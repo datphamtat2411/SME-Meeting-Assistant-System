@@ -5,6 +5,7 @@ import {
   RouterProvider,
 } from '@tanstack/react-router'
 import { routeTree } from '@/routeTree.gen'
+import { toast } from 'sonner'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
@@ -417,6 +418,127 @@ describe('generated meeting route coexistence', () => {
     expect(post.mock.calls[1]?.[2]?.headers).toEqual(
       post.mock.calls[2]?.[2]?.headers
     )
+  })
+
+  it('protects pending and uncertain creation through the actual meeting router', async () => {
+    const api = installAuthorizedApi()
+    const previousRead = api.metadataReads.getMockImplementation()!
+    api.metadataReads.mockImplementation(async (...args) => {
+      const [url] = args
+      if (url === '/action-items' || url === '/action-items/assignee-candidates') {
+        const candidates = url.endsWith('/assignee-candidates')
+        return {
+          data: candidates
+            ? [
+                {
+                  id: user.userId,
+                  displayName: user.displayName,
+                  email: user.email,
+                  organizationalUnitName: null,
+                  active: true,
+                },
+              ]
+            : [],
+          meta: {
+            pagination: {
+              page: 0,
+              size: 20,
+              totalElements: candidates ? 1 : 0,
+              totalPages: candidates ? 1 : 0,
+              hasNext: false,
+              hasPrevious: false,
+            },
+          },
+        }
+      }
+      return previousRead(...args)
+    })
+    let rejectAdmission!: (reason: unknown) => void
+    const pendingAdmission = new Promise<never>((_, reject) => {
+      rejectAdmission = reject
+    })
+    const timeout = new CoreApiError({ message: 'timeout', kind: 'network' })
+    const post = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockReturnValueOnce(pendingAdmission)
+      .mockRejectedValueOnce(timeout)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const warning = vi.spyOn(toast, 'warning')
+    const { router, screen } = await renderRoute(`/meetings/${meetingA.id}`)
+    await expect
+      .element(screen.getByRole('tab', { name: 'Action Items' }))
+      .toBeInTheDocument()
+    await router.navigate({
+      to: '/meetings/$meetingId',
+      params: { meetingId: meetingA.id },
+      search: { section: 'action-items' },
+    })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Add official work' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title', exact: true }),
+      'Review integration'
+    )
+    const leave = () =>
+      router.navigate({
+        to: '/meetings/$meetingId',
+        params: { meetingId: meetingB.id },
+      })
+    void leave()
+    await expect.poll(() => confirm.mock.calls.length).toBe(1)
+    expect(router.state.location.search.section).toBe('action-items')
+
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Primary responsibility' }),
+      'Authorized'
+    )
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: `${user.displayName} · ${user.email}`,
+      })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create official Action Item' })
+    )
+    await expect.poll(() => post.mock.calls.length).toBe(1)
+    confirm.mockReturnValue(true)
+
+    router.history.back()
+    await expect.poll(() => warning.mock.calls.length).toBe(1)
+    expect(router.state.location.search.section).toBe('action-items')
+    expect(confirm).toHaveBeenCalledTimes(1)
+
+    rejectAdmission(timeout)
+    await expect
+      .element(screen.getByText('Creation intent unresolved'))
+      .toBeInTheDocument()
+    void leave()
+    await expect.poll(() => warning.mock.calls.length).toBe(2)
+    expect(router.state.location.pathname).toBe(`/meetings/${meetingA.id}`)
+    expect(confirm).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retry same creation' })
+    )
+    await expect.poll(() => post.mock.calls.length).toBe(2)
+    expect(post.mock.calls[1]?.[1]).toEqual(post.mock.calls[0]?.[1])
+    expect(post.mock.calls[1]?.[2]?.headers).toEqual(
+      post.mock.calls[0]?.[2]?.headers
+    )
+    const abandon = screen.getByRole('button', {
+      name: 'Abandon local recovery',
+    })
+    await expect.element(abandon).toBeEnabled()
+    await userEvent.click(abandon)
+    expect(confirm).toHaveBeenLastCalledWith(
+      'The Action Item may already exist. Abandon local recovery and close this form?'
+    )
+    await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
+    await leave()
+    await expect
+      .poll(() => router.state.location.pathname)
+      .toBe(`/meetings/${meetingB.id}`)
   })
 
   it('redirects anonymous meeting deep links to sign-in without mounting descendants', async () => {

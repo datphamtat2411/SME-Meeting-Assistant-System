@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import type { ActionDraftProtection } from '@/features/action-items/action-navigation-protection'
 import {
   useOptionalMeetingAuthorization,
   type MeetingAuthorizationContextValue,
@@ -82,14 +83,15 @@ export function MeetingSessionProvider({
   const [intelligenceDrafts, setIntelligenceDrafts] = useState({
     summary: false,
     decisions: false,
-    actions: false,
   })
+  const [actionDraftProtection, setActionDraftProtection] =
+    useState<ActionDraftProtection>('none')
   const hasUnsavedIntelligence =
     intelligenceDrafts.summary ||
     intelligenceDrafts.decisions ||
-    intelligenceDrafts.actions
+    actionDraftProtection !== 'none'
   const setIntelligenceDraftDirty = useCallback(
-    (feature: 'summary' | 'decisions' | 'actions', dirty: boolean) => {
+    (feature: 'summary' | 'decisions', dirty: boolean) => {
       setIntelligenceDrafts((current) =>
         current[feature] === dirty ? current : { ...current, [feature]: dirty }
       )
@@ -415,6 +417,8 @@ export function MeetingSessionProvider({
       hasUnsavedTranscriptReview,
       setTranscriptReviewDirty,
       hasUnsavedIntelligence,
+      actionDraftProtection,
+      setActionDraftProtection,
       setIntelligenceDraftDirty,
       updateFallbackCapabilities,
       startRecording,
@@ -447,6 +451,8 @@ export function MeetingSessionProvider({
       hasUnsavedResources,
       hasUnsavedTranscriptReview,
       hasUnsavedIntelligence,
+      actionDraftProtection,
+      setActionDraftProtection,
       setIntelligenceDraftDirty,
       importedMedia,
       pause,

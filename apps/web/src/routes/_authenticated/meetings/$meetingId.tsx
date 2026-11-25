@@ -4,6 +4,8 @@ import {
   useBlocker,
   useMatchRoute,
 } from '@tanstack/react-router'
+import { blockUnresolvedActionCreation } from '@/features/action-items/action-navigation-protection'
+import { isAuthLifecycleBlocking } from '@/features/auth/session/auth-lifecycle'
 import {
   TranscriptReviewGateBoundary,
   useTranscriptReviewGate,
@@ -117,10 +119,12 @@ function MeetingNavigationGuard() {
   const gate = useTranscriptReviewGate()
   useBlocker({
     enableBeforeUnload: () =>
-      session.hasUnsavedResources ||
-      session.hasUnsavedTranscriptReview ||
-      session.hasUnsavedIntelligence ||
-      gate.hasUnresolvedOperation,
+      !isAuthLifecycleBlocking() &&
+      !session.authorization?.isConfirmedAccessLoss &&
+      (session.hasUnsavedResources ||
+        session.hasUnsavedTranscriptReview ||
+        session.hasUnsavedIntelligence ||
+        gate.hasUnresolvedOperation),
     shouldBlockFn: ({ current, next }) => {
       if (
         !session.hasUnsavedResources &&
@@ -138,6 +142,7 @@ function MeetingNavigationGuard() {
           ? next.params.meetingId
           : undefined
       if (
+        isAuthLifecycleBlocking() ||
         session.authorization?.isConfirmedAccessLoss ||
         session.authorization?.status === 'confirmed-authentication-loss' ||
         session.authorization?.status === 'confirmed-authorization-denial'
@@ -145,6 +150,25 @@ function MeetingNavigationGuard() {
         return false
       }
       const sameMeeting = nextMeetingId === session.meetingId
+      const currentSearch: MeetingWorkspaceSearch =
+        current.routeId === '/_authenticated/meetings/$meetingId'
+          ? current.search
+          : {}
+      const remainsInIntelligence =
+        sameMeeting &&
+        next.routeId === '/_authenticated/meetings/$meetingId' &&
+        remainsInIntelligenceReview(currentSearch, next.search)
+      const actionAccessDenied =
+        session.authorization?.capabilities.authorizationResolution ===
+          'denied' &&
+        !session.authorization.capabilities.canReadActionItems
+      if (
+        !remainsInIntelligence &&
+        !actionAccessDenied &&
+        blockUnresolvedActionCreation(session.actionDraftProtection)
+      ) {
+        return true
+      }
       if (!sameMeeting && gate.hasUnresolvedOperation) {
         return !window.confirm(
           'A transcript review request is unresolved. Leaving will lose its local recovery key. Leave anyway?'
@@ -171,19 +195,11 @@ function MeetingNavigationGuard() {
           'Unsaved transcript review work may be lost. Leave anyway?'
         )
       }
-      const currentSearch: MeetingWorkspaceSearch =
-        current.routeId === '/_authenticated/meetings/$meetingId'
-          ? current.search
-          : {}
-      const remainsInIntelligence =
-        sameMeeting &&
-        next.routeId === '/_authenticated/meetings/$meetingId' &&
-        remainsInIntelligenceReview(currentSearch, next.search)
       if (
         session.hasUnsavedIntelligence &&
         !remainsInIntelligence &&
         (currentSearch.section === 'action-items'
-          ? session.authorization?.capabilities.canReadActionItems !== false
+          ? !actionAccessDenied
           : session.authorization?.capabilities.authorizationResolution !==
             'denied')
       ) {

@@ -1,6 +1,8 @@
+import { QueryClient } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CoreApiError, coreApi } from '@/lib/core-api'
 import {
+  processingJobQuery,
   requestProcessing,
   retryProcessing,
   selectProcessingAttempt,
@@ -267,5 +269,38 @@ describe('processing attempt selection', () => {
 
     expect(selectProcessingAttempt([completed])).toEqual(completed)
     expect(selectProcessingAttempt([completed, failed])).toBeUndefined()
+  })
+})
+
+describe('exact processing job ownership', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('uses the originating meeting in the exact query key and caches only matching jobs', async () => {
+    const client = new QueryClient()
+    vi.spyOn(coreApi, 'get').mockResolvedValue(job)
+    const options = processingJobQuery(jobId, meetingId)
+
+    expect(options.queryKey).toEqual(['processing-job', jobId, meetingId])
+    await expect(client.fetchQuery(options)).resolves.toEqual(job)
+    expect(client.getQueryData(options.queryKey)).toEqual(job)
+    expect(client.getQueryData(['processing-job', jobId])).toBeUndefined()
+    client.clear()
+  })
+
+  it.each([
+    { id: secondJobId },
+    { meetingId: mediaId },
+  ])('rejects a mismatched exact job response: %j', async (overrides) => {
+    const client = new QueryClient()
+    vi.spyOn(coreApi, 'get').mockResolvedValue(jobWith(overrides))
+    const options = processingJobQuery(jobId, meetingId)
+
+    await expect(client.fetchQuery(options)).rejects.toMatchObject({
+      code: 'MALFORMED_RESPONSE',
+    })
+    expect(client.getQueryData(options.queryKey)).toBeUndefined()
+    client.clear()
   })
 })

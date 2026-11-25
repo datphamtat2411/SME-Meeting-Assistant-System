@@ -201,7 +201,8 @@ async function listProcessingJobs(
 
 export async function getProcessingJob(
   jobId: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  expectedMeetingId?: string
 ): Promise<ProcessingJob> {
   const response = signal
     ? await coreApi.get<unknown>(
@@ -211,19 +212,28 @@ export async function getProcessingJob(
     : await coreApi.get<unknown>(
         '/processing-jobs/' + encodeURIComponent(jobId)
       )
-  return processingJobSchema.parse(response)
+  const job = processingJobSchema.parse(response)
+  if (
+    job.id !== jobId ||
+    (expectedMeetingId !== undefined && job.meetingId !== expectedMeetingId)
+  ) {
+    throw new CoreApiError({
+      message: 'Core returned a processing job for a different request.',
+      code: 'MALFORMED_RESPONSE',
+      kind: 'malformed',
+    })
+  }
+  return job
 }
 
-export function processingJobQuery(jobId: string) {
+export function processingJobKey(jobId: string, meetingId: string) {
+  return ['processing-job', jobId, meetingId] as const
+}
+
+export function processingJobQuery(jobId: string, meetingId: string) {
   return queryOptions({
-    queryKey: ['processing-job', jobId],
-    queryFn: async ({ signal }) =>
-      processingJobSchema.parse(
-        await coreApi.get<unknown>(
-          '/processing-jobs/' + encodeURIComponent(jobId),
-          { signal }
-        )
-      ),
+    queryKey: processingJobKey(jobId, meetingId),
+    queryFn: ({ signal }) => getProcessingJob(jobId, signal, meetingId),
     retry: false,
   })
 }

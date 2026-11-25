@@ -16,6 +16,7 @@ import { invalidateMeetingArtifacts } from '../intelligence/query-invalidation'
 import { requestSummaryRegeneration } from '../intelligence/summary-api'
 import { meetingMediaQuery, type MeetingMedia } from './media-api'
 import {
+  processingJobKey,
   processingJobsQuery,
   requestProcessing,
   retryProcessing,
@@ -819,7 +820,7 @@ export function useProcessingCoordinator({
       if (index >= 0) next[index] = job
       else next.push(job)
       queryClient.setQueryData(jobsKey, next)
-      queryClient.setQueryData(['processing-job', job.id], job)
+      queryClient.setQueryData(processingJobKey(job.id, meetingId), job)
       void queryClient.invalidateQueries({ queryKey: jobsKey })
       void queryClient.invalidateQueries({
         queryKey: ['meeting-media', meetingId],

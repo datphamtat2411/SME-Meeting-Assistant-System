@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useBlocker } from '@tanstack/react-router'
 import { ListChecks, Plus, Search } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -38,6 +38,11 @@ import {
   RequestError,
   RequestLoading,
 } from '@/components/request-state'
+import { isAuthLifecycleBlocking } from '@/features/auth/session/auth-lifecycle'
+import {
+  classifySessionFailure,
+  currentUserQueryKey,
+} from '@/features/auth/session/current-user'
 import {
   actionItemsQuery,
   managementCapabilityQuery,
@@ -47,6 +52,10 @@ import {
 } from './action-api'
 import { ActionCommands } from './action-commands'
 import { ActionForm } from './action-form'
+import {
+  blockUnresolvedActionCreation,
+  type ActionDraftProtection,
+} from './action-navigation-protection'
 
 type ActionView = 'my' | 'visible' | 'proposals' | 'history'
 
@@ -81,14 +90,27 @@ export function ActionItemsPage() {
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState<ActionItem | null>(null)
   const managementCapability = useQuery(managementCapabilityQuery())
-  const [dirty, setDirty] = useState(false)
+  const queryClient = useQueryClient()
+  const [protection, setProtection] = useState<ActionDraftProtection>('none')
+  function hasConfirmedSessionLoss() {
+    const identity = queryClient.getQueryState(currentUserQueryKey)
+    return (
+      isAuthLifecycleBlocking() ||
+      (identity?.status === 'error' &&
+        classifySessionFailure(identity.error) !== 'unavailable')
+    )
+  }
   useBlocker({
-    enableBeforeUnload: dirty,
-    shouldBlockFn: () =>
-      dirty &&
-      !window.confirm(
-        'Unsaved or unresolved Action Item work may be lost. Leave anyway?'
-      ),
+    enableBeforeUnload: () =>
+      protection !== 'none' && !hasConfirmedSessionLoss(),
+    shouldBlockFn: () => {
+      if (hasConfirmedSessionLoss()) return false
+      if (blockUnresolvedActionCreation(protection)) return true
+      return (
+        protection === 'dirty' &&
+        !window.confirm('Unsaved Action Item work may be lost. Leave anyway?')
+      )
+    },
   })
 
   function selectView(next: string) {
@@ -202,7 +224,7 @@ export function ActionItemsPage() {
         open={open}
         onOpenChange={setOpen}
         item={selected}
-        onDirtyChange={setDirty}
+        onProtectionChange={setProtection}
         canManageActionItems={managementCapability.data?.canCreate === true}
       />
     </>

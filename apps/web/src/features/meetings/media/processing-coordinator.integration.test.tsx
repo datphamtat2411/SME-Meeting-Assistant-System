@@ -898,7 +898,10 @@ describe('meeting-scoped processing command owner', () => {
     await expect
       .element(screen.getByTestId('reprocess-result'))
       .toHaveTextContent('confirmed')
-    expect(client.getQueryData(['processing-job', child.id])).toEqual(child)
+    expect(
+      client.getQueryData(['processing-job', child.id, meetingId])
+    ).toEqual(child)
+    expect(client.getQueryData(['processing-job', child.id])).toBeUndefined()
     await expect
       .element(screen.getByTestId('reprocess-state'))
       .toHaveTextContent('0')
@@ -921,7 +924,9 @@ describe('meeting-scoped processing command owner', () => {
     await expect
       .element(screen.getByTestId('reprocess-state'))
       .toHaveTextContent('1')
-    expect(client.getQueryData(['processing-job', failedJobId])).toBeUndefined()
+    expect(
+      client.getQueryData(['processing-job', failedJobId, meetingId])
+    ).toBeUndefined()
   })
 
   it('retains the original uncertain intent after a definitive replay rejection', async () => {
@@ -1066,7 +1071,7 @@ describe('meeting-scoped processing command owner', () => {
         originalJobs
       )
       expect(
-        client.getQueryData(['processing-job', confirmed.id])
+        client.getQueryData(['processing-job', confirmed.id, meetingId])
       ).toBeUndefined()
 
       processingMocks.jobs =
@@ -1076,9 +1081,9 @@ describe('meeting-scoped processing command owner', () => {
         .element(results)
         .toHaveTextContent('blocked,blocked,confirmed')
       await expect.element(state).toHaveTextContent('idle:undefined')
-      expect(client.getQueryData(['processing-job', confirmed.id])).toEqual(
-        confirmed
-      )
+      expect(
+        client.getQueryData(['processing-job', confirmed.id, meetingId])
+      ).toEqual(confirmed)
     }
   )
 })

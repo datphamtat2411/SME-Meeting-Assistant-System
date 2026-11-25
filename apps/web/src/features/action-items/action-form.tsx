@@ -33,6 +33,7 @@ import {
   type ActionItem,
   type ActionMutationResult,
 } from './action-api'
+import type { ActionDraftProtection } from './action-navigation-protection'
 import { useActionOperationScope } from './action-operation-scope'
 
 export function ActionForm({
@@ -41,14 +42,14 @@ export function ActionForm({
   item,
   meetingId,
   canManageActionItems = false,
-  onDirtyChange,
+  onProtectionChange,
 }: {
   open: boolean
   onOpenChange: (value: boolean) => void
   item?: ActionItem | null
   meetingId?: string
   canManageActionItems?: boolean
-  onDirtyChange?: (dirty: boolean) => void
+  onProtectionChange?: (protection: ActionDraftProtection) => void
 }) {
   const qc = useQueryClient()
   const [title, setTitle] = useState(item?.title ?? '')
@@ -87,7 +88,8 @@ export function ActionForm({
   const submitting = useRef(false)
   const operation = useRef(0)
   const isFixedMeeting = Boolean(item || meetingId)
-  const setMeetingDirty = useOptionalMeetingSession()?.setIntelligenceDraftDirty
+  const setMeetingProtection =
+    useOptionalMeetingSession()?.setActionDraftProtection
   const detail = useQuery({
     ...actionDetailQuery(item?.id, item?.meetingId),
     enabled: open && Boolean(item),
@@ -278,14 +280,28 @@ export function ActionForm({
         : title || details || assignee || dueDate)
     )
 
+  const protection: ActionDraftProtection = !open
+    ? 'none'
+    : !item && mutation.isPending
+      ? 'pending-creation'
+      : !item && unresolvedCreate
+        ? 'uncertain-creation'
+        : dirty
+          ? 'dirty'
+          : 'none'
+
   useLayoutEffect(() => {
-    setMeetingDirty?.('actions', dirty)
-    onDirtyChange?.(dirty)
-    return () => {
-      setMeetingDirty?.('actions', false)
-      onDirtyChange?.(false)
-    }
-  }, [dirty, setMeetingDirty, onDirtyChange])
+    setMeetingProtection?.(protection)
+    onProtectionChange?.(protection)
+  }, [protection, setMeetingProtection, onProtectionChange])
+
+  useLayoutEffect(
+    () => () => {
+      setMeetingProtection?.('none')
+      onProtectionChange?.('none')
+    },
+    [setMeetingProtection, onProtectionChange]
+  )
 
   function submit(event: FormEvent) {
     event.preventDefault()

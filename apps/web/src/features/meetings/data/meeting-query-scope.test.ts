@@ -1,4 +1,6 @@
+import { QueryClient } from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
+import { processingJobQuery } from '../media/processing-api'
 import {
   isMeetingActionQuery,
   isMeetingContentQuery,
@@ -18,6 +20,53 @@ describe('meeting query scope', () => {
       )
     ).toBe(true)
     expect(isMeetingScopedQuery(['export', 'pdf', 'b', 'PDF'], 'a')).toBe(false)
+  })
+
+  it('contains pending and failed exact jobs without touching another meeting', async () => {
+    const client = new QueryClient()
+    const a = processingJobQuery('job-a', 'a')
+    const failed = processingJobQuery('failed-a', 'a')
+    const b = processingJobQuery('job-b', 'b')
+    const pending = client
+      .fetchQuery({
+        ...a,
+        queryFn: ({ signal }) =>
+          new Promise<never>((_, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('aborted')))
+          }),
+      })
+      .catch(() => undefined)
+    await expect(
+      client.fetchQuery({
+        ...failed,
+        queryFn: async () => {
+          throw new Error('read failed')
+        },
+      })
+    ).rejects.toThrow('read failed')
+    const other = client
+      .fetchQuery({
+        ...b,
+        queryFn: ({ signal }) =>
+          new Promise<never>((_, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('aborted')))
+          }),
+      })
+      .catch(() => undefined)
+
+    const filters = {
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        isMeetingContentQuery(query.queryKey, 'a'),
+    }
+    await client.cancelQueries(filters)
+    client.removeQueries(filters)
+    expect(client.getQueryState(a.queryKey)).toBeUndefined()
+    expect(client.getQueryState(failed.queryKey)).toBeUndefined()
+    expect(client.getQueryState(b.queryKey)?.fetchStatus).toBe('fetching')
+
+    await client.cancelQueries()
+    await Promise.all([pending, other])
+    client.clear()
   })
 
   it('distinguishes meeting content from independently authorized action items', () => {

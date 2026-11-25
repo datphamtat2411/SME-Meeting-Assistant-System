@@ -1,3 +1,4 @@
+import type { ActionDraftProtection } from '@/features/action-items/action-navigation-protection'
 import type { MeetingAuthorizationContextValue } from '../meeting-authorization-context'
 import type { MediaUploadPhase, MeetingMedia } from './media-api'
 import type { ProcessingCoordinatorValue } from './processing-coordinator'
@@ -110,8 +111,10 @@ export type MeetingSessionContextValue = {
   hasUnsavedResources: boolean
   hasUnsavedTranscriptReview: boolean
   hasUnsavedIntelligence: boolean
+  actionDraftProtection: ActionDraftProtection
+  setActionDraftProtection: (protection: ActionDraftProtection) => void
   setIntelligenceDraftDirty: (
-    feature: 'summary' | 'decisions' | 'actions',
+    feature: 'summary' | 'decisions',
     dirty: boolean
   ) => void
   setTranscriptReviewDirty: (dirty: boolean) => void
