@@ -331,14 +331,30 @@ export function useProcessingCoordinator({
     publishOperations()
   }, [publishOperations])
 
-  const suspendExecutions = useCallback(() => {
+  const suspendUnauthorizedExecutions = useCallback(() => {
     let changed = false
     for (const operation of operations.current.values()) {
       const execution = operation.execution
-      if (!execution) continue
-      execution.controller.abort()
+      if (
+        !execution ||
+        authorizedForProcessingOperation(
+          operationAuthorizationKind(operation),
+          authorizationRef.current,
+          fallbackRef.current
+        )
+      ) {
+        continue
+      }
+
+      // Detach the attempt before aborting. A late completion must not own
+      // the intent, even if authorization is restored before it settles.
       operation.execution = null
-      operation.status = execution.requestStarted ? 'uncertain' : 'pending'
+      if (execution.requestStarted || execution.replayingUncertain) {
+        operation.status = 'uncertain'
+      } else {
+        operations.current.delete(operation.logicalIdentity)
+      }
+      execution.controller.abort()
       changed = true
     }
     if (changed) publishOperations()
@@ -358,25 +374,14 @@ export function useProcessingCoordinator({
   const refetchMedia = media.refetch
 
   const isAuthorized = useCallback((kind: 'admission' | 'recovery') => {
-    const currentAuthorization = authorizationRef.current
-    if (currentAuthorization) {
-      if (
-        !currentAuthorization.scopeReady ||
-        currentAuthorization.isConfirmedAccessLoss ||
-        !currentAuthorization.canPerformProtectedOperation
-      ) {
-        return false
-      }
-      return kind === 'admission'
-        ? currentAuthorization.canAdmitProcessing
-        : currentAuthorization.canRecoverProcessing
-    }
-    return kind === 'admission'
-      ? (fallbackRef.current?.canAdmitProcessing ?? false)
-      : (fallbackRef.current?.canRecoverProcessing ?? false)
+    return authorizedForProcessingOperation(
+      kind,
+      authorizationRef.current,
+      fallbackRef.current
+    )
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const actorId = authorization?.identityId ?? null
     const confirmedAccessLoss = authorization?.isConfirmedAccessLoss ?? false
     const previous = previousScope.current
@@ -390,13 +395,16 @@ export function useProcessingCoordinator({
       invalidate()
       return
     }
-    if (authorization && !authorization.canPerformProtectedOperation) {
-      // This effect coordinates cancellation with an externally changing
-      // authorization source; publishing the resulting operation state is
-      // required for the recovery UI to reflect the interrupted request.
-      suspendExecutions()
-    }
-  }, [authorization, invalidate, meetingId, suspendExecutions])
+    // A feature capability can be lost while meeting reads remain allowed.
+    // Suspend before the next command or completion can observe the new scope.
+    suspendUnauthorizedExecutions()
+  }, [
+    authorization,
+    fallback,
+    invalidate,
+    meetingId,
+    suspendUnauthorizedExecutions,
+  ])
 
   useEffect(() => {
     const observed = jobs.data ?? []

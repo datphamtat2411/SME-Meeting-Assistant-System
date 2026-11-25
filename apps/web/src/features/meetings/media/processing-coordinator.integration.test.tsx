@@ -9,6 +9,11 @@ import {
   useMeetingSession,
 } from './meeting-session-context'
 import type { ProcessingJob } from './processing-api'
+import {
+  useProcessingCoordinator,
+  type ProcessingAuthorization,
+  type ProcessingOperationKind,
+} from './processing-coordinator'
 
 const processingMocks = vi.hoisted(() => ({
   media: [] as Array<Record<string, unknown>>,
@@ -216,6 +221,85 @@ async function renderCoordinator() {
     .poll(() => client.getQueryData(['processing-jobs', meetingId]))
     .toBeDefined()
   return { client, screen }
+}
+
+const fullAuthorization: ProcessingAuthorization = {
+  identityId: '66666666-6666-4666-8666-666666666666',
+  scopeReady: true,
+  canReadMedia: true,
+  canReadProcessing: true,
+  canAdmitProcessing: true,
+  canRecoverProcessing: true,
+  canPerformProtectedOperation: true,
+  isConfirmedAccessLoss: false,
+}
+
+function CapabilityHarness({ kind }: { kind: ProcessingOperationKind }) {
+  const [allowed, setAllowed] = useState(true)
+  const [results, setResults] = useState<string[]>([])
+  const recovery = kind === 'retry' || kind === 'stage-retry'
+  const processing = useProcessingCoordinator({
+    meetingId,
+    authorization: {
+      ...fullAuthorization,
+      canAdmitProcessing: recovery || allowed,
+      canRecoverProcessing: !recovery || allowed,
+    },
+  })
+
+  function recordResult(request: ReturnType<typeof processing.admit>) {
+    void request.then(
+      (result) => setResults((previous) => [...previous, result.status]),
+      () => setResults((previous) => [...previous, 'rejected'])
+    )
+  }
+
+  function start() {
+    if (kind === 'admission') {
+      recordResult(processing.admit(firstMediaId))
+    } else if (kind === 'reprocessing') {
+      recordResult(processing.reprocess(failedJobId, firstMediaId))
+    } else {
+      recordResult(
+        processing.retry(
+          failedJobId,
+          kind === 'stage-retry' ? 'TRANSCRIPTION' : undefined
+        )
+      )
+    }
+  }
+
+  const unresolved = processing.unresolvedOperations[0]
+
+  return (
+    <>
+      <button type='button' onClick={start}>
+        Start command
+      </button>
+      <button type='button' onClick={() => setAllowed(false)}>
+        Revoke capability
+      </button>
+      <button type='button' onClick={() => setAllowed(true)}>
+        Restore capability
+      </button>
+      <button
+        type='button'
+        onClick={() => {
+          if (unresolved) {
+            recordResult(
+              processing.recoverOperation(unresolved.logicalIdentity)
+            )
+          }
+        }}
+      >
+        Recover command
+      </button>
+      <output data-testid='command-state'>
+        {unresolved?.status ?? 'idle'}:{String(unresolved?.replayPermitted)}
+      </output>
+      <output data-testid='command-results'>{results.join(',')}</output>
+    </>
+  )
 }
 
 describe('meeting-scoped processing command owner', () => {
@@ -469,4 +553,121 @@ describe('meeting-scoped processing command owner', () => {
     )
     expect(new Set(keys).size).toBe(1)
   })
+
+  it.each(['admission', 'retry', 'stage-retry', 'reprocessing'] as const)(
+    'suspends %s on capability loss and recovers the original intent',
+    async (kind) => {
+      const recovery = kind === 'retry' || kind === 'stage-retry'
+      const job = processingJob({
+        stageRuns: [
+          {
+            id: '88888888-8888-4888-8888-888888888888',
+            stageCode: 'TRANSCRIPTION',
+            attemptNumber: 1,
+            status: 'FAILED',
+            providerName: null,
+            modelName: null,
+            startedAt: null,
+            completedAt: null,
+            errorCode: 'TRANSCRIPTION_FAILED',
+          },
+        ],
+      })
+      processingMocks.jobs = kind === 'admission' ? [] : [job]
+      const original = deferred<ProcessingJob>()
+      const replay = deferred<ProcessingJob>()
+      const request = recovery
+        ? processingMocks.retryProcessing
+        : processingMocks.requestProcessing
+      request
+        .mockReturnValueOnce(original.promise)
+        .mockReturnValueOnce(replay.promise)
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      })
+      const screen = await render(
+        <QueryClientProvider client={client}>
+          <CapabilityHarness kind={kind} />
+        </QueryClientProvider>
+      )
+      await expect
+        .poll(() => client.getQueryData(['meeting-media', meetingId]))
+        .toBeDefined()
+      await expect
+        .poll(() => client.getQueryData(['processing-jobs', meetingId]))
+        .toBeDefined()
+
+      const state = screen.getByTestId('command-state')
+      const results = screen.getByTestId('command-results')
+      const recover = screen.getByRole('button', { name: 'Recover command' })
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Start command' })
+      )
+      await expect.element(state).toHaveTextContent('pending:false')
+      expect(request).toHaveBeenCalledTimes(1)
+      const optionsIndex = recovery ? 2 : 3
+      const originalOptions = request.mock.calls[0][optionsIndex]
+
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Revoke capability' })
+      )
+      await expect.element(state).toHaveTextContent('uncertain:false')
+      expect(originalOptions.signal.aborted).toBe(true)
+      const originalJobs = client.getQueryData(['processing-jobs', meetingId])
+      await userEvent.click(recover)
+      expect(request).toHaveBeenCalledTimes(1)
+      await expect.element(results).toHaveTextContent('blocked')
+
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Restore capability' })
+      )
+      await expect.element(state).toHaveTextContent('uncertain:true')
+      await userEvent.click(recover)
+      await expect.element(state).toHaveTextContent('pending:false')
+      expect(request).toHaveBeenCalledTimes(2)
+      const replayOptions = request.mock.calls[1][optionsIndex]
+      expect(replayOptions.idempotencyKey).toBe(originalOptions.idempotencyKey)
+      expect(replayOptions.signal).not.toBe(originalOptions.signal)
+      expect(replayOptions.signal.aborted).toBe(false)
+      expect(request.mock.calls[1].slice(0, optionsIndex)).toEqual(
+        request.mock.calls[0].slice(0, optionsIndex)
+      )
+
+      const confirmed = processingJob({
+        id:
+          kind === 'reprocessing'
+            ? '77777777-7777-4777-8777-777777777777'
+            : failedJobId,
+        reprocessOfJobId: kind === 'reprocessing' ? failedJobId : null,
+        status: 'PENDING',
+        retryable: false,
+      })
+      // Settle the revoked execution while its replacement still owns the
+      // intent. A late success or failure cannot retire the replacement.
+      if (kind === 'retry') {
+        original.reject(new Error('Late failure'))
+      } else {
+        original.resolve({ ...confirmed, status: 'RUNNING' })
+      }
+      await expect.element(results).toHaveTextContent('blocked,blocked')
+      await expect.element(state).toHaveTextContent('pending:false')
+      expect(client.getQueryData(['processing-jobs', meetingId])).toEqual(
+        originalJobs
+      )
+      expect(
+        client.getQueryData(['processing-job', confirmed.id])
+      ).toBeUndefined()
+
+      processingMocks.jobs =
+        kind === 'reprocessing' ? [job, confirmed] : [confirmed]
+      replay.resolve(confirmed)
+      await expect
+        .element(results)
+        .toHaveTextContent('blocked,blocked,confirmed')
+      await expect.element(state).toHaveTextContent('idle:undefined')
+      expect(client.getQueryData(['processing-job', confirmed.id])).toEqual(
+        confirmed
+      )
+    }
+  )
 })
