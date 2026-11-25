@@ -39,6 +39,7 @@ const failedJob = {
   id: jobId,
   meetingId,
   sourceMediaId: firstMediaId,
+  reprocessOfJobId: null,
   jobType: 'OFFLINE_MEETING_PROCESSING',
   status: 'FAILED',
   currentStage: 'TRANSCRIPTION',

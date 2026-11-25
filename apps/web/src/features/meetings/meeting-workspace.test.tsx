@@ -1761,9 +1761,10 @@ describe('MeetingWorkspacePage', () => {
     await expect
       .poll(() => client.getQueryState(['meeting-media', 'meeting-1'])?.status)
       .toBe('success')
-    client.setQueryData(['meeting-media', 'meeting-1'], [
-      { id: 'source-1', status: 'AVAILABLE', originalFilename: 'private.wav' },
-    ])
+    client.setQueryData(
+      ['meeting-media', 'meeting-1'],
+      [{ id: 'source-1', status: 'AVAILABLE', originalFilename: 'private.wav' }]
+    )
     await expect.element(screen.getByText('private.wav')).toBeInTheDocument()
 
     client.setQueryData(['meetings', 'participants', 'meeting-1'], [])
