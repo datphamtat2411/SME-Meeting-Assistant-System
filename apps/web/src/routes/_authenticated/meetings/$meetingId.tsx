@@ -21,6 +21,7 @@ import {
   normalizeMeetingWorkspaceSearch,
   updateMeetingWorkspaceSearch,
   type MeetingWorkspaceSection,
+  type MeetingWorkspaceSearch,
   type IntelligenceView,
 } from '@/features/meetings/meeting-workspace-navigation'
 
@@ -170,7 +171,7 @@ function MeetingNavigationGuard() {
           'Unsaved transcript review work may be lost. Leave anyway?'
         )
       }
-      const currentSearch =
+      const currentSearch: MeetingWorkspaceSearch =
         current.routeId === '/_authenticated/meetings/$meetingId'
           ? current.search
           : {}
