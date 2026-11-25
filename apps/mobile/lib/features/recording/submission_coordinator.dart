@@ -299,7 +299,9 @@ class SubmissionCoordinator extends ChangeNotifier {
     final recovered = <SubmissionState>[];
     for (final operation in uploadOperations) {
       final value = _uploadRecoveryState(scope, operation);
-      _publish(value);
+      if (!hasActiveSubmission(value.assetId, scope: scope)) {
+        _publish(value);
+      }
       recovered.add(value);
     }
     for (final operation in processingOperations) {
@@ -312,7 +314,9 @@ class SubmissionCoordinator extends ChangeNotifier {
             'The processing request requires reconciliation before retrying.',
         sessionScope: scope,
       );
-      _publish(value);
+      if (!hasActiveSubmission(value.assetId, scope: scope)) {
+        _publish(value);
+      }
       recovered.add(value);
     }
     return List<SubmissionState>.unmodifiable(recovered);
@@ -347,8 +351,16 @@ class SubmissionCoordinator extends ChangeNotifier {
     );
   }
 
-  void cancel(String assetId) {
-    final scope = api.authenticatedSessionScope;
+  bool hasActiveSubmission(
+    String assetId, {
+    required AuthenticatedSessionScope scope,
+  }) =>
+      api.isCurrentAuthenticatedSession(scope) &&
+      _active.containsKey(_activeKey(scope, assetId));
+
+  void cancel(String assetId, {AuthenticatedSessionScope? scope}) {
+    scope ??= api.authenticatedSessionScope;
+    if (scope != null && !api.isCurrentAuthenticatedSession(scope)) return;
     if (scope != null) {
       final key = _activeKey(scope, assetId);
       _workflowCancellation[key]?.token.cancel();
@@ -562,7 +574,9 @@ class SubmissionCoordinator extends ChangeNotifier {
         uploadOperation,
         failure,
       );
-      final lifecycle = _failureLifecycle(error);
+      final lifecycle = uploadOperation.recoveryRequired
+          ? SubmissionLifecycleState.reconciliationRequired
+          : _failureLifecycle(error);
       return _publish(
         failed.copyWith(
           lifecycle: lifecycle,
@@ -1407,7 +1421,9 @@ class SubmissionCoordinator extends ChangeNotifier {
             ? authoritative.attemptCount
             : authoritative.attemptCount + 1,
         attemptOutcome: outcome,
-        recoveryRequired: outcome == OperationAttemptOutcome.uncertain,
+        recoveryRequired:
+            operation.recoveryRequired ||
+            outcome == OperationAttemptOutcome.uncertain,
         failureCode: failure.code,
         failureStatus: failure.status,
         failureMessage: failure.message,
@@ -1456,7 +1472,9 @@ class SubmissionCoordinator extends ChangeNotifier {
             ? authoritative.attemptCount
             : authoritative.attemptCount + 1,
         attemptOutcome: outcome,
-        recoveryRequired: outcome == OperationAttemptOutcome.uncertain,
+        recoveryRequired:
+            operation.recoveryRequired ||
+            outcome == OperationAttemptOutcome.uncertain,
         failureCode: failure.code,
         failureStatus: failure.status,
         failureMessage: failure.message,

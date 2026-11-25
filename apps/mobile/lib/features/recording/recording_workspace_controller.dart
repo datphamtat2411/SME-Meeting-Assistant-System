@@ -56,7 +56,9 @@ class RecordingWorkspaceController extends ChangeNotifier {
   ProcessingMeetingState? _remoteState;
   Object? _failure;
   Object? _warning;
-  String? _pendingAction;
+  _WorkspaceAction? _action;
+  int _contextGeneration = 0;
+  int _selectionRevision = 0;
   ProcessingObservation? _observation;
   int _generation = 0;
   bool _disposed = false;
@@ -70,7 +72,7 @@ class RecordingWorkspaceController extends ChangeNotifier {
   ProcessingMeetingState? get remoteState => _remoteState;
   Object? get failure => _failure;
   Object? get warning => _warning;
-  String? get pendingAction => _pendingAction;
+  String? get pendingAction => _action?.kind;
   AuthenticatedSessionScope? get sessionScope => _sessionScope;
   bool get isSessionFenced =>
       _sessionScope == null ||
@@ -87,7 +89,59 @@ class RecordingWorkspaceController extends ChangeNotifier {
   bool get canRetryProcessing =>
       !isSessionFenced &&
       capabilities?.allows(MeetingOperation.retryProcessing) == true;
-  bool get isBusy => _pendingAction != null;
+  bool get isBusy => _action != null;
+
+  bool get canCancelSubmission {
+    final scope = _sessionScope;
+    final asset = _selectedAsset;
+    return scope != null &&
+        asset != null &&
+        !isSessionFenced &&
+        submissions.hasActiveSubmission(asset.id, scope: scope);
+  }
+
+  bool get canCancelImport {
+    final scope = _sessionScope;
+    return scope != null &&
+        !isSessionFenced &&
+        recording.canCancelImport(meetingId: meetingId, scope: scope);
+  }
+
+  bool get canSubmitSelected =>
+      !isBusy &&
+      !isSessionFenced &&
+      _selectedAsset?.isReady == true &&
+      _selectedSubmission?.processingAdmitted != true &&
+      (_selectedSubmission?.remoteMediaAvailable == true
+          ? canAdmitProcessing
+          : canUpload);
+
+  bool canResumeRecovery(SubmissionState state) {
+    if (isBusy || !canReadMedia || !_containsRecovery(state)) return false;
+    final upload = state.uploadOperation;
+    if (upload != null) {
+      return canUpload ||
+          (upload.remoteMediaId != null &&
+              (canAdmitProcessing ||
+                  capabilities?.allows(MeetingOperation.finalizeMedia) ==
+                      true));
+    }
+    return switch (state.processingOperation?.operationType) {
+      ProcessingOperationType.retry => canRetryProcessing,
+      ProcessingOperationType.admission ||
+      ProcessingOperationType.reprocess => canAdmitProcessing,
+      null => false,
+    };
+  }
+
+  bool _containsRecovery(SubmissionState state) =>
+      state.meetingId == meetingId &&
+      state.sessionScope == _sessionScope &&
+      _recoverableOperations.any(
+        (item) =>
+            item.uploadOperation?.id == state.uploadOperation?.id &&
+            item.processingOperation?.id == state.processingOperation?.id,
+      );
 
   RecordingCoordinatorState get recordingState {
     final scope = _sessionScope;
@@ -127,8 +181,17 @@ class RecordingWorkspaceController extends ChangeNotifier {
       if (!canReadMedia) {
         _observation?.dispose();
         _observation = null;
+        _generation++;
+        _assets = const <LocalMediaAsset>[];
+        _recoverableOperations = const <SubmissionState>[];
+        _selectedAsset = null;
+        _selectedSubmission = null;
+        _remoteState = null;
+        _loadState = RecordingWorkspaceLoadState.idle;
+      } else if (_observation == null) {
+        _startObservationIfAllowed();
+        unawaited(load());
       }
-      _startObservationIfAllowed();
       _functionalStateChanged();
     }
   }
@@ -139,7 +202,7 @@ class RecordingWorkspaceController extends ChangeNotifier {
   }
 
   Future<void> load() async {
-    if (_disposed || isSessionFenced) return;
+    if (_disposed || !canReadMedia) return;
     final scope = _sessionScope!;
     final meeting = meetingId;
     final generation = ++_generation;
@@ -161,24 +224,22 @@ class RecordingWorkspaceController extends ChangeNotifier {
         scope: scope,
         meetingId: meeting,
       );
-      if (!_owns(generation, scope, meeting)) return;
+      if (!_owns(generation, scope, meeting) || !canReadMedia) return;
       _assets = listed
           .where((asset) => asset.isRecoverable)
           .toList(growable: false);
       _recoverableOperations = recovered;
-      if (_selectedAsset != null &&
-          !_assets.any((asset) => asset.id == _selectedAsset!.id)) {
-        _selectedAsset = null;
+      if (_selectedAsset != null) {
+        final selectedId = _selectedAsset!.id;
+        _selectedAsset = _assets.where((asset) => asset.id == selectedId).firstOrNull;
       }
       _selectedAsset ??= _findAssetForRecovery(recovered);
-      _selectedSubmission = _selectedAsset == null
-          ? null
-          : submissions.stateFor(_selectedAsset!.id);
+      _projectSelectedSubmission();
       _loadState = RecordingWorkspaceLoadState.ready;
       _failure = recoveryFailure;
       notifyListeners();
     } catch (error) {
-      if (!_owns(generation, scope, meeting)) return;
+      if (!_owns(generation, scope, meeting) || !canReadMedia) return;
       _loadState = RecordingWorkspaceLoadState.failed;
       _failure = recoveryFailure ?? error;
       notifyListeners();
@@ -187,104 +248,102 @@ class RecordingWorkspaceController extends ChangeNotifier {
 
   void selectAsset(LocalMediaAsset? asset) {
     if (_disposed ||
+        !canReadMedia ||
         asset == null ||
         !_assets.any((item) => item.id == asset.id)) {
       return;
     }
-    _selectedAsset = asset;
-    _selectedSubmission = submissions.stateFor(asset.id);
+    _selectedAsset = _assets.firstWhere((item) => item.id == asset.id);
+    _selectionRevision++;
+    _projectSelectedSubmission();
     _warning = null;
     notifyListeners();
   }
 
   Future<void> startRecording() async {
-    if (!_beginAction('recording')) return;
-    final scope = _sessionScope;
+    if (!canUpload || meetingStatus != MeetingStatus.inProgress) return;
+    final action = _beginAction('recording');
+    if (action == null) return;
     try {
-      if (scope == null || !api.isCurrentAuthenticatedSession(scope)) return;
-      await recording.start(
-        meetingId: meetingId,
-        capabilities:
-            capabilities ??
-            (throw const ApiFailure(
-              403,
-              'MEDIA_CAPABILITY_REQUIRED',
-              'Recording authorization is unavailable.',
-            )),
-        meetingStatus:
-            meetingStatus ??
-            (throw const RecordingEligibilityException(
-              'The current meeting state is unavailable.',
-            )),
+      final result = await recording.start(
+        meetingId: action.meetingId,
+        capabilities: capabilities!,
+        meetingStatus: meetingStatus!,
       );
-      await load();
+      if (!_ownsAction(action)) return;
+      _failure = result.failure;
+      notifyListeners();
     } catch (error) {
-      _setActionFailure(scope, error);
+      _setActionFailure(action, error);
     } finally {
-      _endAction('recording');
+      _endAction(action);
     }
   }
 
   Future<void> stopRecording() async {
-    if (!_beginAction('recording')) return;
-    final scope = _sessionScope;
+    if (!recordingState.isCapturing) return;
+    final action = _beginAction('stop', supersedeRecordingStart: true);
+    if (action == null) return;
     try {
-      if (scope == null || !api.isCurrentAuthenticatedSession(scope)) return;
-      await recording.stop(meetingId: meetingId, scope: scope);
+      final result = await recording.stop(
+        meetingId: action.meetingId,
+        scope: action.scope,
+      );
+      if (!_ownsAction(action)) return;
       await load();
-      final asset = recording
-          .stateFor(meetingId: meetingId, scope: scope)
-          .asset;
-      if (_owns(_generation, scope, meetingId) && asset?.isReady == true) {
-        _selectedAsset = asset;
-        _selectedSubmission = submissions.stateFor(asset!.id);
-        notifyListeners();
+      if (!_ownsAction(action)) return;
+      _failure = result.failure;
+      if (result.asset?.isReady == true &&
+          _selectionRevision == action.selectionRevision) {
+        selectAsset(result.asset);
       }
+      notifyListeners();
     } catch (error) {
-      _setActionFailure(scope, error);
+      _setActionFailure(action, error);
     } finally {
-      _endAction('recording');
+      _endAction(action);
     }
   }
 
   Future<void> importAudio() async {
-    if (!_beginAction('import')) return;
-    final scope = _sessionScope;
+    if (!canUpload) return;
+    final action = _beginAction('import');
+    if (action == null) return;
     try {
-      if (scope == null || !api.isCurrentAuthenticatedSession(scope)) return;
-      await recording.importAudio(
-        meetingId: meetingId,
+      final result = await recording.importAudio(
+        meetingId: action.meetingId,
         meetingStatus: meetingStatus,
-        capabilities:
-            capabilities ??
-            (throw const ApiFailure(
-              403,
-              'MEDIA_CAPABILITY_REQUIRED',
-              'Import authorization is unavailable.',
-            )),
+        capabilities: capabilities!,
       );
+      if (!_ownsAction(action)) return;
       await load();
-      final asset = recording
-          .stateFor(meetingId: meetingId, scope: scope)
-          .asset;
-      if (_owns(_generation, scope, meetingId) && asset?.isReady == true) {
-        selectAsset(asset);
+      if (!_ownsAction(action)) return;
+      _failure = result.failure;
+      if (result.asset?.isReady == true &&
+          _selectionRevision == action.selectionRevision) {
+        selectAsset(result.asset);
       }
+      notifyListeners();
     } catch (error) {
-      _setActionFailure(scope, error);
+      _setActionFailure(action, error);
     } finally {
-      _endAction('import');
+      _endAction(action);
     }
+  }
+
+  void cancelImport() {
+    final scope = _sessionScope;
+    if (scope == null || !canCancelImport) return;
+    recording.cancelImport(meetingId: meetingId, scope: scope);
   }
 
   Future<void> submitSelected() async {
     final asset = _selectedAsset;
-    final scope = _sessionScope;
-    if (asset == null || !asset.isReady || !_beginAction('submission')) return;
+    if (asset == null || !canSubmitSelected) return;
+    final action = _beginAction('submission');
+    if (action == null) return;
     try {
-      if (scope == null || !api.isCurrentAuthenticatedSession(scope)) return;
-      final existing = submissions.stateFor(asset.id);
-      final operation = existing?.uploadOperation;
+      final operation = submissions.stateFor(asset.id)?.uploadOperation;
       final result = operation == null
           ? await submissions.submit(
               asset: asset,
@@ -293,157 +352,170 @@ class RecordingWorkspaceController extends ChangeNotifier {
             )
           : await submissions.resume(
               operationId: operation.id,
-              scope: scope,
+              scope: action.scope,
               capabilities: capabilities,
               admitProcessing: canAdmitProcessing,
             );
-      if (_owns(_generation, scope, meetingId) &&
-          _selectedAsset?.id == asset.id) {
-        _selectedSubmission = result;
-        notifyListeners();
-      }
+      if (!_ownsAction(action)) return;
+      await load();
+      if (_ownsAction(action)) _applySubmissionResult(action, result);
     } catch (error) {
-      _setActionFailure(scope, error);
+      _setActionFailure(action, error);
     } finally {
-      _endAction('submission');
+      _endAction(action);
     }
   }
 
   void cancelSubmission() {
     final asset = _selectedAsset;
-    if (asset == null || _disposed) return;
-    submissions.cancel(asset.id);
+    final scope = _sessionScope;
+    if (asset == null || scope == null || !canCancelSubmission) return;
+    submissions.cancel(asset.id, scope: scope);
   }
 
   Future<void> discardAsset(LocalMediaAsset asset) async {
-    final scope = _sessionScope;
-    if (scope == null || !api.isCurrentAuthenticatedSession(scope)) return;
-    if (!_beginAction('discard')) return;
+    if (!canReadMedia || !_assets.any((item) => item.id == asset.id)) return;
+    final action = _beginAction('discard');
+    if (action == null) return;
     try {
-      await localMedia.discard(scope: scope, assetId: asset.id);
+      await localMedia.discard(scope: action.scope, assetId: asset.id);
+      if (!_ownsAction(action)) return;
       if (_selectedAsset?.id == asset.id) {
         _selectedAsset = null;
         _selectedSubmission = null;
+        _selectionRevision++;
       }
       await load();
     } catch (error) {
-      _setActionFailure(scope, error);
+      _setActionFailure(action, error);
     } finally {
-      _endAction('discard');
+      _endAction(action);
     }
   }
 
   Future<void> admitRemoteMedia(MediaRecord media) async {
-    final scope = _sessionScope;
-    if (scope == null ||
-        !canAdmitProcessing ||
-        !api.isCurrentAuthenticatedSession(scope) ||
-        !_beginAction('processing')) {
+    if (!canAdmitProcessing ||
+        !canReadMedia ||
+        media.meetingId != meetingId ||
+        !media.accepted) {
       return;
     }
+    final action = _beginAction('processing');
+    if (action == null) return;
     try {
       final result = await submissions.admitAvailableMedia(
-        meetingId: meetingId,
+        meetingId: action.meetingId,
         mediaId: media.id,
-        scope: scope,
+        scope: action.scope,
         capabilities: capabilities,
       );
-      if (_owns(_generation, scope, meetingId)) {
-        _selectedSubmission = result;
-        notifyListeners();
-      }
+      if (!_ownsAction(action)) return;
+      await load();
+      if (!_ownsAction(action)) return;
+      _applySubmissionResult(action, result);
+      await _refreshAfterMutation(action);
     } catch (error) {
-      _setActionFailure(scope, error);
+      _setActionFailure(action, error);
     } finally {
-      _endAction('processing');
+      _endAction(action);
     }
   }
 
-  /// Resumes exactly the durable operation represented by the recovery row.
-  /// The coordinators decide whether that means remote reconciliation,
-  /// processing-only admission, or a transfer that still needs local bytes.
+  /// Recovery uses identities specific to the durable operation type.
   Future<void> resumeRecovery(SubmissionState state) async {
-    final scope = _sessionScope;
-    if (scope == null ||
-        !api.isCurrentAuthenticatedSession(scope) ||
-        !_beginAction('recovery')) {
-      return;
-    }
+    if (!canResumeRecovery(state)) return;
+    final action = _beginAction('recovery');
+    if (action == null) return;
     try {
       final upload = state.uploadOperation;
       if (upload != null) {
         final result = await submissions.resume(
           operationId: upload.id,
-          scope: scope,
+          scope: action.scope,
           capabilities: capabilities,
           admitProcessing: canAdmitProcessing,
         );
-        if (_owns(_generation, scope, meetingId)) {
-          _selectedSubmission = result;
-          notifyListeners();
-        }
-        return;
-      }
-      final operation = state.processingOperation;
-      if (operation == null || operation.sourceMediaId == null) return;
-      if (operation.operationType == ProcessingOperationType.admission) {
-        final result = await submissions.admitAvailableMedia(
-          meetingId: meetingId,
-          mediaId: operation.sourceMediaId!,
-          scope: scope,
-          capabilities: capabilities,
-        );
-        if (_owns(_generation, scope, meetingId)) {
-          _selectedSubmission = result;
-          notifyListeners();
-        }
-        return;
-      }
-      final targetId = operation.targetJobId ?? operation.reprocessOfJobId;
-      final target = targetId == null
-          ? null
-          : _remoteState?.jobs.where((job) => job.id == targetId).firstOrNull;
-      if (target == null) {
-        _warning = 'Tác vụ xử lý cần làm mới để xác định nguồn khôi phục.';
-        notifyListeners();
-        return;
-      }
-      if (operation.operationType == ProcessingOperationType.retry) {
-        await processingManager.retryJob(
-          job: target,
-          scope: scope,
-          capabilities: capabilities,
-        );
+        if (!_ownsAction(action)) return;
+        _applySubmissionResult(action, result);
       } else {
-        await processingManager.reprocess(
-          parent: target,
-          sourceMediaId: operation.sourceMediaId!,
-          scope: scope,
-          capabilities: capabilities,
-        );
+        final operation = state.processingOperation;
+        if (operation == null) return;
+        switch (operation.operationType) {
+          case ProcessingOperationType.admission:
+            final mediaId = operation.sourceMediaId;
+            if (mediaId == null) {
+              throw StateError('Missing admission source identity.');
+            }
+            final result = await submissions.admitAvailableMedia(
+              meetingId: action.meetingId,
+              mediaId: mediaId,
+              scope: action.scope,
+              capabilities: capabilities,
+            );
+            if (!_ownsAction(action)) return;
+            _applySubmissionResult(action, result);
+          case ProcessingOperationType.retry:
+          case ProcessingOperationType.reprocess:
+            final isRetry =
+                operation.operationType == ProcessingOperationType.retry;
+            final targetId = isRetry
+                ? operation.targetJobId
+                : operation.reprocessOfJobId;
+            if (targetId == null) {
+              throw StateError('Missing processing target identity.');
+            }
+            final target = await processingManager.processingRepository.get(
+              targetId,
+              sessionScope: action.scope,
+            );
+            if (!_ownsAction(action)) return;
+            if (target.meetingId != action.meetingId) {
+              throw StateError('Processing target belongs to another meeting.');
+            }
+            if (isRetry) {
+              await processingManager.retryJob(
+                job: target,
+                scope: action.scope,
+                capabilities: capabilities,
+              );
+            } else {
+              final mediaId = operation.sourceMediaId;
+              if (mediaId == null) {
+                throw StateError('Missing reprocessing source identity.');
+              }
+              await processingManager.reprocess(
+                parent: target,
+                sourceMediaId: mediaId,
+                scope: action.scope,
+                capabilities: capabilities,
+              );
+            }
+        }
       }
     } catch (error) {
-      _setActionFailure(scope, error);
+      _setActionFailure(action, error);
     } finally {
-      _endAction('recovery');
+      await _reloadAfterAction(action);
+      if (_ownsAction(action)) await _refreshAfterMutation(action);
+      _endAction(action);
     }
   }
 
   Future<void> retryProcessing(ProcessingJobRecord job) async {
-    final scope = _sessionScope;
-    if (scope == null || !canRetryProcessing || !_beginAction('retry')) {
-      return;
-    }
+    if (!canRetryProcessing || job.meetingId != meetingId) return;
+    final action = _beginAction('retry');
+    if (action == null) return;
     try {
       await processingManager.retryJob(
         job: job,
-        scope: scope,
+        scope: action.scope,
         capabilities: capabilities,
       );
     } catch (error) {
-      _setActionFailure(scope, error);
+      _setActionFailure(action, error);
     } finally {
-      _endAction('retry');
+      await _reloadAfterAction(action);
+      _endAction(action);
     }
   }
 
@@ -451,33 +523,92 @@ class RecordingWorkspaceController extends ChangeNotifier {
     ProcessingJobRecord job, {
     required String sourceMediaId,
   }) async {
-    final scope = _sessionScope;
-    if (scope == null || !canAdmitProcessing || !_beginAction('reprocess')) {
-      return;
-    }
+    if (!canAdmitProcessing || job.meetingId != meetingId) return;
+    final action = _beginAction('reprocess');
+    if (action == null) return;
     try {
       await processingManager.reprocess(
         parent: job,
         sourceMediaId: sourceMediaId,
-        scope: scope,
+        scope: action.scope,
         capabilities: capabilities,
       );
     } catch (error) {
-      _setActionFailure(scope, error);
+      _setActionFailure(action, error);
     } finally {
-      _endAction('reprocess');
+      await _reloadAfterAction(action);
+      _endAction(action);
     }
   }
 
   Future<void> refresh() async {
-    final scope = _sessionScope;
-    if (scope == null || !canReadMedia) return;
+    if (!canReadMedia) return;
+    final action = _beginAction('refresh');
+    if (action == null) return;
     try {
-      await processingManager.refresh(meetingId, scope: scope, explicit: true);
-      await load();
+      await processingManager.refresh(
+        action.meetingId,
+        scope: action.scope,
+        explicit: true,
+      );
+      if (_ownsAction(action)) await load();
     } catch (error) {
-      _setActionFailure(scope, error);
+      _setActionFailure(action, error);
+    } finally {
+      _endAction(action);
     }
+  }
+
+  Future<void> _reloadAfterAction(_WorkspaceAction action) async {
+    if (!_ownsAction(action)) return;
+    final failure = _failure;
+    await load();
+    if (_ownsAction(action)) _failure ??= failure;
+  }
+
+  Future<void> _refreshAfterMutation(_WorkspaceAction action) async {
+    if (!_ownsAction(action) || !canReadMedia) return;
+    try {
+      await processingManager.refresh(
+        action.meetingId,
+        scope: action.scope,
+        explicit: true,
+      );
+    } catch (_) {
+      if (_ownsAction(action)) {
+        _warning = 'Không thể làm mới trạng thái từ máy chủ.';
+        notifyListeners();
+      }
+    }
+  }
+
+  void _applySubmissionResult(
+    _WorkspaceAction action,
+    SubmissionState result,
+  ) {
+    if (!_ownsAction(action) ||
+        result.meetingId != action.meetingId ||
+        result.sessionScope != action.scope) {
+      return;
+    }
+    if (canReadMedia &&
+        _selectionRevision == action.selectionRevision &&
+        _selectedAsset?.id == result.assetId) {
+      _selectedSubmission = result;
+    }
+    _failure = result.failure;
+    notifyListeners();
+  }
+
+  void _projectSelectedSubmission() {
+    final asset = _selectedAsset;
+    final state = asset == null ? null : submissions.stateFor(asset.id);
+    _selectedSubmission =
+        canReadMedia &&
+            state?.meetingId == meetingId &&
+            state?.sessionScope == _sessionScope
+        ? state
+        : null;
   }
 
   TranscriptReviewHandoff? reviewHandoff(ProcessingJobRecord job) {
@@ -509,9 +640,7 @@ class RecordingWorkspaceController extends ChangeNotifier {
       _fencePresentation();
       return;
     }
-    _selectedSubmission = _selectedAsset == null
-        ? null
-        : submissions.stateFor(_selectedAsset!.id);
+    _projectSelectedSubmission();
     _remoteState = canReadMedia
         ? processingManager.stateFor(meetingId, scope: scope)
         : null;
@@ -523,14 +652,17 @@ class RecordingWorkspaceController extends ChangeNotifier {
     if (next == _sessionScope) return;
     _observation?.dispose();
     _observation = null;
-    _sessionScope = next;
-    _generation++;
+    // The new session requires a newly authorized workspace.
+    _sessionScope = null;
     _fencePresentation(notify: false);
     if (!_disposed) notifyListeners();
   }
 
   void _fencePresentation({bool notify = true}) {
     _generation++;
+    _contextGeneration++;
+    _selectionRevision++;
+    _action = null;
     _assets = const <LocalMediaAsset>[];
     _recoverableOperations = const <SubmissionState>[];
     _selectedAsset = null;
@@ -562,27 +694,46 @@ class RecordingWorkspaceController extends ChangeNotifier {
       _sessionScope == scope &&
       api.isCurrentAuthenticatedSession(scope);
 
-  bool _beginAction(String action) {
-    if (_disposed || _pendingAction != null || isSessionFenced) return false;
-    _pendingAction = action;
+  _WorkspaceAction? _beginAction(
+    String kind, {
+    bool supersedeRecordingStart = false,
+  }) {
+    if (_disposed || isSessionFenced) return null;
+    if (_action != null &&
+        !(supersedeRecordingStart && _action?.kind == 'recording')) {
+      return null;
+    }
+    final action = _WorkspaceAction(
+      kind: kind,
+      scope: _sessionScope!,
+      meetingId: meetingId,
+      contextGeneration: _contextGeneration,
+      selectionRevision: _selectionRevision,
+    );
+    _action = action;
     _failure = null;
+    _warning = null;
     notifyListeners();
-    return true;
+    return action;
   }
 
-  void _endAction(String action) {
-    if (_pendingAction == action) {
-      _pendingAction = null;
-      if (!_disposed) notifyListeners();
+  bool _ownsAction(_WorkspaceAction action) =>
+      !_disposed &&
+      identical(_action, action) &&
+      action.contextGeneration == _contextGeneration &&
+      action.meetingId == meetingId &&
+      action.scope == _sessionScope &&
+      api.isCurrentAuthenticatedSession(action.scope);
+
+  void _endAction(_WorkspaceAction action) {
+    if (_ownsAction(action)) {
+      _action = null;
+      notifyListeners();
     }
   }
 
-  void _setActionFailure(AuthenticatedSessionScope? scope, Object error) {
-    if (_disposed ||
-        scope == null ||
-        !api.isCurrentAuthenticatedSession(scope)) {
-      return;
-    }
+  void _setActionFailure(_WorkspaceAction action, Object error) {
+    if (!_ownsAction(action)) return;
     _failure = error;
     notifyListeners();
   }
@@ -608,4 +759,20 @@ class RecordingWorkspaceController extends ChangeNotifier {
     api.removeListener(_sessionChanged);
     super.dispose();
   }
+}
+
+class _WorkspaceAction {
+  const _WorkspaceAction({
+    required this.kind,
+    required this.scope,
+    required this.meetingId,
+    required this.contextGeneration,
+    required this.selectionRevision,
+  });
+
+  final String kind;
+  final AuthenticatedSessionScope scope;
+  final String meetingId;
+  final int contextGeneration;
+  final int selectionRevision;
 }

@@ -374,7 +374,8 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     final existing = _startFuture;
     if (existing != null) {
       if (_activeCommandKind == _RecordingCommandKind.capture &&
-          _commandMeetingId == meetingId) {
+          _commandMeetingId == meetingId &&
+          _commandScope == api.authenticatedSessionScope) {
         return existing;
       }
       throw const RecordingEligibilityException(
@@ -428,8 +429,6 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     String? meetingId,
     AuthenticatedSessionScope? scope,
   }) {
-    final existing = _stopFuture;
-    if (existing != null) return existing;
     if (meetingId != null && _activeMeetingId != meetingId) {
       throw const RecordingEligibilityException(
         'The requested meeting does not own the active recording.',
@@ -438,6 +437,8 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     if (scope != null && _activeScope != scope) {
       throw const RecordingSessionChangedException();
     }
+    final existing = _stopFuture;
+    if (existing != null) return existing;
     if (!_state.isCapturing && _activeAsset == null) {
       return Future<RecordingCoordinatorState>.value(_state);
     }
@@ -468,7 +469,8 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     final existing = _startFuture;
     if (existing != null) {
       if (_activeCommandKind == _RecordingCommandKind.import &&
-          _commandMeetingId == meetingId) {
+          _commandMeetingId == meetingId &&
+          _commandScope == api.authenticatedSessionScope) {
         return existing;
       }
       throw const RecordingEligibilityException(
@@ -521,7 +523,24 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     return future;
   }
 
-  void cancelImport() {
+  bool canCancelImport({
+    required String meetingId,
+    required AuthenticatedSessionScope scope,
+  }) =>
+      api.isCurrentAuthenticatedSession(scope) &&
+      _activeCommandKind == _RecordingCommandKind.import &&
+      _commandMeetingId == meetingId &&
+      _commandScope == scope &&
+      _importCancellation?.isCancelled == false;
+
+  void cancelImport({String? meetingId, AuthenticatedSessionScope? scope}) {
+    if (meetingId != null || scope != null) {
+      if (meetingId == null ||
+          scope == null ||
+          !canCancelImport(meetingId: meetingId, scope: scope)) {
+        return;
+      }
+    }
     _importCancellation?.cancel();
   }
 
