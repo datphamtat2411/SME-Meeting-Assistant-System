@@ -24,7 +24,6 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
   @override
   void initState() {
     super.initState();
-    unawaited(widget.workspace.loadTranscript());
   }
 
   @override
@@ -36,7 +35,30 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
   Future<void> edit(SpeechSegment segment) async {
     final epoch = widget.workspace.reviewEpoch;
     final draftKey = 'segment:${segment.id}';
-    final controller = TextEditingController(text: widget.workspace.draft(draftKey) ?? segment.text);
+    final preserved = widget.workspace.recoveryDraft(draftKey);
+    var initial = widget.workspace.draftFor(
+      draftKey,
+      resourceId: segment.id,
+      reviewedToken: segment.etag ?? '',
+      epoch: epoch,
+    );
+    if (preserved != null && initial == null) {
+      final choice = await showResultsDraftConflictDialog(
+        context: context,
+        workspace: widget.workspace,
+        epoch: epoch,
+        currentContent: segment.text,
+        preservedDraft: preserved.content,
+      );
+      if (!mounted || !widget.workspace.ownsReview(epoch)) return;
+      if (choice == ResultsDraftConflictChoice.discard) {
+        widget.workspace.clearDraft(draftKey, epoch);
+        return;
+      }
+      if (choice == ResultsDraftConflictChoice.cancel) return;
+      initial = preserved.content;
+    }
+    final controller = TextEditingController(text: initial ?? segment.text);
     final ok = await showResultsReviewDialog<bool>(
       context: context,
       workspace: widget.workspace,
@@ -61,13 +83,24 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
         ],
       ),
     );
+    if (ok != true || !mounted || !widget.workspace.ownsReview(epoch)) {
+      controller.dispose();
+      return;
+    }
     final value = controller.text.trim();
     controller.dispose();
-    if (ok != true || value.isEmpty || !mounted) return;
-    widget.workspace.keepDraft(draftKey, value, epoch);
+    if (value.isEmpty) return;
+    widget.workspace.keepDraft(
+      draftKey,
+      value,
+      epoch,
+      resourceId: segment.id,
+      reviewedToken: segment.etag ?? '',
+    );
     final saved = await runCommand(
       context,
-      operation: () => widget.workspace.correctSegment(segment, value, epoch: epoch),
+      operation: () =>
+          widget.workspace.correctSegment(segment, value, epoch: epoch),
       successText: 'Đã cập nhật transcript.',
     );
     if (saved) widget.workspace.clearDraft(draftKey, epoch);
@@ -78,10 +111,11 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
     animation: widget.workspace,
     builder: (context, _) {
       final resource = widget.workspace.transcript;
-      final transcript = resource.data;
+      final transcript = resource.hasData ? resource.data : null;
       if (transcript == null) {
         return resultsResourceMessage(
-          resource, label: 'Transcript',
+          resource,
+          label: 'Transcript',
           onRetry: () => widget.workspace.loadTranscript(force: true),
         );
       }
@@ -117,7 +151,10 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                     subtitle:
                         '${transcript.segments.length} đoạn phát biểu có dấu thời gian',
                   ),
-                  resultsRefreshNotice(resource, () => widget.workspace.loadTranscript(force: true)),
+                  resultsRefreshNotice(
+                    resource,
+                    () => widget.workspace.loadTranscript(force: true),
+                  ),
                   if (transcript.segments.isEmpty)
                     const MessagePanel(title: 'Transcript chưa sẵn sàng'),
                   if (transcript.segments.isNotEmpty && visible.isEmpty)
@@ -150,8 +187,11 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                                 icon: const Icon(Icons.edit_note_outlined),
                                 onPressed:
                                     widget.workspace.capabilities.canMutate &&
-                                    !widget.workspace.mutationBusy(ResultsMutationGroup.transcript) &&
-                                    segment.etag != null && segment.etag!.trim().isNotEmpty
+                                        !widget.workspace.mutationBusy(
+                                          ResultsMutationGroup.transcript,
+                                        ) &&
+                                        segment.etag != null &&
+                                        segment.etag!.trim().isNotEmpty
                                     ? () => edit(segment)
                                     : null,
                                 tooltip: 'Chỉnh sửa đoạn transcript',
@@ -178,4 +218,3 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
     },
   );
 }
-

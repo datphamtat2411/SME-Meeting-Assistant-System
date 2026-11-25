@@ -23,7 +23,6 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
   @override
   void initState() {
     super.initState();
-    unawaited(widget.workspace.loadDecisions());
   }
 
   Future<void> createDecision() async {
@@ -33,8 +32,11 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
         context,
         operation: () async {
           if (!await widget.workspace.reconcileUnknownDecision(epoch: epoch)) {
-            throw const ApiFailure(409, 'RESULTS_OUTCOME_UNKNOWN',
-              'Không thể xác minh quyết định trước đó.');
+            throw const ApiFailure(
+              409,
+              'RESULTS_OUTCOME_UNKNOWN',
+              'Không thể xác minh quyết định trước đó.',
+            );
           }
         },
         successText: 'Đã tải lại danh sách quyết định.',
@@ -46,14 +48,26 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
         epoch: epoch,
         builder: (dialog) => AlertDialog(
           title: const Text('Kiểm tra quyết định trước đó'),
-          content: const Text('Yêu cầu trước có thể đã được lưu. Hãy xem danh sách quyết định hiện tại trước khi tạo một yêu cầu mới.'),
+          content: const Text(
+            'Yêu cầu trước có thể đã được lưu. Hãy xem danh sách quyết định hiện tại trước khi tạo một yêu cầu mới.',
+          ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('Quay lại danh sách')),
-            FilledButton(onPressed: () => Navigator.pop(dialog, true), child: const Text('Đã kiểm tra, tạo mới')),
+            TextButton(
+              onPressed: () => Navigator.pop(dialog, false),
+              child: const Text('Quay lại danh sách'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialog, true),
+              child: const Text('Đã kiểm tra, tạo mới'),
+            ),
           ],
         ),
       );
-      if (confirmed != true || !mounted) return;
+      if (confirmed != true ||
+          !mounted ||
+          !widget.workspace.ownsReview(epoch)) {
+        return;
+      }
       widget.workspace.acknowledgeUnknownDecision(epoch: epoch);
     }
     final controller = TextEditingController();
@@ -84,9 +98,15 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
         ],
       ),
     );
+    if (ok != true || !mounted || !widget.workspace.ownsReview(epoch)) {
+      controller.dispose();
+      return;
+    }
     final value = controller.text.trim();
     controller.dispose();
-    if (ok != true || value.isEmpty || !mounted) return;
+    if (value.isEmpty) {
+      return;
+    }
     setState(() => busy = true);
     await runCommand(
       context,
@@ -101,7 +121,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
     animation: widget.workspace,
     builder: (context, _) {
       final resource = widget.workspace.decisions;
-      final items = resource.data?.items;
+      final items = resource.hasData ? resource.data?.items : null;
       return Column(
         children: [
           Padding(
@@ -111,7 +131,12 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
               subtitle:
                   'Đề xuất AI cần xác nhận trước khi trở thành chính thức.',
               trailing: IconButton(
-                onPressed: busy || widget.workspace.mutationBusy(ResultsMutationGroup.decisions) || !widget.workspace.capabilities.canMutate
+                onPressed:
+                    busy ||
+                        widget.workspace.mutationBusy(
+                          ResultsMutationGroup.decisions,
+                        ) ||
+                        !widget.workspace.capabilities.canMutate
                     ? null
                     : createDecision,
                 icon: const Icon(Icons.add_circle_outline),
@@ -124,11 +149,17 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
               child: ListView(
                 padding: const EdgeInsets.all(18),
                 children: [
-                  resultsRefreshNotice(resource, () => widget.workspace.loadDecisions(force: true)),
+                  resultsRefreshNotice(
+                    resource,
+                    () => widget.workspace.loadDecisions(force: true),
+                  ),
                   if (items == null)
-                    resultsResourceMessage(resource, label: 'Quyết định',
-                      onRetry: () => widget.workspace.loadDecisions(force: true))
-
+                    resultsResourceMessage(
+                      resource,
+                      label: 'Quyết định',
+                      onRetry: () =>
+                          widget.workspace.loadDecisions(force: true),
+                    )
                   else if (items.isEmpty)
                     const MessagePanel(title: 'Chưa có quyết định')
                   else

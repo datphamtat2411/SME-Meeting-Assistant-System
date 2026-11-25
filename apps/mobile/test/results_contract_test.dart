@@ -16,33 +16,44 @@ void main() {
 
   test('empty collection remains a reusable loaded resource', () {
     const resource = ResultsResource<List<String>>(
-      phase: ResultsResourcePhase.empty, data: [],
+      phase: ResultsResourcePhase.empty,
+      data: [],
     );
     expect(resource.hasData, isTrue);
   });
 
   test('canonical minutes can exist without a transcript', () {
-    final minutes = MeetingMinutes.fromResult(ApiResult({
-      'completeness': 'PARTIAL',
-      'meeting': {'id': 'meeting-1'},
-      'schemaVersion': 1,
-      'sourceFingerprint': 'server-fingerprint',
-      'assembledAt': '2026-11-23T10:00:00Z',
-      'summary': null,
-      'confirmedDecisions': <dynamic>[],
-      'officialActionItems': <dynamic>[],
-      'transcript': {'availability': 'NOT_AVAILABLE', 'status': null},
-      'warnings': <String>[],
-    }, const {}, null));
+    final minutes = MeetingMinutes.fromResult(
+      ApiResult(
+        {
+          'completeness': 'PARTIAL',
+          'meeting': {'id': 'meeting-1'},
+          'schemaVersion': 1,
+          'sourceFingerprint': 'server-fingerprint',
+          'assembledAt': '2026-11-23T10:00:00Z',
+          'summary': null,
+          'confirmedDecisions': <dynamic>[],
+          'officialActionItems': <dynamic>[],
+          'transcript': {'availability': 'NOT_AVAILABLE', 'status': null},
+          'warnings': <String>[],
+        },
+        const {},
+        null,
+      ),
+    );
     expect(minutes.transcriptStatus, isNull);
     expect(minutes.transcriptAvailability, 'NOT_AVAILABLE');
   });
 
-
   test('older item representations remain read-only without a token', () {
     final segment = SpeechSegment.fromJson({
-      'id': 'segment-1', 'ordinal': 0, 'startMs': 0, 'endMs': 1000,
-      'text': 'Hello', 'qualityStatus': 'ACCEPTED', 'version': 0,
+      'id': 'segment-1',
+      'ordinal': 0,
+      'startMs': 0,
+      'endMs': 1000,
+      'text': 'Hello',
+      'qualityStatus': 'ACCEPTED',
+      'version': 0,
     });
     expect(segment.etag, isNull);
   });

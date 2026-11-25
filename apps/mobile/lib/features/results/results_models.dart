@@ -10,6 +10,8 @@ enum ResultsResourcePhase {
   refreshing,
   failed,
   forbidden,
+  verifyingAuthorization,
+  authorizationVerificationFailed,
 }
 
 class ResultsResource<T> {
@@ -230,10 +232,19 @@ class SummaryVersion {
     meetingId: optionalIdentifier(raw, 'meetingId', response: response),
     transcriptId: optionalIdentifier(raw, 'transcriptId', response: response),
     contentRevision: optionalInt(raw, 'contentRevision', response: response),
-    processingJobId: optionalIdentifier(raw, 'processingJobId', response: response),
-    createdByUserId: optionalIdentifier(raw, 'createdByUserId', response: response),
-    aiWarnings: raw['aiWarnings'] == null ? const [] :
-      _strings(raw, 'aiWarnings', response),
+    processingJobId: optionalIdentifier(
+      raw,
+      'processingJobId',
+      response: response,
+    ),
+    createdByUserId: optionalIdentifier(
+      raw,
+      'createdByUserId',
+      response: response,
+    ),
+    aiWarnings: raw['aiWarnings'] == null
+        ? const []
+        : _strings(raw, 'aiWarnings', response),
     aiProducer: optionalObject(raw, 'aiProducer', response: response),
   );
 }
@@ -241,13 +252,21 @@ class SummaryVersion {
 /// Canonical minutes projections do not share mutation models with Decisions
 /// or Action Items; they intentionally carry no client-side business authority.
 class MinutesDecision {
-  const MinutesDecision({required this.id, required this.content,
-    required this.status, required this.confirmedByUserId,
-    required this.confirmedAt, required this.sourceType});
+  const MinutesDecision({
+    required this.id,
+    required this.content,
+    required this.status,
+    required this.confirmedByUserId,
+    required this.confirmedAt,
+    required this.sourceType,
+  });
   final String id, content, status, sourceType;
   final String? confirmedByUserId;
   final DateTime? confirmedAt;
-  factory MinutesDecision.fromJson(Map<String, dynamic> raw, ApiResult response) {
+  factory MinutesDecision.fromJson(
+    Map<String, dynamic> raw,
+    ApiResult response,
+  ) {
     final status = requiredString(raw, 'status', response: response);
     if (status != 'CONFIRMED') invalidApiData(response: response);
     return MinutesDecision(
@@ -255,28 +274,43 @@ class MinutesDecision {
       content: requiredString(raw, 'content', response: response),
       status: status,
       sourceType: requiredString(raw, 'sourceType', response: response),
-      confirmedByUserId: optionalIdentifier(raw, 'confirmedByUserId', response: response),
+      confirmedByUserId: optionalIdentifier(
+        raw,
+        'confirmedByUserId',
+        response: response,
+      ),
       confirmedAt: optionalTimestamp(raw, 'confirmedAt', response: response),
     );
   }
 }
 
 class MinutesAction {
-  const MinutesAction({required this.id, required this.title,
-    required this.details, required this.status, required this.assigneeUserId,
-    required this.dueDate, required this.sourceType});
+  const MinutesAction({
+    required this.id,
+    required this.title,
+    required this.details,
+    required this.status,
+    required this.assigneeUserId,
+    required this.dueDate,
+    required this.sourceType,
+  });
   final String id, title, status, sourceType;
   final String? details, assigneeUserId, dueDate;
   factory MinutesAction.fromJson(Map<String, dynamic> raw, ApiResult response) {
     final status = requiredString(raw, 'status', response: response);
-    if (status == 'PROPOSED' || status == 'REJECTED') invalidApiData(response: response);
+    if (status == 'PROPOSED' || status == 'REJECTED')
+      invalidApiData(response: response);
     return MinutesAction(
       id: requiredIdentifier(raw, 'id', response: response),
       title: requiredString(raw, 'title', response: response),
       details: optionalString(raw, 'details', response: response),
       status: status,
       sourceType: requiredString(raw, 'sourceType', response: response),
-      assigneeUserId: optionalIdentifier(raw, 'assigneeUserId', response: response),
+      assigneeUserId: optionalIdentifier(
+        raw,
+        'assigneeUserId',
+        response: response,
+      ),
       dueDate: optionalDateOnly(raw, 'dueDate', response: response),
     );
   }
@@ -313,9 +347,23 @@ class MeetingMinutes {
     final raw = response.objectData();
     final transcript = requiredObject(raw, 'transcript', response: response);
     return MeetingMinutes(
-      meetingId: requiredIdentifier(requiredObject(raw, 'meeting', response: response), 'id', response: response),
-      schemaVersion: requiredInt(raw, 'schemaVersion', response: response, minimum: 1),
-      sourceFingerprint: requiredString(raw, 'sourceFingerprint', response: response, nonEmpty: true),
+      meetingId: requiredIdentifier(
+        requiredObject(raw, 'meeting', response: response),
+        'id',
+        response: response,
+      ),
+      schemaVersion: requiredInt(
+        raw,
+        'schemaVersion',
+        response: response,
+        minimum: 1,
+      ),
+      sourceFingerprint: requiredString(
+        raw,
+        'sourceFingerprint',
+        response: response,
+        nonEmpty: true,
+      ),
       completeness: requiredString(
         raw,
         'completeness',
@@ -329,8 +377,20 @@ class MeetingMinutes {
         'content',
         response,
       ),
-      confirmedDecisions: List.unmodifiable(_nestedObjects(raw, 'confirmedDecisions', response).map((item) => MinutesDecision.fromJson(item, response))),
-      officialActionItems: List.unmodifiable(_nestedObjects(raw, 'officialActionItems', response).map((item) => MinutesAction.fromJson(item, response))),
+      confirmedDecisions: List.unmodifiable(
+        _nestedObjects(
+          raw,
+          'confirmedDecisions',
+          response,
+        ).map((item) => MinutesDecision.fromJson(item, response)),
+      ),
+      officialActionItems: List.unmodifiable(
+        _nestedObjects(
+          raw,
+          'officialActionItems',
+          response,
+        ).map((item) => MinutesAction.fromJson(item, response)),
+      ),
       transcriptAvailability: requiredString(
         transcript,
         'availability',

@@ -10,6 +10,10 @@ import 'package:sme_meeting_assistant/features/meetings/meeting_aggregate_coordi
 import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_repository.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_scheduling.dart';
+import 'package:sme_meeting_assistant/features/recording/processing_manager.dart';
+import 'package:sme_meeting_assistant/features/results/results_invalidation.dart';
+import 'package:sme_meeting_assistant/features/results/results_repository.dart';
+import 'package:sme_meeting_assistant/features/results/results_workspace_controller.dart';
 
 enum MeetingDetailPhase {
   loading,
@@ -162,6 +166,9 @@ class MeetingDetailController extends ChangeNotifier {
     required this.rooms,
     required this.invalidation,
     required this.meetingId,
+    this.results,
+    this.resultsInvalidation,
+    this.processingManager,
   }) : sessionScope = meetings.api.requireAuthenticatedSessionScope(),
        _state = const MeetingDetailState(
          phase: MeetingDetailPhase.loading,
@@ -188,11 +195,15 @@ class MeetingDetailController extends ChangeNotifier {
   final RoomSchedulingRepository rooms;
   final MeetingInvalidationSignal invalidation;
   final String meetingId;
+  final ResultsRepository? results;
+  final ResultsInvalidationSignal? resultsInvalidation;
+  final ProcessingManager? processingManager;
   final AuthenticatedSessionScope sessionScope;
   final Set<MeetingCanonicalSnapshotListener> _canonicalListeners =
       <MeetingCanonicalSnapshotListener>{};
 
   MeetingDetailState _state;
+  ResultsWorkspaceController? _resultsWorkspace;
   int _generation = 0;
   int _seenInvalidationRevision = 0;
   int _mutationSequence = 0;
@@ -203,8 +214,76 @@ class MeetingDetailController extends ChangeNotifier {
 
   MeetingDetailState get state => _state;
   MeetingSnapshot? get snapshot => _state.snapshot;
+  ResultsWorkspaceController? get resultsWorkspace => _resultsWorkspace;
   bool get ownsSession =>
       !_disposed && meetings.api.isCurrentAuthenticatedSession(sessionScope);
+
+  ResultsWorkspaceController? ensureResultsWorkspace(
+    MeetingCapabilities meetingCapabilities,
+  ) {
+    final snapshot = _state.snapshot;
+    final repository = results;
+    final signal = resultsInvalidation;
+    if (!ownsSession ||
+        snapshot == null ||
+        repository == null ||
+        signal == null) {
+      return null;
+    }
+    final current = _resultsWorkspace;
+    if (current != null && current.ownsSession) {
+      return current;
+    }
+    current?.dispose();
+    final workspace = ResultsWorkspaceController(
+      api: meetings.api,
+      repository: repository,
+      meetingId: meetingId,
+      meeting: snapshot.meeting,
+      capabilities: ResultsCapabilityPolicy.evaluate(
+        scope: sessionScope,
+        meeting: snapshot.meeting,
+        meetingCapabilities: meetingCapabilities,
+      ),
+      invalidation: signal,
+      processingManager: processingManager,
+    );
+    _resultsWorkspace = workspace;
+    return workspace;
+  }
+
+  void _syncResultsWorkspaceCapabilities() {
+    final workspace = _resultsWorkspace;
+    final snapshot = _state.snapshot;
+    if (workspace == null) return;
+    if (!ownsSession || snapshot == null || _state.accessRevoked) {
+      _disposeResultsWorkspace();
+      return;
+    }
+    final participant =
+        _state.participantsLoaded &&
+        _state.participants.any(
+          (item) =>
+              item.isActive &&
+              item.userId.toLowerCase() == meetings.api.userId.toLowerCase(),
+        );
+    workspace.updateCapabilities(
+      ResultsCapabilityPolicy.evaluate(
+        scope: sessionScope,
+        meeting: snapshot.meeting,
+        meetingCapabilities: MeetingCapabilityPolicy.evaluate(
+          callerId: meetings.api.userId,
+          meeting: snapshot.meeting,
+          callerIsActiveParticipant: participant,
+        ),
+      ),
+    );
+  }
+
+  void _disposeResultsWorkspace() {
+    _resultsWorkspace?.dispose();
+    _resultsWorkspace = null;
+  }
 
   VoidCallback addCanonicalSnapshotListener(
     MeetingCanonicalSnapshotListener listener,
@@ -374,6 +453,7 @@ class MeetingDetailController extends ChangeNotifier {
       needsRevalidation: false,
       message: _state.message,
     );
+    _syncResultsWorkspaceCapabilities();
     for (final listener in List<MeetingCanonicalSnapshotListener>.of(
       _canonicalListeners,
     )) {
@@ -438,6 +518,7 @@ class MeetingDetailController extends ChangeNotifier {
                 _state.organizerMetadataStatus !=
                 MeetingOrganizerMetadataStatus.unavailable,
           );
+          _syncResultsWorkspaceCapabilities();
           notifyListeners();
         }
       } catch (error) {
@@ -477,6 +558,7 @@ class MeetingDetailController extends ChangeNotifier {
               _state.organizerMetadataStatus !=
                   MeetingOrganizerMetadataStatus.unavailable,
         );
+        _syncResultsWorkspaceCapabilities();
         notifyListeners();
       } catch (error) {
         if (!ownsSecondary()) return;
@@ -520,6 +602,7 @@ class MeetingDetailController extends ChangeNotifier {
         organizerMetadataStatus: MeetingOrganizerMetadataStatus.resolved,
         clearMetadataFailure: true,
       );
+      _syncResultsWorkspaceCapabilities();
       notifyListeners();
     } catch (error) {
       if (!ownsSecondary()) return;
@@ -741,6 +824,7 @@ class MeetingDetailController extends ChangeNotifier {
           ? _state.organizerMetadataStatus
           : MeetingOrganizerMetadataStatus.resolved,
     );
+    _syncResultsWorkspaceCapabilities();
     notifyListeners();
   }
 
@@ -1129,6 +1213,7 @@ class MeetingDetailController extends ChangeNotifier {
   }
 
   void _clearProtectedState() {
+    _disposeResultsWorkspace();
     _generation++;
     _pendingInvalidation = false;
     _activeMutationToken = null;
@@ -1160,6 +1245,7 @@ class MeetingDetailController extends ChangeNotifier {
     if (_disposed) return;
     _disposed = true;
     _generation++;
+    _disposeResultsWorkspace();
     invalidation.removeListener(_onInvalidation);
     meetings.api.sessionCoordinator.removeListener(_onSessionChanged);
     _canonicalListeners.clear();

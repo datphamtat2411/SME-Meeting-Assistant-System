@@ -22,16 +22,24 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
   @override
   void initState() {
     super.initState();
-    unawaited(widget.workspace.loadSpeakers());
   }
 
-  Future<void> assign(SpeakerReviewSnapshot snapshot, String clusterId,
-      String? userId, int epoch) async {
+  Future<void> assign(
+    SpeakerReviewSnapshot snapshot,
+    String clusterId,
+    String? userId,
+    int epoch,
+  ) async {
     if (busy) return;
     setState(() => busy = true);
     await runCommand(
       context,
-      operation: () => widget.workspace.mapSpeaker(snapshot, clusterId, userId, epoch: epoch),
+      operation: () => widget.workspace.mapSpeaker(
+        snapshot,
+        clusterId,
+        userId,
+        epoch: epoch,
+      ),
       successText: 'Đã cập nhật người nói.',
     );
     if (mounted) setState(() => busy = false);
@@ -63,9 +71,11 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
                     final generation = ++searchGeneration;
                     try {
                       final items = await widget.workspace.meetingCandidates(
-                        value.trim(), epoch: epoch,
+                        value.trim(),
+                        epoch: epoch,
                       );
-                      if (dialog.mounted && generation == searchGeneration &&
+                      if (dialog.mounted &&
+                          generation == searchGeneration &&
                           widget.workspace.ownsReview(epoch)) {
                         update(() => found = items);
                       }
@@ -80,8 +90,7 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
                         .map(
                           (person) => ListTile(
                             title: Text(person.displayName),
-                            onTap: () =>
-                                Navigator.pop(dialog, person.id),
+                            onTap: () => Navigator.pop(dialog, person.id),
                           ),
                         )
                         .toList(),
@@ -100,7 +109,9 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
       ),
     );
     search.dispose();
-    if (user != null && mounted) await assign(snapshot, clusterId, user, epoch);
+    if (user != null && mounted && widget.workspace.ownsReview(epoch)) {
+      await assign(snapshot, clusterId, user, epoch);
+    }
   }
 
   @override
@@ -108,11 +119,12 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
     animation: widget.workspace,
     builder: (context, _) {
       final resource = widget.workspace.speakers;
-      final snapshot = resource.data;
+      final snapshot = resource.hasData ? resource.data : null;
       final items = snapshot?.clusters;
       if (items == null || snapshot == null) {
         return resultsResourceMessage(
-          resource, label: 'Nhóm người nói',
+          resource,
+          label: 'Nhóm người nói',
           onRetry: () => widget.workspace.loadSpeakers(force: true),
         );
       }
@@ -123,7 +135,10 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
             'Nhận diện người nói',
             subtitle: 'Có thể hiệu chỉnh nhãn do AI nhận dạng.',
           ),
-          resultsRefreshNotice(resource, () => widget.workspace.loadSpeakers(force: true)),
+          resultsRefreshNotice(
+            resource,
+            () => widget.workspace.loadSpeakers(force: true),
+          ),
           if (items.isEmpty)
             const MessagePanel(title: 'Chưa có nhóm người nói'),
           ...items.map(
@@ -140,7 +155,11 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
                   children: [
                     IconButton(
                       onPressed:
-                          busy || widget.workspace.mutationBusy(ResultsMutationGroup.transcript) || !widget.workspace.capabilities.canMutate
+                          busy ||
+                              widget.workspace.mutationBusy(
+                                ResultsMutationGroup.transcript,
+                              ) ||
+                              !widget.workspace.capabilities.canMutate
                           ? null
                           : () => choose(snapshot, entry.id),
                       icon: const Icon(Icons.person_add_outlined),
@@ -149,9 +168,18 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
                     if (entry.userId != null)
                       IconButton(
                         onPressed:
-                            busy || widget.workspace.mutationBusy(ResultsMutationGroup.transcript) || !widget.workspace.capabilities.canMutate
+                            busy ||
+                                widget.workspace.mutationBusy(
+                                  ResultsMutationGroup.transcript,
+                                ) ||
+                                !widget.workspace.capabilities.canMutate
                             ? null
-                            : () => assign(snapshot, entry.id, null, widget.workspace.reviewEpoch),
+                            : () => assign(
+                                snapshot,
+                                entry.id,
+                                null,
+                                widget.workspace.reviewEpoch,
+                              ),
                         icon: const Icon(Icons.link_off_outlined),
                         tooltip: 'Bỏ gán',
                       ),

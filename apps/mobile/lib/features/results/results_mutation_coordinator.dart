@@ -5,15 +5,42 @@ import '../../core/api_client.dart';
 /// Workspace-owned command state, independent of presentation mount cycles.
 enum ResultsMutationGroup { transcript, summary, decisions }
 
+/// A protected recovery draft is tied to the exact snapshot the user reviewed.
+///
+/// Keeping only the text is unsafe: the same text may be submitted against a
+/// newer canonical resource after the editor has been recreated.
+class ResultsRecoveryDraft {
+  const ResultsRecoveryDraft({
+    required this.resourceId,
+    required this.reviewedToken,
+    required this.content,
+    required this.meetingId,
+    required this.sessionScope,
+    required this.reviewEpoch,
+    required this.workspaceIdentity,
+  });
+
+  final String resourceId;
+  final String reviewedToken;
+  final String content;
+  final String meetingId;
+  final AuthenticatedSessionScope sessionScope;
+  final int reviewEpoch;
+  final Object workspaceIdentity;
+}
+
 class ResultsMutationCoordinator {
   final Map<ResultsMutationGroup, Object> _pending = {};
   int _epoch = 0;
   String? _regenerationKey;
   bool regenerationUncertain = false;
   bool decisionOutcomeUnknown = false;
-  final Map<String, String> _drafts = {};
-  String? draft(String key) => _drafts[key];
-  void keepDraft(String key, String text) => _drafts[key] = text;
+  String? unknownDecisionContent;
+  final Map<String, ResultsRecoveryDraft> _drafts =
+      <String, ResultsRecoveryDraft>{};
+  ResultsRecoveryDraft? draft(String key) => _drafts[key];
+  void keepDraft(String key, ResultsRecoveryDraft draft) =>
+      _drafts[key] = draft;
   void clearDraft(String key) => _drafts.remove(key);
   String? acceptedRegenerationJobId;
 
@@ -25,6 +52,7 @@ class ResultsMutationCoordinator {
     _pending.clear();
     _drafts.clear();
     decisionOutcomeUnknown = false;
+    unknownDecisionContent = null;
     regenerationUncertain = false;
     _regenerationKey = null;
     acceptedRegenerationJobId = null;
@@ -32,8 +60,11 @@ class ResultsMutationCoordinator {
 
   Object begin(ResultsMutationGroup group) {
     if (busy(group)) {
-      throw const ApiFailure(409, 'RESULTS_COMMAND_PENDING',
-        'Một thao tác trên kết quả này đang được xử lý.');
+      throw const ApiFailure(
+        409,
+        'RESULTS_COMMAND_PENDING',
+        'Một thao tác trên kết quả này đang được xử lý.',
+      );
     }
     final ticket = Object();
     _pending[group] = ticket;
@@ -47,7 +78,8 @@ class ResultsMutationCoordinator {
   String regenerationKey() {
     final random = Random.secure();
     return _regenerationKey ??= List<int>.generate(
-      16, (_) => random.nextInt(256),
+      16,
+      (_) => random.nextInt(256),
     ).map((value) => value.toRadixString(16).padLeft(2, '0')).join();
   }
 
@@ -55,6 +87,12 @@ class ResultsMutationCoordinator {
     acceptedRegenerationJobId = jobId;
     regenerationUncertain = false;
     _regenerationKey = null;
+  }
+
+  void completeAdmission(String jobId) {
+    if (acceptedRegenerationJobId == jobId) {
+      acceptedRegenerationJobId = null;
+    }
   }
 
   void recordFailure(Object error) {
@@ -65,8 +103,13 @@ class ResultsMutationCoordinator {
     }
   }
 
-  static bool isUncertain(Object error) => error is! ApiFailure ||
-      error.remoteOutcomeAmbiguous || error.transportFailure ||
-      error.invalidResponse || error.status == 0 || error.status == 408 ||
-      error.status == 425 || error.serverFailure;
+  static bool isUncertain(Object error) =>
+      error is! ApiFailure ||
+      error.remoteOutcomeAmbiguous ||
+      error.transportFailure ||
+      error.invalidResponse ||
+      error.status == 0 ||
+      error.status == 408 ||
+      error.status == 425 ||
+      error.serverFailure;
 }

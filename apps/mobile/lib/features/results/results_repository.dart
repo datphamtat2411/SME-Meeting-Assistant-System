@@ -7,6 +7,13 @@ import '../meetings/meeting_repository.dart';
 import '../meetings/meeting_foundation.dart';
 import 'results_models.dart';
 
+class ResultsAccessVerification {
+  const ResultsAccessVerification({required this.canRead, this.canMutate});
+
+  final bool canRead;
+  final bool? canMutate;
+}
+
 /// Typed transport boundary for all existing Meeting Results operations.
 class ResultsRepository {
   ResultsRepository(this.api, {this.meetings, this.membership});
@@ -14,6 +21,7 @@ class ResultsRepository {
   final ApiClient api;
   final MeetingRepository? meetings;
   final MeetingMembershipRepository? membership;
+  bool _accessVerificationInProgress = false;
 
   /// A concealed 404 is not evidence that a result is merely absent.
   /// Re-check canonical meeting membership, not cached presentation state.
@@ -21,30 +29,71 @@ class ResultsRepository {
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
   }) async {
+    return (await verifyAccess(
+      sessionScope: sessionScope,
+      meetingId: meetingId,
+    )).canRead;
+  }
+
+  Future<ResultsAccessVerification> verifyAccess({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+  }) async {
     api.requireCurrentAuthenticatedSession(sessionScope);
     final meetingRepository = meetings;
     final membershipRepository = membership;
-    if (meetingRepository == null || membershipRepository == null) return false;
+    if (meetingRepository == null || membershipRepository == null) {
+      // Test doubles and lightweight compositions may only implement the
+      // existing boolean boundary. They cannot establish a fresh mutation
+      // capability, so the caller must retain the previous mutation decision
+      // only if read access itself is verified.
+      if (_accessVerificationInProgress) {
+        return const ResultsAccessVerification(canRead: false);
+      }
+      _accessVerificationInProgress = true;
+      try {
+        return ResultsAccessVerification(
+          canRead: await verifyReadAccess(
+            sessionScope: sessionScope,
+            meetingId: meetingId,
+          ),
+        );
+      } finally {
+        _accessVerificationInProgress = false;
+      }
+    }
     final snapshot = await meetingRepository.detail(meetingId);
     api.requireCurrentAuthenticatedSession(sessionScope);
     final meeting = snapshot.meeting;
     if (meeting.organizerId.toLowerCase() ==
         sessionScope.userId.toLowerCase()) {
-      return MeetingCapabilityPolicy.evaluate(
-        callerId: sessionScope.userId, meeting: meeting,
-      ).canReadMedia;
+      final capabilities = MeetingCapabilityPolicy.evaluate(
+        callerId: sessionScope.userId,
+        meeting: meeting,
+      );
+      return ResultsAccessVerification(
+        canRead: capabilities.canReadMedia,
+        canMutate: capabilities.canReadMedia,
+      );
     }
     final records = await membershipRepository.listParticipants(
-      meetingId, sessionScope: sessionScope,
+      meetingId,
+      sessionScope: sessionScope,
     );
     api.requireCurrentAuthenticatedSession(sessionScope);
-    return MeetingCapabilityPolicy.evaluate(
+    final capabilities = MeetingCapabilityPolicy.evaluate(
       callerId: sessionScope.userId,
       meeting: meeting,
-      callerIsActiveParticipant: records.any((record) =>
-        record.isActive &&
-        record.userId.toLowerCase() == sessionScope.userId.toLowerCase()),
-    ).canReadMedia;
+      callerIsActiveParticipant: records.any(
+        (record) =>
+            record.isActive &&
+            record.userId.toLowerCase() == sessionScope.userId.toLowerCase(),
+      ),
+    );
+    return ResultsAccessVerification(
+      canRead: capabilities.canReadMedia,
+      canMutate: false,
+    );
   }
 
   Future<Transcript> currentTranscript({
@@ -83,32 +132,43 @@ class ResultsRepository {
     for (var attempt = 0; attempt < 2; attempt++) {
       if (!stillAuthorized()) throw _accessChanged();
       final before = await currentTranscript(
-        sessionScope: sessionScope, meetingId: meetingId,
+        sessionScope: sessionScope,
+        meetingId: meetingId,
       );
       if (!stillAuthorized()) throw _accessChanged();
       final clusters = await speakerClusters(
-        sessionScope: sessionScope, meetingId: meetingId,
+        sessionScope: sessionScope,
+        meetingId: meetingId,
       );
       if (!stillAuthorized()) throw _accessChanged();
       final after = await currentTranscript(
-        sessionScope: sessionScope, meetingId: meetingId,
+        sessionScope: sessionScope,
+        meetingId: meetingId,
       );
       if (!stillAuthorized()) throw _accessChanged();
       final etag = before.etag;
-      if (etag != null && etag.isNotEmpty &&
-          before.id == after.id && etag == after.etag) {
+      if (etag != null &&
+          etag.isNotEmpty &&
+          before.id == after.id &&
+          etag == after.etag) {
         return SpeakerReviewSnapshot(
-          transcriptId: before.id, etag: etag,
+          transcriptId: before.id,
+          etag: etag,
           clusters: List.unmodifiable(clusters),
         );
       }
     }
-    throw const ApiFailure(412, 'RESULTS_REVIEW_CHANGED',
-      'Transcript đã thay đổi. Vui lòng tải lại và xem xét lại.');
+    throw const ApiFailure(
+      412,
+      'RESULTS_REVIEW_CHANGED',
+      'Transcript đã thay đổi. Vui lòng tải lại và xem xét lại.',
+    );
   }
 
   ApiFailure _accessChanged() => const ApiFailure(
-    403, 'RESULTS_ACCESS_CHANGED', 'Quyền truy cập đã thay đổi.',
+    403,
+    'RESULTS_ACCESS_CHANGED',
+    'Quyền truy cập đã thay đổi.',
   );
 
   Future<ResultsSummary> currentSummary({
@@ -290,8 +350,11 @@ class ResultsRepository {
       headers: {'Idempotency-Key': idempotencyKey},
     );
     final raw = response.objectData();
-    _requireOwnership(sessionScope, meetingId,
-      requiredIdentifier(raw, 'meetingId', response: response));
+    _requireOwnership(
+      sessionScope,
+      meetingId,
+      requiredIdentifier(raw, 'meetingId', response: response),
+    );
     return requiredIdentifier(raw, 'processingJobId', response: response);
   }
 
@@ -303,28 +366,36 @@ class ResultsRepository {
   }) async {
     final meetingRepository = meetings;
     final membershipRepository = membership;
-    if (meetingRepository == null || membershipRepository == null ||
-        !stillAuthorized()) throw _accessChanged();
+    if (meetingRepository == null ||
+        membershipRepository == null ||
+        !stillAuthorized())
+      throw _accessChanged();
     final snapshot = await meetingRepository.detail(meetingId);
     if (!stillAuthorized()) throw _accessChanged();
     final organizer = snapshot.meeting.organizerId;
     final records = await membershipRepository.listParticipants(
-      meetingId, sessionScope: sessionScope,
+      meetingId,
+      sessionScope: sessionScope,
     );
     if (!stillAuthorized()) throw _accessChanged();
     final organizerLabel = await meetingRepository.organizer(
-      organizer, sessionScope: sessionScope,
+      organizer,
+      sessionScope: sessionScope,
     );
     if (!stillAuthorized()) throw _accessChanged();
     final candidates = <SpeakerCandidate>[
       SpeakerCandidate(organizer, organizerLabel.name),
       for (final record in records)
-        if (record.isActive && record.userId.toLowerCase() != organizer.toLowerCase())
+        if (record.isActive &&
+            record.userId.toLowerCase() != organizer.toLowerCase())
           SpeakerCandidate(record.userId, record.displayName ?? record.userId),
     ];
     final needle = query.trim().toLowerCase();
-    return List.unmodifiable(candidates.where((candidate) =>
-      candidate.displayName.toLowerCase().contains(needle)));
+    return List.unmodifiable(
+      candidates.where(
+        (candidate) => candidate.displayName.toLowerCase().contains(needle),
+      ),
+    );
   }
 
   Future<ApiResult> _get(
@@ -400,7 +471,10 @@ class ResultsRepository {
   }
 
   String _requireEtag(String? value) {
-    if (value == null || value.trim().isEmpty || value.contains('\r') || value.contains('\n')) {
+    if (value == null ||
+        value.trim().isEmpty ||
+        value.contains('\r') ||
+        value.contains('\n')) {
       throw const ApiFailure(
         0,
         'VERSION_MISSING',

@@ -2,11 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../core/api_client.dart';
-import '../../core/app_dependencies.dart';
-import '../../core/models.dart';
 import '../../core/widgets.dart';
-import '../meetings/meeting_foundation.dart';
 import 'decisions_review_panel.dart';
 import 'minutes_panel.dart';
 import 'results_workspace_controller.dart';
@@ -16,20 +12,9 @@ import 'summary_history_panel.dart';
 import 'transcript_review_panel.dart';
 
 class ResultsPanel extends StatefulWidget {
-  const ResultsPanel({
-    super.key,
-    required this.api,
-    required this.meetingId,
-    this.dependencies,
-    this.meeting,
-    this.meetingCapabilities,
-  });
+  const ResultsPanel({super.key, required this.workspace});
 
-  final ApiClient api;
-  final String meetingId;
-  final AppDependencies? dependencies;
-  final Meeting? meeting;
-  final MeetingCapabilities? meetingCapabilities;
+  final ResultsWorkspaceController workspace;
 
   @override
   State<ResultsPanel> createState() => _ResultsPanelState();
@@ -37,7 +22,6 @@ class ResultsPanel extends StatefulWidget {
 
 class _ResultsPanelState extends State<ResultsPanel> {
   int selected = 0;
-  ResultsWorkspaceController? workspace;
 
   Set<ResultsResourceKind> _resourcesFor(int index) => switch (index) {
     0 => {ResultsResourceKind.summary, ResultsResourceKind.summaryVersions},
@@ -50,80 +34,34 @@ class _ResultsPanelState extends State<ResultsPanel> {
   @override
   void initState() {
     super.initState();
-    _createWorkspace();
-  }
-
-  void _createWorkspace() {
-    final dependencies = widget.dependencies;
-    final meeting = widget.meeting;
-    final meetingCapabilities = widget.meetingCapabilities;
-    if (dependencies != null &&
-        meeting != null &&
-        meetingCapabilities != null) {
-      final scope = widget.api.authenticatedSessionScope;
-      if (scope == null) return;
-      workspace = ResultsWorkspaceController(
-        api: widget.api,
-        repository: dependencies.results,
-        meetingId: widget.meetingId,
-        meeting: meeting,
-        capabilities: ResultsCapabilityPolicy.evaluate(
-          scope: scope,
-          meeting: meeting,
-          meetingCapabilities: meetingCapabilities,
-        ),
-        invalidation: dependencies.resultsInvalidation,
-        processingManager: dependencies.processingManager,
-      );
-      workspace!.setActiveResources(_resourcesFor(selected));
-    }
+    _scheduleActivation(widget.workspace);
   }
 
   @override
   void dispose() {
-    workspace?.dispose();
+    widget.workspace.deactivate();
     super.dispose();
   }
 
   @override
   void didUpdateWidget(covariant ResultsPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final current = workspace;
-    final meeting = widget.meeting;
-    final meetingCapabilities = widget.meetingCapabilities;
-    if (current == null ||
-        oldWidget.meetingId != widget.meetingId ||
-        oldWidget.api != widget.api ||
-        oldWidget.dependencies != widget.dependencies ||
-        !current.ownsSession) {
-      current?.dispose();
-      workspace = null;
-      _createWorkspace();
-      return;
+    if (!identical(oldWidget.workspace, widget.workspace)) {
+      oldWidget.workspace.deactivate();
+      _scheduleActivation(widget.workspace);
     }
-    if (meeting == null || meetingCapabilities == null) {
-      current.updateCapabilities(
-        const ResultsCapabilities(canRead: false, canMutate: false),
-      );
-      return;
-    }
-    current.updateCapabilities(
-      ResultsCapabilityPolicy.evaluate(
-        scope: current.sessionScope,
-        meeting: meeting,
-        meetingCapabilities: meetingCapabilities,
-      ),
-    );
+  }
+
+  void _scheduleActivation(ResultsWorkspaceController workspace) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !identical(widget.workspace, workspace)) return;
+      workspace.activateResources(_resourcesFor(selected));
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final current = workspace;
-    if (current == null) {
-      return const Center(
-        child: Text('Không thể xác minh quyền truy cập kết quả cuộc họp.'),
-      );
-    }
+    final current = widget.workspace;
     final tabs = <(String, IconData)>[
       ('Tóm tắt', Icons.auto_awesome_outlined),
       ('Transcript', Icons.notes_outlined),
@@ -152,10 +90,10 @@ class _ResultsPanelState extends State<ResultsPanel> {
                     avatar: Icon(tabs[i].$2, size: 17),
                     label: Text(tabs[i].$1),
                     selected: selected == i,
-                    onSelected: (_) => setState(() {
-                      current.setActiveResources(_resourcesFor(i));
-                      selected = i;
-                    }),
+                    onSelected: (_) {
+                      setState(() => selected = i);
+                      current.activateResources(_resourcesFor(i));
+                    },
                   ),
                 ),
             ],
@@ -167,7 +105,8 @@ class _ResultsPanelState extends State<ResultsPanel> {
             builder: (context, _) => current.capabilities.canRead
                 ? KeyedSubtree(key: ObjectKey(current), child: page)
                 : MessagePanel(
-                    title: 'Không thể xác minh quyền truy cập kết quả cuộc họp.',
+                    title:
+                        'Không thể xác minh quyền truy cập kết quả cuộc họp.',
                     onRetry: () => unawaited(current.retryAccess()),
                   ),
           ),

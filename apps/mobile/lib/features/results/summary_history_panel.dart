@@ -23,14 +23,35 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
   @override
   void initState() {
     super.initState();
-    unawaited(widget.workspace.loadSummary());
-    unawaited(widget.workspace.loadSummaryVersions());
   }
 
   Future<void> edit(ResultsSummary summary) async {
     final epoch = widget.workspace.reviewEpoch;
     final draftKey = 'summary:${summary.meetingId}';
-    final controller = TextEditingController(text: widget.workspace.draft(draftKey) ?? summary.content);
+    final preserved = widget.workspace.recoveryDraft(draftKey);
+    var initial = widget.workspace.draftFor(
+      draftKey,
+      resourceId: summary.id,
+      reviewedToken: summary.etag,
+      epoch: epoch,
+    );
+    if (preserved != null && initial == null) {
+      final choice = await showResultsDraftConflictDialog(
+        context: context,
+        workspace: widget.workspace,
+        epoch: epoch,
+        currentContent: summary.content,
+        preservedDraft: preserved.content,
+      );
+      if (!mounted || !widget.workspace.ownsReview(epoch)) return;
+      if (choice == ResultsDraftConflictChoice.discard) {
+        widget.workspace.clearDraft(draftKey, epoch);
+        return;
+      }
+      if (choice == ResultsDraftConflictChoice.cancel) return;
+      initial = preserved.content;
+    }
+    final controller = TextEditingController(text: initial ?? summary.content);
     final ok = await showResultsReviewDialog<bool>(
       context: context,
       workspace: widget.workspace,
@@ -58,14 +79,25 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
         ],
       ),
     );
+    if (ok != true || !mounted || !widget.workspace.ownsReview(epoch)) {
+      controller.dispose();
+      return;
+    }
     final value = controller.text.trim();
     controller.dispose();
-    if (ok != true || value.isEmpty || !mounted) return;
+    if (value.isEmpty) return;
     setState(() => busy = true);
-    widget.workspace.keepDraft(draftKey, value, epoch);
+    widget.workspace.keepDraft(
+      draftKey,
+      value,
+      epoch,
+      resourceId: summary.id,
+      reviewedToken: summary.etag,
+    );
     final saved = await runCommand(
       context,
-      operation: () => widget.workspace.editSummary(summary, value, epoch: epoch),
+      operation: () =>
+          widget.workspace.editSummary(summary, value, epoch: epoch),
       successText: 'Đã lưu phiên bản mới.',
     );
     if (saved) widget.workspace.clearDraft(draftKey, epoch);
@@ -85,17 +117,28 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
         title: Text('Kích hoạt phiên bản ${version.versionNumber}?'),
         content: SingleChildScrollView(child: Text(version.content)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('Hủy')),
-          FilledButton(onPressed: () => Navigator.pop(dialog, true), child: const Text('Kích hoạt')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, false),
+            child: const Text('Hủy'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialog, true),
+            child: const Text('Kích hoạt'),
+          ),
         ],
       ),
     );
-    if (confirmed != true || !mounted) return;
+    if (confirmed != true || !mounted || !widget.workspace.ownsReview(epoch)) {
+      return;
+    }
     setState(() => busy = true);
     await runCommand(
       context,
-      operation: () =>
-          widget.workspace.activateSummaryVersion(summary, version, epoch: epoch),
+      operation: () => widget.workspace.activateSummaryVersion(
+        summary,
+        version,
+        epoch: epoch,
+      ),
       successText: 'Đã kích hoạt phiên bản.',
     );
     if (mounted) setState(() => busy = false);
@@ -109,17 +152,27 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
       workspace: widget.workspace,
       epoch: epoch,
       builder: (dialog) => AlertDialog(
-        title: Text(retry ? 'Kiểm tra lại yêu cầu trước?' : 'Tạo lại tóm tắt AI?'),
-        content: Text(retry
-          ? 'Tiếp tục cùng yêu cầu đã gửi; không tạo một yêu cầu mới.'
-          : 'Tạo một tác vụ xử lý mới. Phiên bản cũ vẫn được lưu.'),
+        title: Text(
+          retry ? 'Kiểm tra lại yêu cầu trước?' : 'Tạo lại tóm tắt AI?',
+        ),
+        content: Text(
+          retry
+              ? 'Tiếp tục cùng yêu cầu đã gửi; không tạo một yêu cầu mới.'
+              : 'Tạo một tác vụ xử lý mới. Phiên bản cũ vẫn được lưu.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('Hủy')),
-          FilledButton(onPressed: () => Navigator.pop(dialog, true), child: const Text('Xác nhận')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, false),
+            child: const Text('Hủy'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialog, true),
+            child: const Text('Xác nhận'),
+          ),
         ],
       ),
     );
-    if (ok != true || !mounted) return;
+    if (ok != true || !mounted || !widget.workspace.ownsReview(epoch)) return;
     setState(() => busy = true);
     await runCommand(
       context,
@@ -133,8 +186,12 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.workspace,
     builder: (context, _) {
-      final current = widget.workspace.summary.data;
-      final versions = widget.workspace.summaryVersions.data?.items;
+      final current = widget.workspace.summary.hasData
+          ? widget.workspace.summary.data
+          : null;
+      final versions = widget.workspace.summaryVersions.hasData
+          ? widget.workspace.summaryVersions.data?.items
+          : null;
       return ListView(
         padding: const EdgeInsets.all(18),
         children: [
@@ -150,11 +207,15 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
           ),
           if (current == null)
             resultsResourceMessage(
-              widget.workspace.summary, label: 'Tóm tắt',
+              widget.workspace.summary,
+              label: 'Tóm tắt',
               onRetry: () => widget.workspace.loadSummary(force: true),
             )
           else ...[
-            resultsRefreshNotice(widget.workspace.summary, () => widget.workspace.loadSummary(force: true)),
+            resultsRefreshNotice(
+              widget.workspace.summary,
+              () => widget.workspace.loadSummary(force: true),
+            ),
             ContentCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -188,7 +249,12 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: busy || widget.workspace.mutationBusy(ResultsMutationGroup.summary) || !widget.workspace.capabilities.canMutate
+                    onPressed:
+                        busy ||
+                            widget.workspace.mutationBusy(
+                              ResultsMutationGroup.summary,
+                            ) ||
+                            !widget.workspace.capabilities.canMutate
                         ? null
                         : () => edit(current),
                     icon: const Icon(Icons.edit_outlined),
@@ -198,11 +264,20 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: busy || widget.workspace.mutationBusy(ResultsMutationGroup.summary) || !widget.workspace.capabilities.canMutate
+                    onPressed:
+                        busy ||
+                            widget.workspace.mutationBusy(
+                              ResultsMutationGroup.summary,
+                            ) ||
+                            !widget.workspace.capabilities.canMutate
                         ? null
                         : regenerate,
                     icon: const Icon(Icons.auto_awesome),
-                    label: Text(widget.workspace.regenerationUncertain ? 'Kiểm tra lại' : 'Tạo lại AI'),
+                    label: Text(
+                      widget.workspace.regenerationUncertain
+                          ? 'Kiểm tra lại'
+                          : 'Tạo lại AI',
+                    ),
                   ),
                 ),
               ],
@@ -211,7 +286,11 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
           const SizedBox(height: 16),
           const SectionHeading('Lịch sử phiên bản'),
           if (versions == null)
-            resultsResourceMessage(widget.workspace.summaryVersions, label: 'Lịch sử phiên bản', onRetry: () => widget.workspace.loadSummaryVersions(force: true))
+            resultsResourceMessage(
+              widget.workspace.summaryVersions,
+              label: 'Lịch sử phiên bản',
+              onRetry: () => widget.workspace.loadSummaryVersions(force: true),
+            )
           else if (versions.isEmpty)
             const MessagePanel(title: 'Chưa có lịch sử')
           else
@@ -228,7 +307,9 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                       : TextButton(
                           onPressed:
                               busy ||
-                                  widget.workspace.mutationBusy(ResultsMutationGroup.summary) ||
+                                  widget.workspace.mutationBusy(
+                                    ResultsMutationGroup.summary,
+                                  ) ||
                                   version.isStale ||
                                   current == null ||
                                   !widget.workspace.capabilities.canMutate

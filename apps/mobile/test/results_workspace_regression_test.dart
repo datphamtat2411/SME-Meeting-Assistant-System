@@ -1,14 +1,17 @@
 import 'dart:async';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/meeting_models.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/core/paged_collection.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
 import 'package:sme_meeting_assistant/features/results/results_invalidation.dart';
 import 'package:sme_meeting_assistant/features/results/results_models.dart';
 import 'package:sme_meeting_assistant/features/results/results_mutation_coordinator.dart';
 import 'package:sme_meeting_assistant/features/results/results_repository.dart';
+import 'package:sme_meeting_assistant/features/results/results_panel.dart';
 import 'package:sme_meeting_assistant/features/results/results_workspace_controller.dart';
 
 import 'support/meeting_test_support.dart';
@@ -17,10 +20,12 @@ class _Repository extends ResultsRepository {
   _Repository(super.api);
   int reads = 0;
   bool access = true;
+  Object? verificationFailure;
   Completer<Transcript>? pending;
   ApiFailure? readFailure;
   String? submittedTag;
   Completer<ApiResult>? mutation;
+  final List<String> regenerationKeys = <String>[];
 
   @override
   Future<Transcript> currentTranscript({
@@ -34,10 +39,85 @@ class _Repository extends ResultsRepository {
   }
 
   @override
+  Future<ResultsSummary> currentSummary({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+  }) async => ResultsSummary(
+    id: 'summary-1',
+    meetingId: testMeetingId,
+    versionNumber: 1,
+    content: 'Summary',
+    sourceType: 'AI',
+    qualityStatus: 'CONFIRMED',
+    processingJobId: null,
+    transcriptId: null,
+    contentRevision: 1,
+    isStale: false,
+    createdAt: _createdAt,
+    createdByUserId: null,
+    aiWarnings: <String>[],
+    etag: '"summary-v1"',
+  );
+
+  @override
+  Future<PagedCollection<SummaryVersion>> summaryVersions({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+    int page = 0,
+    int size = 20,
+  }) async => const PagedCollection<SummaryVersion>(
+    items: <SummaryVersion>[],
+    page: 0,
+    size: 20,
+    totalElements: 0,
+    totalPages: 0,
+    hasNext: false,
+    hasPrevious: false,
+  );
+
+  @override
+  Future<PagedCollection<MeetingDecision>> decisions({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+    int page = 0,
+    int size = 20,
+  }) async => const PagedCollection<MeetingDecision>(
+    items: <MeetingDecision>[],
+    page: 0,
+    size: 20,
+    totalElements: 0,
+    totalPages: 0,
+    hasNext: false,
+    hasPrevious: false,
+  );
+
+  @override
+  Future<MeetingMinutes> minutes({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+  }) async => MeetingMinutes(
+    completeness: 'PARTIAL',
+    assembledAt: _createdAt,
+    summaryContent: 'Summary',
+    confirmedDecisions: <MinutesDecision>[],
+    officialActionItems: <MinutesAction>[],
+    transcriptAvailability: 'AVAILABLE',
+    transcriptStatus: 'READY',
+    warnings: <String>[],
+    meetingId: testMeetingId,
+    schemaVersion: 1,
+    sourceFingerprint: 'test',
+  );
+
+  @override
   Future<bool> verifyReadAccess({
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
-  }) async => access;
+  }) async {
+    final error = verificationFailure;
+    if (error != null) throw error;
+    return access;
+  }
 
   @override
   Future<ApiResult> mapSpeaker({
@@ -51,6 +131,24 @@ class _Repository extends ResultsRepository {
     return mutation == null
         ? const ApiResult({}, {}, '"mapped"')
         : await mutation!.future;
+  }
+
+  @override
+  Future<String> regenerateSummary({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+    required String idempotencyKey,
+  }) async {
+    regenerationKeys.add(idempotencyKey);
+    if (regenerationKeys.length == 1) {
+      throw const ApiFailure(
+        0,
+        'TIMEOUT',
+        'Unknown',
+        remoteOutcomeAmbiguous: true,
+      );
+    }
+    return 'processing-job-1';
   }
 }
 
@@ -69,8 +167,13 @@ const _transcript = Transcript(
   etag: '"transcript-reviewed"',
 );
 
+final _createdAt = DateTime.utc(2026, 11, 24);
+
 const _speaker = SpeakerCluster(
-  id: 'speaker-1', label: 'SPEAKER_01', userId: null, displayName: null,
+  id: 'speaker-1',
+  label: 'SPEAKER_01',
+  userId: null,
+  displayName: null,
 );
 
 const _review = SpeakerReviewSnapshot(
@@ -79,13 +182,19 @@ const _review = SpeakerReviewSnapshot(
   clusters: [_speaker],
 );
 
-Future<({ResultsWorkspaceController workspace, _Repository repository})> _setup() async {
-  final api = createMeetingTestApi(MeetingTestHttpClient((request) async {
-    throw StateError('Unexpected request ${request.url.path}');
-  }));
+Future<({ResultsWorkspaceController workspace, _Repository repository})>
+_setup() async {
+  final api = createMeetingTestApi(
+    MeetingTestHttpClient((request) async {
+      throw StateError('Unexpected request ${request.url.path}');
+    }),
+  );
   await signInMeetingTestApi(api);
   final meetings = MeetingInvalidationSignal(api);
-  final invalidation = ResultsInvalidationSignal(api: api, meetingInvalidation: meetings);
+  final invalidation = ResultsInvalidationSignal(
+    api: api,
+    meetingInvalidation: meetings,
+  );
   final repository = _Repository(api);
   final workspace = ResultsWorkspaceController(
     api: api,
@@ -109,7 +218,9 @@ void main() {
     final (:workspace, :repository) = await _setup();
     repository.pending = Completer<Transcript>();
     final loading = workspace.loadTranscript();
-    workspace.updateCapabilities(const ResultsCapabilities(canRead: false, canMutate: false));
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: false, canMutate: false),
+    );
     repository.pending!.complete(_transcript);
     await loading;
     expect(workspace.transcript.data, isNull);
@@ -126,23 +237,37 @@ void main() {
     expect(workspace.capabilities.canRead, isFalse);
   });
 
-  test('concealed not-found rechecks access instead of retaining data', () async {
-    final (:workspace, :repository) = await _setup();
-    await workspace.loadTranscript();
-    repository.readFailure = const ApiFailure(404, 'NOT_FOUND', 'Unavailable');
-    repository.access = false;
-    await workspace.loadTranscript(force: true);
-    expect(workspace.transcript.data, isNull);
-    expect(workspace.capabilities.canRead, isFalse);
-  });
+  test(
+    'concealed not-found rechecks access instead of retaining data',
+    () async {
+      final (:workspace, :repository) = await _setup();
+      await workspace.loadTranscript();
+      repository.readFailure = const ApiFailure(
+        404,
+        'NOT_FOUND',
+        'Unavailable',
+      );
+      repository.access = false;
+      await workspace.loadTranscript(force: true);
+      expect(workspace.transcript.data, isNull);
+      expect(workspace.capabilities.canRead, isFalse);
+    },
+  );
 
-  test('authorized not-found remains absent and does not revoke other access', () async {
-    final (:workspace, :repository) = await _setup();
-    repository.readFailure = const ApiFailure(404, 'NOT_FOUND', 'Unavailable');
-    await workspace.loadTranscript();
-    expect(workspace.transcript.phase, ResultsResourcePhase.notReady);
-    expect(workspace.capabilities.canRead, isTrue);
-  });
+  test(
+    'authorized not-found remains absent and does not revoke other access',
+    () async {
+      final (:workspace, :repository) = await _setup();
+      repository.readFailure = const ApiFailure(
+        404,
+        'NOT_FOUND',
+        'Unavailable',
+      );
+      await workspace.loadTranscript();
+      expect(workspace.transcript.phase, ResultsResourcePhase.notReady);
+      expect(workspace.capabilities.canRead, isTrue);
+    },
+  );
 
   test('empty loaded resources are reused until explicit refresh', () async {
     final (:workspace, :repository) = await _setup();
@@ -157,7 +282,8 @@ void main() {
     final (:workspace, :repository) = await _setup();
     await workspace.loadTranscript();
     workspace.invalidation.invalidate(
-      sessionScope: workspace.sessionScope, meetingId: testMeetingId,
+      sessionScope: workspace.sessionScope,
+      meetingId: testMeetingId,
       resources: {ResultsResourceKind.transcript},
     );
     expect(repository.reads, 1);
@@ -165,26 +291,38 @@ void main() {
     expect(repository.reads, 2);
   });
 
-  test('speaker command uses the reviewed token and rejects duplicate dispatch', () async {
-    final (:workspace, :repository) = await _setup();
-    await workspace.loadTranscript();
-    repository.mutation = Completer<ApiResult>();
-    final epoch = workspace.reviewEpoch;
-    final first = workspace.mapSpeaker(_review, _speaker.id, null, epoch: epoch);
-    await expectLater(
-      workspace.mapSpeaker(_review, _speaker.id, null, epoch: epoch),
-      throwsA(isA<ApiFailure>()),
-    );
-    expect(repository.submittedTag, _review.etag);
-    repository.mutation!.complete(const ApiResult({}, {}, '"mapped"'));
-    await first;
-  });
+  test(
+    'speaker command uses the reviewed token and rejects duplicate dispatch',
+    () async {
+      final (:workspace, :repository) = await _setup();
+      await workspace.loadTranscript();
+      repository.mutation = Completer<ApiResult>();
+      final epoch = workspace.reviewEpoch;
+      final first = workspace.mapSpeaker(
+        _review,
+        _speaker.id,
+        null,
+        epoch: epoch,
+      );
+      await expectLater(
+        workspace.mapSpeaker(_review, _speaker.id, null, epoch: epoch),
+        throwsA(isA<ApiFailure>()),
+      );
+      expect(repository.submittedTag, _review.etag);
+      repository.mutation!.complete(const ApiResult({}, {}, '"mapped"'));
+      await first;
+    },
+  );
 
   test('old review epoch cannot dispatch after access is restored', () async {
     final (:workspace, :repository) = await _setup();
     final epoch = workspace.reviewEpoch;
-    workspace.updateCapabilities(const ResultsCapabilities(canRead: false, canMutate: false));
-    workspace.updateCapabilities(const ResultsCapabilities(canRead: true, canMutate: true));
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: false, canMutate: false),
+    );
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: true, canMutate: true),
+    );
     await expectLater(
       workspace.mapSpeaker(_review, _speaker.id, null, epoch: epoch),
       throwsA(isA<ApiFailure>()),
@@ -195,8 +333,9 @@ void main() {
   test('uncertain regeneration retains key until admission is confirmed', () {
     final commands = ResultsMutationCoordinator();
     final key = commands.regenerationKey();
-    commands.recordFailure(const ApiFailure(0, 'TIMEOUT', 'Unknown',
-      remoteOutcomeAmbiguous: true));
+    commands.recordFailure(
+      const ApiFailure(0, 'TIMEOUT', 'Unknown', remoteOutcomeAmbiguous: true),
+    );
     expect(commands.regenerationKey(), key);
     commands.recordFailure(const ApiFailure(429, 'RATE_LIMIT', 'Retry later'));
     expect(commands.regenerationKey(), key);
@@ -205,4 +344,146 @@ void main() {
     expect(commands.regenerationUncertain, isFalse);
     expect(commands.regenerationKey(), isNot(key));
   });
+
+  testWidgets('the Results workspace activates sections after the frame', (
+    tester,
+  ) async {
+    final setup = await tester.runAsync(_setup);
+    final (:workspace, :repository) = setup!;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 700,
+            child: ResultsPanel(workspace: workspace),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byType(ChoiceChip).at(1));
+    await tester.pump();
+    await tester.tap(find.byType(ChoiceChip).at(2));
+    await tester.pump();
+    final minutesTab = find.byType(ChoiceChip).at(4);
+    await tester.ensureVisible(minutesTab);
+    await tester.tap(minutesTab);
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(repository.reads, greaterThanOrEqualTo(1));
+  });
+
+  test('authorization verification failure stays fail-closed', () async {
+    final (:workspace, :repository) = await _setup();
+    await workspace.loadTranscript();
+    repository.readFailure = const ApiFailure(404, 'NOT_FOUND', 'Unavailable');
+    repository.verificationFailure = const ApiFailure(
+      0,
+      'NETWORK_UNAVAILABLE',
+      'Cannot verify access',
+      isTransportFailure: true,
+    );
+
+    await workspace.loadTranscript(force: true);
+
+    expect(
+      workspace.transcript.phase,
+      ResultsResourcePhase.authorizationVerificationFailed,
+    );
+    expect(workspace.transcript.data, isNull);
+    expect(workspace.capabilities.canRead, isFalse);
+    expect(workspace.authorizationVerificationFailure, isNotNull);
+  });
+
+  test('recovery drafts keep their reviewed version', () async {
+    final (:workspace, :repository) = await _setup();
+    final epoch = workspace.reviewEpoch;
+    workspace.keepDraft(
+      'summary:$testMeetingId',
+      'preserved',
+      epoch,
+      resourceId: 'summary-1',
+      reviewedToken: '"old"',
+    );
+
+    expect(
+      workspace.draftFor(
+        'summary:$testMeetingId',
+        resourceId: 'summary-1',
+        reviewedToken: '"old"',
+        epoch: epoch,
+      ),
+      'preserved',
+    );
+    expect(
+      workspace.draftFor(
+        'summary:$testMeetingId',
+        resourceId: 'summary-1',
+        reviewedToken: '"new"',
+        epoch: epoch,
+      ),
+      isNull,
+    );
+    expect(repository.reads, 0);
+  });
+
+  test(
+    'workspace retries regeneration with the same idempotency key',
+    () async {
+      final (:workspace, :repository) = await _setup();
+      final epoch = workspace.reviewEpoch;
+
+      await expectLater(
+        workspace.regenerateSummary(epoch: epoch),
+        throwsA(isA<ApiFailure>()),
+      );
+      await workspace.regenerateSummary(epoch: epoch);
+
+      expect(repository.regenerationKeys, hasLength(2));
+      expect(repository.regenerationKeys[0], repository.regenerationKeys[1]);
+      expect(workspace.acceptedRegenerationJobId, 'processing-job-1');
+      workspace.deactivate();
+      expect(workspace.acceptedRegenerationJobId, 'processing-job-1');
+    },
+  );
+
+  test(
+    'in-flight invalidation is followed by a newer canonical refresh',
+    () async {
+      final (:workspace, :repository) = await _setup();
+      final pending = Completer<Transcript>();
+      repository.pending = pending;
+      workspace.activateResources({ResultsResourceKind.transcript});
+      for (var turn = 0; turn < 20 && repository.reads == 0; turn++) {
+        await Future<void>.value();
+      }
+      expect(repository.reads, 1);
+
+      workspace.invalidation.invalidate(
+        sessionScope: workspace.sessionScope,
+        meetingId: testMeetingId,
+        resources: {ResultsResourceKind.transcript},
+      );
+      pending.complete(_transcript);
+      for (
+        var turn = 0;
+        turn < 100 &&
+            (repository.reads < 2 ||
+                workspace.transcript.phase != ResultsResourcePhase.available);
+        turn++
+      ) {
+        await Future<void>.value();
+      }
+
+      expect(repository.reads, 2);
+      expect(
+        workspace.transcript.phase,
+        isIn(<ResultsResourcePhase>[
+          ResultsResourcePhase.available,
+          ResultsResourcePhase.empty,
+        ]),
+      );
+    },
+  );
 }

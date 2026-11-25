@@ -70,7 +70,8 @@ class MeetingMembershipRepository {
     _validateMeetingId(meetingId);
     api.requireCurrentAuthenticatedSession(sessionScope);
     final response = await api.get(
-      '${_meetingPath(meetingId)}/participants', sessionScope: sessionScope,
+      '${_meetingPath(meetingId)}/participants',
+      sessionScope: sessionScope,
     );
     api.requireCurrentAuthenticatedSession(sessionScope);
     final raw = response.objectArrayData();

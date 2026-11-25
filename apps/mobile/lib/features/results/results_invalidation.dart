@@ -101,6 +101,7 @@ class ResultsProcessingBridge {
     required ApiClient api,
     required String meetingId,
     required AuthenticatedSessionScope scope,
+    this.onTerminalOutcome,
   }) : _manager = manager,
        _invalidation = invalidation,
        _api = api,
@@ -116,6 +117,7 @@ class ResultsProcessingBridge {
   final ApiClient _api;
   final String _meetingId;
   final AuthenticatedSessionScope _scope;
+  final void Function(String jobId)? onTerminalOutcome;
   late final ProcessingObservation _observation;
   final Map<String, String> _seenOutcomes = <String, String>{};
   bool _disposed = false;
@@ -133,6 +135,7 @@ class ResultsProcessingBridge {
       final outcome = '${job.status.wireValue}:${job.retryCount}';
       if (_seenOutcomes[job.id] == outcome) continue;
       _seenOutcomes[job.id] = outcome;
+      onTerminalOutcome?.call(job.id);
       if (job.jobType == ProcessingJobType.offlineMeetingProcessing) {
         affected.addAll(ResultsResourceKind.values);
       } else {
@@ -148,7 +151,9 @@ class ResultsProcessingBridge {
     }
     if (publish && affected.isNotEmpty) {
       _invalidation.invalidate(
-        sessionScope: _scope, meetingId: _meetingId, resources: affected,
+        sessionScope: _scope,
+        meetingId: _meetingId,
+        resources: affected,
       );
     }
   }

@@ -303,7 +303,13 @@ class MeetingDecision {
   final DateTime? confirmedAt;
   final DateTime? rejectedAt;
   final String? etag;
-  final String? sourceType, transcriptId, processingJobId, createdByUserId, confirmedByUserId, rejectedByUserId, aiUncertainty;
+  final String? sourceType,
+      transcriptId,
+      processingJobId,
+      createdByUserId,
+      confirmedByUserId,
+      rejectedByUserId,
+      aiUncertainty;
   final int? contentRevision;
   final List<String> aiWarnings, evidenceSegmentIds;
   final Map<String, dynamic>? aiProducer;
@@ -324,11 +330,27 @@ class MeetingDecision {
     etag: optionalString(raw, 'etag', response: response),
     sourceType: optionalString(raw, 'sourceType', response: response),
     transcriptId: optionalIdentifier(raw, 'transcriptId', response: response),
-    processingJobId: optionalIdentifier(raw, 'processingJobId', response: response),
+    processingJobId: optionalIdentifier(
+      raw,
+      'processingJobId',
+      response: response,
+    ),
     contentRevision: optionalInt(raw, 'contentRevision', response: response),
-    createdByUserId: optionalIdentifier(raw, 'createdByUserId', response: response),
-    confirmedByUserId: optionalIdentifier(raw, 'confirmedByUserId', response: response),
-    rejectedByUserId: optionalIdentifier(raw, 'rejectedByUserId', response: response),
+    createdByUserId: optionalIdentifier(
+      raw,
+      'createdByUserId',
+      response: response,
+    ),
+    confirmedByUserId: optionalIdentifier(
+      raw,
+      'confirmedByUserId',
+      response: response,
+    ),
+    rejectedByUserId: optionalIdentifier(
+      raw,
+      'rejectedByUserId',
+      response: response,
+    ),
     aiUncertainty: optionalString(raw, 'aiUncertainty', response: response),
     aiWarnings: _decisionStrings(raw['aiWarnings'], response),
     evidenceSegmentIds: _decisionStrings(raw['evidenceSegmentIds'], response),

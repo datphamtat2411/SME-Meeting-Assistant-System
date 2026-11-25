@@ -33,7 +33,7 @@ class MeetingDetailPage extends StatefulWidget {
 
 class _MeetingDetailPageState extends State<MeetingDetailPage>
     with WidgetsBindingObserver {
-  late final MeetingDetailController _controller;
+  late MeetingDetailController _controller;
   int _tab = 0;
 
   @override
@@ -41,14 +41,32 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
     super.initState();
     _tab = widget.openRecording ? 2 : 0;
     WidgetsBinding.instance.addObserver(this);
+    _createController();
+  }
+
+  void _createController() {
     _controller = MeetingDetailController(
       meetings: widget.dependencies.meetings,
       membership: widget.dependencies.meetingMembership,
       rooms: widget.dependencies.roomScheduling,
       invalidation: widget.dependencies.meetingInvalidation,
       meetingId: widget.meetingId,
+      results: widget.dependencies.results,
+      resultsInvalidation: widget.dependencies.resultsInvalidation,
+      processingManager: widget.dependencies.processingManager,
     );
     unawaited(_controller.initialize());
+  }
+
+  @override
+  void didUpdateWidget(covariant MeetingDetailPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.meetingId == widget.meetingId &&
+        identical(oldWidget.dependencies, widget.dependencies)) {
+      return;
+    }
+    _controller.dispose();
+    _createController();
   }
 
   @override
@@ -472,22 +490,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                   Expanded(
                     child: switch (_tab) {
                       0 => _overview(state, snapshot),
-                      1 => ResultsPanel(
-                        api: widget.api,
-                        meetingId: widget.meetingId,
-                        dependencies: widget.dependencies,
-                        meeting: snapshot.meeting,
-                        meetingCapabilities: MeetingCapabilityPolicy.evaluate(
-                          callerId: widget.api.userId,
-                          meeting: snapshot.meeting,
-                          callerIsActiveParticipant: state.participantsLoaded && state.participants.any(
-                            (participant) =>
-                                participant.isActive &&
-                                participant.userId.toLowerCase() ==
-                                    widget.api.userId.toLowerCase(),
-                          ),
-                        ),
-                      ),
+                      1 => _resultsPanel(state, snapshot),
                       2 => RecordingPage(
                         api: widget.api,
                         meetingId: widget.meetingId,
@@ -553,6 +556,30 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
 
   String _failureMessage(Object? error) =>
       error is ApiFailure ? error.message : 'Đã xảy ra lỗi không mong muốn.';
+
+  Widget _resultsPanel(MeetingDetailState state, MeetingSnapshot snapshot) {
+    final capabilities = MeetingCapabilityPolicy.evaluate(
+      callerId: widget.api.userId,
+      meeting: snapshot.meeting,
+      callerIsActiveParticipant:
+          state.participantsLoaded &&
+          state.participants.any(
+            (participant) =>
+                participant.isActive &&
+                participant.userId.toLowerCase() ==
+                    widget.api.userId.toLowerCase(),
+          ),
+    );
+    final workspace =
+        _controller.resultsWorkspace ??
+        _controller.ensureResultsWorkspace(capabilities);
+    if (workspace == null) {
+      return const Center(
+        child: Text('Không thể xác minh quyền truy cập kết quả cuộc họp.'),
+      );
+    }
+    return ResultsPanel(workspace: workspace);
+  }
 }
 
 class _LifecycleConfirmation {

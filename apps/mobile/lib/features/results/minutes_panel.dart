@@ -1,8 +1,7 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
+import '../../core/models.dart';
 import '../../core/widgets.dart';
 import 'results_workspace_controller.dart';
 import 'results_presentation.dart';
@@ -19,7 +18,6 @@ class _MinutesPanelState extends State<MinutesPanel> {
   @override
   void initState() {
     super.initState();
-    unawaited(widget.workspace.loadMinutes());
   }
 
   @override
@@ -27,11 +25,13 @@ class _MinutesPanelState extends State<MinutesPanel> {
     animation: widget.workspace,
     builder: (context, _) {
       final resource = widget.workspace.minutes;
-      final minutes = resource.data;
+      final minutes = resource.hasData ? resource.data : null;
       if (minutes == null) {
-        return resultsResourceMessage(resource, label: 'Biên bản',
-          onRetry: () => widget.workspace.loadMinutes(force: true));
-
+        return resultsResourceMessage(
+          resource,
+          label: 'Biên bản',
+          onRetry: () => widget.workspace.loadMinutes(force: true),
+        );
       }
       return RefreshIndicator(
         onRefresh: () => widget.workspace.loadMinutes(force: true),
@@ -39,7 +39,10 @@ class _MinutesPanelState extends State<MinutesPanel> {
           padding: const EdgeInsets.all(18),
           children: [
             const SectionHeading('Biên bản chính thức'),
-            resultsRefreshNotice(resource, () => widget.workspace.loadMinutes(force: true)),
+            resultsRefreshNotice(
+              resource,
+              () => widget.workspace.loadMinutes(force: true),
+            ),
             ContentCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -68,9 +71,7 @@ class _MinutesPanelState extends State<MinutesPanel> {
             if (minutes.confirmedDecisions.isEmpty)
               const MessagePanel(title: 'Chưa có quyết định chính thức'),
             ...minutes.confirmedDecisions.map(
-              (entry) => ContentCard(
-                child: SelectableText(entry.content),
-              ),
+              (entry) => ContentCard(child: SelectableText(entry.content)),
             ),
             SectionHeading(
               'Đầu việc chính thức',
@@ -98,7 +99,11 @@ class _MinutesPanelState extends State<MinutesPanel> {
             const SectionHeading('Tình trạng transcript'),
             ContentCard(
               child: Text(
-                [minutes.transcriptAvailability, if (minutes.transcriptStatus != null) minutes.transcriptStatus!].join(' · '),
+                [
+                  minutes.transcriptAvailability,
+                  if (minutes.transcriptStatus != null)
+                    minutes.transcriptStatus!,
+                ].join(' · '),
               ),
             ),
             if (minutes.warnings.isNotEmpty) ...[
