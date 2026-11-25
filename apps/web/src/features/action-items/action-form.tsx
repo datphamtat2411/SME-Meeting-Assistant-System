@@ -68,8 +68,9 @@ export function ActionForm({
   const [dueDate, setDueDate] = useState(item?.dueDate ?? '')
   const [meetingSearch, setMeetingSearch] = useState('')
   const [userSearch, setUserSearch] = useState('')
-  const [snapshot, setSnapshot] = useState<ActionMutationResult | null>(null)
-  const [reviewOwner, setReviewOwner] = useState<(() => boolean) | null>(null)
+  const [snapshot, setSnapshot] = useState<
+    (ActionMutationResult & { owns: () => boolean }) | null
+  >(null)
   const [conflict, setConflict] = useState<{
     reviewed: ActionItem
     latest: ActionItem | null
@@ -138,8 +139,7 @@ export function ActionForm({
     const owns = captureScope()
     if (!owns()) return
     initializedReview.current = item.id
-    setReviewOwner(() => owns)
-    setSnapshot(detail.data)
+    setSnapshot({ ...detail.data, owns })
     setTitle(detail.data.item.title)
     setDetails(detail.data.item.details ?? '')
     setAssignee(detail.data.item.assigneeUserId ?? '')
@@ -269,7 +269,7 @@ export function ActionForm({
   const editingAllowed = item
     ? snapshot?.item.capabilities.canEdit === true &&
       canEditCurrent &&
-      reviewOwner?.() === true
+      snapshot.owns()
     : canManageActionItems
   const canClearAssignee =
     snapshot?.item.status === 'PROPOSED' && assignmentAllowed
@@ -308,7 +308,7 @@ export function ActionForm({
       (!item && !assignee)
     )
       return
-    const scope = item ? reviewOwner : captureScope()
+    const scope = item ? snapshot?.owns : captureScope()
     if (!scope?.()) return
     if (
       item &&
@@ -445,7 +445,7 @@ export function ActionForm({
                     !conflict.latest.capabilities.canEdit || !editingAllowed
                   }
                   onClick={() => {
-                    if (!reviewOwner?.() || !editingAllowed) return
+                    if (!snapshot?.owns() || !editingAllowed) return
                     const latest = conflict.latest!
                     const next = rebaseActionDraft(
                       conflict.reviewed,
@@ -460,7 +460,10 @@ export function ActionForm({
                       toast.error('Assignment is no longer authorized.')
                       return
                     }
-                    setSnapshot(conflict.latestResult!)
+                    setSnapshot({
+                      ...conflict.latestResult!,
+                      owns: snapshot.owns,
+                    })
                     setTitle(next.title)
                     setDetails(next.details)
                     setAssignee(next.assigneeUserId)
