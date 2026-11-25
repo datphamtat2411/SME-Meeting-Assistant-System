@@ -19,10 +19,12 @@ class MeetingDetailPage extends StatefulWidget {
     super.key,
     required this.dependencies,
     required this.meetingId,
+    this.openRecording = false,
   });
 
   final AppDependencies dependencies;
   final String meetingId;
+  final bool openRecording;
   ApiClient get api => dependencies.api;
 
   @override
@@ -37,6 +39,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
   @override
   void initState() {
     super.initState();
+    _tab = widget.openRecording ? 2 : 0;
     WidgetsBinding.instance.addObserver(this);
     _controller = MeetingDetailController(
       meetings: widget.dependencies.meetings,

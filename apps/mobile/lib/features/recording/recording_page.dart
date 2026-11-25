@@ -186,7 +186,7 @@ class _RecordingPageState extends State<RecordingPage> {
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                'Cuộc họp ${capture.meetingId}',
+                'Cuộc họp hiện tại',
                 style: const TextStyle(color: Palette.muted, fontSize: 12),
               ),
             ),
@@ -435,7 +435,9 @@ class _RecordingPageState extends State<RecordingPage> {
               ),
               title: Text(item.originalFilename),
               subtitle: Text(_mediaLabel(item)),
-              trailing: item.accepted && controller.canAdmitProcessing
+              trailing: item.accepted &&
+                    controller.canAdmitProcessing &&
+                    !(remote?.jobs.any((job) => job.sourceMediaId == item.id) ?? false)
                   ? TextButton(
                       onPressed: controller.isBusy
                           ? null
@@ -617,7 +619,7 @@ class _RecordingPageState extends State<RecordingPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Bản ghi ${handoff.jobId} sẵn sàng để duyệt; màn hình duyệt chưa khả dụng.',
+          'Bản ghi sẵn sàng để duyệt; màn hình duyệt chưa khả dụng.',
         ),
       ),
     );
