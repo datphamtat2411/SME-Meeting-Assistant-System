@@ -46,9 +46,14 @@ class ResultsMutationCoordinator {
 
   int get epoch => _epoch;
   bool busy(ResultsMutationGroup group) => _pending.containsKey(group);
+  bool owns(ResultsMutationGroup group, Object ticket) =>
+      identical(_pending[group], ticket);
+
+  // Suspension fences review callbacks, not operations already dispatched.
+  void invalidateReviews() => _epoch++;
 
   void invalidate() {
-    _epoch++;
+    invalidateReviews();
     _pending.clear();
     _drafts.clear();
     decisionOutcomeUnknown = false;

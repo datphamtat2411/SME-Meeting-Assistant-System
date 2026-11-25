@@ -21,11 +21,15 @@ class _Repository extends ResultsRepository {
   int reads = 0;
   bool access = true;
   Object? verificationFailure;
+  Completer<bool>? pendingVerification;
+  Completer<String>? pendingRegeneration;
   Completer<Transcript>? pending;
   ApiFailure? readFailure;
   String? submittedTag;
   Completer<ApiResult>? mutation;
   final List<String> regenerationKeys = <String>[];
+  final List<PagedCollection<MeetingDecision>> decisionPages = [];
+  int decisionCreates = 0;
 
   @override
   Future<Transcript> currentTranscript({
@@ -81,15 +85,32 @@ class _Repository extends ResultsRepository {
     required String meetingId,
     int page = 0,
     int size = 20,
-  }) async => const PagedCollection<MeetingDecision>(
-    items: <MeetingDecision>[],
-    page: 0,
-    size: 20,
-    totalElements: 0,
-    totalPages: 0,
-    hasNext: false,
-    hasPrevious: false,
-  );
+  }) async => decisionPages.isNotEmpty
+      ? decisionPages[page]
+      : const PagedCollection<MeetingDecision>(
+          items: <MeetingDecision>[],
+          page: 0,
+          size: 20,
+          totalElements: 0,
+          totalPages: 0,
+          hasNext: false,
+          hasPrevious: false,
+        );
+
+  @override
+  Future<MeetingDecision> createDecision({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+    required String content,
+  }) async {
+    decisionCreates++;
+    throw const ApiFailure(
+      0,
+      'TIMEOUT',
+      'Unknown',
+      remoteOutcomeAmbiguous: true,
+    );
+  }
 
   @override
   Future<MeetingMinutes> minutes({
@@ -116,7 +137,9 @@ class _Repository extends ResultsRepository {
   }) async {
     final error = verificationFailure;
     if (error != null) throw error;
-    return access;
+    return pendingVerification == null
+        ? access
+        : await pendingVerification!.future;
   }
 
   @override
@@ -140,6 +163,7 @@ class _Repository extends ResultsRepository {
     required String idempotencyKey,
   }) async {
     regenerationKeys.add(idempotencyKey);
+    if (pendingRegeneration != null) return pendingRegeneration!.future;
     if (regenerationKeys.length == 1) {
       throw const ApiFailure(
         0,
@@ -396,6 +420,164 @@ void main() {
     expect(workspace.authorizationVerificationFailure, isNotNull);
   });
 
+  test('resource invalidation cannot strand access verification', () async {
+    final (:workspace, :repository) = await _setup();
+    repository.readFailure = const ApiFailure(404, 'NOT_FOUND', 'Unavailable');
+    repository.pendingVerification = Completer<bool>();
+    final loading = workspace.loadTranscript();
+    await _eventually(() => workspace.isAuthorizationVerificationPending);
+    workspace.invalidation.invalidate(
+      sessionScope: workspace.sessionScope,
+      meetingId: testMeetingId,
+      resources: {ResultsResourceKind.transcript},
+    );
+    repository.readFailure = null;
+    repository.pendingVerification!.complete(true);
+    await loading;
+    expect(workspace.isAuthorizationVerificationPending, isFalse);
+    expect(workspace.capabilities.canRead, isTrue);
+    await workspace.loadTranscript();
+    expect(workspace.transcript.data, isNotNull);
+  });
+
+  test('metadata synchronization cannot restore suspended access', () async {
+    final (:workspace, :repository) = await _setup();
+    repository.readFailure = const ApiFailure(404, 'NOT_FOUND', 'Unavailable');
+    repository.pendingVerification = Completer<bool>();
+    final loading = workspace.loadTranscript();
+    await _eventually(() => workspace.isAuthorizationVerificationPending);
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: true, canMutate: true),
+    );
+    expect(workspace.capabilities.canRead, isFalse);
+    repository.pendingVerification!.complete(false);
+    await loading;
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: true, canMutate: true),
+    );
+    expect(workspace.capabilities.canRead, isFalse);
+    expect(workspace.transcript.data, isNull);
+  });
+
+  test('admission survives temporary authorization suspension', () async {
+    final (:workspace, :repository) = await _setup();
+    repository.pendingRegeneration = Completer<String>();
+    final epoch = workspace.reviewEpoch;
+    final command = workspace.regenerateSummary(epoch: epoch);
+    final outcome = expectLater(command, throwsA(isA<ApiFailure>()));
+    repository.readFailure = const ApiFailure(404, 'NOT_FOUND', 'Unavailable');
+    repository.pendingVerification = Completer<bool>();
+    final loading = workspace.loadTranscript();
+    await _eventually(() => workspace.isAuthorizationVerificationPending);
+    repository.pendingRegeneration!.complete('accepted-job');
+    await outcome;
+    expect(workspace.capabilities.canRead, isFalse);
+    repository.pendingVerification!.complete(true);
+    await loading;
+    expect(workspace.acceptedRegenerationJobId, 'accepted-job');
+    expect(workspace.ownsReview(epoch), isFalse);
+    await expectLater(
+      workspace.regenerateSummary(epoch: workspace.reviewEpoch),
+      throwsA(isA<ApiFailure>()),
+    );
+    expect(repository.regenerationKeys, hasLength(1));
+  });
+
+  test('uncertain admission keeps its key through suspension', () async {
+    final (:workspace, :repository) = await _setup();
+    repository.pendingRegeneration = Completer<String>();
+    final command = workspace.regenerateSummary(epoch: workspace.reviewEpoch);
+    final outcome = expectLater(command, throwsA(isA<ApiFailure>()));
+    repository.readFailure = const ApiFailure(404, 'NOT_FOUND', 'Unavailable');
+    repository.pendingVerification = Completer<bool>();
+    final loading = workspace.loadTranscript();
+    await _eventually(() => workspace.isAuthorizationVerificationPending);
+    repository.pendingRegeneration!.completeError(
+      const ApiFailure(0, 'TIMEOUT', 'Unknown', remoteOutcomeAmbiguous: true),
+    );
+    await outcome;
+    repository.pendingVerification!.complete(true);
+    await loading;
+    expect(workspace.regenerationUncertain, isTrue);
+    repository.pendingRegeneration = null;
+    await workspace.regenerateSummary(epoch: workspace.reviewEpoch);
+    expect(repository.regenerationKeys, hasLength(2));
+    expect(repository.regenerationKeys[0], repository.regenerationKeys[1]);
+  });
+
+  test('revocation fences a delayed authorization verification', () async {
+    final (:workspace, :repository) = await _setup();
+    repository.readFailure = const ApiFailure(404, 'NOT_FOUND', 'Unavailable');
+    repository.pendingVerification = Completer<bool>();
+    final loading = workspace.loadTranscript();
+    await _eventually(() => workspace.isAuthorizationVerificationPending);
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: false, canMutate: false),
+    );
+    repository.pendingVerification!.complete(true);
+    await loading;
+    expect(workspace.capabilities.canRead, isFalse);
+    expect(workspace.transcript.data, isNull);
+  });
+
+  test('decision recovery retains every page and fences old reviews', () async {
+    final (:workspace, :repository) = await _setup();
+    final epoch = workspace.reviewEpoch;
+    await expectLater(
+      workspace.createDecision('Uncertain request', epoch: epoch),
+      throwsA(isA<ApiFailure>()),
+    );
+    for (var page = 0; page < 2; page++) {
+      repository.decisionPages.add(
+        PagedCollection<MeetingDecision>(
+          items: [
+            MeetingDecision(
+              id: 'decision-$page',
+              meetingId: testMeetingId,
+              content: 'Decision from page $page',
+              status: 'CONFIRMED',
+              version: 1,
+              stale: false,
+              createdAt: _createdAt,
+              confirmedAt: _createdAt,
+              rejectedAt: null,
+              etag: '"decision-$page"',
+            ),
+          ],
+          page: page,
+          size: 1,
+          totalElements: 2,
+          totalPages: 2,
+          hasNext: page == 0,
+          hasPrevious: page > 0,
+        ),
+      );
+    }
+    final review = await workspace.reconcileUnknownDecision(epoch: epoch);
+    expect(review?.map((decision) => decision.id), [
+      'decision-0',
+      'decision-1',
+    ]);
+    expect(workspace.decisionOutcomeUnknown, isTrue);
+    workspace.invalidation.invalidate(
+      sessionScope: workspace.sessionScope,
+      meetingId: testMeetingId,
+      resources: {ResultsResourceKind.decisions},
+    );
+    expect(
+      () => workspace.acknowledgeUnknownDecision(
+        epoch: epoch,
+        reviewed: review!,
+      ),
+      throwsA(isA<ApiFailure>()),
+    );
+    expect(workspace.decisionOutcomeUnknown, isTrue);
+    final fresh = await workspace.reconcileUnknownDecision(epoch: epoch);
+    workspace.acknowledgeUnknownDecision(epoch: epoch, reviewed: fresh!);
+    expect(workspace.decisionOutcomeUnknown, isFalse);
+    expect(repository.decisionCreates, 1);
+  });
+
   test('recovery drafts keep their reviewed version', () async {
     final (:workspace, :repository) = await _setup();
     final epoch = workspace.reviewEpoch;
@@ -486,4 +668,12 @@ void main() {
       );
     },
   );
+}
+
+Future<void> _eventually(bool Function() condition) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    if (condition()) return;
+    await Future<void>.value();
+  }
+  fail('The expected state transition did not occur.');
 }

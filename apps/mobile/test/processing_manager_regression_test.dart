@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
+import 'package:sme_meeting_assistant/features/results/results_invalidation.dart';
 import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_manager.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
@@ -10,6 +12,77 @@ import 'package:sme_meeting_assistant/features/recording/local_media_repository.
 import 'support/meeting_test_support.dart';
 
 void main() {
+  test('Results catches processing outcomes across an observation gap', () async {
+    var completed = false;
+    final client = MeetingTestHttpClient((request) async {
+      if (request.url.path.endsWith('/media')) {
+        return meetingApiSuccess(const <dynamic>[]);
+      }
+      if (request.url.path.endsWith('/processing-jobs')) {
+        final job = _jobJson(firstJobId);
+        if (completed) {
+          job['status'] = 'COMPLETED';
+          job['currentStage'] = null;
+          job['completedAt'] = '2026-11-24T12:02:00Z';
+          job['updatedAt'] = '2026-11-24T12:02:00Z';
+        }
+        return meetingApiSuccess([job]);
+      }
+      throw StateError('Unexpected request ${request.url.path}');
+    });
+    final api = createMeetingTestApi(client);
+    await signInMeetingTestApi(api);
+    final scope = api.requireAuthenticatedSessionScope();
+    final meetings = MeetingInvalidationSignal(api);
+    final invalidation = ResultsInvalidationSignal(
+      api: api,
+      meetingInvalidation: meetings,
+    );
+    final manager = ProcessingManager(
+      api: api,
+      mediaRepository: MediaRepository(api: api),
+      processingRepository: ProcessingRepository(api: api),
+      localMedia: LocalMediaRepository.lazyDefault(),
+    );
+    addTearDown(() {
+      manager.dispose();
+      invalidation.dispose();
+      meetings.dispose();
+      api.dispose();
+    });
+    final outcomes = <String, String>{};
+    final other = manager.startObserving(testMeetingId, scope: scope);
+    await manager.refresh(testMeetingId, scope: scope, explicit: true);
+    final first = ResultsProcessingBridge(
+      manager: manager,
+      invalidation: invalidation,
+      api: api,
+      meetingId: testMeetingId,
+      scope: scope,
+      seenOutcomes: outcomes,
+    );
+    first.dispose();
+    completed = true;
+    await manager.refresh(testMeetingId, scope: scope, explicit: true);
+    final before = invalidation.revision;
+    final resumed = ResultsProcessingBridge(
+      manager: manager,
+      invalidation: invalidation,
+      api: api,
+      meetingId: testMeetingId,
+      scope: scope,
+      seenOutcomes: outcomes,
+      publishInitial: true,
+    );
+    expect(invalidation.revision, before + 1);
+    expect(invalidation.resources, contains(ResultsResourceKind.summary));
+    expect(invalidation.resources, isNot(contains(ResultsResourceKind.transcript)));
+    resumed.reconcileCurrent();
+    expect(invalidation.revision, before + 1);
+    resumed.dispose();
+    other.dispose();
+  });
+
   test('explicit refreshes within one generation share one request', () async {
     final mediaResponse = Completer<http.StreamedResponse>();
     final jobsResponse = Completer<http.StreamedResponse>();

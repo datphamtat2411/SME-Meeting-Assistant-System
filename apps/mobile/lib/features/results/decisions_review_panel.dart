@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/command_actions.dart';
+import '../../core/meeting_models.dart';
 import '../../core/widgets.dart';
 import 'results_workspace_controller.dart';
 import 'results_presentation.dart';
@@ -26,35 +27,69 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
   }
 
   Future<void> createDecision() async {
-    final epoch = widget.workspace.reviewEpoch;
-    if (widget.workspace.decisionOutcomeUnknown) {
+    if (busy) return;
+    setState(() => busy = true);
+    try {
+      await _createDecision();
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _createDecision() async {
+    final workspace = widget.workspace;
+    final epoch = workspace.reviewEpoch;
+    List<MeetingDecision>? recovery;
+    if (workspace.decisionOutcomeUnknown) {
       final reviewed = await runCommand(
         context,
         operation: () async {
-          if (!await widget.workspace.reconcileUnknownDecision(epoch: epoch)) {
+          recovery = await workspace.reconcileUnknownDecision(epoch: epoch);
+          if (recovery == null) {
             throw const ApiFailure(
               409,
               'RESULTS_OUTCOME_UNKNOWN',
-              'Không thể xác minh quyết định trước đó.',
+              'Danh sách đã thay đổi hoặc không thể tải đầy đủ. Hãy thử lại.',
             );
           }
         },
-        successText: 'Đã tải lại danh sách quyết định.',
+        successText: 'Đã tải danh sách quyết định để kiểm tra.',
       );
-      if (!reviewed || !mounted) return;
+      if (!reviewed || !mounted || !workspace.ownsReview(epoch)) return;
+      final decisions = recovery!;
       final confirmed = await showResultsReviewDialog<bool>(
         context: context,
-        workspace: widget.workspace,
+        workspace: workspace,
         epoch: epoch,
         builder: (dialog) => AlertDialog(
           title: const Text('Kiểm tra quyết định trước đó'),
-          content: const Text(
-            'Yêu cầu trước có thể đã được lưu. Hãy xem danh sách quyết định hiện tại trước khi tạo một yêu cầu mới.',
+          content: SizedBox(
+            width: 480,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Yêu cầu trước có thể đã được lưu. Danh sách này không '
+                    'chứng minh yêu cầu thành công hay thất bại. Hãy kiểm tra '
+                    'trước khi tạo một yêu cầu mới.',
+                  ),
+                  if (decisions.isEmpty)
+                    const Text('Chưa có quyết định trong danh sách hiện tại.'),
+                  for (final decision in decisions)
+                    ListTile(
+                      title: Text(decision.content),
+                      subtitle: Text(decision.status),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                ],
+              ),
+            ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialog, false),
-              child: const Text('Quay lại danh sách'),
+              child: const Text('Quay lại'),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(dialog, true),
@@ -63,17 +98,14 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
           ],
         ),
       );
-      if (confirmed != true ||
-          !mounted ||
-          !widget.workspace.ownsReview(epoch)) {
+      if (confirmed != true || !mounted || !workspace.ownsReview(epoch)) {
         return;
       }
-      widget.workspace.acknowledgeUnknownDecision(epoch: epoch);
     }
     final controller = TextEditingController();
     final ok = await showResultsReviewDialog<bool>(
       context: context,
-      workspace: widget.workspace,
+      workspace: workspace,
       epoch: epoch,
       builder: (dialog) => AlertDialog(
         title: const Text('Tạo quyết định'),
@@ -98,7 +130,10 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
         ],
       ),
     );
-    if (ok != true || !mounted || !widget.workspace.ownsReview(epoch)) {
+    if (ok != true ||
+        !mounted ||
+        !identical(widget.workspace, workspace) ||
+        !workspace.ownsReview(epoch)) {
       controller.dispose();
       return;
     }
@@ -107,13 +142,20 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
     if (value.isEmpty) {
       return;
     }
-    setState(() => busy = true);
     await runCommand(
       context,
-      operation: () => widget.workspace.createDecision(value, epoch: epoch),
+      operation: () async {
+        final reviewed = recovery;
+        if (reviewed != null) {
+          workspace.acknowledgeUnknownDecision(
+            epoch: epoch,
+            reviewed: reviewed,
+          );
+        }
+        await workspace.createDecision(value, epoch: epoch);
+      },
       successText: 'Đã lưu quyết định.',
     );
-    if (mounted) setState(() => busy = false);
   }
 
   @override

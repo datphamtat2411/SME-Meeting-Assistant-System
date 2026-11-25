@@ -102,14 +102,20 @@ class ResultsProcessingBridge {
     required String meetingId,
     required AuthenticatedSessionScope scope,
     this.onTerminalOutcome,
+    Map<String, String>? seenOutcomes,
+    bool publishInitial = false,
   }) : _manager = manager,
        _invalidation = invalidation,
        _api = api,
        _meetingId = meetingId,
-       _scope = scope {
+       _scope = scope,
+       _seenOutcomes = seenOutcomes ?? <String, String>{} {
+    _remember(
+      _manager.stateFor(meetingId, scope: scope),
+      publish: publishInitial,
+    );
     _manager.addListener(_changed);
     _observation = _manager.startObserving(meetingId, scope: scope);
-    _remember(_manager.stateFor(meetingId, scope: scope), publish: false);
   }
 
   final ProcessingManager _manager;
@@ -119,10 +125,12 @@ class ResultsProcessingBridge {
   final AuthenticatedSessionScope _scope;
   final void Function(String jobId)? onTerminalOutcome;
   late final ProcessingObservation _observation;
-  final Map<String, String> _seenOutcomes = <String, String>{};
+  final Map<String, String> _seenOutcomes;
   bool _disposed = false;
 
-  void _changed() {
+  void _changed() => reconcileCurrent();
+
+  void reconcileCurrent() {
     if (_disposed || !_api.isCurrentAuthenticatedSession(_scope)) return;
     _remember(_manager.stateFor(_meetingId, scope: _scope), publish: true);
   }
@@ -133,9 +141,10 @@ class ResultsProcessingBridge {
     for (final job in state.jobs) {
       if (!job.status.isTerminal && !job.isWaitingForReview) continue;
       final outcome = '${job.status.wireValue}:${job.retryCount}';
-      if (_seenOutcomes[job.id] == outcome) continue;
+      final alreadySeen = _seenOutcomes[job.id] == outcome;
       _seenOutcomes[job.id] = outcome;
-      onTerminalOutcome?.call(job.id);
+      if (job.status.isTerminal) onTerminalOutcome?.call(job.id);
+      if (alreadySeen) continue;
       if (job.jobType == ProcessingJobType.offlineMeetingProcessing) {
         affected.addAll(ResultsResourceKind.values);
       } else {

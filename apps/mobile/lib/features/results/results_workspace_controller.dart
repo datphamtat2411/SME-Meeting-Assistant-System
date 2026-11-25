@@ -107,7 +107,13 @@ class ResultsWorkspaceController extends ChangeNotifier {
   bool _disposed = false;
   bool _accessVerificationPending = false;
   Object? _accessVerificationFailure;
-  bool _authorizationRefreshRequested = false;
+  Object? _authorizationTicket;
+  bool _authorizationRecheckRequested = false;
+  final Map<String, String> _processingOutcomes = <String, String>{};
+  bool _hasObservedProcessing = false;
+  bool _processingObservationGap = false;
+  List<MeetingDecision>? _decisionRecoveryReview;
+  int? _decisionRecoveryGeneration;
   final ResultsMutationCoordinator _mutations = ResultsMutationCoordinator();
   final Set<ResultsProtectedDialogRegistration> _dialogs =
       <ResultsProtectedDialogRegistration>{};
@@ -195,6 +201,9 @@ class ResultsWorkspaceController extends ChangeNotifier {
   bool get ownsSession =>
       !_disposed && api.isCurrentAuthenticatedSession(sessionScope);
 
+  bool _ownsOperation(ResultsMutationGroup group, Object ticket) =>
+      ownsSession && !_accessDenied && _mutations.owns(group, ticket);
+
   void _syncProcessingObservation() {
     final shouldObserve =
         capabilities.canRead &&
@@ -202,12 +211,25 @@ class ResultsWorkspaceController extends ChangeNotifier {
             _mutations.regenerationUncertain ||
             _mutations.acceptedRegenerationJobId != null);
     if (!shouldObserve) {
+      if (_processingBridge != null && capabilities.canRead) {
+        _processingObservationGap = true;
+      }
       _processingBridge?.dispose();
       _processingBridge = null;
     } else if (processingManager != null &&
         _processingBridge == null &&
         !_creatingProcessingBridge) {
       _creatingProcessingBridge = true;
+      if (_processingObservationGap) {
+        // A shared observer may have completed or lost sight of a job while
+        // Results was hidden. Revalidate on demand, not in the background.
+        _processingObservationGap = false;
+        _authorizationAbsent.clear();
+        for (final kind in ResultsResourceKind.values) {
+          _generations[kind] = (_generations[kind] ?? 0) + 1;
+          _dirty.add(kind);
+        }
+      }
       try {
         _processingBridge = ResultsProcessingBridge(
           manager: processingManager!,
@@ -215,6 +237,8 @@ class ResultsWorkspaceController extends ChangeNotifier {
           api: api,
           meetingId: meetingId,
           scope: sessionScope,
+          seenOutcomes: _processingOutcomes,
+          publishInitial: _hasObservedProcessing,
           onTerminalOutcome: (jobId) {
             if (_mutations.acceptedRegenerationJobId != jobId) return;
             _mutations.completeAdmission(jobId);
@@ -222,6 +246,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
             notifyListeners();
           },
         );
+        _hasObservedProcessing = true;
       } finally {
         _creatingProcessingBridge = false;
       }
@@ -278,7 +303,13 @@ class ResultsWorkspaceController extends ChangeNotifier {
     _mutations.invalidate();
     _accessVerificationPending = false;
     _accessVerificationFailure = null;
-    _authorizationRefreshRequested = false;
+    _authorizationTicket = null;
+    _authorizationRecheckRequested = false;
+    _processingOutcomes.clear();
+    _hasObservedProcessing = false;
+    _processingObservationGap = false;
+    _decisionRecoveryReview = null;
+    _decisionRecoveryGeneration = null;
     for (final kind in ResultsResourceKind.values) {
       _generations[kind] = (_generations[kind] ?? 0) + 1;
       _dirty.add(kind);
@@ -313,84 +344,154 @@ class ResultsWorkspaceController extends ChangeNotifier {
   }
 
   void updateCapabilities(ResultsCapabilities next) {
-    if (_disposed) return;
-    final wasReadable = capabilities.canRead;
+    if (_disposed || !ownsSession) return;
     final changed =
         next.canRead != _capabilities.canRead ||
         next.canMutate != _capabilities.canMutate;
-    final restoringAccess =
-        next.canRead &&
-        (_accessDenied ||
-            _accessVerificationPending ||
-            _accessVerificationFailure != null);
-    if (!changed && !restoringAccess) return;
-    final newlyGranted =
-        (!_capabilities.canRead && next.canRead) || restoringAccess;
+    if (!next.canRead) {
+      if (changed || !_accessDenied) {
+        _capabilities = next;
+        _denyAccess();
+      }
+      return;
+    }
+    // Ordinary metadata synchronization is not proof of restored access.
+    // Expansions require a new canonical verification; reductions are safe.
+    if (_accessDenied || isAuthorizationVerificationPending) {
+      if (_capabilities.canMutate && !next.canMutate) {
+        _capabilities = next;
+        _mutations.invalidate();
+        _authorizationRecheckRequested = _authorizationTicket != null;
+        notifyListeners();
+      }
+      if (changed && _authorizationTicket == null) {
+        unawaited(retryAccess());
+      }
+      return;
+    }
+    if (!changed) return;
+    if (!_capabilities.canRead ||
+        (!_capabilities.canMutate && next.canMutate)) {
+      unawaited(_verifyAuthorization());
+      return;
+    }
     if (_capabilities.canMutate && !next.canMutate) {
       _invalidateDialogs();
       _mutations.invalidate();
+      _decisionRecoveryReview = null;
+      _decisionRecoveryGeneration = null;
     }
     _capabilities = next;
-    if (newlyGranted) {
-      _accessDenied = false;
-      _accessVerificationPending = false;
-      _accessVerificationFailure = null;
-    }
-    if (!capabilities.canRead) {
-      _clearProtectedState();
-    } else if (!wasReadable) {
-      _syncProcessingObservation();
-      for (final kind in _active.toList()) {
-        unawaited(_reload(kind));
-      }
-    }
+    _syncProcessingObservation();
     notifyListeners();
   }
 
   Future<void> retryAccess() async {
     if (!ownsSession ||
-        (!_accessDenied &&
-            !_accessVerificationPending &&
-            _accessVerificationFailure == null)) {
+        _authorizationTicket != null ||
+        (!_accessDenied && !isAuthorizationVerificationPending)) {
       return;
     }
-    final epoch = reviewEpoch;
+    _authorizationAbsent.clear();
+    await _verifyAuthorization();
+  }
+
+  Object _beginAuthorizationVerification() {
+    final ticket = Object();
+    _authorizationTicket = ticket;
+    _accessVerificationPending = true;
+    _accessVerificationFailure = null;
+    _invalidateDialogs();
+    _mutations.invalidateReviews();
+    _decisionRecoveryReview = null;
+    _decisionRecoveryGeneration = null;
+    for (final kind in ResultsResourceKind.values) {
+      _generations[kind] = (_generations[kind] ?? 0) + 1;
+      _dirty.add(kind);
+    }
+    _requests.clear();
+    _setAuthorizationPhase(ResultsResourcePhase.verifyingAuthorization);
+    _syncProcessingObservation();
+    notifyListeners();
+    return ticket;
+  }
+
+  bool _ownsAuthorizationCheck(Object ticket) =>
+      ownsSession && identical(_authorizationTicket, ticket);
+
+  Future<void> _verifyAuthorization({
+    ResultsResourceKind? absentKind,
+    ApiFailure? failure,
+  }) async {
+    if (!ownsSession || _authorizationTicket != null) return;
+    final absentGeneration = (_generations[absentKind] ?? 0) + 1;
+    final ticket = _beginAuthorizationVerification();
+    ResultsAccessVerification access;
     try {
-      final access = await repository.verifyAccess(
+      access = await repository.verifyAccess(
         sessionScope: sessionScope,
         meetingId: meetingId,
       );
-      if (!ownsSession || reviewEpoch != epoch) return;
-      if (!access.canRead) {
+    } catch (error) {
+      if (!_ownsAuthorizationCheck(ticket)) return;
+      _authorizationTicket = null;
+      _authorizationRecheckRequested = false;
+      if (error is ApiFailure &&
+          (error.status == 401 || error.status == 403 || error.status == 404)) {
         _denyAccess();
         return;
       }
-      _accessDenied = false;
-      _accessVerificationFailure = null;
       _accessVerificationPending = false;
-      _applyVerifiedCapabilities(access);
-      _markResourcesForAuthorizationRefresh();
-      notifyListeners();
-      if (capabilities.canRead) {
-        await _refreshActiveResources();
-      }
-    } catch (error) {
-      if (!ownsSession || reviewEpoch != epoch) return;
       _accessVerificationFailure = error;
       _setAuthorizationPhase(
         ResultsResourcePhase.authorizationVerificationFailed,
       );
       notifyListeners();
+      return;
     }
+    if (!_ownsAuthorizationCheck(ticket)) return;
+    if (_authorizationRecheckRequested) {
+      _authorizationRecheckRequested = false;
+      _authorizationTicket = null;
+      await _verifyAuthorization();
+      return;
+    }
+    if (!access.canRead) {
+      _denyAccess();
+      return;
+    }
+
+    _authorizationTicket = null;
+    _accessDenied = false;
+    _accessVerificationPending = false;
+    _accessVerificationFailure = null;
+    _applyVerifiedCapabilities(access);
+    if (absentKind != null && _generations[absentKind] == absentGeneration) {
+      _authorizationAbsent.add(absentKind);
+    }
+    _setAuthorizationPhase(ResultsResourcePhase.uninitialized);
+    for (final kind in _authorizationAbsent) {
+      _dirty.remove(kind);
+      _setResourcePhase(
+        kind,
+        ResultsResourcePhase.notReady,
+        failure: kind == absentKind ? failure : null,
+      );
+    }
+    _syncProcessingObservation();
+    notifyListeners();
+    // The previous request generation has been fenced. Do not wait on its
+    // completion or re-fetch an absence already verified in this context.
+    unawaited(_refreshActiveResources());
   }
 
   void _setAuthorizationPhase(ResultsResourcePhase phase) {
-    transcript = transcript.copyWith(phase: phase);
-    speakers = speakers.copyWith(phase: phase);
-    summary = summary.copyWith(phase: phase);
-    summaryVersions = summaryVersions.copyWith(phase: phase);
-    decisions = decisions.copyWith(phase: phase);
-    minutes = minutes.copyWith(phase: phase);
+    transcript = transcript.copyWith(phase: phase, clearData: true);
+    speakers = speakers.copyWith(phase: phase, clearData: true);
+    summary = summary.copyWith(phase: phase, clearData: true);
+    summaryVersions = summaryVersions.copyWith(phase: phase, clearData: true);
+    decisions = decisions.copyWith(phase: phase, clearData: true);
+    minutes = minutes.copyWith(phase: phase, clearData: true);
   }
 
   void _setResourcePhase(
@@ -417,15 +518,6 @@ class ResultsWorkspaceController extends ChangeNotifier {
     }
   }
 
-  void _markResourcesForAuthorizationRefresh() {
-    _authorizationAbsent.clear();
-    for (final kind in ResultsResourceKind.values) {
-      _generations[kind] = (_generations[kind] ?? 0) + 1;
-      _dirty.add(kind);
-    }
-    _setAuthorizationPhase(ResultsResourcePhase.uninitialized);
-  }
-
   void _applyVerifiedCapabilities(ResultsAccessVerification access) {
     final canMutate = access.canMutate ?? _capabilities.canMutate;
     if (_capabilities.canMutate && !canMutate) {
@@ -439,8 +531,10 @@ class ResultsWorkspaceController extends ChangeNotifier {
   }
 
   Future<void> _refreshActiveResources() async {
-    final resources = _active.toList(growable: false);
-    await Future.wait(resources.map((kind) => _reload(kind)));
+    final resources = _active
+        .where((kind) => !_authorizationAbsent.contains(kind))
+        .toList(growable: false);
+    await Future.wait(resources.map(_reloadIfNeeded));
     _syncProcessingObservation();
   }
 
@@ -564,7 +658,9 @@ class ResultsWorkspaceController extends ChangeNotifier {
     if (_disposed) return Future<void>.value();
     final current = read();
     if (force) _authorizationAbsent.remove(kind);
-    if (force && _accessDenied) return retryAccess();
+    if (force && (_accessDenied || isAuthorizationVerificationPending)) {
+      return retryAccess();
+    }
     if (!ownsSession || !capabilities.canRead) {
       final phase = _accessVerificationPending
           ? ResultsResourcePhase.verifyingAuthorization
@@ -646,24 +742,8 @@ class ResultsWorkspaceController extends ChangeNotifier {
                 return;
               }
               if (failure.status == 404) {
-                // A concealed 404 is ambiguous. Remove this representation and
-                // suspend every protected Results surface until canonical
-                // meeting/membership access has been verified.
-                write(
-                  ResultsResource<T>(
-                    phase: ResultsResourcePhase.verifyingAuthorization,
-                    generation: generation,
-                  ),
-                );
-                _accessVerificationPending = true;
-                _accessVerificationFailure = null;
-                _setAuthorizationPhase(
-                  ResultsResourcePhase.verifyingAuthorization,
-                );
-                notifyListeners();
-                await _verifyAuthorizationAfterProtectedFailure(
-                  kind: kind,
-                  generation: generation,
+                await _verifyAuthorization(
+                  absentKind: kind,
                   failure: failure,
                 );
                 return;
@@ -682,15 +762,6 @@ class ResultsWorkspaceController extends ChangeNotifier {
             completion.complete();
             if (!identical(_requests[kind], operation)) return;
             _requests.remove(kind);
-            if (_authorizationRefreshRequested) {
-              _authorizationRefreshRequested = false;
-              for (final activeKind in _active) {
-                if (_requests[activeKind] == null &&
-                    !_authorizationAbsent.contains(activeKind)) {
-                  unawaited(_reload(activeKind));
-                }
-              }
-            }
             if (capabilities.canRead &&
                 _active.contains(kind) &&
                 !_authorizationAbsent.contains(kind) &&
@@ -702,90 +773,10 @@ class ResultsWorkspaceController extends ChangeNotifier {
     return operation;
   }
 
-  Future<void> _verifyAuthorizationAfterProtectedFailure({
-    required ResultsResourceKind kind,
-    required int generation,
-    required ApiFailure failure,
-  }) async {
-    ResultsAccessVerification access;
-    try {
-      access = await repository.verifyAccess(
-        sessionScope: sessionScope,
-        meetingId: meetingId,
-      );
-    } catch (error) {
-      if (!_ownsAuthorizationCheck(kind, generation)) return;
-      _accessVerificationPending = false;
-      _accessVerificationFailure = error;
-      _setAuthorizationPhase(
-        ResultsResourcePhase.authorizationVerificationFailed,
-      );
-      notifyListeners();
-      return;
-    }
-    if (!_ownsAuthorizationCheck(kind, generation)) return;
-    if (!access.canRead) {
-      _denyAccess();
-      return;
-    }
-
-    // Access is now based on a fresh canonical meeting/membership check. Keep
-    // all resources non-presentable until the active set has been refreshed.
-    _accessDenied = false;
-    _accessVerificationPending = false;
-    _accessVerificationFailure = null;
-    _applyVerifiedCapabilities(access);
-    _markResourcesForAuthorizationRefresh();
-    _authorizationAbsent.add(kind);
-    _dirty.remove(kind);
-    _setResourcePhase(kind, ResultsResourcePhase.notReady, failure: failure);
-    _authorizationRefreshRequested = true;
-    notifyListeners();
-  }
-
-  Future<void> _revalidateAuthorizationAfterMutationFailure() async {
-    if (!ownsSession) return;
-    _accessVerificationPending = true;
-    _accessVerificationFailure = null;
-    _setAuthorizationPhase(ResultsResourcePhase.verifyingAuthorization);
-    notifyListeners();
-    ResultsAccessVerification access;
-    try {
-      access = await repository.verifyAccess(
-        sessionScope: sessionScope,
-        meetingId: meetingId,
-      );
-    } catch (error) {
-      if (!ownsSession) return;
-      _accessVerificationPending = false;
-      _accessVerificationFailure = error;
-      _setAuthorizationPhase(
-        ResultsResourcePhase.authorizationVerificationFailed,
-      );
-      notifyListeners();
-      return;
-    }
-    if (!ownsSession) return;
-    if (!access.canRead) {
-      _denyAccess();
-      return;
-    }
-    _accessDenied = false;
-    _accessVerificationPending = false;
-    _accessVerificationFailure = null;
-    _applyVerifiedCapabilities(access);
-    _markResourcesForAuthorizationRefresh();
-    notifyListeners();
-    await _refreshActiveResources();
-  }
-
   bool _ownsGeneration(ResultsResourceKind kind, int generation) =>
       ownsSession &&
       capabilities.canRead &&
       (_generations[kind] ?? 0) == generation;
-
-  bool _ownsAuthorizationCheck(ResultsResourceKind kind, int generation) =>
-      ownsSession && !_accessDenied && (_generations[kind] ?? 0) == generation;
 
   void _onInvalidation() {
     if (_disposed || !ownsSession) return;
@@ -797,6 +788,10 @@ class ResultsWorkspaceController extends ChangeNotifier {
       return;
     }
     final kinds = invalidation.resources;
+    if (kinds.contains(ResultsResourceKind.decisions)) {
+      _decisionRecoveryReview = null;
+      _decisionRecoveryGeneration = null;
+    }
     for (final kind in kinds) {
       _authorizationAbsent.remove(kind);
       _generations[kind] = (_generations[kind] ?? 0) + 1;
@@ -832,7 +827,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
         ResultsResourceKind.decisions,
         ResultsResourceKind.minutes,
       },
-      () => repository.correctSegment(
+      (_) => repository.correctSegment(
         sessionScope: sessionScope,
         meetingId: meetingId,
         snapshot: snapshot,
@@ -866,7 +861,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
         ResultsResourceKind.decisions,
         ResultsResourceKind.minutes,
       },
-      () => repository.mapSpeaker(
+      (_) => repository.mapSpeaker(
         sessionScope: sessionScope,
         meetingId: meetingId,
         clusterId: clusterId,
@@ -890,7 +885,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
         ResultsResourceKind.summaryVersions,
         ResultsResourceKind.minutes,
       },
-      () => repository.editSummary(
+      (_) => repository.editSummary(
         sessionScope: sessionScope,
         meetingId: meetingId,
         snapshot: snapshot,
@@ -919,7 +914,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
         ResultsResourceKind.summaryVersions,
         ResultsResourceKind.minutes,
       },
-      () => repository.activateSummaryVersion(
+      (_) => repository.activateSummaryVersion(
         sessionScope: sessionScope,
         meetingId: meetingId,
         snapshot: snapshot,
@@ -943,7 +938,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
         ResultsResourceKind.decisions,
         ResultsResourceKind.minutes,
       },
-      () => repository.createDecision(
+      (_) => repository.createDecision(
         sessionScope: sessionScope,
         meetingId: meetingId,
         content: content,
@@ -964,7 +959,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
         ResultsResourceKind.decisions,
         ResultsResourceKind.minutes,
       },
-      () => repository.reviewDecision(
+      (_) => repository.reviewDecision(
         sessionScope: sessionScope,
         meetingId: meetingId,
         snapshot: snapshot,
@@ -975,6 +970,13 @@ class ResultsWorkspaceController extends ChangeNotifier {
 
   Future<void> regenerateSummary({required int epoch}) async {
     _requireMutation(epoch);
+    if (_mutations.acceptedRegenerationJobId != null) {
+      throw const ApiFailure(
+        409,
+        'RESULTS_COMMAND_PENDING',
+        'Tác vụ tạo lại tóm tắt trước đó chưa hoàn tất.',
+      );
+    }
     await _reconcileAfterMutation(
       ResultsMutationGroup.summary,
       <ResultsResourceKind>{
@@ -982,7 +984,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
         ResultsResourceKind.summaryVersions,
         ResultsResourceKind.minutes,
       },
-      () async {
+      (ticket) async {
         final key = _mutations.regenerationKey();
         try {
           final jobId = await repository.regenerateSummary(
@@ -990,11 +992,14 @@ class ResultsWorkspaceController extends ChangeNotifier {
             meetingId: meetingId,
             idempotencyKey: key,
           );
-          if (ownsReview(epoch)) _mutations.recordAdmission(jobId);
-          _syncProcessingObservation();
+          if (_ownsOperation(ResultsMutationGroup.summary, ticket)) {
+            _mutations.recordAdmission(jobId);
+            _syncProcessingObservation();
+            _processingBridge?.reconcileCurrent();
+          }
           return jobId;
         } catch (error) {
-          if (ownsReview(epoch)) {
+          if (_ownsOperation(ResultsMutationGroup.summary, ticket)) {
             _mutations.recordFailure(error);
             _syncProcessingObservation();
           }
@@ -1023,7 +1028,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
   Future<void> _reconcileAfterMutation(
     ResultsMutationGroup group,
     Set<ResultsResourceKind> resources,
-    Future<Object?> Function() operation, {
+    Future<Object?> Function(Object ticket) operation, {
     String? unresolvedIntent,
   }) async {
     final ticket = _mutations.begin(group);
@@ -1032,11 +1037,11 @@ class ResultsWorkspaceController extends ChangeNotifier {
     notifyListeners();
     try {
       _requireMutation(epoch);
-      await operation();
-      _requireMutation(epoch);
+      await operation(ticket);
     } catch (error, stack) {
-      if (ownsReview(epoch) && ResultsMutationCoordinator.isUncertain(error)) {
-        if (group == ResultsMutationGroup.decisions) {
+      if (_ownsOperation(group, ticket) &&
+          ResultsMutationCoordinator.isUncertain(error)) {
+        if (unresolvedIntent != null) {
           _mutations.decisionOutcomeUnknown = true;
           _mutations.unknownDecisionContent = unresolvedIntent;
         }
@@ -1052,50 +1057,98 @@ class ResultsWorkspaceController extends ChangeNotifier {
           remoteOutcomeAmbiguous: true,
         );
       }
-      if (ownsReview(epoch) &&
+      if (_ownsOperation(group, ticket) &&
           error is ApiFailure &&
           (error.status == 403 || error.status == 404)) {
-        await _revalidateAuthorizationAfterMutationFailure();
+        await _verifyAuthorization();
       }
       Error.throwWithStackTrace(error, stack);
     } finally {
+      final owned = _ownsOperation(group, ticket);
       _mutations.finish(group, ticket);
-      if (ownsReview(epoch) && !invalidated) {
-        _invalidate(resources);
-        notifyListeners();
-      } else if (ownsReview(epoch)) {
+      if (owned) {
+        if (!invalidated) _invalidate(resources);
         notifyListeners();
       }
     }
+    // Admission and completion ownership differ. An already dispatched
+    // operation may finish during suspension, but its obsolete UI must not
+    // present a success or dispatch another command.
+    _requireMutation(epoch);
   }
 
-  Future<bool> reconcileUnknownDecision({required int epoch}) async {
+  Future<List<MeetingDecision>?> reconcileUnknownDecision({
+    required int epoch,
+  }) async {
     _requireMutation(epoch);
-    await loadDecisions(force: true);
-    _requireMutation(epoch);
-    final firstPage = decisions.data;
-    if (firstPage == null) return false;
-    for (var page = 1; page < firstPage.totalPages; page++) {
-      await repository.decisions(
+    _decisionRecoveryReview = null;
+    _decisionRecoveryGeneration = null;
+    if (!_mutations.decisionOutcomeUnknown) return null;
+    final generation = _generations[ResultsResourceKind.decisions] ?? 0;
+    final items = <MeetingDecision>[];
+    final ids = <String>{};
+    try {
+      final first = await repository.decisions(
         sessionScope: sessionScope,
         meetingId: meetingId,
-        page: page,
-        size: firstPage.size,
       );
-      _requireMutation(epoch);
+      var page = first;
+      for (var index = 0; index < first.totalPages || index == 0; index++) {
+        _requireMutation(epoch);
+        if ((_generations[ResultsResourceKind.decisions] ?? 0) != generation ||
+            page.page != index ||
+            page.totalPages != first.totalPages ||
+            page.totalElements != first.totalElements ||
+            page.size != first.size) {
+          return null;
+        }
+        for (final decision in page.items) {
+          if (!ids.add(decision.id)) return null;
+          items.add(decision);
+        }
+        if (!page.hasNext) break;
+        page = await repository.decisions(
+          sessionScope: sessionScope,
+          meetingId: meetingId,
+          page: index + 1,
+          size: first.size,
+        );
+      }
+      if (items.length != first.totalElements) return null;
+    } on ApiFailure catch (error) {
+      if (ownsReview(epoch) && (error.status == 403 || error.status == 404)) {
+        await _verifyAuthorization();
+      }
+      rethrow;
     }
-    return decisions.phase == ResultsResourcePhase.available ||
-        decisions.phase == ResultsResourcePhase.empty;
+    final review = List<MeetingDecision>.unmodifiable(items);
+    _decisionRecoveryReview = review;
+    _decisionRecoveryGeneration = generation;
+    return review;
   }
 
-  void acknowledgeUnknownDecision({required int epoch}) {
+  void acknowledgeUnknownDecision({
+    required int epoch,
+    required List<MeetingDecision> reviewed,
+  }) {
     _requireMutation(epoch);
-    if (decisions.phase != ResultsResourcePhase.available &&
-        decisions.phase != ResultsResourcePhase.empty) {
+    if (!_mutations.decisionOutcomeUnknown ||
+        !identical(_decisionRecoveryReview, reviewed) ||
+        _decisionRecoveryGeneration !=
+            (_generations[ResultsResourceKind.decisions] ?? 0)) {
       throw const ApiFailure(
         409,
         'RESULTS_OUTCOME_UNKNOWN',
-        'Không thể xác minh danh sách quyết định hiện tại.',
+        'Danh sách quyết định đã thay đổi. Vui lòng kiểm tra lại.',
+      );
+    }
+    _decisionRecoveryReview = null;
+    _decisionRecoveryGeneration = null;
+    if (_mutations.busy(ResultsMutationGroup.decisions)) {
+      throw const ApiFailure(
+        409,
+        'RESULTS_COMMAND_PENDING',
+        'Một thao tác trên quyết định đang được xử lý.',
       );
     }
     _mutations.decisionOutcomeUnknown = false;
