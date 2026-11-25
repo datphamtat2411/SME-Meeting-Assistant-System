@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
+import 'package:sme_meeting_assistant/core/app_theme.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_database.dart';
@@ -17,10 +19,12 @@ import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_manager.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/recording_coordinator.dart';
+import 'package:sme_meeting_assistant/features/recording/recording_page.dart';
 import 'package:sme_meeting_assistant/features/recording/recording_workspace_controller.dart';
 import 'package:sme_meeting_assistant/features/recording/submission_coordinator.dart';
 
 import 'support/meeting_test_support.dart';
+import 'support/widget_test_support.dart';
 
 void main() {
   setUpAll(() {
@@ -226,6 +230,220 @@ void main() {
     expect(controller.canCancelSubmission, isFalse);
   });
 
+  testWidgets('workspace import cancellation reaches the active picker', (
+    tester,
+  ) async {
+    final entered = Completer<void>();
+    final pickerResult = Completer<AudioImportSource?>();
+    final fixture = (await tester.runAsync(
+      () => _workspace(
+        initializeController: false,
+        picker: () {
+          entered.complete();
+          return pickerResult.future;
+        },
+      ),
+    ))!;
+    final scope = fixture.api.requireAuthenticatedSessionScope();
+    try {
+      await _pumpRecordingPage(tester, fixture.controller);
+      await tester.tap(find.text('Nhập WAV / MP3 / M4A'));
+      await pumpUntil(
+        tester,
+        () =>
+            entered.isCompleted &&
+            find.text('Hủy nhập âm thanh').evaluate().isNotEmpty,
+        reason: 'the production cancellation control to become available',
+        maxPumps: 400,
+      );
+      final cancel = find.widgetWithText(TextButton, 'Hủy nhập âm thanh');
+      expect(tester.widget<TextButton>(cancel).onPressed, isNotNull);
+      await tester.ensureVisible(cancel);
+      await tester.tap(cancel);
+      pickerResult.complete(
+        AudioImportSource(
+          name: 'cancelled.wav',
+          sizeBytes: 3,
+          bytes: Stream<List<int>>.value(<int>[1, 2, 3]),
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () =>
+            fixture.controller.recording.state.lifecycle ==
+                RecordingLifecycleState.failed &&
+            find.text('Không thể hoàn tất thao tác').evaluate().isNotEmpty,
+        reason: 'the cancelled import to settle and reload the workspace',
+        maxPumps: 400,
+      );
+      expect(
+        await tester.runAsync(
+          () => fixture.localMedia.listAssets(
+            scope: scope,
+            meetingId: testMeetingId,
+          ),
+        ),
+        isEmpty,
+      );
+    } finally {
+      if (!pickerResult.isCompleted) pickerResult.complete(null);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+  });
+
+  testWidgets('workspace upload cancellation prevents the pending PUT', (
+    tester,
+  ) async {
+    final intentStarted = Completer<void>();
+    final intentResponse = Completer<http.StreamedResponse>();
+    var puts = 0;
+    final fixture = (await tester.runAsync(
+      () => _workspace(
+        initializeController: false,
+        handler: (request) async {
+          if (request.url.path.endsWith('/media/uploads')) {
+            intentStarted.complete();
+            return intentResponse.future;
+          }
+          if (request.method == 'PUT') puts++;
+          throw StateError('Unexpected mutation ${request.url.path}');
+        },
+      ),
+    ))!;
+    final scope = fixture.api.requireAuthenticatedSessionScope();
+    final asset = (await tester.runAsync(() async {
+      final source = File('${fixture.directory.path}/widget-recording.wav')
+        ..writeAsBytesSync(<int>[1, 2, 3]);
+      return fixture.localMedia.rememberSourceFile(
+        scope: scope,
+        meetingId: testMeetingId,
+        source: source,
+        sourceType: LocalMediaSourceType.recording,
+        originalFilename: 'widget-recording.wav',
+        contentType: 'audio/wav',
+        expectedSizeBytes: 3,
+      );
+    }))!;
+    Future<http.StreamedResponse> pendingIntent() =>
+        meetingApiSuccess(<String, dynamic>{
+          'mediaId': 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+          'status': 'PENDING_UPLOAD',
+          'uploadUrl': 'https://storage.example.test/object',
+          'expiresAt': DateTime.now()
+              .toUtc()
+              .add(const Duration(minutes: 10))
+              .toIso8601String(),
+          'requiredContentType': 'audio/wav',
+        });
+    try {
+      await _pumpRecordingPage(tester, fixture.controller);
+      final select = find.text('Chọn');
+      await tester.scrollUntilVisible(select, 150);
+      await tester.tap(select);
+      await tester.pump();
+      final submit = find.text('Gửi và xử lý');
+      await tester.scrollUntilVisible(submit, 150);
+      await tester.tap(submit);
+      await pumpUntil(
+        tester,
+        () =>
+            intentStarted.isCompleted &&
+            find.text('Yêu cầu hủy').evaluate().isNotEmpty,
+        reason: 'the active submission cancellation control to appear',
+        maxPumps: 400,
+      );
+      final cancel = find.widgetWithText(FilledButton, 'Yêu cầu hủy');
+      expect(tester.widget<FilledButton>(cancel).onPressed, isNotNull);
+      await tester.ensureVisible(cancel);
+      await tester.tap(cancel);
+      intentResponse.complete(await pendingIntent());
+      await pumpUntil(
+        tester,
+        () =>
+            !fixture.controller.submissions.hasActiveSubmission(
+              asset.id,
+              scope: scope,
+            ) &&
+            find.text('Yêu cầu hủy').evaluate().isEmpty,
+        reason: 'the cancelled submission to settle',
+        maxPumps: 400,
+      );
+      expect(puts, 0);
+      final operations = await tester.runAsync(
+        () => fixture.localMedia.listUploadOperations(
+          scope: scope,
+          assetId: asset.id,
+        ),
+      );
+      expect(operations, hasLength(1));
+      expect(
+        operations!.single.checkpoint,
+        UploadOperationCheckpoint.intentConfirmed,
+      );
+    } finally {
+      if (!intentResponse.isCompleted) {
+        intentResponse.complete(await pendingIntent());
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+  });
+
+  testWidgets('local discard is performed only after confirmation', (
+    tester,
+  ) async {
+    final fixture = (await tester.runAsync(
+      () => _workspace(initializeController: false),
+    ))!;
+    final scope = fixture.api.requireAuthenticatedSessionScope();
+    final asset = (await tester.runAsync(() async {
+      final source = File('${fixture.directory.path}/discard.wav')
+        ..writeAsBytesSync(<int>[1, 2, 3]);
+      return fixture.localMedia.rememberSourceFile(
+        scope: scope,
+        meetingId: testMeetingId,
+        source: source,
+        sourceType: LocalMediaSourceType.recording,
+        originalFilename: 'discard.wav',
+        contentType: 'audio/wav',
+        expectedSizeBytes: 3,
+      );
+    }))!;
+    Future<LocalMediaAsset> readAsset() => fixture.localMedia.findAssetMetadata(
+      scope: scope,
+      assetId: asset.id,
+      meetingId: testMeetingId,
+    );
+    try {
+      await _pumpRecordingPage(tester, fixture.controller);
+      final discard = find.byTooltip('Xóa bản sao cục bộ');
+      await tester.scrollUntilVisible(discard, 150);
+      await tester.tap(discard);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Xóa bản sao cục bộ?'), findsOneWidget);
+      await tester.tap(find.text('Giữ lại'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect((await tester.runAsync(readAsset))?.isReady, isTrue);
+      await tester.tap(discard);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Xóa'));
+      await pumpUntil(
+        tester,
+        () => find.text('Chưa có âm thanh cục bộ').evaluate().isNotEmpty,
+        reason: 'confirmed discard to remove the asset from the workspace',
+        maxPumps: 400,
+      );
+      expect(
+        (await tester.runAsync(readAsset))?.lifecycle,
+        LocalMediaLifecycle.discarded,
+      );
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+  });
+
   test('retry recovery works with target job and no source media', () async {
     const jobId = '11111111-1111-4111-8111-111111111111';
     var retryCalls = 0;
@@ -272,6 +490,38 @@ void main() {
   });
 }
 
+Future<void> _pumpRecordingPage(
+  WidgetTester tester,
+  RecordingWorkspaceController fixture,
+) async {
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: AppTheme.light(),
+      home: Scaffold(
+        body: RecordingPage(
+          api: fixture.api,
+          meetingId: testMeetingId,
+          enabled: true,
+          capabilities: fixture.capabilities,
+          meetingStatus: MeetingStatus.inProgress,
+          localMedia: fixture.localMedia,
+          mediaRepository: fixture.processingManager.mediaRepository,
+          processingRepository: fixture.processingManager.processingRepository,
+          recordingCoordinator: fixture.recording,
+          submissionCoordinator: fixture.submissions,
+          processingManager: fixture.processingManager,
+        ),
+      ),
+    ),
+  );
+  await pumpUntil(
+    tester,
+    () => find.text('Không gian âm thanh').evaluate().isNotEmpty,
+    reason: 'the recording workspace to finish initial loading',
+    maxPumps: 400,
+  );
+}
+
 Map<String, dynamic> _retryJobJson(String id, {required bool retryable}) =>
     <String, dynamic>{
       'id': id,
@@ -305,6 +555,7 @@ Future<
   })
 >
 _workspace({
+  bool initializeController = true,
   AudioImportPicker? picker,
   Future<http.StreamedResponse> Function(http.BaseRequest)? handler,
 }) async {
@@ -371,7 +622,7 @@ _workspace({
     api.dispose();
   });
 
-  await controller.initialize();
+  if (initializeController) await controller.initialize();
   return (
     api: api,
     directory: directory,
