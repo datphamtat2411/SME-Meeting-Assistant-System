@@ -1,6 +1,7 @@
 import 'package:http/http.dart' as http;
 
 import 'api_client.dart';
+import 'models.dart';
 import 'appearance_preferences.dart';
 
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
@@ -8,6 +9,7 @@ import 'package:sme_meeting_assistant/features/meetings/meeting_creation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_repository.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_scheduling.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/meetings/participant_selection.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
@@ -48,32 +50,7 @@ class AppDependencies {
     ProcessingManager? processingManager,
   }) {
     this.localMedia = localMedia ?? LocalMediaRepository.lazyDefault();
-    media = MediaRepository(api: api);
-    processing = ProcessingRepository(api: api);
-    this.recording =
-        recording ??
-        RecordingCoordinator(api: api, localMedia: this.localMedia);
-    this.submissions =
-        submissions ??
-        SubmissionCoordinator(
-          api: api,
-          localMedia: this.localMedia,
-          mediaRepository: media,
-          processingRepository: processing,
-        );
-    this.processingManager =
-        processingManager ??
-        ProcessingManager(
-          api: api,
-          mediaRepository: media,
-          processingRepository: processing,
-          localMedia: this.localMedia,
-        );
     meetingInvalidation = MeetingInvalidationSignal(api);
-    meetingCreationRecovery = MeetingCreationRecoveryStore(
-      storage: api.credentialStorage,
-      deployment: api.baseUri,
-    );
     meetings = MeetingRepository(api: api, invalidation: meetingInvalidation);
     roomScheduling = RoomSchedulingRepository(api);
     participantCandidates = ParticipantCandidateRepository(api);
@@ -82,6 +59,74 @@ class AppDependencies {
       meetings: meetings,
       invalidation: meetingInvalidation,
     );
+    meetingCreationRecovery = MeetingCreationRecoveryStore(
+      storage: api.credentialStorage,
+      deployment: api.baseUri,
+    );
+    media = MediaRepository(api: api);
+    processing = ProcessingRepository(api: api);
+    this.recording =
+        recording ??
+        RecordingCoordinator(
+          api: api,
+          localMedia: this.localMedia,
+          capabilityResolver: _resolveRecordingAuthorization,
+        );
+    this.submissions =
+        submissions ??
+        SubmissionCoordinator(
+          api: api,
+          localMedia: this.localMedia,
+          mediaRepository: media,
+          processingRepository: processing,
+          capabilityResolver: _resolveRecordingAuthorization,
+        );
+    this.processingManager =
+        processingManager ??
+        ProcessingManager(
+          api: api,
+          mediaRepository: media,
+          processingRepository: processing,
+          localMedia: this.localMedia,
+          capabilityResolver: _resolveProcessingCapability,
+        );
+  }
+
+  Future<RecordingAuthorizationContext?> _resolveRecordingAuthorization(
+    String meetingId,
+    AuthenticatedSessionScope scope,
+  ) async {
+    if (!api.isCurrentAuthenticatedSession(scope)) return null;
+    try {
+      final snapshot = await meetings.detail(meetingId);
+      if (!api.isCurrentAuthenticatedSession(scope) ||
+          snapshot.sessionScope != scope ||
+          snapshot.meeting.id.toLowerCase() != meetingId.toLowerCase()) {
+        return null;
+      }
+      return RecordingAuthorizationContext(
+        capabilities: MeetingCapabilityPolicy.evaluate(
+          callerId: scope.userId,
+          meeting: snapshot.meeting,
+        ),
+        status: snapshot.meeting.lifecycleStatus ?? MeetingStatus.cancelled,
+      );
+    } on Object {
+      // A missing or stale verified meeting snapshot is fail-closed. The
+      // backend remains the final authorization authority for mutations.
+      return null;
+    }
+  }
+
+  Future<MeetingCapabilities?> _resolveProcessingCapability(
+    String meetingId,
+    AuthenticatedSessionScope scope,
+  ) async {
+    final authorization = await _resolveRecordingAuthorization(
+      meetingId,
+      scope,
+    );
+    return authorization?.capabilities;
   }
 
   factory AppDependencies.create({

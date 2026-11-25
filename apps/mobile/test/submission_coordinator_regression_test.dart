@@ -1,0 +1,314 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:sqflite/sqflite.dart' as sqflite;
+import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_database.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_models.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_persistence.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/submission_coordinator.dart';
+import 'package:sme_meeting_assistant/features/recording/managed_media_storage.dart';
+
+import 'support/http_test_support.dart';
+import 'support/meeting_test_support.dart';
+
+void main() {
+  setUpAll(() {
+    sqfliteFfiInit();
+    sqflite.databaseFactory = databaseFactoryFfi;
+  });
+
+  test(
+    'an unrelated API notification does not cancel an active submission',
+    () async {
+      final intentStarted = Completer<void>();
+      final intentResponse = Completer<http.StreamedResponse>();
+      final client = MeetingTestHttpClient((request) async {
+        final path = request.url.path;
+        if (path.endsWith('/media/uploads')) {
+          intentStarted.complete();
+          return intentResponse.future;
+        }
+        if (request.method == 'PUT') {
+          await request.finalize().drain<void>();
+          return streamedResponse(200);
+        }
+        if (path.endsWith('/finalize')) {
+          return meetingApiSuccess(_availableMediaJson());
+        }
+        throw StateError('Unexpected request $path');
+      });
+      final api = createMeetingTestApi(client);
+      await signInMeetingTestApi(api);
+      final directory = await Directory.systemTemp.createTemp('sme-submit-');
+      final database = await LocalMediaDatabase.open(
+        databasePath: '${directory.path}/media.db',
+        databaseFactory: databaseFactoryFfi,
+      );
+      final repository = LocalMediaRepository(
+        persistence: LocalMediaPersistence(database),
+        storage: ManagedMediaStorage(
+          root: Directory('${directory.path}/managed'),
+        ),
+      );
+      final coordinator = SubmissionCoordinator(
+        api: api,
+        localMedia: repository,
+        mediaRepository: MediaRepository(api: api),
+        processingRepository: ProcessingRepository(api: api),
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await repository.dispose();
+        await directory.delete(recursive: true);
+        api.dispose();
+      });
+
+      final source = File('${directory.path}/meeting.wav')
+        ..writeAsBytesSync(<int>[1, 2, 3]);
+      final meeting = Meeting.fromJson(meetingTestJson(status: 'IN_PROGRESS'));
+      final capabilities = MeetingCapabilityPolicy.evaluate(
+        callerId: testUserId,
+        meeting: meeting,
+      );
+      final asset = await repository.rememberSourceFile(
+        scope: api.requireAuthenticatedSessionScope(),
+        meetingId: testMeetingId,
+        source: source,
+        sourceType: LocalMediaSourceType.recording,
+        originalFilename: 'meeting.wav',
+        contentType: 'audio/wav',
+        expectedSizeBytes: 3,
+      );
+
+      final submission = coordinator.submit(
+        asset: asset,
+        capabilities: capabilities,
+        admitProcessing: false,
+      );
+      await intentStarted.future;
+      // ApiClient notifications are also emitted by unrelated authenticated
+      // state changes. The execution must remain tied to its original scope.
+      api.notifyListeners();
+      intentResponse.complete(
+        await meetingApiSuccess(<String, dynamic>{
+          'mediaId': testMediaId,
+          'status': 'PENDING_UPLOAD',
+          'uploadUrl': 'https://storage.example.test/object',
+          'expiresAt': DateTime.now()
+              .toUtc()
+              .add(const Duration(minutes: 10))
+              .toIso8601String(),
+          'requiredContentType': 'audio/wav',
+        }),
+      );
+
+      final result = await submission;
+      expect(result.lifecycle, SubmissionLifecycleState.mediaAvailable);
+      expect(result.uploadOperation?.remoteMediaId, testMediaId);
+    },
+  );
+
+  test(
+    'resume executes the requested durable operation instead of latest state',
+    () async {
+      final requestedMediaId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+      final newerMediaId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+      final client = MeetingTestHttpClient((request) async {
+        final path = request.url.path;
+        if (path.contains('/media/') && !path.endsWith('/finalize')) {
+          final mediaId = path.split('/').last;
+          return meetingApiSuccess(_availableMediaJson(id: mediaId));
+        }
+        throw StateError('Unexpected request $path');
+      });
+      final api = createMeetingTestApi(client);
+      await signInMeetingTestApi(api);
+      final directory = await Directory.systemTemp.createTemp('sme-resume-');
+      final database = await LocalMediaDatabase.open(
+        databasePath: '${directory.path}/media.db',
+        databaseFactory: databaseFactoryFfi,
+      );
+      final repository = LocalMediaRepository(
+        persistence: LocalMediaPersistence(database),
+        storage: ManagedMediaStorage(
+          root: Directory('${directory.path}/managed'),
+        ),
+      );
+      final coordinator = SubmissionCoordinator(
+        api: api,
+        localMedia: repository,
+        mediaRepository: MediaRepository(api: api),
+        processingRepository: ProcessingRepository(api: api),
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await repository.dispose();
+        await directory.delete(recursive: true);
+        api.dispose();
+      });
+
+      final source = File('${directory.path}/meeting.wav')
+        ..writeAsBytesSync(<int>[1, 2, 3]);
+      final scope = api.requireAuthenticatedSessionScope();
+      final asset = await repository.rememberSourceFile(
+        scope: scope,
+        meetingId: testMeetingId,
+        source: source,
+        sourceType: LocalMediaSourceType.recording,
+        originalFilename: 'meeting.wav',
+        contentType: 'audio/wav',
+        expectedSizeBytes: 3,
+      );
+      final capabilities = MeetingCapabilityPolicy.evaluate(
+        callerId: testUserId,
+        meeting: Meeting.fromJson(meetingTestJson(status: 'IN_PROGRESS')),
+      );
+      final first = await repository.beginUploadOperation(
+        scope: scope,
+        asset: asset,
+        idempotencyKey: 'resume-old-operation',
+      );
+      await repository.beginUploadOperation(
+        scope: scope,
+        asset: asset,
+        idempotencyKey: 'resume-new-operation',
+      );
+      final operations = await repository.listUploadOperations(
+        scope: scope,
+        assetId: asset.id,
+      );
+      final target = operations.lastWhere((item) => item.id == first.id);
+      await repository.updateUploadOperation(
+        target,
+        scope: scope,
+        checkpoint: UploadOperationCheckpoint.intentConfirmed,
+        remoteMediaId: requestedMediaId,
+        attemptCount: 1,
+        attemptOutcome: OperationAttemptOutcome.succeeded,
+      );
+      final other = operations.firstWhere((item) => item.id != target.id);
+      await repository.updateUploadOperation(
+        other,
+        scope: scope,
+        checkpoint: UploadOperationCheckpoint.intentConfirmed,
+        remoteMediaId: newerMediaId,
+        attemptCount: 1,
+        attemptOutcome: OperationAttemptOutcome.succeeded,
+      );
+
+      final result = await coordinator.resume(
+        operationId: target.id,
+        scope: scope,
+        capabilities: capabilities,
+        admitProcessing: false,
+      );
+
+      expect(result.lifecycle, SubmissionLifecycleState.mediaAvailable);
+      expect(result.media?.id, requestedMediaId);
+      expect(
+        client.requests.any(
+          (request) => request.url.path.endsWith('/media/$requestedMediaId'),
+        ),
+        isTrue,
+      );
+      expect(
+        client.requests.any(
+          (request) => request.url.path.endsWith('/media/$newerMediaId'),
+        ),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'workspace recovery projects durable upload operations before retrying',
+    () async {
+      final api = createMeetingTestApi(
+        MeetingTestHttpClient(
+          (_) => throw StateError('No remote recovery request is expected.'),
+        ),
+      );
+      await signInMeetingTestApi(api);
+      final directory = await Directory.systemTemp.createTemp('sme-recovery-');
+      final database = await LocalMediaDatabase.open(
+        databasePath: '${directory.path}/media.db',
+        databaseFactory: databaseFactoryFfi,
+      );
+      final repository = LocalMediaRepository(
+        persistence: LocalMediaPersistence(database),
+        storage: ManagedMediaStorage(
+          root: Directory('${directory.path}/managed'),
+        ),
+      );
+      final coordinator = SubmissionCoordinator(
+        api: api,
+        localMedia: repository,
+        mediaRepository: MediaRepository(api: api),
+        processingRepository: ProcessingRepository(api: api),
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await repository.dispose();
+        await directory.delete(recursive: true);
+        api.dispose();
+      });
+
+      final source = File('${directory.path}/meeting.wav')
+        ..writeAsBytesSync(<int>[1, 2, 3]);
+      final scope = api.requireAuthenticatedSessionScope();
+      final asset = await repository.rememberSourceFile(
+        scope: scope,
+        meetingId: testMeetingId,
+        source: source,
+        sourceType: LocalMediaSourceType.recording,
+        originalFilename: 'meeting.wav',
+        contentType: 'audio/wav',
+        expectedSizeBytes: 3,
+      );
+      final operation = await repository.beginUploadOperation(
+        scope: scope,
+        asset: asset,
+        idempotencyKey: 'workspace-recovery-operation',
+      );
+
+      final recovered = await coordinator.recoverDurableState(
+        scope: scope,
+        meetingId: testMeetingId,
+      );
+
+      expect(recovered.single.assetId, asset.id);
+      expect(
+        recovered.single.lifecycle,
+        SubmissionLifecycleState.recoverableFailure,
+      );
+      expect(recovered.single.uploadOperation?.id, operation.id);
+      expect(coordinator.stateFor(asset.id)?.uploadOperation?.id, operation.id);
+    },
+  );
+}
+
+const testMediaId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+Map<String, dynamic> _availableMediaJson({String id = testMediaId}) =>
+    <String, dynamic>{
+      'id': id,
+      'meetingId': testMeetingId,
+      'sourceType': 'RECORDING',
+      'status': 'AVAILABLE',
+      'originalFilename': 'meeting.wav',
+      'contentType': 'audio/wav',
+      'sizeBytes': 3,
+      'durationMs': 1000,
+      'sha256': 'a' * 64,
+      'createdAt': '2026-11-24T12:00:00Z',
+      'availableAt': '2026-11-24T12:01:00Z',
+      'failureCode': null,
+    };

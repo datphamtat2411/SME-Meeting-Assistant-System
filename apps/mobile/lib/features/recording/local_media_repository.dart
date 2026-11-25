@@ -9,8 +9,42 @@ import '../../core/api_client.dart';
 import 'local_media_database.dart';
 import 'local_media_models.dart';
 import 'local_media_persistence.dart';
-import 'local_media_persistence.dart' as media_persistence;
 import 'managed_media_storage.dart';
+
+/// Explicit ownership of protection held for one managed media asset.
+///
+/// A writer lease is exclusive. Reader leases are independent and shared, but
+/// each handle releases only the protection it acquired.
+class LocalMediaAssetLease {
+  LocalMediaAssetLease._(
+    this._repository,
+    this.assetId,
+    this.isWriter,
+    this._identity,
+    this.legacyCompatible,
+  );
+
+  final LocalMediaRepository _repository;
+  final String assetId;
+  final bool isWriter;
+  final String _identity;
+  final bool legacyCompatible;
+  File? _file;
+  bool _released = false;
+
+  File get file {
+    final value = _file;
+    if (value == null) {
+      throw StateError('The staging file has not been resolved.');
+    }
+    return value;
+  }
+
+  Future<void> release() {
+    if (_released) return Future<void>.value();
+    return _repository._releaseLease(this);
+  }
+}
 
 /// Application-level owner of durable local media state.
 ///
@@ -55,7 +89,9 @@ class LocalMediaRepository {
       <String, Future<LocalMediaRecoveryReport>>{};
   final Map<String, LocalMediaRecoveryReport> _completedRecoveries =
       <String, LocalMediaRecoveryReport>{};
-  final Map<String, int> _activeAssetLeases = <String, int>{};
+  final Map<String, LocalMediaAssetLease> _writerLeases =
+      <String, LocalMediaAssetLease>{};
+  final Map<String, Set<String>> _readerLeaseIds = <String, Set<String>>{};
   bool _disposed = false;
 
   static LocalMediaRepository fromReady({
@@ -106,17 +142,19 @@ class LocalMediaRepository {
     required String contentType,
     String? sourceProvenance,
     UploadCancellationToken? cancellationToken,
-  }) => _importStreamForOwner(
-    deploymentScope: scope.deploymentScope,
-    ownerUserId: scope.userId,
-    meetingId: meetingId,
-    bytes: bytes,
-    expectedSizeBytes: expectedSizeBytes,
-    sourceType: sourceType,
-    originalFilename: originalFilename,
-    contentType: contentType,
-    sourceProvenance: sourceProvenance,
-    cancellationToken: cancellationToken,
+  }) => _withLifecycleLock(
+    () => _importStreamForOwner(
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+      meetingId: meetingId,
+      bytes: bytes,
+      expectedSizeBytes: expectedSizeBytes,
+      sourceType: sourceType,
+      originalFilename: originalFilename,
+      contentType: contentType,
+      sourceProvenance: sourceProvenance,
+      cancellationToken: cancellationToken,
+    ),
   );
 
   Future<List<LocalMediaAsset>> listAssets({
@@ -205,6 +243,7 @@ class LocalMediaRepository {
     required Future<T> Function() action,
   }) async {
     _requireScope(scope.deploymentScope, scope.userId);
+    LocalMediaAssetLease? lease;
     await _withLifecycleLock(() async {
       final asset = await (await _persistence()).findAsset(
         id: assetId,
@@ -216,14 +255,15 @@ class LocalMediaRepository {
           asset.lifecycle == LocalMediaLifecycle.discardPending) {
         throw const LocalMediaUnavailableException();
       }
-      _acquireAssetLease(assetId);
+      if (_writerLeases.containsKey(assetId)) {
+        throw const LocalMediaBusyException();
+      }
+      lease = _acquireReaderLease(assetId);
     });
     try {
       return await action();
     } finally {
-      await _withLifecycleLock(() async {
-        _releaseAssetLease(assetId);
-      });
+      await lease!.release();
     }
   }
 
@@ -389,6 +429,9 @@ class LocalMediaRepository {
       meetingId: meetingId,
       sourceProvenance: provenance,
     );
+    if (existing?.lifecycle == LocalMediaLifecycle.discardPending) {
+      throw const LocalMediaBusyException();
+    }
     if (existing != null) return existing;
     final id = assetId ?? _newId();
     final paths = storage.allocatePaths(id);
@@ -420,6 +463,29 @@ class LocalMediaRepository {
   Future<File> stagingFileFor({
     required AuthenticatedSessionScope scope,
     required LocalMediaAsset asset,
+  }) async {
+    // Retain the lease for legacy callers until completion or interruption.
+    return (await _stagingLeaseFor(
+      scope: scope,
+      asset: asset,
+      legacyCompatible: true,
+    )).file;
+  }
+
+  /// Acquires the exclusive writer lease for a reserved staging destination.
+  ///
+  /// The repository retains the handle so the compatibility
+  /// [stagingFileFor] API can still be completed safely. New capture owners
+  /// may retain and explicitly release the returned handle as well.
+  Future<LocalMediaAssetLease> stagingLeaseFor({
+    required AuthenticatedSessionScope scope,
+    required LocalMediaAsset asset,
+  }) => _stagingLeaseFor(scope: scope, asset: asset, legacyCompatible: false);
+
+  Future<LocalMediaAssetLease> _stagingLeaseFor({
+    required AuthenticatedSessionScope scope,
+    required LocalMediaAsset asset,
+    required bool legacyCompatible,
   }) => _withLifecycleLock(() async {
     _requireAssetOwner(asset, scope);
     final persisted = await (await _persistence()).findAsset(
@@ -442,14 +508,24 @@ class LocalMediaRepository {
     // Registration and destination lookup are one lifecycle-critical section.
     // The section ends before the recorder starts, so it does not lock a
     // recording for its full duration.
-    _acquireAssetLease(persisted.id);
-    return (await _storage()).fileFor(persisted.stagedRelativePath!);
+    final lease = _acquireWriterLease(
+      persisted.id,
+      legacyCompatible: legacyCompatible,
+    );
+    try {
+      lease._file = (await _storage()).fileFor(persisted.stagedRelativePath!);
+      return lease;
+    } catch (_) {
+      _releaseLeaseNow(lease);
+      rethrow;
+    }
   });
 
   Future<LocalMediaAsset> confirmFileCompletion({
     required AuthenticatedSessionScope scope,
     required String assetId,
     int? expectedSizeBytes,
+    LocalMediaAssetLease? writerLease,
   }) => _withLifecycleLock(() async {
     _requireScope(scope.deploymentScope, scope.userId);
     final persistence = await _persistence();
@@ -461,23 +537,30 @@ class LocalMediaRepository {
     if (asset == null) throw const LocalMediaOwnershipException();
     if (asset.lifecycle == LocalMediaLifecycle.discarded ||
         asset.lifecycle == LocalMediaLifecycle.quarantined) {
+      _releaseMatchingWriter(asset.id, writerLease);
       return asset;
     }
     if (asset.lifecycle == LocalMediaLifecycle.interrupted ||
         asset.lifecycle == LocalMediaLifecycle.missing ||
         asset.lifecycle == LocalMediaLifecycle.unavailable) {
+      _releaseMatchingWriter(asset.id, writerLease);
       throw const LocalMediaUnavailableException();
     }
     if (asset.lifecycle == LocalMediaLifecycle.discardPending) {
-      _releaseAssetLease(asset.id);
+      _releaseMatchingWriter(asset.id, writerLease);
       return _discardAssetFiles(persistence, await _storage(), asset);
     }
+    if (asset.lifecycle == LocalMediaLifecycle.ready) {
+      _releaseMatchingWriter(asset.id, writerLease);
+      return asset;
+    }
     if (asset.stagedRelativePath == null) {
+      _releaseMatchingWriter(asset.id, writerLease);
       throw const LocalMediaUnavailableException();
     }
     final storage = await _storage();
-    final acquiredHere = !_isAssetProtected(asset.id);
-    if (acquiredHere) _acquireAssetLease(asset.id);
+    final lease =
+        _writerLeaseFor(asset.id, writerLease) ?? _acquireWriterLease(asset.id);
     try {
       final integrity = await storage.inspectFile(asset.stagedRelativePath!);
       if (integrity.sizeBytes <= 0 ||
@@ -534,7 +617,7 @@ class LocalMediaRepository {
       } catch (_) {}
       rethrow;
     } finally {
-      if (acquiredHere) _releaseAssetLease(asset.id);
+      _releaseLeaseNow(lease);
     }
   });
 
@@ -542,6 +625,7 @@ class LocalMediaRepository {
     required AuthenticatedSessionScope scope,
     required String assetId,
     String reason = 'FILE_CREATION_INTERRUPTED',
+    LocalMediaAssetLease? writerLease,
   }) => _withLifecycleLock(() async {
     final persistence = await _persistence();
     final asset = await persistence.findAsset(
@@ -552,13 +636,29 @@ class LocalMediaRepository {
     if (asset == null) throw const LocalMediaOwnershipException();
     if (asset.lifecycle == LocalMediaLifecycle.quarantined ||
         asset.lifecycle == LocalMediaLifecycle.discarded) {
+      _releaseMatchingWriter(asset.id, writerLease);
       return asset;
     }
+    final currentWriter = _writerLeases[asset.id];
+    if (writerLease != null && !identical(currentWriter, writerLease)) {
+      throw const LocalMediaBusyException();
+    }
+    if (writerLease == null &&
+        currentWriter != null &&
+        !currentWriter.legacyCompatible) {
+      throw const LocalMediaBusyException();
+    }
     if (asset.lifecycle == LocalMediaLifecycle.discardPending) {
-      _releaseAssetLease(asset.id);
+      _releaseMatchingWriter(asset.id, writerLease);
       return _discardAssetFiles(persistence, await _storage(), asset);
     }
-    _releaseAssetLease(asset.id);
+    if (asset.lifecycle == LocalMediaLifecycle.ready) {
+      // A late native interruption callback must never regress a completed
+      // asset. It only releases the callback's own writer handle, if any.
+      _releaseMatchingWriter(asset.id, writerLease);
+      return asset;
+    }
+    _releaseMatchingWriter(asset.id, writerLease);
     return persistence.updateAsset(
       asset.copyWith(
         lifecycle: LocalMediaLifecycle.interrupted,
@@ -882,7 +982,7 @@ class LocalMediaRepository {
           version: 0,
         ),
       );
-    } on media_persistence.LocalMediaIdempotencyConflictException {
+    } on LocalMediaIdempotencyConflictException {
       throw const LocalMediaIdempotencyConflictException();
     }
   }
@@ -998,7 +1098,7 @@ class LocalMediaRepository {
           version: 0,
         ),
       );
-    } on media_persistence.LocalMediaIdempotencyConflictException {
+    } on LocalMediaIdempotencyConflictException {
       throw const LocalMediaIdempotencyConflictException();
     }
   }
@@ -1424,6 +1524,9 @@ class LocalMediaRepository {
           'An incomplete or quarantined migration asset needs explicit recovery.',
         );
       }
+      if (existing.lifecycle == LocalMediaLifecycle.discardPending) {
+        throw const LocalMediaBusyException();
+      }
       asset = existing;
     } else {
       final id = assetId ?? _newId();
@@ -1452,7 +1555,7 @@ class LocalMediaRepository {
       );
       await persistence.insertAsset(asset);
     }
-    _acquireAssetLease(asset.id);
+    final writerLease = _acquireWriterLease(asset.id);
     try {
       final stagedPath = asset.stagedRelativePath;
       if (stagedPath == null) {
@@ -1511,7 +1614,7 @@ class LocalMediaRepository {
       } catch (_) {}
       rethrow;
     } finally {
-      _releaseAssetLease(asset.id);
+      _releaseLeaseNow(writerLease);
     }
   }
 
@@ -1556,6 +1659,9 @@ class LocalMediaRepository {
         existing?.lifecycle == LocalMediaLifecycle.quarantined) {
       throw const LocalMediaUnavailableException();
     }
+    if (existing?.lifecycle == LocalMediaLifecycle.discardPending) {
+      throw const LocalMediaBusyException();
+    }
 
     LocalMediaAsset? asset = existing;
     if (asset == null) {
@@ -1587,7 +1693,7 @@ class LocalMediaRepository {
     }
 
     var current = asset;
-    _acquireAssetLease(current.id);
+    final writerLease = _acquireWriterLease(current.id);
     try {
       final stagedPath = current.stagedRelativePath;
       if (stagedPath == null) {
@@ -1672,7 +1778,7 @@ class LocalMediaRepository {
       } catch (_) {}
       rethrow;
     } finally {
-      _releaseAssetLease(current.id);
+      _releaseLeaseNow(writerLease);
     }
   }
 
@@ -1979,21 +2085,81 @@ class LocalMediaRepository {
     }();
   }
 
-  void _acquireAssetLease(String assetId) {
-    _activeAssetLeases[assetId] = (_activeAssetLeases[assetId] ?? 0) + 1;
+  LocalMediaAssetLease _acquireWriterLease(
+    String assetId, {
+    bool legacyCompatible = false,
+  }) {
+    if (_writerLeases.containsKey(assetId) ||
+        (_readerLeaseIds[assetId]?.isNotEmpty ?? false)) {
+      throw const LocalMediaBusyException();
+    }
+    final lease = LocalMediaAssetLease._(
+      this,
+      assetId,
+      true,
+      _newId(),
+      legacyCompatible,
+    );
+    _writerLeases[assetId] = lease;
+    return lease;
   }
 
-  void _releaseAssetLease(String assetId) {
-    final count = _activeAssetLeases[assetId];
-    if (count == null || count <= 1) {
-      _activeAssetLeases.remove(assetId);
-    } else {
-      _activeAssetLeases[assetId] = count - 1;
+  LocalMediaAssetLease _acquireReaderLease(String assetId) {
+    if (_writerLeases.containsKey(assetId)) {
+      throw const LocalMediaBusyException();
+    }
+    final lease = LocalMediaAssetLease._(this, assetId, false, _newId(), false);
+    (_readerLeaseIds[assetId] ??= <String>{}).add(lease._identity);
+    return lease;
+  }
+
+  LocalMediaAssetLease? _writerLeaseFor(
+    String assetId,
+    LocalMediaAssetLease? expected,
+  ) {
+    final current = _writerLeases[assetId];
+    if (expected != null && !identical(current, expected)) {
+      throw const LocalMediaBusyException();
+    }
+    if (expected == null && current != null && !current.legacyCompatible) {
+      throw const LocalMediaBusyException();
+    }
+    return current;
+  }
+
+  void _releaseMatchingWriter(String assetId, LocalMediaAssetLease? expected) {
+    final current = _writerLeases[assetId];
+    if (current == null || expected != null && !identical(current, expected)) {
+      return;
+    }
+    if (expected == null && !current.legacyCompatible) return;
+    _releaseLeaseNow(current);
+  }
+
+  Future<void> _releaseLease(LocalMediaAssetLease lease) =>
+      _withLifecycleLock<void>(() async {
+        _releaseLeaseNow(lease);
+      });
+
+  void _releaseLeaseNow(LocalMediaAssetLease lease) {
+    if (lease._released) return;
+    lease._released = true;
+    if (lease.isWriter) {
+      if (identical(_writerLeases[lease.assetId], lease)) {
+        _writerLeases.remove(lease.assetId);
+      }
+      return;
+    }
+    final readers = _readerLeaseIds[lease.assetId];
+    readers?.remove(lease._identity);
+    if (readers != null && readers.isEmpty) {
+      _readerLeaseIds.remove(lease.assetId);
     }
   }
 
   bool _isAssetProtected(String assetId) =>
-      (_activeAssetLeases[assetId] ?? 0) > 0;
+      _writerLeases.containsKey(assetId) ||
+      (_readerLeaseIds[assetId]?.isNotEmpty ?? false);
 
   Future<T> _withMigrationLock<T>(Future<T> Function() action) {
     final previous = _migrationTail;

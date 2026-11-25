@@ -34,7 +34,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   bool retrying = false;
   late final AuthenticatedSessionScope sessionScope;
   MeetingCapabilities? _capabilities;
-  late final ProcessingObservation observation;
+  ProcessingObservation? observation;
 
   @override
   void initState() {
@@ -44,16 +44,30 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     _capabilities = widget.capabilities;
     widget.processingManager.addListener(_managerChanged);
     _managerChanged();
-    observation = widget.processingManager.startObserving(
-      widget.meetingId,
-      scope: sessionScope,
-    );
+    if (_allows(MeetingOperation.readMedia)) {
+      observation = widget.processingManager.startObserving(
+        widget.meetingId,
+        scope: sessionScope,
+      );
+    }
   }
 
   @override
   void didUpdateWidget(covariant ProcessingTimelinePanel oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final hadReadAccess =
+        oldWidget.capabilities?.allows(MeetingOperation.readMedia) == true;
     _capabilities = widget.capabilities;
+    final hasReadAccess = _allows(MeetingOperation.readMedia);
+    if (!hadReadAccess && hasReadAccess && observation == null) {
+      observation = widget.processingManager.startObserving(
+        widget.meetingId,
+        scope: sessionScope,
+      );
+    } else if (hadReadAccess && !hasReadAccess) {
+      observation?.dispose();
+      observation = null;
+    }
   }
 
   bool _allows(MeetingOperation operation) =>
@@ -67,7 +81,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    observation.dispose();
+    observation?.dispose();
     widget.processingManager.removeListener(_managerChanged);
     super.dispose();
   }

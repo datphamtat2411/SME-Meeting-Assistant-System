@@ -11,6 +11,11 @@ import 'media_contracts.dart';
 import 'media_repository.dart';
 import 'processing_repository.dart';
 
+typedef ProcessingCapabilityResolver = Future<MeetingCapabilities?> Function(
+  String meetingId,
+  AuthenticatedSessionScope scope,
+);
+
 class ProcessingMeetingState {
   const ProcessingMeetingState({
     required this.meetingId,
@@ -97,6 +102,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     required this.mediaRepository,
     required this.processingRepository,
     required this.localMedia,
+    this.capabilityResolver,
     DateTime Function()? now,
   }) : _now = now ?? DateTime.now {
     api.addListener(_sessionChanged);
@@ -114,6 +120,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
   final MediaRepository mediaRepository;
   final ProcessingRepository processingRepository;
   final LocalMediaRepository localMedia;
+  final ProcessingCapabilityResolver? capabilityResolver;
   final DateTime Function() _now;
 
   final Map<String, ProcessingMeetingState> _states =
@@ -126,6 +133,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, int> _unchangedRefreshes = <String, int>{};
   final Map<String, String> _meetingForKey = <String, String>{};
   final Map<String, int> _failureCounts = <String, int>{};
+  final Map<String, int> _observationGenerations = <String, int>{};
   final Map<String, Future<ProcessingJobRecord>> _mutationFlights =
       <String, Future<ProcessingJobRecord>>{};
   bool _backgrounded = false;
@@ -150,10 +158,30 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
   }) {
     api.requireCurrentAuthenticatedSession(scope);
     final key = _key(scope, meetingId);
+    final wasInactive = (_consumers[key] ?? 0) == 0;
+    final needsGeneration = wasInactive || !_scopes.containsKey(key);
     _meetingForKey[key] = meetingId;
     _scopes[key] = scope;
     _consumers[key] = (_consumers[key] ?? 0) + 1;
-    unawaited(refresh(meetingId, scope: scope));
+    if (needsGeneration) {
+      _cancelTimer(key);
+      final generation = (_observationGenerations[key] ?? 0) + 1;
+      _observationGenerations[key] = generation;
+      _unchangedRefreshes[key] = 0;
+      _failureCounts.remove(key);
+    }
+    if (needsGeneration) {
+      final generation = _observationGenerations[key] ??= 1;
+      unawaited(
+        refresh(
+          meetingId,
+          scope: scope,
+          generation: generation,
+          explicit: true,
+          force: true,
+        ),
+      );
+    }
     return ProcessingObservation(this, meetingId, key);
   }
 
@@ -168,6 +196,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _consumers.remove(key);
+    _observationGenerations[key] = (_observationGenerations[key] ?? 0) + 1;
     _cancelTimer(key);
     _scopes.remove(key);
     _failureCounts.remove(key);
@@ -177,14 +206,30 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     String meetingId, {
     required AuthenticatedSessionScope scope,
     bool explicit = false,
+    int? generation,
+    bool force = false,
   }) {
     api.requireCurrentAuthenticatedSession(scope);
     if (_disposed) return Future<void>.value();
     final key = _key(scope, meetingId);
+    var activeGeneration = generation ?? _observationGenerations[key];
+    if (activeGeneration == null) {
+      activeGeneration = 1;
+      _observationGenerations[key] = activeGeneration;
+    }
+    if (explicit && generation == null) {
+      activeGeneration++;
+      _observationGenerations[key] = activeGeneration;
+      _cancelTimer(key);
+      force = true;
+    }
+    if (_observationGenerations[key] != activeGeneration) {
+      return Future<void>.value();
+    }
     _scopes[key] ??= scope;
     _meetingForKey[key] ??= meetingId;
     final running = _inFlight[key];
-    if (running != null) return running;
+    if (running != null && !force) return running;
     final current =
         _states[key] ??
         ProcessingMeetingState(meetingId: meetingId, sessionScope: scope);
@@ -194,7 +239,12 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       sessionScope: scope,
     );
     notifyListeners();
-    final future = _fetch(meetingId, scope, explicit: explicit);
+    final future = _fetch(
+      meetingId,
+      scope,
+      explicit: explicit,
+      generation: activeGeneration,
+    );
     _inFlight[key] = future;
     unawaited(
       future.then<void>(
@@ -213,6 +263,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     String meetingId,
     AuthenticatedSessionScope scope, {
     required bool explicit,
+    required int generation,
   }) async {
     final key = _key(scope, meetingId);
     try {
@@ -222,7 +273,9 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       ]);
       if (_disposed ||
           !api.isCurrentAuthenticatedSession(scope) ||
-          _scopes[key] != scope) {
+          _scopes[key] != scope ||
+          _observationGenerations[key] != generation ||
+          (_consumers[key] ?? 0) == 0) {
         return;
       }
       final media = results[0] as List<MediaRecord>;
@@ -245,11 +298,19 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
         sessionScope: scope,
       );
       notifyListeners();
-      _schedule(key, meetingId, scope, _intervalFor(jobs, changed, key));
+      _schedule(
+        key,
+        meetingId,
+        scope,
+        _intervalFor(jobs, changed, key),
+        generation: generation,
+      );
     } catch (error) {
       if (_disposed ||
           !api.isCurrentAuthenticatedSession(scope) ||
-          _scopes[key] != scope) {
+          _scopes[key] != scope ||
+          _observationGenerations[key] != generation ||
+          (_consumers[key] ?? 0) == 0) {
         return;
       }
       if (error is ApiFailure && (error.status == 401 || error.status == 403)) {
@@ -291,7 +352,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
                 sessionScope: scope,
               );
       notifyListeners();
-      _schedule(key, meetingId, scope, retryDelay);
+      _schedule(key, meetingId, scope, retryDelay, generation: generation);
     }
   }
 
@@ -328,14 +389,12 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     MeetingCapabilities? capabilities,
   }) async {
     api.requireCurrentAuthenticatedSession(scope);
-    if (capabilities == null ||
-        !capabilities.allows(MeetingOperation.retryProcessing)) {
-      throw const ApiFailure(
-        403,
-        'PROCESSING_CAPABILITY_REQUIRED',
-        'The current meeting capability does not allow retry.',
-      );
-    }
+    await _requireCurrentCapability(
+      scope,
+      job.meetingId,
+      MeetingOperation.retryProcessing,
+      capabilities,
+    );
     var operation = await _unresolvedOperation(
       scope: scope,
       meetingId: job.meetingId,
@@ -364,6 +423,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
         idempotencyKey: operation.idempotencyKey,
         sessionScope: scope,
       );
+      api.requireCurrentAuthenticatedSession(scope);
       await localMedia.updateProcessingOperation(
         operation,
         scope: scope,
@@ -440,14 +500,12 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     MeetingCapabilities? capabilities,
   }) async {
     api.requireCurrentAuthenticatedSession(scope);
-    if (capabilities == null ||
-        !capabilities.allows(MeetingOperation.admitProcessing)) {
-      throw const ApiFailure(
-        403,
-        'PROCESSING_CAPABILITY_REQUIRED',
-        'The current meeting capability does not allow reprocessing.',
-      );
-    }
+    await _requireCurrentCapability(
+      scope,
+      parent.meetingId,
+      MeetingOperation.admitProcessing,
+      capabilities,
+    );
     if (!parent.status.isTerminal ||
         parent.meetingId.isEmpty ||
         parent.sourceMediaId != sourceMediaId) {
@@ -494,6 +552,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
         idempotencyKey: operation.idempotencyKey,
         sessionScope: scope,
       );
+      api.requireCurrentAuthenticatedSession(scope);
       await localMedia.updateProcessingOperation(
         operation,
         scope: scope,
@@ -584,8 +643,9 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     String key,
     String meetingId,
     AuthenticatedSessionScope scope,
-    Duration duration,
-  ) {
+    Duration duration, {
+    required int generation,
+  }) {
     _cancelTimer(key);
     if (_backgrounded || (_consumers[key] ?? 0) == 0) return;
     _timers[key] = Timer(duration, () {
@@ -593,8 +653,9 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       if (!_backgrounded &&
           (_consumers[key] ?? 0) > 0 &&
           _scopes[key] == scope &&
+          _observationGenerations[key] == generation &&
           !_disposed) {
-        unawaited(refresh(meetingId, scope: scope));
+        unawaited(refresh(meetingId, scope: scope, generation: generation));
       }
     });
   }
@@ -632,6 +693,35 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     return null;
   }
 
+  Future<void> _requireCurrentCapability(
+    AuthenticatedSessionScope scope,
+    String meetingId,
+    MeetingOperation operation,
+    MeetingCapabilities? fallback,
+  ) async {
+    api.requireCurrentAuthenticatedSession(scope);
+    final resolver = capabilityResolver;
+    if (resolver == null) {
+      if (fallback == null || !fallback.allows(operation)) {
+        throw const ApiFailure(
+          403,
+          'PROCESSING_CAPABILITY_REQUIRED',
+          'The current meeting capability does not allow this processing operation.',
+        );
+      }
+      return;
+    }
+    final current = await resolver(meetingId, scope);
+    api.requireCurrentAuthenticatedSession(scope);
+    if (current == null || !current.allows(operation)) {
+      throw const ApiFailure(
+        403,
+        'PROCESSING_CAPABILITY_REQUIRED',
+        'The current meeting capability does not allow this processing operation.',
+      );
+    }
+  }
+
   bool _sameRemoteInventory(
     List<MediaRecord> oldMedia,
     List<ProcessingJobRecord> oldJobs,
@@ -666,6 +756,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
         .toList(growable: false);
     for (final key in obsolete) {
       _cancelTimer(key);
+      _observationGenerations[key] = (_observationGenerations[key] ?? 0) + 1;
       _consumers.remove(key);
       _scopes.remove(key);
       _inFlight.remove(key);
@@ -701,6 +792,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     _scopes.clear();
     _consumers.clear();
     _inFlight.clear();
+    _observationGenerations.clear();
     _failureCounts.clear();
     super.dispose();
   }

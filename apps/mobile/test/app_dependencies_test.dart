@@ -43,6 +43,9 @@ void main() {
     );
     expect(dependencies.appearancePreferences, same(preferences));
     expect(dependencies.meetings, isA<MeetingRepository>());
+    expect(dependencies.recording.capabilityResolver, isNotNull);
+    expect(dependencies.submissions.capabilityResolver, isNotNull);
+    expect(dependencies.processingManager.capabilityResolver, isNotNull);
 
     dependencies.dispose();
     expect(client.closeCalls, 1);

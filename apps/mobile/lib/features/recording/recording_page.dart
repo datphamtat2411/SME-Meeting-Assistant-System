@@ -54,13 +54,14 @@ class _RecordingPageState extends State<RecordingPage> {
   late final RecordingCoordinator recording;
   late final SubmissionCoordinator submissions;
   late final ProcessingManager processingManager;
-  late final ProcessingObservation observation;
+  ProcessingObservation? observation;
 
   List<LocalMediaAsset> assets = <LocalMediaAsset>[];
   LocalMediaAsset? selectedAsset;
   SubmissionState? submission;
   ProcessingMeetingState? remoteState;
   Object? failure;
+  bool _sessionFenced = false;
 
   @override
   void initState() {
@@ -74,15 +75,26 @@ class _RecordingPageState extends State<RecordingPage> {
     submissions.addListener(_changed);
     processingManager.addListener(_changed);
     unawaited(_load());
-    observation = processingManager.startObserving(
-      widget.meetingId,
-      scope: sessionScope,
-    );
+    if (_allows(MeetingOperation.readMedia)) {
+      observation = processingManager.startObserving(
+        widget.meetingId,
+        scope: sessionScope,
+      );
+    }
   }
 
   Future<void> _load() async {
+    Object? recoveryFailure;
     try {
       await localMedia.recoverLocalState(
+        scope: sessionScope,
+        meetingId: widget.meetingId,
+      );
+    } catch (error) {
+      recoveryFailure = error;
+    }
+    try {
+      final recovered = await submissions.recoverDurableState(
         scope: sessionScope,
         meetingId: widget.meetingId,
       );
@@ -93,18 +105,53 @@ class _RecordingPageState extends State<RecordingPage> {
       if (!mounted || !widget.api.isCurrentAuthenticatedSession(sessionScope)) {
         return;
       }
-      setState(() => assets = listed.where((asset) => asset.isReady).toList());
+      final ready = listed.where((asset) => asset.isReady).toList();
+      LocalMediaAsset? recoveredAsset;
+      for (final state in recovered) {
+        for (final asset in ready) {
+          if (asset.id == state.assetId) {
+            recoveredAsset = asset;
+            break;
+          }
+        }
+        if (recoveredAsset != null) break;
+      }
+      setState(() {
+        assets = ready;
+        if (selectedAsset != null &&
+            !ready.any((asset) => asset.id == selectedAsset!.id)) {
+          selectedAsset = null;
+        }
+        selectedAsset ??= recoveredAsset;
+        submission = selectedAsset == null
+            ? null
+            : submissions.stateFor(selectedAsset!.id);
+        failure = recoveryFailure;
+      });
     } catch (error) {
       if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
-        setState(() => failure = error);
+        setState(() => failure = recoveryFailure ?? error);
       }
     }
   }
 
   void _changed() {
-    if (!mounted || !widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+    if (!mounted) {
       return;
     }
+    if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      if (_sessionFenced) return;
+      setState(() {
+        _sessionFenced = true;
+        assets = <LocalMediaAsset>[];
+        selectedAsset = null;
+        submission = null;
+        remoteState = null;
+        failure = null;
+      });
+      return;
+    }
+    if (_sessionFenced) return;
     setState(() {
       submission = submissions.stateFor(selectedAsset?.id ?? '');
       remoteState = processingManager.stateFor(widget.meetingId);
@@ -112,7 +159,7 @@ class _RecordingPageState extends State<RecordingPage> {
   }
 
   bool _allows(MeetingOperation operation) =>
-      widget.capabilities?.allows(operation) == true;
+      !_sessionFenced && widget.capabilities?.allows(operation) == true;
 
   Future<void> _start() async {
     try {
@@ -180,11 +227,20 @@ class _RecordingPageState extends State<RecordingPage> {
     final asset = selectedAsset;
     if (asset == null) return;
     try {
-      final result = await submissions.submit(
-        asset: asset,
-        capabilities: widget.capabilities,
-        admitProcessing: _allows(MeetingOperation.admitProcessing),
-      );
+      final existing = submissions.stateFor(asset.id);
+      final operation = existing?.uploadOperation;
+      final result = operation == null
+          ? await submissions.submit(
+              asset: asset,
+              capabilities: widget.capabilities,
+              admitProcessing: _allows(MeetingOperation.admitProcessing),
+            )
+          : await submissions.resume(
+              operationId: operation.id,
+              scope: sessionScope,
+              capabilities: widget.capabilities,
+              admitProcessing: _allows(MeetingOperation.admitProcessing),
+            );
       if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
         setState(() => submission = result);
       }
@@ -214,7 +270,7 @@ class _RecordingPageState extends State<RecordingPage> {
 
   @override
   void dispose() {
-    observation.dispose();
+    observation?.dispose();
     recording.removeListener(_changed);
     submissions.removeListener(_changed);
     processingManager.removeListener(_changed);
@@ -225,7 +281,10 @@ class _RecordingPageState extends State<RecordingPage> {
   Widget build(BuildContext context) {
     final captureState = recording.state;
     final isCapturing = captureState.isCapturing;
-    final canUpload = widget.enabled && _allows(MeetingOperation.uploadMedia);
+    final canUpload =
+        !_sessionFenced &&
+        widget.enabled &&
+        _allows(MeetingOperation.uploadMedia);
     final selectedSubmission =
         submission ??
         (selectedAsset == null
@@ -245,7 +304,7 @@ class _RecordingPageState extends State<RecordingPage> {
         if (failure != null)
           MessagePanel(
             title: 'Không thể hoàn tất thao tác',
-            description: failure.toString(),
+            description: _failureMessage(failure),
           ),
         ContentCard(
           child: Column(
@@ -441,6 +500,13 @@ class _RecordingPageState extends State<RecordingPage> {
     );
   }
 
+  String _failureMessage(Object? error) {
+    if (error is ApiFailure) return error.message;
+    if (error is AudioImportException) return error.message;
+    if (error is RecordingEligibilityException) return error.message;
+    return 'Đã xảy ra lỗi không mong muốn.';
+  }
+
   Future<void> _submitExisting(MediaRecord media) async {
     try {
       final result = await submissions.admitAvailableMedia(
@@ -449,7 +515,9 @@ class _RecordingPageState extends State<RecordingPage> {
         scope: sessionScope,
         capabilities: widget.capabilities,
       );
-      if (mounted) setState(() => submission = result);
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        setState(() => submission = result);
+      }
     } catch (error) {
       if (mounted) setState(() => failure = error);
     }
