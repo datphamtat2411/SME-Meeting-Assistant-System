@@ -68,6 +68,43 @@ class DecisionCollection {
   );
 }
 
+enum DecisionCommand { create, edit, confirm, reject }
+
+class DecisionCommandIntent {
+  const DecisionCommandIntent(this.command, this.content, {this.snapshot});
+
+  final DecisionCommand command;
+  final String content;
+  final MeetingDecision? snapshot;
+}
+
+class ManualDecisionDraft {
+  const ManualDecisionDraft(
+    this.content,
+    this.attachEvidence, {
+    this.source,
+    this.evidence = const {},
+  });
+
+  final String content;
+  final bool attachEvidence;
+  final Transcript? source;
+  final Set<String> evidence;
+}
+
+/// Decision-owned recovery state, cleared by shared ownership revocation.
+class DecisionReviewState {
+  ManualDecisionDraft? draft;
+  DecisionCommandIntent? unresolved;
+
+  void clear() {
+    draft = null;
+    unresolved = null;
+  }
+}
+
+typedef DecisionReviewStamp = (int, int, int, int);
+
 enum DecisionEvidenceQuality { reviewable, unknown, unsafe }
 
 /// The backend rejects non-accepted segments and overlapping non-covered
@@ -87,7 +124,11 @@ DecisionEvidenceQuality decisionEvidenceQuality(
           false)) {
     return DecisionEvidenceQuality.unsafe;
   }
-  if (coverage == null || coverage.regions.isEmpty) {
+  if (coverage == null ||
+      !coverage.regions.any(
+        (region) =>
+            region.startMs < segment.endMs && region.endMs > segment.startMs,
+      )) {
     return DecisionEvidenceQuality.unknown;
   }
   return DecisionEvidenceQuality.reviewable;

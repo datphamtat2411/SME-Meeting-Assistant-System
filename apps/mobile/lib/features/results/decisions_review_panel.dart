@@ -35,11 +35,14 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
     }
   }
 
-  Future<void> _createDecision() async {
+  Future<void> recoverUnknownDecision() async {
     final workspace = widget.workspace;
     final epoch = workspace.reviewEpoch;
-    List<MeetingDecision>? recovery;
-    if (workspace.decisionOutcomeUnknown) {
+    final intent = workspace.unresolvedDecision;
+    if (intent == null || busy) return;
+    setState(() => busy = true);
+    try {
+      List<MeetingDecision>? recovery;
       final reviewed = await runCommand(
         context,
         operation: () async {
@@ -56,6 +59,10 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       );
       if (!reviewed || !mounted || !workspace.ownsReview(epoch)) return;
       final decisions = recovery!;
+      final target = intent.snapshot;
+      final observed = target == null
+          ? decisions
+          : decisions.where((item) => item.id == target.id).toList();
       final confirmed = await showResultsReviewDialog<bool>(
         context: context,
         workspace: workspace,
@@ -73,9 +80,16 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                     'chứng minh yêu cầu thành công hay thất bại. Hãy kiểm tra '
                     'trước khi tạo một yêu cầu mới.',
                   ),
-                  if (decisions.isEmpty)
-                    const Text('Chưa có quyết định trong danh sách hiện tại.'),
-                  for (final decision in decisions)
+                  if (target != null) ...[
+                    Text('Thao tác trước: ${_commandLabel(intent.command)}'),
+                    SelectableText(intent.content),
+                    const Divider(),
+                  ],
+                  if (observed.isEmpty)
+                    const Text(
+                      'Không tìm thấy quyết định trong kết quả kiểm tra.',
+                    ),
+                  for (final decision in observed)
                     ListTile(
                       title: Text(decision.content),
                       subtitle: Text(decision.status),
@@ -92,7 +106,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(dialog, true),
-              child: const Text('Đã kiểm tra, tạo mới'),
+              child: const Text('Đã kiểm tra, cho phép thao tác mới'),
             ),
           ],
         ),
@@ -100,24 +114,62 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       if (confirmed != true || !mounted || !workspace.ownsReview(epoch)) {
         return;
       }
+      await runCommand(
+        context,
+        operation: () async {
+          workspace.acknowledgeUnknownDecision(
+            epoch: epoch,
+            reviewed: decisions,
+          );
+        },
+        successText: 'Đã ghi nhận kết quả kiểm tra.',
+      );
+    } finally {
+      if (mounted) setState(() => busy = false);
     }
+  }
+
+  String _commandLabel(DecisionCommand command) => switch (command) {
+    DecisionCommand.create => 'Tạo quyết định',
+    DecisionCommand.edit => 'Chỉnh sửa',
+    DecisionCommand.confirm => 'Xác nhận',
+    DecisionCommand.reject => 'Từ chối',
+  };
+
+  Future<void> _createDecision() async {
+    final workspace = widget.workspace;
+    final epoch = workspace.reviewEpoch;
+    if (workspace.decisionOutcomeUnknown) return;
+    final draft = workspace.manualDecisionDraft;
     final input = await showResultsReviewDialog<(String, bool)>(
       context: context,
       workspace: workspace,
       epoch: epoch,
-      builder: (_) => const _DecisionContentDialog(
+      builder: (_) => _DecisionContentDialog(
         title: 'Tạo quyết định chính thức',
+        initial: draft?.content ?? '',
+        initialAttach: draft?.attachEvidence ?? false,
         allowEvidence: true,
       ),
     );
     if (input == null || !mounted || !workspace.ownsReview(epoch)) return;
+    workspace.keepManualDecisionDraft(
+      ManualDecisionDraft(
+        input.$1,
+        input.$2,
+        source: input.$2 ? draft?.source : null,
+        evidence: input.$2 ? draft?.evidence ?? const {} : const {},
+      ),
+      epoch,
+    );
     Transcript? source;
     Set<String> selected = {};
     if (input.$2) {
-      await workspace.loadTranscript(force: true);
+      final projection = await workspace.loadCurrentDecisionProjection();
       if (!mounted || !workspace.ownsReview(epoch)) return;
-      source = workspace.transcript.data;
+      source = projection?.transcript;
       if (!workspace.transcriptIsCurrent ||
+          projection == null ||
           source == null ||
           source.etag == null) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -127,26 +179,34 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
         );
         return;
       }
-      final reviewed = source;
+      final initialSelection =
+          draft?.source?.id == source.id && draft?.source?.etag == source.etag
+          ? draft!.evidence
+          : const <String>{};
       final evidence = await showResultsReviewDialog<Set<String>>(
         context: context,
         workspace: workspace,
         epoch: epoch,
-        builder: (_) => _DecisionEvidencePicker(transcript: reviewed),
+        builder: (_) => _DecisionEvidencePicker(
+          projection: projection,
+          initialSelection: initialSelection,
+        ),
       );
       if (evidence == null || !mounted || !workspace.ownsReview(epoch)) return;
       selected = evidence;
+      workspace.keepManualDecisionDraft(
+        ManualDecisionDraft(
+          input.$1,
+          true,
+          source: source,
+          evidence: Set.unmodifiable(selected),
+        ),
+        epoch,
+      );
     }
-    await runCommand(
+    final saved = await runCommand(
       context,
       operation: () async {
-        final reviewed = recovery;
-        if (reviewed != null) {
-          workspace.acknowledgeUnknownDecision(
-            epoch: epoch,
-            reviewed: reviewed,
-          );
-        }
         await workspace.createDecision(
           input.$1,
           epoch: epoch,
@@ -156,6 +216,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       },
       successText: 'Đã lưu quyết định.',
     );
+    if (saved) workspace.keepManualDecisionDraft(null, epoch);
   }
 
   Future<void> inspect(MeetingDecision decision) async {
@@ -164,8 +225,12 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
     final reviewEpoch = workspace.reviewEpoch;
     final evidence = await workspace.loadDecisionEvidence(decision);
     if (!mounted || !workspace.ownsRead(readEpoch)) return;
-    final canMutate =
+    final stamp = workspace.decisionReviewStamp;
+    bool current() => workspace.decisionReviewIsCurrent(decision, stamp);
+    bool canMutate() =>
+        current() &&
         workspace.ownsReview(reviewEpoch) &&
+        !workspace.decisionOutcomeUnknown &&
         !workspace.mutationBusy(ResultsMutationGroup.decisions) &&
         decision.etag != null &&
         decision.etag!.trim().isNotEmpty;
@@ -174,61 +239,66 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       workspace: workspace,
       epoch: readEpoch,
       requiresMutation: false,
-      builder: (dialog) => AlertDialog(
-        title: const Text('Đối chiếu quyết định'),
-        content: SizedBox(
-          width: 480,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                StatePill(decision.status),
-                SelectableText(decision.content),
-                ..._provenance(decision),
-                const Divider(),
-                const Text('Bằng chứng transcript'),
-                if (decision.evidenceSegmentIds.isEmpty)
-                  const Text('Không có bằng chứng đính kèm.'),
-                if (decision.evidenceSegmentIds.isNotEmpty &&
-                    !evidence.hasCompatibleSource)
-                  const Text(
-                    'Không còn nguồn transcript tương thích hoặc nguồn chưa tải được.',
-                  ),
-                for (final id in decision.evidenceSegmentIds)
-                  _evidenceTile(dialog, evidence, id),
-                if (decision.status == 'PROPOSED')
-                  Text(
-                    evidence.canConfirm
-                        ? 'Xác nhận sẽ đưa đề xuất vào quyết định chính thức.'
-                        : 'Chưa đủ điều kiện xác nhận; vẫn có thể từ chối đề xuất.',
-                  ),
-              ],
+      builder: (dialog) => AnimatedBuilder(
+        animation: workspace,
+        builder: (context, _) => AlertDialog(
+          title: const Text('Đối chiếu quyết định'),
+          content: SizedBox(
+            width: 480,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (!current())
+                    const Text('Nguồn hoặc quyết định đã đổi. Hãy mở lại để đối chiếu.'),
+                  StatePill(decision.status),
+                  SelectableText(decision.content),
+                  ..._provenance(decision),
+                  const Divider(),
+                  const Text('Bằng chứng transcript'),
+                  if (decision.evidenceSegmentIds.isEmpty)
+                    const Text('Không có bằng chứng đính kèm.'),
+                  if (decision.evidenceSegmentIds.isNotEmpty &&
+                      !evidence.hasCompatibleSource)
+                    const Text(
+                      'Không còn nguồn transcript tương thích hoặc nguồn chưa tải được.',
+                    ),
+                  for (final id in decision.evidenceSegmentIds)
+                    _evidenceTile(dialog, evidence, id),
+                  if (decision.status == 'PROPOSED')
+                    Text(
+                      evidence.canConfirm
+                          ? 'Xác nhận sẽ đưa đề xuất vào quyết định chính thức.'
+                          : 'Chưa đủ điều kiện xác nhận; vẫn có thể từ chối đề xuất.',
+                    ),
+                ],
+              ),
             ),
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialog),
-            child: const Text('Đóng'),
-          ),
-          if (canMutate && decision.status == 'PROPOSED') ...[
+          actions: [
             TextButton(
-              onPressed: () => Navigator.pop(dialog, 'reject'),
-              child: const Text('Từ chối'),
+              onPressed: () => Navigator.pop(dialog),
+              child: const Text('Đóng'),
             ),
-            FilledButton(
-              onPressed: evidence.canConfirm
-                  ? () => Navigator.pop(dialog, 'confirm')
-                  : null,
-              child: const Text('Xác nhận chính thức'),
-            ),
+            if (canMutate() && decision.status == 'PROPOSED') ...[
+              TextButton(
+                onPressed: () => Navigator.pop(dialog, 'reject'),
+                child: const Text('Từ chối'),
+              ),
+              FilledButton(
+                onPressed: evidence.canConfirm
+                    ? () => Navigator.pop(dialog, 'confirm')
+                    : null,
+                child: const Text('Xác nhận chính thức'),
+              ),
+            ],
+            if (canMutate() && decision.status == 'CONFIRMED')
+              FilledButton(
+                onPressed: () => Navigator.pop(dialog, 'edit'),
+                child: const Text('Chỉnh sửa'),
+              ),
           ],
-          if (canMutate && decision.status == 'CONFIRMED')
-            FilledButton(
-              onPressed: () => Navigator.pop(dialog, 'edit'),
-              child: const Text('Chỉnh sửa'),
-            ),
-        ],
+        ),
       ),
     );
     if (action == null || !mounted || !workspace.ownsRead(readEpoch)) return;
@@ -253,21 +323,24 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       }
       return;
     }
-    if (!workspace.ownsReview(reviewEpoch)) return;
+    if (!workspace.ownsReview(reviewEpoch) || !current()) return;
     if (action == 'edit') {
-      await edit(decision, reviewEpoch);
+      await edit(decision, reviewEpoch, stamp);
       return;
     }
     if (action != 'confirm' && action != 'reject') return;
     final confirm = action == 'confirm';
     await runCommand(
       context,
-      operation: () => workspace.reviewDecision(
-        decision,
-        confirm: confirm,
-        epoch: reviewEpoch,
-        reviewedEvidence: evidence,
-      ),
+      operation: () {
+        workspace.requireDecisionReview(decision, stamp);
+        return workspace.reviewDecision(
+          decision,
+          confirm: confirm,
+          epoch: reviewEpoch,
+          reviewedEvidence: evidence,
+        );
+      },
       successText: confirm ? 'Đã xác nhận quyết định.' : 'Đã từ chối đề xuất.',
     );
   }
@@ -334,7 +407,11 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       Text('Cảnh báo: $warning', style: const TextStyle(color: Palette.amber)),
   ];
 
-  Future<void> edit(MeetingDecision decision, int epoch) async {
+  Future<void> edit(
+    MeetingDecision decision,
+    int epoch,
+    DecisionReviewStamp stamp,
+  ) async {
     final workspace = widget.workspace;
     final token = decision.etag;
     if (token == null || !workspace.ownsReview(epoch)) return;
@@ -381,7 +458,10 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
     );
     final saved = await runCommand(
       context,
-      operation: () => workspace.editDecision(decision, input.$1, epoch: epoch),
+      operation: () {
+        workspace.requireDecisionReview(decision, stamp);
+        return workspace.editDecision(decision, input.$1, epoch: epoch);
+      },
       successText: 'Đã lưu nội dung quyết định.',
     );
     if (saved) workspace.clearDraft(key, epoch);
@@ -412,13 +492,20 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                         workspace.mutationBusy(
                           ResultsMutationGroup.decisions,
                         ) ||
-                        !workspace.capabilities.canMutate
+                        !workspace.capabilities.canMutate ||
+                        workspace.decisionOutcomeUnknown
                     ? null
                     : createDecision,
                 icon: const Icon(Icons.add_circle_outline),
               ),
             ),
           ),
+          if (workspace.capabilities.canMutate &&
+              workspace.decisionOutcomeUnknown)
+            TextButton(
+              onPressed: busy ? null : recoverUnknownDecision,
+              child: const Text('Kiểm tra thao tác chưa rõ kết quả'),
+            ),
           if (workspace.capabilities.canRead)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 18),
@@ -518,12 +605,14 @@ class _DecisionContentDialog extends StatefulWidget {
   const _DecisionContentDialog({
     required this.title,
     this.initial = '',
+    this.initialAttach = false,
     this.allowEvidence = false,
   });
 
   final String title;
   final String initial;
   final bool allowEvidence;
+  final bool initialAttach;
 
   @override
   State<_DecisionContentDialog> createState() => _DecisionContentDialogState();
@@ -533,7 +622,7 @@ class _DecisionContentDialogState extends State<_DecisionContentDialog> {
   late final TextEditingController _text = TextEditingController(
     text: widget.initial,
   );
-  bool _attach = false;
+  late bool _attach = widget.initialAttach;
 
   @override
   void dispose() {
@@ -581,8 +670,12 @@ class _DecisionContentDialogState extends State<_DecisionContentDialog> {
 }
 
 class _DecisionEvidencePicker extends StatefulWidget {
-  const _DecisionEvidencePicker({required this.transcript});
-  final Transcript transcript;
+  const _DecisionEvidencePicker({
+    required this.projection,
+    required this.initialSelection,
+  });
+  final TranscriptReviewProjection projection;
+  final Set<String> initialSelection;
 
   @override
   State<_DecisionEvidencePicker> createState() =>
@@ -590,7 +683,7 @@ class _DecisionEvidencePicker extends StatefulWidget {
 }
 
 class _DecisionEvidencePickerState extends State<_DecisionEvidencePicker> {
-  final Set<String> _selected = {};
+  late final Set<String> _selected = Set.of(widget.initialSelection);
 
   @override
   Widget build(BuildContext context) => AlertDialog(
@@ -599,16 +692,21 @@ class _DecisionEvidencePickerState extends State<_DecisionEvidencePicker> {
       width: 480,
       height: 360,
       child: ListView.builder(
-        itemCount: widget.transcript.segments.length,
+        itemCount: widget.projection.transcript.segments.length,
         itemBuilder: (context, index) {
-          final segment = widget.transcript.segments[index];
+          final segment = widget.projection.transcript.segments[index];
           final selected = _selected.contains(segment.id);
           return CheckboxListTile(
             value: selected,
             title: Text(segment.text),
             subtitle: Text(
+              '${widget.projection.speakerName(segment)} · '
               '${segment.startMs ~/ 1000}s · '
-              '${segment.quality == 'ACCEPTED' ? 'Đã chấp nhận' : 'Cần đối chiếu'}',
+              '${switch (decisionEvidenceQuality(widget.projection, segment)) {
+                DecisionEvidenceQuality.reviewable => 'Có thể đối chiếu',
+                DecisionEvidenceQuality.unknown => 'Chưa đủ thông tin coverage',
+                DecisionEvidenceQuality.unsafe => 'Cần đối chiếu chất lượng',
+              }}',
             ),
             onChanged: selected || _selected.length < 50
                 ? (value) => setState(() {

@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import '../../core/api_client.dart';
+import 'decision_review_state.dart';
 import 'summary_regeneration_tracker.dart';
 
 /// Workspace-owned command state, independent of presentation mount cycles.
@@ -35,8 +36,8 @@ class ResultsMutationCoordinator {
   int _epoch = 0;
   String? _regenerationKey;
   bool regenerationUncertain = false;
-  bool decisionOutcomeUnknown = false;
-  String? unknownDecisionContent;
+  final DecisionReviewState decisionReview = DecisionReviewState();
+  bool get decisionOutcomeUnknown => decisionReview.unresolved != null;
   final Map<String, ResultsRecoveryDraft> _drafts =
       <String, ResultsRecoveryDraft>{};
   ResultsRecoveryDraft? draft(String key) => _drafts[key];
@@ -58,8 +59,7 @@ class ResultsMutationCoordinator {
     invalidateReviews();
     _pending.clear();
     _drafts.clear();
-    decisionOutcomeUnknown = false;
-    unknownDecisionContent = null;
+    decisionReview.clear();
     regenerationUncertain = false;
     _regenerationKey = null;
     regeneration.clear();

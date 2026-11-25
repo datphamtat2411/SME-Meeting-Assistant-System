@@ -188,6 +188,47 @@ class ResultsWorkspaceController extends ChangeNotifier
 
   bool get regenerationUncertain => _mutations.regenerationUncertain;
   bool get decisionOutcomeUnknown => _mutations.decisionOutcomeUnknown;
+  DecisionCommandIntent? get unresolvedDecision =>
+      capabilities.canMutate ? _mutations.decisionReview.unresolved : null;
+  ManualDecisionDraft? get manualDecisionDraft =>
+      capabilities.canMutate ? _mutations.decisionReview.draft : null;
+
+  void keepManualDecisionDraft(ManualDecisionDraft? draft, int epoch) {
+    if (ownsReview(epoch)) _mutations.decisionReview.draft = draft;
+  }
+
+  DecisionReviewStamp get decisionReviewStamp => (
+    _generations[ResultsResourceKind.decisions] ?? 0,
+    _generations[ResultsResourceKind.transcript] ?? 0,
+    _generations[ResultsResourceKind.coverage] ?? 0,
+    _generations[ResultsResourceKind.speakers] ?? 0,
+  );
+
+  bool decisionReviewIsCurrent(
+    MeetingDecision snapshot,
+    DecisionReviewStamp stamp,
+  ) =>
+      capabilities.canRead &&
+      decisionReviewStamp == stamp &&
+      !_dirty.contains(ResultsResourceKind.decisions) &&
+      decisions.phase == ResultsResourcePhase.available &&
+      (decisions.data?.items.any(
+            (item) => item.id == snapshot.id && item.etag == snapshot.etag,
+          ) ??
+          false);
+
+  void requireDecisionReview(
+    MeetingDecision snapshot,
+    DecisionReviewStamp stamp,
+  ) {
+    if (!decisionReviewIsCurrent(snapshot, stamp)) {
+      throw const ApiFailure(
+        412,
+        'RESULTS_REVIEW_CHANGED',
+        'Quyết định hoặc nguồn đã thay đổi. Vui lòng đối chiếu lại.',
+      );
+    }
+  }
   ResultsRecoveryDraft? recoveryDraft(String key) =>
       capabilities.canMutate ? _mutations.draft(key) : null;
   String? draftFor(
@@ -1119,47 +1160,47 @@ class ResultsWorkspaceController extends ChangeNotifier
   Future<DecisionEvidenceReview> loadDecisionEvidence(
     MeetingDecision snapshot,
   ) async {
-    final epoch = readEpoch;
-    if (!ownsRead(epoch) ||
-        snapshot.meetingId.toLowerCase() != meetingId.toLowerCase() ||
+    if (snapshot.meetingId.toLowerCase() != meetingId.toLowerCase() ||
         snapshot.transcriptId == null ||
         snapshot.contentRevision == null) {
       return DecisionEvidenceReview(snapshot, null);
     }
+    final projection = await loadCurrentDecisionProjection();
+    if (projection?.transcript.id != snapshot.transcriptId ||
+        projection?.transcript.contentRevision != snapshot.contentRevision) {
+      return DecisionEvidenceReview(snapshot, null);
+    }
+    return DecisionEvidenceReview(snapshot, projection);
+  }
+
+  Future<TranscriptReviewProjection?> loadCurrentDecisionProjection() async {
+    final epoch = readEpoch;
+    if (!ownsRead(epoch)) return null;
     await loadTranscript(force: true);
-    if (!ownsRead(epoch) || !transcriptIsCurrent) {
-      return DecisionEvidenceReview(snapshot, null);
-    }
+    if (!ownsRead(epoch) || !transcriptIsCurrent) return null;
     final source = transcript.data;
-    if (source == null ||
-        source.id != snapshot.transcriptId ||
-        source.contentRevision != snapshot.contentRevision) {
-      return DecisionEvidenceReview(snapshot, null);
-    }
+    if (source == null) return null;
     await Future.wait([loadCoverage(force: true), loadSpeakers(force: true)]);
     if (!ownsRead(epoch) ||
         !transcriptIsCurrent ||
         transcript.data?.etag != source.etag ||
         transcript.data?.id != source.id) {
-      return DecisionEvidenceReview(snapshot, null);
+      return null;
     }
-    return DecisionEvidenceReview(
-      snapshot,
-      TranscriptReviewProjection(
-        source,
-        coverage:
-            !_dirty.contains(ResultsResourceKind.coverage) &&
-                (coverage.phase == ResultsResourcePhase.available ||
-                    coverage.phase == ResultsResourcePhase.empty)
-            ? coverage.data
-            : null,
-        speakers:
-            !_dirty.contains(ResultsResourceKind.speakers) &&
-                (speakers.phase == ResultsResourcePhase.available ||
-                    speakers.phase == ResultsResourcePhase.empty)
-            ? speakers.data
-            : null,
-      ),
+    return TranscriptReviewProjection(
+      source,
+      coverage:
+          !_dirty.contains(ResultsResourceKind.coverage) &&
+              (coverage.phase == ResultsResourcePhase.available ||
+                  coverage.phase == ResultsResourcePhase.empty)
+          ? coverage.data
+          : null,
+      speakers:
+          !_dirty.contains(ResultsResourceKind.speakers) &&
+              (speakers.phase == ResultsResourcePhase.available ||
+                  speakers.phase == ResultsResourcePhase.empty)
+          ? speakers.data
+          : null,
     );
   }
 
@@ -1199,7 +1240,7 @@ class ResultsWorkspaceController extends ChangeNotifier
         ResultsResourceKind.decisions,
         ResultsResourceKind.minutes,
       },
-      (_) async {
+      (ticket) async {
         if (ids.isNotEmpty) {
           await loadTranscript(force: true);
           _requireMutation(epoch);
@@ -1217,15 +1258,18 @@ class ResultsWorkspaceController extends ChangeNotifier
             );
           }
         }
-        return repository.createDecision(
-          sessionScope: sessionScope,
-          meetingId: meetingId,
-          content: content,
-          evidenceSegmentIds: ids,
-          reviewedTranscript: reviewedTranscript,
+        return _dispatchDecision(
+          ticket,
+          DecisionCommandIntent(DecisionCommand.create, content),
+          () => repository.createDecision(
+            sessionScope: sessionScope,
+            meetingId: meetingId,
+            content: content,
+            evidenceSegmentIds: ids,
+            reviewedTranscript: reviewedTranscript,
+          ),
         );
       },
-      unresolvedIntent: content,
     );
   }
 
@@ -1260,16 +1304,25 @@ class ResultsWorkspaceController extends ChangeNotifier
     required int epoch,
   }) async {
     _requireMutation(epoch);
+    _requireDecisionRecoveryResolved();
     _requireDecisionSnapshot(snapshot, 'CONFIRMED');
     _validateDecisionContent(content);
     await _reconcileAfterMutation(
       ResultsMutationGroup.decisions,
       {ResultsResourceKind.decisions, ResultsResourceKind.minutes},
-      (_) => repository.editDecision(
-        sessionScope: sessionScope,
-        meetingId: meetingId,
-        snapshot: snapshot,
-        content: content,
+      (ticket) => _dispatchDecision(
+        ticket,
+        DecisionCommandIntent(
+          DecisionCommand.edit,
+          content,
+          snapshot: snapshot,
+        ),
+        () => repository.editDecision(
+          sessionScope: sessionScope,
+          meetingId: meetingId,
+          snapshot: snapshot,
+          content: content,
+        ),
       ),
     );
   }
@@ -1281,6 +1334,7 @@ class ResultsWorkspaceController extends ChangeNotifier
     DecisionEvidenceReview? reviewedEvidence,
   }) async {
     _requireMutation(epoch);
+    _requireDecisionRecoveryResolved();
     _requireDecisionSnapshot(snapshot, 'PROPOSED');
     if (confirm &&
         (reviewedEvidence == null ||
@@ -1298,7 +1352,7 @@ class ResultsWorkspaceController extends ChangeNotifier
         ResultsResourceKind.decisions,
         ResultsResourceKind.minutes,
       },
-      (_) async {
+      (ticket) async {
         if (confirm) {
           final current = await loadDecisionEvidence(snapshot);
           _requireMutation(epoch);
@@ -1312,14 +1366,48 @@ class ResultsWorkspaceController extends ChangeNotifier
             );
           }
         }
-        return repository.reviewDecision(
-          sessionScope: sessionScope,
-          meetingId: meetingId,
-          snapshot: snapshot,
-          confirm: confirm,
+        return _dispatchDecision(
+          ticket,
+          DecisionCommandIntent(
+            confirm ? DecisionCommand.confirm : DecisionCommand.reject,
+            snapshot.content,
+            snapshot: snapshot,
+          ),
+          () => repository.reviewDecision(
+            sessionScope: sessionScope,
+            meetingId: meetingId,
+            snapshot: snapshot,
+            confirm: confirm,
+          ),
         );
       },
     );
+  }
+
+  void _requireDecisionRecoveryResolved() {
+    if (_mutations.decisionOutcomeUnknown) {
+      throw const ApiFailure(
+        409,
+        'RESULTS_OUTCOME_UNKNOWN',
+        'Kiểm tra thao tác quyết định trước đó trước khi tiếp tục.',
+      );
+    }
+  }
+
+  Future<T> _dispatchDecision<T>(
+    Object ticket,
+    DecisionCommandIntent intent,
+    Future<T> Function() send,
+  ) async {
+    try {
+      return await send();
+    } catch (error) {
+      if (_ownsOperation(ResultsMutationGroup.decisions, ticket) &&
+          ResultsMutationCoordinator.isUncertain(error)) {
+        _mutations.decisionReview.unresolved = intent;
+      }
+      rethrow;
+    }
   }
 
   Future<void> regenerateSummary({required int epoch}) async {
@@ -1382,9 +1470,8 @@ class ResultsWorkspaceController extends ChangeNotifier
   Future<void> _reconcileAfterMutation(
     ResultsMutationGroup group,
     Set<ResultsResourceKind> resources,
-    Future<Object?> Function(Object ticket) operation, {
-    String? unresolvedIntent,
-  }) async {
+    Future<Object?> Function(Object ticket) operation,
+  ) async {
     final ticket = _mutations.begin(group);
     final epoch = reviewEpoch;
     var invalidated = false;
@@ -1395,10 +1482,6 @@ class ResultsWorkspaceController extends ChangeNotifier
     } catch (error, stack) {
       if (_ownsOperation(group, ticket) &&
           ResultsMutationCoordinator.isUncertain(error)) {
-        if (unresolvedIntent != null) {
-          _mutations.decisionOutcomeUnknown = true;
-          _mutations.unknownDecisionContent = unresolvedIntent;
-        }
         _invalidate(resources);
         invalidated = true;
         // Reconcile active canonical projections before returning an
@@ -1506,8 +1589,7 @@ class ResultsWorkspaceController extends ChangeNotifier
         'Một thao tác trên quyết định đang được xử lý.',
       );
     }
-    _mutations.decisionOutcomeUnknown = false;
-    _mutations.unknownDecisionContent = null;
+    _mutations.decisionReview.unresolved = null;
     notifyListeners();
   }
 
