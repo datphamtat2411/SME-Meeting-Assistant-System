@@ -71,21 +71,24 @@ export function useTranscriptReviewOperation(
     []
   )
 
-  const acquire = useCallback((kind: ReviewExecution['kind']) => {
-    const current = scopeRef.current
-    if (executionRef.current || !canExecute(current, kind)) return null
-    const execution: ReviewExecution = {
-      scope: current,
-      kind,
-      controller: new AbortController(),
-      releaseCommand,
-    }
-    if (claimCommand && !claimCommand(execution)) return null
-    executionRef.current = execution
-    setInterrupted(null)
-    setPending(true)
-    return execution
-  }, [claimCommand, releaseCommand])
+  const acquire = useCallback(
+    (kind: ReviewExecution['kind']) => {
+      const current = scopeRef.current
+      if (executionRef.current || !canExecute(current, kind)) return null
+      const execution: ReviewExecution = {
+        scope: current,
+        kind,
+        controller: new AbortController(),
+        releaseCommand,
+      }
+      if (claimCommand && !claimCommand(execution)) return null
+      executionRef.current = execution
+      setInterrupted(null)
+      setPending(true)
+      return execution
+    },
+    [claimCommand, releaseCommand]
+  )
 
   const isCurrent = useCallback((execution: ReviewExecution) => {
     const current = scopeRef.current

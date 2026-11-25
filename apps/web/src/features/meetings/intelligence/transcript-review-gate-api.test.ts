@@ -99,6 +99,17 @@ describe('ordinary transcript review gate API', () => {
     })
   })
 
+  it('treats malformed mutation responses as uncertain', async () => {
+    vi.spyOn(coreApi, 'post').mockResolvedValue({})
+
+    await expect(
+      acknowledgeTranscriptReview(jobId, proof, 'ack-key')
+    ).rejects.toMatchObject({ recoveryOutcome: 'uncertain' })
+    await expect(
+      admitMeetingIntelligence(jobId, proof, receipt, 'admit-key')
+    ).rejects.toMatchObject({ recoveryOutcome: 'uncertain' })
+  })
+
   it('admits with the receipt proof without assuming the original requester is the actor', async () => {
     const post = vi.spyOn(coreApi, 'post').mockResolvedValue(job())
 

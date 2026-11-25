@@ -90,7 +90,8 @@ function ProcessingPanelContent({
     (source) => !sourceHasJob.has(source.id)
   )
   const unresolvedOperations = processing.unresolvedOperations
-  const hasUnresolvedOperation = unresolvedOperations.length > 0
+  const hasUnresolvedOperation =
+    unresolvedOperations.length > 0 || processing.reviewCommandBlocked
   const selectedJobId = processing.selectedJobId
   const selectedJob = processing.selectedJob
   const actionableJob = processing.actionableJob
@@ -120,7 +121,7 @@ function ProcessingPanelContent({
   }
 
   async function submitReprocessing(jobId: string, sourceMediaId: string) {
-    if (!admissionAllowed) return
+    if (!admissionAllowed || hasUnresolvedOperation) return
     try {
       const result = await processing.reprocess(jobId, sourceMediaId)
       if (result.status === 'confirmed') {
@@ -209,6 +210,12 @@ function ProcessingPanelContent({
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
+        {processing.reviewCommandBlocked && (
+          <p role='status' className='text-sm text-muted-foreground'>
+            Transcript review has unresolved work. Resolve it in the Transcript
+            section before issuing a processing command.
+          </p>
+        )}
         {unresolvedOperations.length > 0 && (
           <div
             role='region'

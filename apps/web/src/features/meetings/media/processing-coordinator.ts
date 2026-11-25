@@ -87,6 +87,7 @@ export type ProcessingCoordinatorValue = {
   claimReviewCommand: (owner: object) => boolean
   releaseReviewCommand: (owner: object) => void
   setReviewWorkBlocked: (blocked: boolean) => void
+  reviewCommandBlocked: boolean
   selectProcessingJob: (jobId: string | null) => void
   admit: (mediaId: string) => Promise<ProcessingCommandResult>
   retry: (jobId: string, stageCode?: string) => Promise<ProcessingCommandResult>
@@ -290,6 +291,8 @@ export function useProcessingCoordinator({
   const operations = useRef(new Map<string, ProcessingOperation>())
   const reviewCommandOwner = useRef<object | null>(null)
   const reviewWorkBlocked = useRef(false)
+  const [reviewCommandActive, setReviewCommandActive] = useState(false)
+  const [reviewWorkDirty, setReviewWorkDirty] = useState(false)
   const lifecycle = useRef(new Map<string, string>())
   const generation = useRef(0)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
@@ -321,6 +324,8 @@ export function useProcessingCoordinator({
     operations.current.clear()
     reviewCommandOwner.current = null
     reviewWorkBlocked.current = false
+    setReviewCommandActive(false)
+    setReviewWorkDirty(false)
     lifecycle.current.clear()
     setSelectedJobId(null)
     publishOperations()
@@ -469,17 +474,20 @@ export function useProcessingCoordinator({
       return false
     }
     reviewCommandOwner.current = owner
+    setReviewCommandActive(true)
     return true
   }, [])
 
   const releaseReviewCommand = useCallback((owner: object) => {
     if (reviewCommandOwner.current === owner) {
       reviewCommandOwner.current = null
+      setReviewCommandActive(false)
     }
   }, [])
 
   const setReviewWorkBlocked = useCallback((blocked: boolean) => {
     reviewWorkBlocked.current = blocked
+    setReviewWorkDirty(blocked)
   }, [])
 
   const canReplayOperation = useCallback(
@@ -991,6 +999,7 @@ export function useProcessingCoordinator({
     claimReviewCommand,
     releaseReviewCommand,
     setReviewWorkBlocked,
+    reviewCommandBlocked: reviewCommandActive || reviewWorkDirty,
     selectProcessingJob: setSelectedJobId,
     admit,
     retry,

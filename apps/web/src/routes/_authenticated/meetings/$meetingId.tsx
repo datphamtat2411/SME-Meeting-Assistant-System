@@ -4,7 +4,10 @@ import {
   useBlocker,
   useMatchRoute,
 } from '@tanstack/react-router'
-import { TranscriptReviewGateBoundary } from '@/features/meetings/intelligence/transcript-review-gate'
+import {
+  TranscriptReviewGateBoundary,
+  useTranscriptReviewGate,
+} from '@/features/meetings/intelligence/transcript-review-gate'
 import {
   MeetingSessionProvider,
   useMeetingSession,
@@ -75,11 +78,18 @@ function MeetingRoute() {
 
 function MeetingNavigationGuard() {
   const session = useMeetingSession()
+  const gate = useTranscriptReviewGate()
   useBlocker({
     enableBeforeUnload: () =>
-      session.hasUnsavedResources || session.hasUnsavedTranscriptReview,
+      session.hasUnsavedResources ||
+      session.hasUnsavedTranscriptReview ||
+      gate.hasUnresolvedOperation,
     shouldBlockFn: ({ next }) => {
-      if (!session.hasUnsavedResources && !session.hasUnsavedTranscriptReview) {
+      if (
+        !session.hasUnsavedResources &&
+        !session.hasUnsavedTranscriptReview &&
+        !gate.hasUnresolvedOperation
+      ) {
         return false
       }
       const nextMeetingId =
@@ -97,6 +107,11 @@ function MeetingNavigationGuard() {
         return false
       }
       const sameMeeting = nextMeetingId === session.meetingId
+      if (!sameMeeting && gate.hasUnresolvedOperation) {
+        return !window.confirm(
+          'A transcript review request is unresolved. Leaving will lose its local recovery key. Leave anyway?'
+        )
+      }
       const remainsInTranscript =
         sameMeeting &&
         next.routeId === '/_authenticated/meetings/$meetingId' &&

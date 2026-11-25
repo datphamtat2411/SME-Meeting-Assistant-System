@@ -852,10 +852,7 @@ function TranscriptReviewWorkspaceContent({
   }
 
   useEffect(() => {
-    if (
-      !reviewGate ||
-      reviewGate.ownsEvidenceObservation
-    ) return
+    if (!reviewGate || reviewGate.ownsEvidenceObservation) return
     if (
       !canRead ||
       !transcriptReview.isSuccess ||

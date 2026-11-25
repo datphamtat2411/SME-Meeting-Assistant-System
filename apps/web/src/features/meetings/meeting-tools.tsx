@@ -3,7 +3,10 @@ import { DecisionsPanel } from './intelligence/decisions-panel'
 import { ExportPanel } from './intelligence/export-panel'
 import { MinutesPanel } from './intelligence/minutes-panel'
 import { SummaryPanel } from './intelligence/summary-panel'
-import { TranscriptReviewAdmissionPanel } from './intelligence/transcript-review-admission-panel'
+import {
+  TranscriptReviewAdmissionPanel,
+  TranscriptReviewWorkflowStatus,
+} from './intelligence/transcript-review-admission-panel'
 import {
   TranscriptReviewGateBoundary,
   useOptionalTranscriptReviewGate,
@@ -135,6 +138,9 @@ export function MeetingTools({
             operations are available to the meeting organizer.
           </ReadOnlyNote>
         )}
+        <TranscriptReviewWorkflowStatus
+          onReview={() => onSectionChange?.('transcript')}
+        />
         <SummaryPanel
           meetingId={meetingId}
           canEdit={capabilities.canMutateIntelligence}

@@ -9,7 +9,11 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { useTranscriptReviewGate } from './transcript-review-gate'
+import { presentProcessingStatus } from '../media/processing-status-presentation'
+import {
+  useOptionalTranscriptReviewGate,
+  useTranscriptReviewGate,
+} from './transcript-review-gate'
 
 export function TranscriptReviewAdmissionPanel({
   onNavigateToIntelligence,
@@ -50,7 +54,9 @@ export function TranscriptReviewAdmissionPanel({
 
   async function acknowledge() {
     try {
-      const result = await gate.acknowledge(acknowledgementIntent.fingerprint ?? '')
+      const result = await gate.acknowledge(
+        acknowledgementIntent.fingerprint ?? ''
+      )
       if (result === 'confirmed') {
         setAcknowledgementIntent({
           fingerprint: gate.evidence?.fingerprint ?? null,
@@ -132,6 +138,7 @@ export function TranscriptReviewAdmissionPanel({
           </p>
         )}
 
+        <TranscriptReviewWorkflowStatus />
         {gate.eligibilityMessage && !admissionConfirmed && (
           <p role='status' className='text-sm text-muted-foreground'>
             {gate.eligibilityMessage}
@@ -141,15 +148,23 @@ export function TranscriptReviewAdmissionPanel({
           <div role='status' className='space-y-2 rounded-lg border p-3'>
             <p className='text-sm'>
               A prior request has an uncertain outcome. Recover the original
-              intent before starting another operation, even if the evidence changed.
+              intent before starting another operation, even if the evidence
+              changed.
+            </p>
+            <p className='text-sm text-muted-foreground'>
+              {gate.admission.status === 'uncertain'
+                ? gate.admission.message
+                : gate.acknowledgement.message}
             </p>
             <Button
               type='button'
               variant='outline'
               disabled={!gate.isAuthorized || gate.mutationBlocked}
-              onClick={() => void (gate.admission.status === 'uncertain'
-                ? recoverAdmission()
-                : recoverAcknowledgement())}
+              onClick={() =>
+                void (gate.admission.status === 'uncertain'
+                  ? recoverAdmission()
+                  : recoverAcknowledgement())
+              }
             >
               {gate.admission.status === 'uncertain'
                 ? 'Recover admission'
@@ -159,8 +174,9 @@ export function TranscriptReviewAdmissionPanel({
         )}
         {gate.receipt && !gate.receiptIsCurrent && (
           <p className='text-sm text-muted-foreground'>
-            Core confirmed a historical acknowledgement for revision{' '}
-            {gate.receipt.contentRevision}. It is not proof for the current revision.
+            Core confirmed an acknowledgement for revision{' '}
+            {gate.receipt.contentRevision}. Verify the evidence against the
+            current revision before using this receipt.
           </p>
         )}
         {gate.admission.status === 'confirmed' && !admissionConfirmed && (
@@ -295,5 +311,47 @@ export function TranscriptReviewAdmissionPanel({
         )}
       </CardContent>
     </Card>
+  )
+}
+
+
+export function TranscriptReviewWorkflowStatus({
+  onReview,
+}: {
+  onReview?: () => void
+}) {
+  const gate = useOptionalTranscriptReviewGate()
+  if (!gate?.isAuthorized) return null
+  const job = gate.observedJob
+  if (!job && !gate.hasUnresolvedOperation) return null
+
+  return (
+    <div role='status' className='space-y-2 rounded-lg border p-3 text-sm'>
+      {job && (
+        <>
+          <p className='font-medium'>
+            Transcript processing: {presentProcessingStatus(job.status).label}
+          </p>
+          {job.currentStage && <p>Current stage: {job.currentStage}</p>}
+          {job.warningSummary && (
+            <p className='text-muted-foreground'>{job.warningSummary}</p>
+          )}
+          {job.errorSummary && (
+            <p className='text-muted-foreground'>{job.errorSummary}</p>
+          )}
+        </>
+      )}
+      {gate.hasUnresolvedOperation && (
+        <p>
+          A transcript review request is unresolved. Job progression alone
+          does not confirm that request.
+        </p>
+      )}
+      {onReview && (
+        <Button type='button' variant='outline' onClick={onReview}>
+          Open transcript review
+        </Button>
+      )}
+    </div>
   )
 }

@@ -106,7 +106,9 @@ function ReviewGateProbe() {
     <div>
       <span data-testid='digest-status'>{gate.digestStatus}</span>
       <span data-testid='ack-status'>{gate.acknowledgement.status}</span>
-      <span data-testid='receipt-current'>{String(gate.receiptIsCurrent)}</span>
+      <span data-testid='receipt-current'>
+        {String(gate.receiptIsCurrent)}
+      </span>
       <span data-testid='admission-status'>{gate.admission.status}</span>
       <span data-testid='proof-invalidated'>
         {String(gate.proofInvalidated)}
@@ -114,7 +116,9 @@ function ReviewGateProbe() {
       <button
         type='button'
         onClick={() =>
-          void gate.acknowledge(gate.evidence?.fingerprint ?? '').catch(() => undefined)
+          void gate
+            .acknowledge(gate.evidence?.fingerprint ?? '')
+            .catch(() => undefined)
         }
       >
         Acknowledge
@@ -130,7 +134,9 @@ function ReviewGateProbe() {
       <button
         type='button'
         onClick={() =>
-          void gate.admit(gate.evidence?.fingerprint ?? '').catch(() => undefined)
+          void gate
+            .admit(gate.evidence?.fingerprint ?? '')
+            .catch(() => undefined)
         }
       >
         Admit
@@ -256,6 +262,44 @@ describe('transcript review gate lifecycle', () => {
     await expect
       .element(screen.getByTestId('receipt-current'))
       .toHaveTextContent('false')
+  })
+
+  it('keeps the receipt across transcript panel unmount and remount', async () => {
+    const post = vi.spyOn(coreApi, 'post').mockResolvedValueOnce(receipt)
+    function Harness() {
+      const [showPanel, setShowPanel] = useState(true)
+      return (
+        <TranscriptReviewGateProvider
+          meetingId={meetingId}
+          fallbackCanManageReview
+        >
+          <ReviewGateProbe />
+          <button type='button' onClick={() => setShowPanel(!showPanel)}>
+            Toggle section
+          </button>
+          {showPanel && <TranscriptReviewAdmissionPanel />}
+        </TranscriptReviewGateProvider>
+      )
+    }
+    const screen = await render(<Harness />)
+    await expect
+      .element(screen.getByTestId('digest-status'))
+      .toHaveTextContent('ready')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Acknowledge', exact: true })
+    )
+    await expect
+      .element(screen.getByText('Core acknowledgement confirmed'))
+      .toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Toggle section' }))
+    await expect
+      .element(screen.getByTestId('transcript-review-admission'))
+      .not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Toggle section' }))
+    await expect
+      .element(screen.getByText('Core acknowledgement confirmed'))
+      .toBeInTheDocument()
+    expect(post).toHaveBeenCalledTimes(1)
   })
 
   it('blocks fresh review when the exact job is no longer waiting', async () => {

@@ -80,6 +80,8 @@ export type TranscriptReviewGateValue = {
   mutationBlocked: boolean
   eligibilityMessage: string | null
   ownsEvidenceObservation: boolean
+  hasUnresolvedOperation: boolean
+  observedJob: ProcessingJob | null
   observeEvidence: (
     base: TranscriptReviewEvidenceBase,
     segments: readonly TranscriptReviewDigestSegment[]
@@ -244,7 +246,9 @@ export function TranscriptReviewGateProvider({
   fallbackCanManageReview?: boolean
   canonicalSnapshot?: TranscriptReview | null
   canonicalEvidenceReady?: boolean
-  validateCurrentEvidence?: (evidence: TranscriptReviewEvidence) => string | null
+  validateCurrentEvidence?: (
+    evidence: TranscriptReviewEvidence
+  ) => string | null
   refreshEvidence?: () => void
   children: ReactNode
 }) {
@@ -301,7 +305,13 @@ export function TranscriptReviewGateProvider({
     evidenceValidatorRef.current = validateCurrentEvidence
     refreshEvidenceRef.current = refreshEvidence
     fallbackCanManageReviewRef.current = fallbackCanManageReview
-  }, [authorization, fallbackCanManageReview, session, validateCurrentEvidence, refreshEvidence])
+  }, [
+    authorization,
+    fallbackCanManageReview,
+    session,
+    validateCurrentEvidence,
+    refreshEvidence,
+  ])
 
   const isAuthorizedNow = useCallback(() => {
     return canManageReview(
@@ -685,48 +695,62 @@ export function TranscriptReviewGateProvider({
     [isCurrentAdmission, publishAdmission]
   )
 
-  const acknowledge = useCallback(async (fingerprint: string): Promise<
-    'blocked' | 'confirmed'
-  > => {
-    const currentEvidence = evidenceRef.current
-    const currentAcknowledgement = acknowledgementRef.current
-    if (
-      !currentEvidence ||
-      fingerprint !== currentEvidence.fingerprint ||
-      freshEligibility(currentEvidence) !== null ||
-      hasUncertainOperation() ||
-      !isAuthorizedNow() ||
-      mutationBlockedRef.current ||
-      hasActiveBoundary()
-    ) {
-      return 'blocked'
-    }
-    if (
-      currentAcknowledgement?.status === 'confirmed' &&
-      currentAcknowledgement.proofFingerprint === currentEvidence.fingerprint
-    ) {
-      return 'confirmed'
-    }
-    if (currentAcknowledgement?.status === 'uncertain') return 'blocked'
+  const acknowledge = useCallback(
+    async (fingerprint: string): Promise<'blocked' | 'confirmed'> => {
+      const currentEvidence = evidenceRef.current
+      const currentAcknowledgement = acknowledgementRef.current
+      if (
+        !currentEvidence ||
+        fingerprint !== currentEvidence.fingerprint ||
+        freshEligibility(currentEvidence) !== null ||
+        hasUncertainOperation() ||
+        !isAuthorizedNow() ||
+        mutationBlockedRef.current ||
+        hasActiveBoundary()
+      ) {
+        return 'blocked'
+      }
+      if (
+        currentAcknowledgement?.status === 'confirmed' &&
+        currentAcknowledgement.proofFingerprint === currentEvidence.fingerprint
+      ) {
+        return 'confirmed'
+      }
+      if (currentAcknowledgement?.status === 'uncertain') return 'blocked'
+      if (
+        admissionRef.current?.status === 'confirmed' &&
+        admissionRef.current.proof.processingJobId ===
+          currentEvidence.processingJobId
+      ) {
+        return 'blocked'
+      }
 
-    const operation: AcknowledgementOperation = {
-      kind: 'acknowledgement',
-      operationId: createIdentity('transcript acknowledgement'),
-      idempotencyKey: createIdentity('transcript acknowledgement idempotency'),
-      generation: generationRef.current,
-      proof: currentEvidence,
-      proofFingerprint: currentEvidence.fingerprint,
-      status: 'pending',
-      message: null,
-      execution: null,
-      receipt: null,
-    }
-    if (!sessionRef.current.processing.claimReviewCommand(operation)) {
-      return 'blocked'
-    }
-    acknowledgementRef.current = operation
-    return runAcknowledgement(operation, false)
-  }, [freshEligibility, hasActiveBoundary, hasUncertainOperation, isAuthorizedNow, runAcknowledgement])
+      const operation: AcknowledgementOperation = {
+        kind: 'acknowledgement',
+        operationId: createIdentity('transcript acknowledgement'),
+        idempotencyKey: createIdentity('transcript acknowledgement idempotency'),
+        generation: generationRef.current,
+        proof: currentEvidence,
+        proofFingerprint: currentEvidence.fingerprint,
+        status: 'pending',
+        message: null,
+        execution: null,
+        receipt: null,
+      }
+      if (!sessionRef.current.processing.claimReviewCommand(operation)) {
+        return 'blocked'
+      }
+      acknowledgementRef.current = operation
+      return runAcknowledgement(operation, false)
+    },
+    [
+      freshEligibility,
+      hasActiveBoundary,
+      hasUncertainOperation,
+      isAuthorizedNow,
+      runAcknowledgement,
+    ]
+  )
 
   const recoverAcknowledgement = useCallback(async (): Promise<
     'blocked' | 'confirmed'
@@ -748,53 +772,62 @@ export function TranscriptReviewGateProvider({
     return runAcknowledgement(operation, true)
   }, [hasActiveBoundary, isAuthorizedNow, runAcknowledgement])
 
-  const admit = useCallback(async (fingerprint: string): Promise<'blocked' | 'confirmed'> => {
-    const currentEvidence = evidenceRef.current
-    const currentReceipt = receiptRef.current
-    const currentAdmission = admissionRef.current
-    if (
-      !currentEvidence ||
-      fingerprint !== currentEvidence.fingerprint ||
-      freshEligibility(currentEvidence) !== null ||
-      hasUncertainOperation() ||
-      !currentReceipt ||
-      receiptProofFingerprintRef.current !== currentEvidence.fingerprint ||
-      !isAuthorizedNow() ||
-      mutationBlockedRef.current ||
-      hasActiveBoundary()
-    ) {
-      return 'blocked'
-    }
-    if (currentReceipt.admittedAt) return 'confirmed'
-    if (
-      currentAdmission?.status === 'confirmed' &&
-      currentAdmission.proofFingerprint === currentEvidence.fingerprint
-    ) {
-      return 'confirmed'
-    }
-    if (currentAdmission?.status === 'uncertain') return 'blocked'
+  const admit = useCallback(
+    async (fingerprint: string): Promise<'blocked' | 'confirmed'> => {
+      const currentEvidence = evidenceRef.current
+      const currentReceipt = receiptRef.current
+      const currentAdmission = admissionRef.current
+      if (
+        !currentEvidence ||
+        fingerprint !== currentEvidence.fingerprint ||
+        freshEligibility(currentEvidence) !== null ||
+        hasUncertainOperation() ||
+        !currentReceipt ||
+        receiptProofFingerprintRef.current !== currentEvidence.fingerprint ||
+        !isAuthorizedNow() ||
+        mutationBlockedRef.current ||
+        hasActiveBoundary()
+      ) {
+        return 'blocked'
+      }
+      if (currentReceipt.admittedAt) return 'confirmed'
+      if (
+        currentAdmission?.status === 'confirmed' &&
+        currentAdmission.proof.processingJobId === currentEvidence.processingJobId
+      ) {
+        return 'confirmed'
+      }
+      if (currentAdmission?.status === 'uncertain') return 'blocked'
 
-    const operation: AdmissionOperation = {
-      kind: 'admission',
-      operationId: createIdentity('Meeting Intelligence admission'),
-      idempotencyKey: createIdentity(
-        'Meeting Intelligence admission idempotency'
-      ),
-      generation: generationRef.current,
-      proof: currentEvidence,
-      proofFingerprint: currentEvidence.fingerprint,
-      receipt: currentReceipt,
-      status: 'pending',
-      message: null,
-      execution: null,
-      job: null,
-    }
-    if (!sessionRef.current.processing.claimReviewCommand(operation)) {
-      return 'blocked'
-    }
-    admissionRef.current = operation
-    return runAdmission(operation, false)
-  }, [freshEligibility, hasActiveBoundary, hasUncertainOperation, isAuthorizedNow, runAdmission])
+      const operation: AdmissionOperation = {
+        kind: 'admission',
+        operationId: createIdentity('Meeting Intelligence admission'),
+        idempotencyKey: createIdentity(
+          'Meeting Intelligence admission idempotency'
+        ),
+        generation: generationRef.current,
+        proof: currentEvidence,
+        proofFingerprint: currentEvidence.fingerprint,
+        receipt: currentReceipt,
+        status: 'pending',
+        message: null,
+        execution: null,
+        job: null,
+      }
+      if (!sessionRef.current.processing.claimReviewCommand(operation)) {
+        return 'blocked'
+      }
+      admissionRef.current = operation
+      return runAdmission(operation, false)
+    },
+    [
+      freshEligibility,
+      hasActiveBoundary,
+      hasUncertainOperation,
+      isAuthorizedNow,
+      runAdmission,
+    ]
+  )
 
   const recoverAdmission = useCallback(async (): Promise<
     'blocked' | 'confirmed'
@@ -831,6 +864,11 @@ export function TranscriptReviewGateProvider({
     []
   )
 
+  const hasUnresolvedOperation =
+    acknowledgementView.status === 'pending' ||
+    acknowledgementView.status === 'uncertain' ||
+    admissionView.status === 'pending' ||
+    admissionView.status === 'uncertain'
   const ownsEvidenceObservation = canonicalSnapshot !== undefined
   const currentBase = canonicalSnapshot ? evidenceBase(canonicalSnapshot) : null
   const evidenceVerified = Boolean(
@@ -857,6 +895,16 @@ export function TranscriptReviewGateProvider({
     jobs.data &&
     media.data
       ? { jobs: jobs.data, media: media.data }
+      : null
+  const lineage = currentBase ?? evidence
+  const observedJob =
+    authorizedNow && jobs?.isSuccess && lineage
+      ? (jobs.data?.find(
+          (job) =>
+            job.id === lineage.processingJobId &&
+            job.meetingId === meetingId &&
+            job.sourceMediaId === lineage.sourceMediaId
+        ) ?? null)
       : null
   const eligibilityMessage = !authorizedNow
     ? 'The current actor cannot manage transcript review.'
@@ -886,6 +934,8 @@ export function TranscriptReviewGateProvider({
       mutationBlocked,
       eligibilityMessage,
       ownsEvidenceObservation,
+      hasUnresolvedOperation,
+      observedJob,
       observeEvidence,
       clearEvidence,
       setMutationBlocked,
@@ -908,6 +958,8 @@ export function TranscriptReviewGateProvider({
       evidenceInputFingerprint,
       eligibilityMessage,
       ownsEvidenceObservation,
+      hasUnresolvedOperation,
+      observedJob,
       meetingId,
       mutationBlocked,
       observeEvidence,
@@ -1054,13 +1106,22 @@ export function TranscriptReviewGateBoundary({
         !snapshot ||
         !base ||
         !settled(queryClient.getQueryState(key)) ||
-        transcriptReviewEvidenceInputFingerprint(base) !== evidence.inputFingerprint
+        transcriptReviewEvidenceInputFingerprint(base) !==
+          evidence.inputFingerprint
       ) {
         return 'The current transcript must be verified again.'
       }
       if (
-        !settled(queryClient.getQueryState(reviewCoverageQuery(meetingId, snapshot).queryKey)) ||
-        !settled(queryClient.getQueryState(reviewSpeakersQuery(meetingId, snapshot).queryKey))
+        !settled(
+          queryClient.getQueryState(
+            reviewCoverageQuery(meetingId, snapshot).queryKey
+          )
+        ) ||
+        !settled(
+          queryClient.getQueryState(
+            reviewSpeakersQuery(meetingId, snapshot).queryKey
+          )
+        )
       ) {
         return 'Coverage and speaker evidence must finish verification.'
       }
