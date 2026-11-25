@@ -8,10 +8,17 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { useMeetingSession } from '../media/meeting-session-context'
 import type { ProcessingJob } from '../media/processing-api'
 import { useOptionalMeetingAuthorization } from '../meeting-authorization-context'
+import {
+  reviewCoverageQuery,
+  reviewSpeakersQuery,
+  transcriptReviewQuery,
+  type TranscriptReview,
+} from './transcript-api'
 import { computeTranscriptCorrectionDigest } from './transcript-correction-digest'
 import {
   acknowledgeTranscriptReview,
@@ -51,6 +58,7 @@ export type ReviewMutationView = {
   status: ReviewMutationStatus
   message: string | null
   proofFingerprint: string | null
+  processingJobId: string | null
   recoveryAvailable: boolean
 }
 
@@ -69,15 +77,17 @@ export type TranscriptReviewGateValue = {
   proofInvalidationMessage: string | null
   isAuthorized: boolean
   mutationBlocked: boolean
+  eligibilityMessage: string | null
+  ownsEvidenceObservation: boolean
   observeEvidence: (
     base: TranscriptReviewEvidenceBase,
     segments: readonly TranscriptReviewDigestSegment[]
   ) => void
   clearEvidence: () => void
   setMutationBlocked: (blocked: boolean) => void
-  acknowledge: () => Promise<'blocked' | 'confirmed'>
+  acknowledge: (fingerprint: string) => Promise<'blocked' | 'confirmed'>
   recoverAcknowledgement: () => Promise<'blocked' | 'confirmed'>
-  admit: () => Promise<'blocked' | 'confirmed'>
+  admit: (fingerprint: string) => Promise<'blocked' | 'confirmed'>
   recoverAdmission: () => Promise<'blocked' | 'confirmed'>
 }
 
@@ -168,6 +178,7 @@ function initialMutationView(): ReviewMutationView {
     status: 'idle',
     message: null,
     proofFingerprint: null,
+    processingJobId: null,
     recoveryAvailable: false,
   }
 }
@@ -191,6 +202,7 @@ function operationView(
     status: operation.status,
     message: operation.message,
     proofFingerprint: operation.proofFingerprint,
+    processingJobId: operation.proof.processingJobId,
     recoveryAvailable: operation.status === 'uncertain',
   }
 }
@@ -208,6 +220,7 @@ function canManageReview(
     authorization.scopeReady &&
     authorization.canPerformProtectedOperation &&
     authorization.capabilities.canAdmitProcessing &&
+    authorization.capabilities.canReadMeetingContent &&
     !authorization.isConfirmedAccessLoss
   )
 }
@@ -215,10 +228,16 @@ function canManageReview(
 export function TranscriptReviewGateProvider({
   meetingId,
   fallbackCanManageReview = false,
+  canonicalSnapshot,
+  validateCurrentEvidence,
+  refreshEvidence,
   children,
 }: {
   meetingId: string
   fallbackCanManageReview?: boolean
+  canonicalSnapshot?: TranscriptReview | null
+  validateCurrentEvidence?: (evidence: TranscriptReviewEvidence) => string | null
+  refreshEvidence?: () => void
   children: ReactNode
 }) {
   const authorization = useOptionalMeetingAuthorization()
@@ -226,6 +245,8 @@ export function TranscriptReviewGateProvider({
   const actorId = authorization?.identity?.userId ?? null
   const authorizationRef = useRef(authorization)
   const sessionRef = useRef(session)
+  const evidenceValidatorRef = useRef(validateCurrentEvidence)
+  const refreshEvidenceRef = useRef(refreshEvidence)
   const fallbackCanManageReviewRef = useRef(fallbackCanManageReview)
   const scopeRef = useRef<Scope>({ meetingId, actorId })
   const generationRef = useRef(0)
@@ -265,8 +286,10 @@ export function TranscriptReviewGateProvider({
   useLayoutEffect(() => {
     authorizationRef.current = authorization
     sessionRef.current = session
+    evidenceValidatorRef.current = validateCurrentEvidence
+    refreshEvidenceRef.current = refreshEvidence
     fallbackCanManageReviewRef.current = fallbackCanManageReview
-  }, [authorization, fallbackCanManageReview, session])
+  }, [authorization, fallbackCanManageReview, session, validateCurrentEvidence, refreshEvidence])
 
   const isAuthorizedNow = useCallback(() => {
     return canManageReview(
@@ -285,6 +308,14 @@ export function TranscriptReviewGateProvider({
   }, [])
 
   const clearCurrentScope = useCallback(() => {
+    for (const operation of [acknowledgementRef.current, admissionRef.current]) {
+      if (!operation) continue
+      operation.execution?.controller.abort()
+      sessionRef.current.processing.releaseReviewCommand(operation)
+    }
+    mutationBlockedRef.current = false
+    sessionRef.current.processing.setReviewWorkBlocked(false)
+    setMutationBlockedState(false)
     acknowledgementRef.current = null
     admissionRef.current = null
     evidenceRef.current = null
@@ -305,37 +336,14 @@ export function TranscriptReviewGateProvider({
     setAdmissionView(initialMutationView())
   }, [])
 
-  const invalidateProof = useCallback(
-    (message: string) => {
-      generationRef.current += 1
-      const operations = [
-        acknowledgementRef.current,
-        admissionRef.current,
-      ] as const
-      for (const operation of operations) {
-        if (!operation) continue
-        operation.execution?.controller.abort()
-        operation.execution = null
-        operation.status = 'rejected'
-        operation.message = message
-        if (operation.kind === 'acknowledgement') {
-          publishAcknowledgement()
-        } else {
-          publishAdmission()
-        }
-      }
-      acknowledgementRef.current = null
-      admissionRef.current = null
-      receiptRef.current = null
-      receiptProofFingerprintRef.current = null
-      setReceipt(null)
-      setReceiptProofFingerprint(null)
-      setAdmittedJob(null)
-      setProofInvalidated(true)
-      setProofInvalidationMessage(message)
-    },
-    [publishAcknowledgement, publishAdmission]
-  )
+  // Proof freshness and mutation outcome are independent. A newer transcript
+  // cannot prove that a previously dispatched request was rejected.
+  const invalidateProof = useCallback((message: string) => {
+    evidenceRef.current = null
+    setEvidence(null)
+    setProofInvalidated(true)
+    setProofInvalidationMessage(message)
+  }, [])
 
   const suspendOperation = useCallback(
     (operation: AcknowledgementOperation | AdmissionOperation | null) => {
@@ -343,8 +351,12 @@ export function TranscriptReviewGateProvider({
       if (!operation || !execution) return
       execution.controller.abort()
       operation.execution = null
-      operation.status = execution.requestStarted ? 'uncertain' : 'rejected'
-      operation.message = execution.requestStarted
+      const uncertain = execution.requestStarted || execution.replayingUncertain
+      operation.status = uncertain ? 'uncertain' : 'rejected'
+      if (!uncertain) {
+        sessionRef.current.processing.releaseReviewCommand(operation)
+      }
+      operation.message = uncertain
         ? 'The request may have committed before authorization changed.'
         : 'Authorization changed before the request was sent.'
       if (operation.kind === 'acknowledgement') publishAcknowledgement()
@@ -377,15 +389,30 @@ export function TranscriptReviewGateProvider({
     const current = authorizedNow
     const previous = previousAuthorizationRef.current
     previousAuthorizationRef.current = current
+    if (
+      authorization?.isConfirmedAccessLoss ||
+      authorization?.capabilities.authorizationResolution === 'denied'
+    ) {
+      generationRef.current += 1
+      clearCurrentScope()
+      return
+    }
     if (previous === true && !current) {
       generationRef.current += 1
       suspendOperation(acknowledgementRef.current)
       suspendOperation(admissionRef.current)
     }
-  }, [authorizedNow, suspendOperation])
+  }, [
+    authorization?.isConfirmedAccessLoss,
+    authorization?.capabilities.authorizationResolution,
+    authorizedNow,
+    clearCurrentScope,
+    suspendOperation,
+  ])
 
   const setMutationBlocked = useCallback((blocked: boolean) => {
     mutationBlockedRef.current = blocked
+    sessionRef.current.processing.setReviewWorkBlocked(blocked)
     setMutationBlockedState(blocked)
   }, [])
 
@@ -413,6 +440,7 @@ export function TranscriptReviewGateProvider({
       }
       observationKeyRef.current = digestInputKey
       const digestGeneration = ++digestGenerationRef.current
+      evidenceRef.current = null
       setEvidenceInputFingerprint(inputFingerprint)
       setDigestStatus('computing')
       setDigestError(null)
@@ -432,6 +460,10 @@ export function TranscriptReviewGateProvider({
           evidenceRef.current = nextEvidence
           setEvidence(nextEvidence)
           setDigestStatus('ready')
+          if (receiptProofFingerprintRef.current === nextEvidence.fingerprint) {
+            setProofInvalidated(false)
+            setProofInvalidationMessage(null)
+          }
         })
         .catch((error: unknown) => {
           if (digestGenerationRef.current !== digestGeneration) return
@@ -457,14 +489,23 @@ export function TranscriptReviewGateProvider({
     observationKeyRef.current = null
     digestGenerationRef.current += 1
     evidenceRef.current = null
-    receiptRef.current = null
-    receiptProofFingerprintRef.current = null
-    setReceiptProofFingerprint(null)
     setEvidence(null)
     setEvidenceInputFingerprint(null)
     setDigestStatus('idle')
     setDigestError(null)
   }, [invalidateProof])
+
+  useLayoutEffect(() => {
+    if (canonicalSnapshot === undefined) return
+    const base = authorizedNow && canonicalSnapshot
+      ? evidenceBase(canonicalSnapshot)
+      : null
+    if (!base || !canonicalSnapshot) {
+      clearEvidence()
+      return
+    }
+    observeEvidence(base, canonicalSnapshot.transcript.segments)
+  }, [authorizedNow, canonicalSnapshot, clearEvidence, observeEvidence])
 
   const isCurrentAcknowledgement = useCallback(
     (operation: AcknowledgementOperation, execution: Execution) => {
@@ -507,6 +548,42 @@ export function TranscriptReviewGateProvider({
     )
   }, [])
 
+  const freshEligibility = useCallback(
+    (proof: TranscriptReviewEvidence): string | null => {
+      if (proof.meetingId !== scopeRef.current.meetingId) {
+        return 'The transcript belongs to another meeting.'
+      }
+      const evidenceProblem = evidenceValidatorRef.current?.(proof)
+      if (evidenceProblem) return evidenceProblem
+      const snapshot = sessionRef.current.processing.getAuthoritativeSnapshot()
+      if (!snapshot) return 'Current job and source evidence are not verified.'
+      const job = snapshot.jobs.find((item) => item.id === proof.processingJobId)
+      if (
+        !job ||
+        job.meetingId !== proof.meetingId ||
+        job.sourceMediaId !== proof.sourceMediaId ||
+        job.jobType !== 'OFFLINE_MEETING_PROCESSING' ||
+        job.status !== 'WAITING_FOR_REVIEW'
+      ) {
+        return 'The exact processing job is not waiting for transcript review.'
+      }
+      if (!snapshot.media.some((item) =>
+        item.id === proof.sourceMediaId &&
+        item.meetingId === proof.meetingId &&
+        item.status === 'AVAILABLE'
+      )) {
+        return 'The reviewed source media is not available.'
+      }
+      return null
+    },
+    []
+  )
+
+  const hasUncertainOperation = useCallback(() =>
+    acknowledgementRef.current?.status === 'uncertain' ||
+    admissionRef.current?.status === 'uncertain',
+  [])
+
   const runAcknowledgement = useCallback(
     async (
       operation: AcknowledgementOperation,
@@ -541,29 +618,16 @@ export function TranscriptReviewGateProvider({
         receiptProofFingerprintRef.current = operation.proofFingerprint
         setReceipt(nextReceipt)
         setReceiptProofFingerprint(operation.proofFingerprint)
-        setProofInvalidated(false)
-        setProofInvalidationMessage(null)
+        const proofIsCurrent =
+          evidenceRef.current?.fingerprint === operation.proofFingerprint
+        setProofInvalidated(!proofIsCurrent)
+        setProofInvalidationMessage(
+          proofIsCurrent
+            ? null
+            : 'This acknowledgement belongs to a historical transcript revision.'
+        )
         publishAcknowledgement()
-
-        if (nextReceipt.admittedAt) {
-          const admitted: AdmissionOperation = {
-            kind: 'admission',
-            operationId: createIdentity('Meeting Intelligence admission'),
-            idempotencyKey: createIdentity(
-              'Meeting Intelligence admission idempotency'
-            ),
-            generation: generationRef.current,
-            proof: operation.proof,
-            proofFingerprint: operation.proofFingerprint,
-            receipt: nextReceipt,
-            status: 'confirmed',
-            message: null,
-            execution: null,
-            job: null,
-          }
-          admissionRef.current = admitted
-          publishAdmission()
-        }
+        sessionRef.current.processing.releaseReviewCommand(operation)
         return 'confirmed'
       } catch (error) {
         if (!isCurrentAcknowledgement(operation, execution)) {
@@ -574,12 +638,20 @@ export function TranscriptReviewGateProvider({
           isUncertainOutcome(error) || execution.replayingUncertain
             ? 'uncertain'
             : 'rejected'
-        operation.message = normalizeCoreApiError(error).message
+        const normalized = normalizeCoreApiError(error)
+        operation.message = normalized.message
+        if (operation.status !== 'uncertain') {
+          sessionRef.current.processing.releaseReviewCommand(operation)
+        }
+        if (normalized.status === 409) {
+          refreshEvidenceRef.current?.()
+          void sessionRef.current.processing.refreshObservation?.()
+        }
         publishAcknowledgement()
         throw error
       }
     },
-    [isCurrentAcknowledgement, publishAcknowledgement, publishAdmission]
+    [isCurrentAcknowledgement, publishAcknowledgement]
   )
 
   const runAdmission = useCallback(
@@ -615,7 +687,8 @@ export function TranscriptReviewGateProvider({
         operation.job = nextJob
         setAdmittedJob(nextJob)
         publishAdmission()
-        sessionRef.current.processing.reconcileJob?.(nextJob)
+        sessionRef.current.processing.reconcileJob(nextJob)
+        sessionRef.current.processing.releaseReviewCommand(operation)
         return 'confirmed'
       } catch (error) {
         if (!isCurrentAdmission(operation, execution)) {
@@ -626,7 +699,15 @@ export function TranscriptReviewGateProvider({
           isUncertainOutcome(error) || execution.replayingUncertain
             ? 'uncertain'
             : 'rejected'
-        operation.message = normalizeCoreApiError(error).message
+        const normalized = normalizeCoreApiError(error)
+        operation.message = normalized.message
+        if (operation.status !== 'uncertain') {
+          sessionRef.current.processing.releaseReviewCommand(operation)
+        }
+        if (normalized.status === 409) {
+          refreshEvidenceRef.current?.()
+          void sessionRef.current.processing.refreshObservation?.()
+        }
         publishAdmission()
         throw error
       }
@@ -634,13 +715,16 @@ export function TranscriptReviewGateProvider({
     [isCurrentAdmission, publishAdmission]
   )
 
-  const acknowledge = useCallback(async (): Promise<
+  const acknowledge = useCallback(async (fingerprint: string): Promise<
     'blocked' | 'confirmed'
   > => {
     const currentEvidence = evidenceRef.current
     const currentAcknowledgement = acknowledgementRef.current
     if (
       !currentEvidence ||
+      fingerprint !== currentEvidence.fingerprint ||
+      freshEligibility(currentEvidence) !== null ||
+      hasUncertainOperation() ||
       !isAuthorizedNow() ||
       mutationBlockedRef.current ||
       hasActiveBoundary()
@@ -667,9 +751,12 @@ export function TranscriptReviewGateProvider({
       execution: null,
       receipt: null,
     }
+    if (!sessionRef.current.processing.claimReviewCommand(operation)) {
+      return 'blocked'
+    }
     acknowledgementRef.current = operation
     return runAcknowledgement(operation, false)
-  }, [hasActiveBoundary, isAuthorizedNow, runAcknowledgement])
+  }, [freshEligibility, hasActiveBoundary, hasUncertainOperation, isAuthorizedNow, runAcknowledgement])
 
   const recoverAcknowledgement = useCallback(async (): Promise<
     'blocked' | 'confirmed'
@@ -685,15 +772,21 @@ export function TranscriptReviewGateProvider({
     ) {
       return 'blocked'
     }
+    if (!sessionRef.current.processing.claimReviewCommand(operation)) {
+      return 'blocked'
+    }
     return runAcknowledgement(operation, true)
   }, [hasActiveBoundary, isAuthorizedNow, runAcknowledgement])
 
-  const admit = useCallback(async (): Promise<'blocked' | 'confirmed'> => {
+  const admit = useCallback(async (fingerprint: string): Promise<'blocked' | 'confirmed'> => {
     const currentEvidence = evidenceRef.current
     const currentReceipt = receiptRef.current
     const currentAdmission = admissionRef.current
     if (
       !currentEvidence ||
+      fingerprint !== currentEvidence.fingerprint ||
+      freshEligibility(currentEvidence) !== null ||
+      hasUncertainOperation() ||
       !currentReceipt ||
       receiptProofFingerprintRef.current !== currentEvidence.fingerprint ||
       !isAuthorizedNow() ||
@@ -726,9 +819,12 @@ export function TranscriptReviewGateProvider({
       execution: null,
       job: null,
     }
+    if (!sessionRef.current.processing.claimReviewCommand(operation)) {
+      return 'blocked'
+    }
     admissionRef.current = operation
     return runAdmission(operation, false)
-  }, [hasActiveBoundary, isAuthorizedNow, runAdmission])
+  }, [freshEligibility, hasActiveBoundary, hasUncertainOperation, isAuthorizedNow, runAdmission])
 
   const recoverAdmission = useCallback(async (): Promise<
     'blocked' | 'confirmed'
@@ -744,37 +840,60 @@ export function TranscriptReviewGateProvider({
     ) {
       return 'blocked'
     }
+    if (!sessionRef.current.processing.claimReviewCommand(operation)) {
+      return 'blocked'
+    }
     return runAdmission(operation, true)
   }, [hasActiveBoundary, isAuthorizedNow, runAdmission])
 
   useLayoutEffect(
     () => () => {
       generationRef.current += 1
-      acknowledgementRef.current?.execution?.controller.abort()
-      admissionRef.current?.execution?.controller.abort()
+      digestGenerationRef.current += 1
+      observationKeyRef.current = null
+      evidenceRef.current = null
+      for (const operation of [acknowledgementRef.current, admissionRef.current]) {
+        if (!operation) continue
+        operation.execution?.controller.abort()
+        sessionRef.current.processing.releaseReviewCommand(operation)
+      }
     },
     []
   )
 
   const receiptIsCurrent = Boolean(
+    authorizedNow &&
     receipt && evidence && receiptProofFingerprint === evidence.fingerprint
   )
+  const eligibilityMessage = !authorizedNow
+    ? 'The current actor cannot manage transcript review.'
+    : mutationBlocked
+      ? 'Finish or discard unresolved transcript review work.'
+      : !evidence
+        ? 'Current transcript evidence is not verified.'
+        : freshEligibility(evidence) ??
+          (session.processing.unresolvedOperations.length > 0
+            ? 'Resolve the outstanding processing operation first.'
+            : null)
+  const ownsEvidenceObservation = canonicalSnapshot !== undefined
   const value = useMemo<TranscriptReviewGateValue>(
     () => ({
       meetingId,
-      evidence,
-      evidenceInputFingerprint,
+      evidence: authorizedNow ? evidence : null,
+      evidenceInputFingerprint: authorizedNow ? evidenceInputFingerprint : null,
       digestStatus,
       digestError,
-      receipt,
+      receipt: authorizedNow ? receipt : null,
       receiptIsCurrent,
-      acknowledgement: acknowledgementView,
-      admission: admissionView,
-      admittedJob,
+      acknowledgement: authorizedNow ? acknowledgementView : initialMutationView(),
+      admission: authorizedNow ? admissionView : initialMutationView(),
+      admittedJob: authorizedNow ? admittedJob : null,
       proofInvalidated,
       proofInvalidationMessage,
       isAuthorized: authorizedNow,
       mutationBlocked,
+      eligibilityMessage,
+      ownsEvidenceObservation,
       observeEvidence,
       clearEvidence,
       setMutationBlocked,
@@ -795,6 +914,8 @@ export function TranscriptReviewGateProvider({
       digestStatus,
       evidence,
       evidenceInputFingerprint,
+      eligibilityMessage,
+      ownsEvidenceObservation,
       meetingId,
       mutationBlocked,
       observeEvidence,
@@ -812,6 +933,109 @@ export function TranscriptReviewGateProvider({
     <TranscriptReviewGateContext.Provider value={value}>
       {children}
     </TranscriptReviewGateContext.Provider>
+  )
+}
+
+function evidenceBase(snapshot: TranscriptReview): TranscriptReviewEvidenceBase | null {
+  const transcript = snapshot.transcript
+  if (
+    !transcript.finalizedAt ||
+    !['READY', 'READY_WITH_WARNINGS'].includes(transcript.status)
+  ) {
+    return null
+  }
+  return {
+    meetingId: transcript.meetingId,
+    processingJobId: transcript.processingJobId,
+    sourceMediaId: transcript.sourceMediaId,
+    transcriptId: transcript.id,
+    versionNumber: transcript.versionNumber,
+    contentRevision: transcript.contentRevision,
+    transcriptStatus: transcript.status,
+    finalizedAt: transcript.finalizedAt,
+    etag: snapshot.etag,
+  }
+}
+
+function settled(state: {
+  status: string
+  fetchStatus: string
+  isInvalidated: boolean
+} | undefined): boolean {
+  return Boolean(
+    state?.status === 'success' &&
+    state.fetchStatus === 'idle' &&
+    !state.isInvalidated
+  )
+}
+
+/** The ordinary route owns evidence observation, not its disposable tab. */
+export function TranscriptReviewGateBoundary({
+  meetingId,
+  fallbackCanManageReview = false,
+  children,
+}: {
+  meetingId: string
+  fallbackCanManageReview?: boolean
+  children: ReactNode
+}) {
+  const authorization = useOptionalMeetingAuthorization()
+  const queryClient = useQueryClient()
+  const enabled = canManageReview(authorization, fallbackCanManageReview)
+  const transcript = useQuery({
+    ...transcriptReviewQuery(meetingId),
+    enabled,
+  })
+  const coverage = useQuery({
+    ...reviewCoverageQuery(meetingId, transcript.data),
+    enabled: enabled && transcript.isSuccess,
+  })
+  const speakers = useQuery({
+    ...reviewSpeakersQuery(meetingId, transcript.data),
+    enabled: enabled && transcript.isSuccess,
+  })
+  const validateCurrentEvidence = useCallback(
+    (evidence: TranscriptReviewEvidence): string | null => {
+      const key = transcriptReviewQuery(meetingId).queryKey
+      const snapshot = queryClient.getQueryData<TranscriptReview>(key)
+      const base = snapshot ? evidenceBase(snapshot) : null
+      if (
+        !snapshot ||
+        !base ||
+        !settled(queryClient.getQueryState(key)) ||
+        transcriptReviewEvidenceInputFingerprint(base) !== evidence.inputFingerprint
+      ) {
+        return 'The current transcript must be verified again.'
+      }
+      if (
+        !settled(queryClient.getQueryState(reviewCoverageQuery(meetingId, snapshot).queryKey)) ||
+        !settled(queryClient.getQueryState(reviewSpeakersQuery(meetingId, snapshot).queryKey))
+      ) {
+        return 'Coverage and speaker evidence must finish verification.'
+      }
+      return null
+    },
+    [meetingId, queryClient]
+  )
+  const refreshEvidence = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['transcript', meetingId] })
+  }, [meetingId, queryClient])
+  // Reading both observers keeps their verification transitions reactive.
+  const canonicalSnapshot =
+    enabled && transcript.isSuccess && coverage.isSuccess && speakers.isSuccess
+      ? transcript.data
+      : null
+
+  return (
+    <TranscriptReviewGateProvider
+      meetingId={meetingId}
+      fallbackCanManageReview={fallbackCanManageReview}
+      canonicalSnapshot={canonicalSnapshot}
+      validateCurrentEvidence={validateCurrentEvidence}
+      refreshEvidence={refreshEvidence}
+    >
+      {children}
+    </TranscriptReviewGateProvider>
   )
 }
 

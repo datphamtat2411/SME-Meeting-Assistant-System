@@ -377,15 +377,19 @@ function TranscriptReviewWorkspaceContent({
   const transcriptRef = useRef<TranscriptReview | null>(null)
   const canCorrectRef = useRef(canEditCanonicalTranscript)
   const canMapRef = useRef(canMapCanonicalSpeakers)
-  const operation = useTranscriptReviewOperation({
-    meetingId,
-    actorId: authorization?.identity?.userId ?? null,
-    transcriptId: transcriptValue?.id ?? null,
-    canRead,
-    confirmedAccessLoss,
-    canCorrect: canEditCanonicalTranscript,
-    canMap: canMapCanonicalSpeakers,
-  })
+  const operation = useTranscriptReviewOperation(
+    {
+      meetingId,
+      actorId: authorization?.identity?.userId ?? null,
+      transcriptId: transcriptValue?.id ?? null,
+      canRead,
+      confirmedAccessLoss,
+      canCorrect: canEditCanonicalTranscript,
+      canMap: canMapCanonicalSpeakers,
+    },
+    session.processing.claimReviewCommand,
+    session.processing.releaseReviewCommand
+  )
   const reviewGate = useOptionalTranscriptReviewGate()
   const { acquire, isCurrent, release, interrupted, clearInterrupted } =
     operation
@@ -413,10 +417,13 @@ function TranscriptReviewWorkspaceContent({
       (draft) => draft.transcriptId !== transcriptValue?.id
     ) ||
     Boolean(mappingDraft && mappingDraft.transcriptId !== transcriptValue?.id)
-  const blocked = operation.pending || hasUncertainty || replacementDraft
-  const reviewGatePending =
+  const gateWriteBlocked =
     reviewGate?.acknowledgement.status === 'pending' ||
-    reviewGate?.admission.status === 'pending'
+    reviewGate?.acknowledgement.status === 'uncertain' ||
+    reviewGate?.admission.status === 'pending' ||
+    reviewGate?.admission.status === 'uncertain'
+  const blocked =
+    operation.pending || hasUncertainty || replacementDraft || gateWriteBlocked
   const setReviewGateBlocked = reviewGate?.setMutationBlocked
   const setReviewDirty = session.setTranscriptReviewDirty
   const reviewDirty =
@@ -424,7 +431,7 @@ function TranscriptReviewWorkspaceContent({
     Boolean(mappingDraft) ||
     operation.pending ||
     hasUncertainty ||
-    reviewGatePending
+    replacementDraft
 
   useLayoutEffect(() => {
     transcriptRef.current = transcriptSnapshot
@@ -437,11 +444,11 @@ function TranscriptReviewWorkspaceContent({
     return () => setReviewDirty?.(false)
   }, [confirmedAccessLoss, reviewDirty, setReviewDirty])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!setReviewGateBlocked) return
-    setReviewGateBlocked(blocked)
+    setReviewGateBlocked(!confirmedAccessLoss && reviewDirty)
     return () => setReviewGateBlocked(false)
-  }, [blocked, setReviewGateBlocked])
+  }, [confirmedAccessLoss, reviewDirty, setReviewGateBlocked])
 
   useEffect(() => {
     if (!selectedSegmentId) return
@@ -845,9 +852,15 @@ function TranscriptReviewWorkspaceContent({
   }
 
   useEffect(() => {
-    if (!reviewGate?.clearEvidence || !reviewGate.observeEvidence) return
+    if (
+      !reviewGate ||
+      reviewGate.ownsEvidenceObservation
+    ) return
     if (
       !canRead ||
+      !transcriptReview.isSuccess ||
+      !coverage.isSuccess ||
+      !speakers.isSuccess ||
       !transcriptSnapshot ||
       !transcriptValue ||
       !isFinalized ||
@@ -879,6 +892,9 @@ function TranscriptReviewWorkspaceContent({
     )
   }, [
     canRead,
+    coverage.isSuccess,
+    speakers.isSuccess,
+    transcriptReview.isSuccess,
     reviewGate?.clearEvidence,
     reviewGate?.observeEvidence,
     isFinalized,

@@ -77,7 +77,8 @@ function assertAdmissionBinding(
   if (
     job.id !== jobId ||
     job.meetingId !== proof.meetingId ||
-    job.sourceMediaId !== proof.sourceMediaId
+    job.sourceMediaId !== proof.sourceMediaId ||
+    job.jobType !== 'OFFLINE_MEETING_PROCESSING'
   ) {
     throw unboundResponse(
       'Core did not bind Meeting Intelligence admission to the reviewed job and source.'
@@ -91,7 +92,7 @@ export async function acknowledgeTranscriptReview(
   idempotencyKey: string,
   signal?: AbortSignal
 ): Promise<TranscriptReviewReceipt> {
-  const receipt = reviewReceiptSchema.parse(
+  const parsed = reviewReceiptSchema.safeParse(
     await coreApi.post<unknown>(
       `/processing-jobs/${encodeURIComponent(jobId)}/transcript-review/acknowledge`,
       {
@@ -102,8 +103,11 @@ export async function acknowledgeTranscriptReview(
       requestOptions(idempotencyKey, signal)
     )
   )
-  assertReceiptBinding(receipt, jobId, proof)
-  return receipt
+  if (!parsed.success) {
+    throw unboundResponse('Core returned an invalid transcript review receipt.')
+  }
+  assertReceiptBinding(parsed.data, jobId, proof)
+  return parsed.data
 }
 
 export async function admitMeetingIntelligence(
@@ -128,7 +132,7 @@ export async function admitMeetingIntelligence(
     })
   }
 
-  const job = processingJobSchema.parse(
+  const parsed = processingJobSchema.safeParse(
     await coreApi.post<unknown>(
       `/processing-jobs/${encodeURIComponent(jobId)}/meeting-intelligence/admit`,
       {
@@ -140,6 +144,9 @@ export async function admitMeetingIntelligence(
       requestOptions(idempotencyKey, signal)
     )
   )
-  assertAdmissionBinding(job, jobId, proof)
-  return job
+  if (!parsed.success) {
+    throw unboundResponse('Core returned an invalid admission response.')
+  }
+  assertAdmissionBinding(parsed.data, jobId, proof)
+  return parsed.data
 }

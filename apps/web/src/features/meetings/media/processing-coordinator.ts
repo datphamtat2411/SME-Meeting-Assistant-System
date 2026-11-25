@@ -83,6 +83,10 @@ export type ProcessingCoordinatorValue = {
   isOperationPending: (logicalIdentity: string) => boolean
   isOperationUncertain: (logicalIdentity: string) => boolean
   reconcileJob: (job: ProcessingJob) => void
+  getAuthoritativeSnapshot: () => AuthoritativeSnapshot | null
+  claimReviewCommand: (owner: object) => boolean
+  releaseReviewCommand: (owner: object) => void
+  setReviewWorkBlocked: (blocked: boolean) => void
   selectProcessingJob: (jobId: string | null) => void
   admit: (mediaId: string) => Promise<ProcessingCommandResult>
   retry: (jobId: string, stageCode?: string) => Promise<ProcessingCommandResult>
@@ -284,6 +288,8 @@ export function useProcessingCoordinator({
   const authorizationRef = useRef(authorization)
   const fallbackRef = useRef(fallback)
   const operations = useRef(new Map<string, ProcessingOperation>())
+  const reviewCommandOwner = useRef<object | null>(null)
+  const reviewWorkBlocked = useRef(false)
   const lifecycle = useRef(new Map<string, string>())
   const generation = useRef(0)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
@@ -313,6 +319,8 @@ export function useProcessingCoordinator({
       operation.execution?.controller.abort()
     }
     operations.current.clear()
+    reviewCommandOwner.current = null
+    reviewWorkBlocked.current = false
     lifecycle.current.clear()
     setSelectedJobId(null)
     publishOperations()
@@ -453,6 +461,27 @@ export function useProcessingCoordinator({
     []
   )
 
+  const claimReviewCommand = useCallback((owner: object) => {
+    if (
+      operations.current.size > 0 ||
+      (reviewCommandOwner.current && reviewCommandOwner.current !== owner)
+    ) {
+      return false
+    }
+    reviewCommandOwner.current = owner
+    return true
+  }, [])
+
+  const releaseReviewCommand = useCallback((owner: object) => {
+    if (reviewCommandOwner.current === owner) {
+      reviewCommandOwner.current = null
+    }
+  }, [])
+
+  const setReviewWorkBlocked = useCallback((blocked: boolean) => {
+    reviewWorkBlocked.current = blocked
+  }, [])
+
   const canReplayOperation = useCallback(
     (
       operation: ProcessingOperation,
@@ -482,6 +511,7 @@ export function useProcessingCoordinator({
         | 'execution'
       >
     ): ProcessingOperation | null => {
+      if (reviewCommandOwner.current || reviewWorkBlocked.current) return null
       const existing = operations.current.get(logicalIdentity)
       if (existing) {
         if (existing.status === 'pending' && existing.execution) return null
@@ -957,6 +987,10 @@ export function useProcessingCoordinator({
     isOperationPending,
     isOperationUncertain,
     reconcileJob: reconcileConfirmedJob,
+    getAuthoritativeSnapshot,
+    claimReviewCommand,
+    releaseReviewCommand,
+    setReviewWorkBlocked,
     selectProcessingJob: setSelectedJobId,
     admit,
     retry,

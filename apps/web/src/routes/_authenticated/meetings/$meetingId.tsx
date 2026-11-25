@@ -4,6 +4,7 @@ import {
   useBlocker,
   useMatchRoute,
 } from '@tanstack/react-router'
+import { TranscriptReviewGateBoundary } from '@/features/meetings/intelligence/transcript-review-gate'
 import {
   MeetingSessionProvider,
   useMeetingSession,
@@ -44,27 +45,29 @@ function MeetingRoute() {
   return (
     <MeetingAuthorizationProvider key={meetingId} meetingId={meetingId}>
       <MeetingSessionProvider key={meetingId} meetingId={meetingId}>
-        <MeetingNavigationGuard />
-        {isLiveRoute ? (
-          <Outlet />
-        ) : (
-          <MeetingWorkspacePage
-            key={meetingId}
-            meetingId={meetingId}
-            section={
-              search.evidenceTranscriptId ||
-              search.evidenceSegmentId ||
-              search.evidenceReferenceIssue
-                ? meetingWorkspaceSectionSchema.enum.transcript
-                : (search.section ??
-                  meetingWorkspaceSectionSchema.enum.overview)
-            }
-            evidenceTranscriptId={search.evidenceTranscriptId}
-            evidenceSegmentId={search.evidenceSegmentId}
-            evidenceReferenceIssue={search.evidenceReferenceIssue}
-            onSectionChange={changeSection}
-          />
-        )}
+        <TranscriptReviewGateBoundary meetingId={meetingId}>
+          <MeetingNavigationGuard />
+          {isLiveRoute ? (
+            <Outlet />
+          ) : (
+            <MeetingWorkspacePage
+              key={meetingId}
+              meetingId={meetingId}
+              section={
+                search.evidenceTranscriptId ||
+                search.evidenceSegmentId ||
+                search.evidenceReferenceIssue
+                  ? meetingWorkspaceSectionSchema.enum.transcript
+                  : (search.section ??
+                    meetingWorkspaceSectionSchema.enum.overview)
+              }
+              evidenceTranscriptId={search.evidenceTranscriptId}
+              evidenceSegmentId={search.evidenceSegmentId}
+              evidenceReferenceIssue={search.evidenceReferenceIssue}
+              onSectionChange={changeSection}
+            />
+          )}
+        </TranscriptReviewGateBoundary>
       </MeetingSessionProvider>
     </MeetingAuthorizationProvider>
   )
