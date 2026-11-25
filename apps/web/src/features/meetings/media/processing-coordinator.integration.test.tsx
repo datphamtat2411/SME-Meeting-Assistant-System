@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
@@ -102,6 +103,7 @@ function deferred<T>() {
 
 function CoordinatorHarness() {
   const { processing } = useMeetingSession()
+  const [reprocessResult, setReprocessResult] = useState('idle')
   return (
     <>
       <button
@@ -136,7 +138,8 @@ function CoordinatorHarness() {
         onClick={() =>
           void processing
             .reprocess(failedJobId, firstMediaId)
-            .catch(() => undefined)
+            .then((result) => setReprocessResult(result.status))
+            .catch(() => setReprocessResult('rejected'))
         }
       >
         Reprocess failed job
@@ -151,6 +154,10 @@ function CoordinatorHarness() {
       >
         Reprocess cancelled job
       </button>
+      <output data-testid='reprocess-result'>{reprocessResult}</output>
+      <output data-testid='reprocess-state'>
+        {processing.unresolvedOperations.length}
+      </output>
       <output data-testid='operation-state'>
         {processing.isOperationPending(`admission:${firstMediaId}`)
           ? 'admission-pending'
@@ -321,14 +328,16 @@ describe('meeting-scoped processing command owner', () => {
         retryable: false,
       }),
     ]
-    processingMocks.requestProcessing.mockResolvedValue(
-      processingJob({
-        id: '77777777-7777-4777-8777-777777777777',
-        status: 'PENDING',
-        retryable: false,
-        reprocessOfJobId: failedJobId,
-      })
-    )
+    const child = processingJob({
+      id: '77777777-7777-4777-8777-777777777777',
+      status: 'PENDING',
+      retryable: false,
+      reprocessOfJobId: failedJobId,
+    })
+    processingMocks.requestProcessing.mockImplementation(async () => {
+      processingMocks.jobs.push(child)
+      return child
+    })
     const { client, screen } = await renderCoordinator()
     client.setQueryData(['processing-jobs', meetingId], processingMocks.jobs)
 
@@ -342,5 +351,73 @@ describe('meeting-scoped processing command owner', () => {
     expect(
       processingMocks.requestProcessing.mock.calls[0]?.slice(0, 3)
     ).toEqual([meetingId, firstMediaId, failedJobId])
+    await expect
+      .element(screen.getByTestId('reprocess-result'))
+      .toHaveTextContent('confirmed')
+    expect(client.getQueryData(['processing-job', child.id])).toEqual(child)
+    await expect
+      .element(screen.getByTestId('reprocess-state'))
+      .toHaveTextContent('0')
+  })
+
+  it('does not accept the parent as the new reprocessing job', async () => {
+    processingMocks.jobs = [processingJob()]
+    processingMocks.requestProcessing.mockResolvedValue(
+      processingJob({ reprocessOfJobId: failedJobId })
+    )
+    const { client, screen } = await renderCoordinator()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reprocess failed job' })
+    )
+
+    await expect
+      .element(screen.getByTestId('reprocess-result'))
+      .toHaveTextContent('rejected')
+    await expect
+      .element(screen.getByTestId('reprocess-state'))
+      .toHaveTextContent('1')
+    expect(client.getQueryData(['processing-job', failedJobId])).toBeUndefined()
+  })
+
+  it('retains the original uncertain intent after a definitive replay rejection', async () => {
+    processingMocks.requestProcessing
+      .mockRejectedValueOnce(
+        Object.assign(new Error('network'), { recoveryOutcome: 'uncertain' })
+      )
+      .mockRejectedValueOnce(new Error('Replay rejected'))
+      .mockResolvedValueOnce(
+        processingJob({ status: 'PENDING', retryable: false })
+      )
+    const { screen } = await renderCoordinator()
+    const admission = screen.getByRole('button', { name: 'Double admission' })
+
+    await userEvent.click(admission)
+    await expect
+      .element(screen.getByTestId('operation-state'))
+      .toHaveTextContent('admission-uncertain')
+
+    await userEvent.click(admission)
+    await expect
+      .poll(() => processingMocks.requestProcessing.mock.calls.length)
+      .toBe(2)
+    await expect
+      .element(screen.getByTestId('operation-state'))
+      .toHaveTextContent('admission-uncertain')
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Admit second source' })
+    )
+    expect(processingMocks.requestProcessing).toHaveBeenCalledTimes(2)
+
+    await userEvent.click(admission)
+    await expect
+      .element(screen.getByTestId('operation-state'))
+      .toHaveTextContent('admission-idle')
+    expect(processingMocks.requestProcessing).toHaveBeenCalledTimes(3)
+    const keys = processingMocks.requestProcessing.mock.calls.map(
+      (call) => call[3].idempotencyKey
+    )
+    expect(new Set(keys).size).toBe(1)
   })
 })

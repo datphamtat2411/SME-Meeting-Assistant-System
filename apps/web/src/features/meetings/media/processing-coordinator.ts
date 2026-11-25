@@ -41,6 +41,7 @@ type ProcessingExecution = {
   executionId: string
   controller: AbortController
   requestStarted: boolean
+  replayingUncertain: boolean
 }
 
 type ProcessingOperation = {
@@ -488,6 +489,7 @@ export function useProcessingCoordinator({
           executionId: createOperationIdentity(),
           controller: new AbortController(),
           requestStarted: false,
+          replayingUncertain: existing.status === 'uncertain',
         }
         existing.status = 'pending'
         publishOperations()
@@ -506,6 +508,7 @@ export function useProcessingCoordinator({
           executionId: createOperationIdentity(),
           controller: new AbortController(),
           requestStarted: false,
+          replayingUncertain: false,
         },
       }
       operations.current.set(logicalIdentity, operation)
@@ -558,15 +561,21 @@ export function useProcessingCoordinator({
         execution.requestStarted = true
         const job = await request(execution.controller.signal)
         if (!isCurrent()) return { status: 'blocked' }
-        if (
+        const isRetry =
+          operation.kind === 'retry' || operation.kind === 'stage-retry'
+        const invalidBinding =
           job.meetingId !== operation.meetingId ||
           job.sourceMediaId !== operation.sourceMediaId ||
-          (operation.jobId && job.id !== operation.jobId) ||
+          (isRetry && job.id !== operation.jobId) ||
+          (operation.kind === 'admission' && job.reprocessOfJobId !== null) ||
           (operation.kind === 'reprocessing' &&
-            job.reprocessOfJobId !== operation.jobId)
-        ) {
-          throw new Error(
-            'Core returned a processing job for a different intent.'
+            (job.id === operation.jobId ||
+              job.reprocessOfJobId !== operation.jobId))
+        if (invalidBinding) {
+          // An invalid receipt cannot establish that the mutation failed.
+          throw Object.assign(
+            new Error('Core returned a processing job for a different intent.'),
+            { recoveryOutcome: 'uncertain' }
           )
         }
         reconcileConfirmedJob(job)
@@ -581,7 +590,7 @@ export function useProcessingCoordinator({
           'recoveryOutcome' in error &&
           (error as { recoveryOutcome?: unknown }).recoveryOutcome ===
             'uncertain'
-        if (uncertain) {
+        if (uncertain || execution.replayingUncertain) {
           operation.status = 'uncertain'
           operation.execution = null
         } else {

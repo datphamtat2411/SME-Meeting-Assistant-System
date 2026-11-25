@@ -146,6 +146,11 @@ function LiveMeetingContent({ meetingId }: { meetingId: string }) {
               sharedAuthorization?.capabilities.canManageMeeting
             }
             recording={recording}
+            canReadMedia={
+              sharedAuthorization
+                ? sharedAuthorization.capabilities.canReadMedia
+                : currentUser?.userId === detail.meeting.organizerUserId
+            }
             media={session.media.data ?? []}
           />
         ) : null}
@@ -161,6 +166,7 @@ function LiveMeetingDetail({
   participants,
   canManageMeeting,
   recording,
+  canReadMedia,
   media,
 }: {
   detail: { meeting: MeetingView; etag: string }
@@ -169,6 +175,7 @@ function LiveMeetingDetail({
   participants?: ParticipantView[]
   canManageMeeting?: boolean
   recording: ReturnType<typeof useMeetingSession>['recording']
+  canReadMedia: boolean
   media: MeetingMedia[]
 }) {
   const { meeting, etag } = detail
@@ -294,17 +301,19 @@ function LiveMeetingDetail({
               <LiveMetric
                 label='Recording'
                 value={
-                  isLive
-                    ? recordingMetric(recording)
-                    : reviewableRecording
+                  !canReadMedia
+                    ? 'Not available'
+                    : isLive
                       ? recordingMetric(recording)
-                      : 'Review in workspace'
+                      : reviewableRecording
+                        ? recordingMetric(recording)
+                        : 'Review in workspace'
                 }
               />
             </CardContent>
           </Card>
 
-          {isOrganizer && (isLive || reviewableRecording) ? (
+          {canReadMedia && isOrganizer && (isLive || reviewableRecording) ? (
             <RecordingPanel
               meetingId={meeting.id}
               canRecordAudio={isLive}
@@ -327,7 +336,7 @@ function LiveMeetingDetail({
               </CardContent>
             </Card>
           )}
-          <LivePlaybackSources media={media} />
+          {canReadMedia && <LivePlaybackSources media={media} />}
         </div>
 
         <div className='space-y-6'>

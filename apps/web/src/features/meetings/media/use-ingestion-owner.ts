@@ -590,23 +590,38 @@ export function useIngestionOwner({
         retireSubmittedArtifact(operation, execution)
         return media
       } catch (error) {
-        if (!isSubmissionScopeCurrent(operation, execution)) return null
+        if (
+          !canReadMedia() ||
+          !isSubmissionScopeCurrent(operation, execution)
+        ) {
+          return null
+        }
+        // Only a bound authoritative rejection resolves the original intent.
+        // A network or read authorization error cannot establish that outcome.
+        const definitiveFailure =
+          error instanceof mediaApi.MediaUploadError &&
+          error.outcome === 'failed' &&
+          error.mediaId === mediaId
         operation.execution = null
-        operation.status = 'uncertain'
+        if (definitiveFailure) {
+          submissionOperations.current.delete(operation.artifactId)
+        } else {
+          operation.status = 'uncertain'
+        }
         publishSubmissionOperations()
         if (draft === 'recording') {
           setRecordingSubmissionPresentation({
-            uploadPhase: 'reconciling',
-            uploadStatus: 'uncertain',
-            uncertainMediaId: mediaId,
+            uploadPhase: definitiveFailure ? null : 'reconciling',
+            uploadStatus: definitiveFailure ? 'failed' : 'uncertain',
+            uncertainMediaId: definitiveFailure ? null : mediaId,
             error: formatError(error),
           })
         } else {
           setImportedMedia((state) => ({
             ...state,
-            phase: 'reconciling',
-            status: 'uncertain',
-            uncertainMediaId: mediaId,
+            phase: definitiveFailure ? null : 'reconciling',
+            status: definitiveFailure ? 'failed' : 'uncertain',
+            uncertainMediaId: definitiveFailure ? null : mediaId,
             error: formatError(error),
           }))
         }

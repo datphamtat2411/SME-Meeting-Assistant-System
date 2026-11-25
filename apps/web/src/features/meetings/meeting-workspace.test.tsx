@@ -1736,6 +1736,50 @@ describe('MeetingWorkspacePage', () => {
     expect(protectedReads).toEqual([])
   })
 
+  it('hides cached Live Meeting media after content access is revoked', async () => {
+    installSharedWorkspaceApi({ participants })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(currentUserQueryKey, workspaceIdentity('user-1'))
+
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <MeetingAuthorizationProvider meetingId='meeting-1'>
+          <MeetingSessionProvider meetingId='meeting-1'>
+            <LiveMeetingPage meetingId='meeting-1' />
+          </MeetingSessionProvider>
+        </MeetingAuthorizationProvider>
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(
+        screen.getByRole('heading', { name: 'Authorized roadmap review' })
+      )
+      .toBeInTheDocument()
+    await expect
+      .poll(() => client.getQueryState(['meeting-media', 'meeting-1'])?.status)
+      .toBe('success')
+    client.setQueryData(['meeting-media', 'meeting-1'], [
+      { id: 'source-1', status: 'AVAILABLE', originalFilename: 'private.wav' },
+    ])
+    await expect.element(screen.getByText('private.wav')).toBeInTheDocument()
+
+    client.setQueryData(['meetings', 'participants', 'meeting-1'], [])
+    await expect
+      .element(screen.getByText('private.wav'))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Shared audio playback'))
+      .not.toBeInTheDocument()
+    await expect
+      .element(
+        screen.getByRole('heading', { name: 'Authorized roadmap review' })
+      )
+      .toBeInTheDocument()
+  })
+
   it('preserves organizer access when participant lookup is denied', async () => {
     const { protectedReads } = installSharedWorkspaceApi({
       organizerUserId: 'organizer-1',

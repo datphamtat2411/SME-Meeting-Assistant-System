@@ -254,7 +254,10 @@ export function MeetingSessionProvider({
   }, [authorization?.identity?.userId, meetingId, resetProtectedResources])
 
   useEffect(() => {
-    if (authorization?.isConfirmedAccessLoss) {
+    if (
+      authorization?.isConfirmedAccessLoss ||
+      authorization?.capabilities.authorizationResolution === 'denied'
+    ) {
       resetProtectedResources()
       return
     }
@@ -270,6 +273,7 @@ export function MeetingSessionProvider({
       stopRecording()
     }
   }, [
+    authorization?.capabilities.authorizationResolution,
     authorization?.capabilities.canRecordAudio,
     authorization?.isConfirmedAccessLoss,
     authorization?.isEstablished,

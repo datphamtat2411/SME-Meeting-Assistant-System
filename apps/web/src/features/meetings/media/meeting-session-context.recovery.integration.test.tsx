@@ -9,7 +9,7 @@ import {
 } from '@/features/auth/session/current-user'
 import type { MeetingView } from '../data/detail-api'
 import { MeetingAuthorizationProvider } from '../meeting-authorization-context'
-import type { MeetingMedia } from './media-api'
+import { MediaUploadError, type MeetingMedia } from './media-api'
 import {
   MeetingSessionProvider,
   useMeetingSession,
@@ -17,6 +17,7 @@ import {
 
 const mediaMocks = vi.hoisted(() => ({
   uploadMeetingFile: vi.fn(),
+  reconcileMeetingMedia: vi.fn(),
 }))
 
 vi.mock('./media-api', async (importOriginal) => {
@@ -29,6 +30,7 @@ vi.mock('./media-api', async (importOriginal) => {
       retry: false,
     }),
     uploadMeetingFile: mediaMocks.uploadMeetingFile,
+    reconcileMeetingMedia: mediaMocks.reconcileMeetingMedia,
   }
 })
 
@@ -93,6 +95,7 @@ type UploadCall = {
   onMediaIdentity?: (id: string) => void
   onPhase?: (phase: string) => void
   resolve: (media: MeetingMedia) => void
+  reject: (reason?: unknown) => void
 }
 
 function deferred<T>() {
@@ -119,6 +122,15 @@ function RecoveryHarness() {
       <button type='button' onClick={() => void session.submitImportedMedia()}>
         Submit source
       </button>
+      <button
+        type='button'
+        onClick={() => void session.reconcileImportedMedia()}
+      >
+        Reconcile source
+      </button>
+      <output data-testid='selected-file'>
+        {session.importedMedia.file?.name ?? 'empty'}
+      </output>
       <output data-testid='submission-state'>
         {session.importedMedia.status}:
         {session.importedMedia.uncertainMediaId ?? 'no-media'}
@@ -188,6 +200,7 @@ async function renderRecovery() {
 describe('meeting session upload intent recovery', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    uploadCalls.length = 0
     mediaMocks.uploadMeetingFile.mockImplementation(
       (
         _meetingId: string,
@@ -211,6 +224,7 @@ describe('meeting session upload intent recovery', () => {
           onMediaIdentity: options.onMediaIdentity,
           onPhase: options.onPhase,
           resolve: result.resolve,
+          reject: result.reject,
         }
         uploadCalls.push(call)
         return result.promise
@@ -263,5 +277,71 @@ describe('meeting session upload intent recovery', () => {
     await expect
       .element(screen.getByTestId('submission-state'))
       .toHaveTextContent('success:')
+  })
+
+  it('retains uncertainty on a failed status request but resolves authoritative media rejection', async () => {
+    mediaMocks.reconcileMeetingMedia
+      .mockRejectedValueOnce(new Error('Network unavailable'))
+      .mockRejectedValueOnce(
+        new MediaUploadError('Core rejected the media.', {
+          mediaId,
+          outcome: 'failed',
+        })
+      )
+    const { screen } = await renderRecovery()
+    await userEvent.click(screen.getByRole('button', { name: 'Select source' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Submit source' }))
+    await expect.poll(() => uploadCalls.length).toBe(1)
+    uploadCalls[0]!.reject(
+      new MediaUploadError('Outcome uncertain', {
+        mediaId,
+        outcome: 'uncertain',
+      })
+    )
+    await expect
+      .element(screen.getByTestId('submission-state'))
+      .toHaveTextContent('uncertain:' + mediaId)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reconcile source' })
+    )
+    await expect
+      .poll(() => mediaMocks.reconcileMeetingMedia.mock.calls.length)
+      .toBe(1)
+    await expect
+      .element(screen.getByTestId('submission-state'))
+      .toHaveTextContent('uncertain:' + mediaId)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reconcile source' })
+    )
+    await expect
+      .element(screen.getByTestId('submission-state'))
+      .toHaveTextContent('failed:no-media')
+    await expect
+      .element(screen.getByTestId('selected-file'))
+      .toHaveTextContent('source.wav')
+  })
+
+  it('releases protected local media when content access is denied but metadata remains readable', async () => {
+    const { client, screen } = await renderRecovery()
+    await expect
+      .element(screen.getByTestId('scope-state'))
+      .toHaveTextContent('ready')
+    await userEvent.click(screen.getByRole('button', { name: 'Select source' }))
+    await expect
+      .element(screen.getByTestId('selected-file'))
+      .toHaveTextContent('source.wav')
+
+    client.setQueryData(['meetings', 'detail', meetingId], {
+      meeting: { ...meeting, organizerUserId: mediaId },
+      etag: '"updated-meeting"',
+    })
+    await expect
+      .element(screen.getByTestId('selected-file'))
+      .toHaveTextContent('empty')
+    await expect
+      .element(screen.getByTestId('scope-state'))
+      .toHaveTextContent('ready')
   })
 })
