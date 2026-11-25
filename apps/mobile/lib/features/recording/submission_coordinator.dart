@@ -1380,8 +1380,8 @@ class SubmissionCoordinator extends ChangeNotifier {
     String meetingId,
     String sourceMediaId,
   ) =>
-      '${_scopeKey(scope)}\u0000initial-admission\u0000'
-      '$meetingId\u0000$sourceMediaId';
+      '${scope.deploymentScope}\u0000${scope.userId}\u0000initial-admission\u0000'
+      '${meetingId.toLowerCase()}\u0000${sourceMediaId.toLowerCase()}';
 
   Future<UploadOperation> _recordUploadFailure(
     AuthenticatedSessionScope scope,

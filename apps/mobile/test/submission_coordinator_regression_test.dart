@@ -233,10 +233,21 @@ void main() {
     UploadOperationCheckpoint.binaryTransferConfirmed,
   ]) {
     test('resume reconciles $checkpoint without local audio', () async {
+      final admit =
+          checkpoint == UploadOperationCheckpoint.binaryTransferConfirmed;
+      final admissionStarted = Completer<void>();
+      final admissionResponse = Completer<http.StreamedResponse>();
+      var admissionRequests = 0;
       final client = MeetingTestHttpClient((request) async {
         if (request.method == 'GET' &&
             request.url.path.endsWith('/media/$testMediaId')) {
           return meetingApiSuccess(_availableMediaJson());
+        }
+        if (request.method == 'POST' &&
+            request.url.path.endsWith('/processing-jobs')) {
+          admissionRequests++;
+          if (!admissionStarted.isCompleted) admissionStarted.complete();
+          return admissionResponse.future;
         }
         throw StateError('Unexpected request ${request.url.path}');
       });
@@ -301,14 +312,46 @@ void main() {
         meeting: Meeting.fromJson(meetingTestJson(status: 'ENDED')),
       );
 
-      final result = await coordinator.resume(
+      final resumed = coordinator.resume(
         operationId: operation.id,
         scope: scope,
         capabilities: capabilities,
-        admitProcessing: false,
+        admitProcessing: admit,
       );
+      if (admit) {
+        await admissionStarted.future.timeout(const Duration(seconds: 5));
+        try {
+          final competing = await coordinator
+              .admitAvailableMedia(
+                meetingId: testMeetingId,
+                mediaId: testMediaId,
+                scope: scope,
+                capabilities: capabilities,
+              )
+              .timeout(const Duration(seconds: 5));
+          expect(competing.failure, isA<SubmissionBusyException>());
+          expect(admissionRequests, 1);
+          final operations = await repository.listProcessingOperations(
+            scope: scope,
+            meetingId: testMeetingId,
+            sourceMediaId: testMediaId,
+          );
+          expect(operations, hasLength(1));
+          expect(operations.single.attemptCount, 1);
+        } finally {
+          admissionResponse.complete(
+            await meetingApiSuccess(_admittedJobJson()),
+          );
+        }
+      }
+      final result = await resumed;
 
-      expect(result.lifecycle, SubmissionLifecycleState.mediaAvailable);
+      expect(
+        result.lifecycle,
+        admit
+            ? SubmissionLifecycleState.processingAccepted
+            : SubmissionLifecycleState.mediaAvailable,
+      );
       expect(result.media?.id, testMediaId);
       expect(result.uploadOperation?.id, operation.id);
       final persisted = await repository.findUploadOperationById(
@@ -325,8 +368,23 @@ void main() {
         client.requests
             .where((request) => request.url.path.contains('/media/'))
             .map((request) => request.method),
-        <String>['GET'],
+        admit ? <String>['GET', 'GET'] : <String>['GET'],
       );
+      if (admit) {
+        final operations = await repository.listProcessingOperations(
+          scope: scope,
+          meetingId: testMeetingId,
+          sourceMediaId: testMediaId,
+        );
+        expect(operations, hasLength(1));
+        expect(
+          operations.single.checkpoint,
+          ProcessingOperationCheckpoint.admissionConfirmed,
+        );
+        expect(operations.single.resultingJobId, testJobId);
+        expect(operations.single.attemptCount, 1);
+        expect(admissionRequests, 1);
+      }
     });
   }
 
@@ -398,6 +456,29 @@ void main() {
 }
 
 const testMediaId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const testJobId = '11111111-1111-4111-8111-111111111111';
+
+Map<String, dynamic> _admittedJobJson() => <String, dynamic>{
+  'id': testJobId,
+  'meetingId': testMeetingId,
+  'sourceMediaId': testMediaId,
+  'jobType': 'OFFLINE_MEETING_PROCESSING',
+  'status': 'QUEUED',
+  'requestedByUserId': testUserId,
+  'currentStage': null,
+  'queuedAt': '2026-11-24T12:00:00Z',
+  'startedAt': null,
+  'completedAt': null,
+  'errorCode': null,
+  'errorSummary': null,
+  'warningSummary': null,
+  'createdAt': '2026-11-24T12:00:00Z',
+  'updatedAt': '2026-11-24T12:00:00Z',
+  'reprocessOfJobId': null,
+  'retryable': false,
+  'retryCount': 0,
+  'stageRuns': <Map<String, dynamic>>[],
+};
 
 Map<String, dynamic> _availableMediaJson({String id = testMediaId}) =>
     <String, dynamic>{
