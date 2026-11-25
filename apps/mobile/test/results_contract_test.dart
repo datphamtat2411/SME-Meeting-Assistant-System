@@ -3,6 +3,35 @@ import 'package:sme_meeting_assistant/core/api_response.dart';
 import 'package:sme_meeting_assistant/core/meeting_models.dart';
 import 'package:sme_meeting_assistant/features/results/results_models.dart';
 
+Map<String, dynamic> minutesFixture() => {
+  'completeness': 'PARTIAL',
+  'meeting': {
+    'id': 'meeting-1',
+    'title': 'Planning',
+    'organizerUserId': 'user-1',
+    'status': 'ENDED',
+  },
+  'schemaVersion': 1,
+  'sourceFingerprint': 'server-fingerprint',
+  'assembledAt': '2026-11-23T10:00:00Z',
+  'summary': {
+    'availability': 'NOT_AVAILABLE',
+    'selectionEpoch': 0,
+    'isStale': false,
+    'aiWarnings': <String>[],
+  },
+  'confirmedDecisions': <dynamic>[],
+  'officialActionItems': <dynamic>[],
+  'transcript': {
+    'availability': 'NOT_AVAILABLE',
+    'suspiciousSegments': 0,
+    'unresolvedSegments': 0,
+    'unresolvedCoverageRegions': 0,
+  },
+  'warnings': <String>['TRANSCRIPT_NOT_AVAILABLE'],
+  'proposalsIncluded': false,
+};
+
 void main() {
   test(
     'transcript projection rejects unrelated coverage and speaker snapshots',
@@ -94,24 +123,74 @@ void main() {
   test('canonical minutes can exist without a transcript', () {
     final minutes = MeetingMinutes.fromResult(
       ApiResult(
-        {
-          'completeness': 'PARTIAL',
-          'meeting': {'id': 'meeting-1'},
-          'schemaVersion': 1,
-          'sourceFingerprint': 'server-fingerprint',
-          'assembledAt': '2026-11-23T10:00:00Z',
-          'summary': null,
-          'confirmedDecisions': <dynamic>[],
-          'officialActionItems': <dynamic>[],
-          'transcript': {'availability': 'NOT_AVAILABLE', 'status': null},
-          'warnings': <String>[],
-        },
+        minutesFixture(),
         const {},
         null,
       ),
     );
     expect(minutes.transcriptStatus, isNull);
     expect(minutes.transcriptAvailability, 'NOT_AVAILABLE');
+  });
+
+  test('minutes reject incompatible schema and unofficial content', () {
+    final incompatible = minutesFixture()..['schemaVersion'] = 2;
+    expect(
+      () => MeetingMinutes.fromResult(ApiResult(incompatible, const {}, null)),
+      throwsA(isA<ApiFailure>()),
+    );
+    final proposed = minutesFixture()
+      ..['confirmedDecisions'] = [
+        {
+          'id': 'decision-1',
+          'content': 'Proposal',
+          'status': 'PROPOSED',
+          'sourceType': 'AI_EXTRACTED',
+          'isStale': false,
+          'version': 0,
+          'evidenceSegmentIds': <String>[],
+          'aiWarnings': <String>[],
+        },
+      ];
+    expect(
+      () => MeetingMinutes.fromResult(ApiResult(proposed, const {}, null)),
+      throwsA(isA<ApiFailure>()),
+    );
+  });
+
+  test('minutes preserve official stale decisions and date-only due dates', () {
+    final raw = minutesFixture()
+      ..['confirmedDecisions'] = [
+        {
+          'id': 'decision-1',
+          'content': 'Confirmed',
+          'status': 'CONFIRMED',
+          'sourceType': 'AI_EXTRACTED',
+          'isStale': true,
+          'version': 2,
+          'transcriptId': 'transcript-1',
+          'contentRevision': 1,
+          'evidenceSegmentIds': ['segment-1'],
+          'aiWarnings': <String>['SOURCE_STALE'],
+        },
+      ]
+      ..['officialActionItems'] = [
+        {
+          'id': 'action-1',
+          'title': 'Follow up',
+          'status': 'OPEN',
+          'sourceType': 'MANUAL',
+          'dueDate': '2026-11-30',
+          'version': 0,
+          'createdAt': '2026-11-23T10:00:00Z',
+        },
+      ];
+    final minutes = MeetingMinutes.fromResult(ApiResult(raw, const {}, null));
+    expect(minutes.confirmedDecisions.single.status, 'CONFIRMED');
+    expect(minutes.confirmedDecisions.single.isStale, isTrue);
+    expect(minutes.confirmedDecisions.single.evidenceSegmentIds, ['segment-1']);
+    expect(minutes.officialActionItems.single.dueDate, '2026-11-30');
+    expect(minutes.meeting.title, 'Planning');
+    expect(minutes.summary.availability, 'NOT_AVAILABLE');
   });
 
   test('older item representations remain read-only without a token', () {

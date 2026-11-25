@@ -377,38 +377,173 @@ class SummaryVersion {
   );
 }
 
-/// Canonical minutes projections do not share mutation models with Decisions
-/// or Action Items; they intentionally carry no client-side business authority.
+/// Canonical Minutes is a read-only projection. It deliberately does not
+/// reuse mutable Decision or Action Item command models.
+class MinutesMeeting {
+  const MinutesMeeting({
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.organizerUserId,
+    required this.status,
+    required this.scheduledStartAt,
+    required this.scheduledEndAt,
+    required this.startedAt,
+    required this.endedAt,
+  });
+
+  final String id;
+  final String title;
+  final String? description;
+  final String organizerUserId;
+  final String status;
+  final DateTime? scheduledStartAt;
+  final DateTime? scheduledEndAt;
+  final DateTime? startedAt;
+  final DateTime? endedAt;
+
+  factory MinutesMeeting.fromJson(Map<String, dynamic> raw, ApiResult response) {
+    final value = MinutesMeeting(
+      id: requiredIdentifier(raw, 'id', response: response),
+      title: requiredString(raw, 'title', response: response),
+      description: optionalString(raw, 'description', response: response),
+      organizerUserId: requiredIdentifier(
+        raw,
+        'organizerUserId',
+        response: response,
+      ),
+      status: requiredString(raw, 'status', response: response),
+      scheduledStartAt: optionalTimestamp(
+        raw,
+        'scheduledStartAt',
+        response: response,
+      ),
+      scheduledEndAt: optionalTimestamp(
+        raw,
+        'scheduledEndAt',
+        response: response,
+      ),
+      startedAt: optionalTimestamp(raw, 'startedAt', response: response),
+      endedAt: optionalTimestamp(raw, 'endedAt', response: response),
+    );
+    if (!const {'DRAFT', 'SCHEDULED', 'IN_PROGRESS', 'ENDED', 'CANCELLED'}
+        .contains(value.status)) {
+      invalidApiData(response: response);
+    }
+    return value;
+  }
+}
+
+class MinutesSummary {
+  const MinutesSummary({
+    required this.availability,
+    required this.id,
+    required this.versionNumber,
+    required this.content,
+    required this.sourceType,
+    required this.qualityStatus,
+    required this.transcriptId,
+    required this.contentRevision,
+    required this.selectionEpoch,
+    required this.isStale,
+    required this.aiWarnings,
+  });
+
+  final String availability;
+  final String? id;
+  final int? versionNumber;
+  final String? content;
+  final String? sourceType;
+  final String? qualityStatus;
+  final String? transcriptId;
+  final int? contentRevision;
+  final int selectionEpoch;
+  final bool isStale;
+  final List<String> aiWarnings;
+
+  factory MinutesSummary.fromJson(Map<String, dynamic> raw, ApiResult response) {
+    final value = MinutesSummary(
+      availability: requiredString(raw, 'availability', response: response),
+      id: optionalIdentifier(raw, 'id', response: response),
+      versionNumber: optionalInt(raw, 'versionNumber', response: response),
+      content: optionalString(raw, 'content', response: response),
+      sourceType: optionalString(raw, 'sourceType', response: response),
+      qualityStatus: optionalString(raw, 'qualityStatus', response: response),
+      transcriptId: optionalIdentifier(raw, 'transcriptId', response: response),
+      contentRevision: optionalInt(raw, 'contentRevision', response: response),
+      selectionEpoch: requiredInt(raw, 'selectionEpoch', response: response),
+      isStale: requiredBool(raw, 'isStale', response: response),
+      aiWarnings: _strings(raw, 'aiWarnings', response),
+    );
+    if (!const {'NOT_AVAILABLE', 'AVAILABLE', 'NEEDS_REVIEW'}.contains(
+          value.availability,
+        ) ||
+        (value.availability == 'NOT_AVAILABLE'
+            ? value.id != null || value.content != null
+            : value.id == null ||
+                  value.content == null ||
+                  value.versionNumber == null ||
+                  value.sourceType == null ||
+                  value.qualityStatus == null)) {
+      invalidApiData(response: response);
+    }
+    return value;
+  }
+}
+
 class MinutesDecision {
   const MinutesDecision({
     required this.id,
     required this.content,
     required this.status,
+    required this.sourceType,
+    required this.transcriptId,
+    required this.contentRevision,
+    required this.isStale,
+    required this.version,
     required this.confirmedByUserId,
     required this.confirmedAt,
-    required this.sourceType,
+    required this.evidenceSegmentIds,
+    required this.aiUncertainty,
+    required this.aiWarnings,
   });
-  final String id, content, status, sourceType;
+
+  final String id;
+  final String content;
+  final String status;
+  final String sourceType;
+  final String? transcriptId;
+  final int? contentRevision;
+  final bool isStale;
+  final int version;
   final String? confirmedByUserId;
   final DateTime? confirmedAt;
-  factory MinutesDecision.fromJson(
-    Map<String, dynamic> raw,
-    ApiResult response,
-  ) {
-    final status = requiredString(raw, 'status', response: response);
-    if (status != 'CONFIRMED') invalidApiData(response: response);
-    return MinutesDecision(
+  final List<String> evidenceSegmentIds;
+  final String? aiUncertainty;
+  final List<String> aiWarnings;
+
+  factory MinutesDecision.fromJson(Map<String, dynamic> raw, ApiResult response) {
+    final value = MinutesDecision(
       id: requiredIdentifier(raw, 'id', response: response),
       content: requiredString(raw, 'content', response: response),
-      status: status,
+      status: requiredString(raw, 'status', response: response),
       sourceType: requiredString(raw, 'sourceType', response: response),
+      transcriptId: optionalIdentifier(raw, 'transcriptId', response: response),
+      contentRevision: optionalInt(raw, 'contentRevision', response: response),
+      isStale: requiredBool(raw, 'isStale', response: response),
+      version: requiredInt(raw, 'version', response: response),
       confirmedByUserId: optionalIdentifier(
         raw,
         'confirmedByUserId',
         response: response,
       ),
       confirmedAt: optionalTimestamp(raw, 'confirmedAt', response: response),
+      evidenceSegmentIds: _strings(raw, 'evidenceSegmentIds', response),
+      aiUncertainty: optionalString(raw, 'aiUncertainty', response: response),
+      aiWarnings: _strings(raw, 'aiWarnings', response),
     );
+    if (value.status != 'CONFIRMED') invalidApiData(response: response);
+    return value;
   }
 }
 
@@ -418,21 +553,33 @@ class MinutesAction {
     required this.title,
     required this.details,
     required this.status,
+    required this.sourceType,
     required this.assigneeUserId,
     required this.dueDate,
-    required this.sourceType,
+    required this.version,
+    required this.createdAt,
+    required this.confirmedByUserId,
+    required this.confirmedAt,
   });
-  final String id, title, status, sourceType;
-  final String? details, assigneeUserId, dueDate;
+
+  final String id;
+  final String title;
+  final String? details;
+  final String status;
+  final String sourceType;
+  final String? assigneeUserId;
+  final String? dueDate;
+  final int version;
+  final DateTime createdAt;
+  final String? confirmedByUserId;
+  final DateTime? confirmedAt;
+
   factory MinutesAction.fromJson(Map<String, dynamic> raw, ApiResult response) {
-    final status = requiredString(raw, 'status', response: response);
-    if (status == 'PROPOSED' || status == 'REJECTED')
-      invalidApiData(response: response);
-    return MinutesAction(
+    final value = MinutesAction(
       id: requiredIdentifier(raw, 'id', response: response),
       title: requiredString(raw, 'title', response: response),
       details: optionalString(raw, 'details', response: response),
-      status: status,
+      status: requiredString(raw, 'status', response: response),
       sourceType: requiredString(raw, 'sourceType', response: response),
       assigneeUserId: optionalIdentifier(
         raw,
@@ -440,7 +587,97 @@ class MinutesAction {
         response: response,
       ),
       dueDate: optionalDateOnly(raw, 'dueDate', response: response),
+      version: requiredInt(raw, 'version', response: response),
+      createdAt: requiredTimestamp(raw, 'createdAt', response: response),
+      confirmedByUserId: optionalIdentifier(
+        raw,
+        'confirmedByUserId',
+        response: response,
+      ),
+      confirmedAt: optionalTimestamp(raw, 'confirmedAt', response: response),
     );
+    if (!const {'OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED'}.contains(
+          value.status,
+        ) ||
+        (value.sourceType != 'MANUAL' && value.confirmedByUserId == null)) {
+      invalidApiData(response: response);
+    }
+    return value;
+  }
+}
+
+class MinutesTranscript {
+  const MinutesTranscript({
+    required this.availability,
+    required this.id,
+    required this.processingJobId,
+    required this.versionNumber,
+    required this.languageCode,
+    required this.status,
+    required this.contentRevision,
+    required this.durationMs,
+    required this.suspiciousSegments,
+    required this.unresolvedSegments,
+    required this.unresolvedCoverageRegions,
+  });
+
+  final String availability;
+  final String? id;
+  final String? processingJobId;
+  final int? versionNumber;
+  final String? languageCode;
+  final String? status;
+  final int? contentRevision;
+  final int? durationMs;
+  final int suspiciousSegments;
+  final int unresolvedSegments;
+  final int unresolvedCoverageRegions;
+
+  factory MinutesTranscript.fromJson(Map<String, dynamic> raw, ApiResult response) {
+    final value = MinutesTranscript(
+      availability: requiredString(raw, 'availability', response: response),
+      id: optionalIdentifier(raw, 'id', response: response),
+      processingJobId: optionalIdentifier(
+        raw,
+        'processingJobId',
+        response: response,
+      ),
+      versionNumber: optionalInt(raw, 'versionNumber', response: response),
+      languageCode: optionalString(raw, 'languageCode', response: response),
+      status: optionalString(raw, 'status', response: response),
+      contentRevision: optionalInt(raw, 'contentRevision', response: response),
+      durationMs: optionalInt(raw, 'durationMs', response: response),
+      suspiciousSegments: requiredInt(
+        raw,
+        'suspiciousSegments',
+        response: response,
+      ),
+      unresolvedSegments: requiredInt(
+        raw,
+        'unresolvedSegments',
+        response: response,
+      ),
+      unresolvedCoverageRegions: requiredInt(
+        raw,
+        'unresolvedCoverageRegions',
+        response: response,
+      ),
+    );
+    if (!const {
+      'NOT_AVAILABLE',
+      'AVAILABLE',
+      'PROCESSING',
+      'FAILED',
+      'NEEDS_REVIEW',
+    }.contains(value.availability)) {
+      invalidApiData(response: response);
+    }
+    if (value.availability == 'NOT_AVAILABLE'
+        ? value.id != null || value.status != null
+        : value.id == null || value.status == null) {
+      invalidApiData(response: response);
+    }
+    return value;
   }
 }
 
@@ -448,61 +685,64 @@ class MeetingMinutes {
   const MeetingMinutes({
     required this.completeness,
     required this.assembledAt,
-    required this.summaryContent,
+    required this.meeting,
+    required this.summary,
     required this.confirmedDecisions,
     required this.officialActionItems,
-    required this.transcriptAvailability,
-    required this.transcriptStatus,
+    required this.transcript,
     required this.warnings,
-    required this.meetingId,
     required this.schemaVersion,
     required this.sourceFingerprint,
+    required this.proposalsIncluded,
   });
 
   final String completeness;
-  final String meetingId;
   final int schemaVersion;
   final String sourceFingerprint;
-  final DateTime? assembledAt;
-  final String? summaryContent;
+  final DateTime assembledAt;
+  final MinutesMeeting meeting;
+  final MinutesSummary summary;
   final List<MinutesDecision> confirmedDecisions;
   final List<MinutesAction> officialActionItems;
-  final String transcriptAvailability;
-  final String? transcriptStatus;
+  final MinutesTranscript transcript;
   final List<String> warnings;
+  final bool proposalsIncluded;
+
+  String get meetingId => meeting.id;
+  String? get summaryContent => summary.content;
+  String get transcriptAvailability => transcript.availability;
+  String? get transcriptStatus => transcript.status;
 
   factory MeetingMinutes.fromResult(ApiResult response) {
     final raw = response.objectData();
-    final transcript = requiredObject(raw, 'transcript', response: response);
+    final schemaVersion = requiredInt(raw, 'schemaVersion', response: response);
+    final completeness = requiredString(raw, 'completeness', response: response);
+    final proposalsIncluded = requiredBool(
+      raw,
+      'proposalsIncluded',
+      response: response,
+    );
+    if (schemaVersion != 1 ||
+        proposalsIncluded ||
+        !const {'COMPLETE', 'PARTIAL', 'NEEDS_REVIEW'}.contains(completeness)) {
+      invalidApiData(response: response);
+    }
     return MeetingMinutes(
-      meetingId: requiredIdentifier(
+      meeting: MinutesMeeting.fromJson(
         requiredObject(raw, 'meeting', response: response),
-        'id',
-        response: response,
+        response,
       ),
-      schemaVersion: requiredInt(
-        raw,
-        'schemaVersion',
-        response: response,
-        minimum: 1,
-      ),
+      schemaVersion: schemaVersion,
       sourceFingerprint: requiredString(
         raw,
         'sourceFingerprint',
         response: response,
         nonEmpty: true,
       ),
-      completeness: requiredString(
-        raw,
-        'completeness',
-        response: response,
-        nonEmpty: true,
-      ),
-      assembledAt: optionalTimestamp(raw, 'assembledAt', response: response),
-      summaryContent: _nestedOptionalString(
-        raw,
-        'summary',
-        'content',
+      completeness: completeness,
+      assembledAt: requiredTimestamp(raw, 'assembledAt', response: response),
+      summary: MinutesSummary.fromJson(
+        requiredObject(raw, 'summary', response: response),
         response,
       ),
       confirmedDecisions: List.unmodifiable(
@@ -519,18 +759,12 @@ class MeetingMinutes {
           response,
         ).map((item) => MinutesAction.fromJson(item, response)),
       ),
-      transcriptAvailability: requiredString(
-        transcript,
-        'availability',
-        response: response,
-        nonEmpty: true,
-      ),
-      transcriptStatus: optionalString(
-        transcript,
-        'status',
-        response: response,
+      transcript: MinutesTranscript.fromJson(
+        requiredObject(raw, 'transcript', response: response),
+        response,
       ),
       warnings: _strings(raw, 'warnings', response),
+      proposalsIncluded: proposalsIncluded,
     );
   }
 }
@@ -566,17 +800,3 @@ List<Map<String, dynamic>> _nestedObjects(
   requireJsonObjectArray(raw[field], response: response),
 );
 
-String? _nestedOptionalString(
-  Map<String, dynamic> raw,
-  String objectField,
-  String field,
-  ApiResult response,
-) {
-  final object = raw[objectField];
-  if (object == null) return null;
-  return optionalString(
-    requiredObject(raw, objectField, response: response),
-    field,
-    response: response,
-  );
-}
