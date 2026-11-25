@@ -77,9 +77,17 @@ Future<T?> showResultsReviewDialog<T>({
   required ResultsWorkspaceController workspace,
   required int epoch,
   required WidgetBuilder builder,
+  bool requiresMutation = true,
 }) {
-  if (!workspace.ownsReview(epoch)) return Future<T?>.value();
-  final registration = workspace.registerProtectedDialog(epoch);
+  if (requiresMutation
+      ? !workspace.ownsReview(epoch)
+      : !workspace.ownsRead(epoch)) {
+    return Future<T?>.value();
+  }
+  final registration = workspace.registerProtectedDialog(
+    epoch,
+    requiresMutation: requiresMutation,
+  );
   return _showOwnedResultsDialog<T>(
     context: context,
     workspace: workspace,
@@ -98,7 +106,7 @@ Future<T?> _showOwnedResultsDialog<T>({
     return await showDialog<T>(
       context: context,
       builder: (dialog) => AnimatedBuilder(
-        animation: workspace,
+        animation: registration,
         builder: (context, _) {
           registration.attach(context);
           if (!registration.isValid) {

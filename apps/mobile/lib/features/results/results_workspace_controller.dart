@@ -83,6 +83,8 @@ class ResultsWorkspaceController extends ChangeNotifier {
   final AuthenticatedSessionScope sessionScope;
 
   ResultsResource<Transcript> transcript = const ResultsResource<Transcript>();
+  ResultsResource<TranscriptCoverage> coverage =
+      const ResultsResource<TranscriptCoverage>();
   ResultsResource<SpeakerReviewSnapshot> speakers =
       const ResultsResource<SpeakerReviewSnapshot>();
   ResultsResource<ResultsSummary> summary =
@@ -118,6 +120,8 @@ class ResultsWorkspaceController extends ChangeNotifier {
   final Set<ResultsProtectedDialogRegistration> _dialogs =
       <ResultsProtectedDialogRegistration>{};
   int get reviewEpoch => _mutations.epoch;
+  int _readEpoch = 0;
+  int get readEpoch => _readEpoch;
   bool get regenerationUncertain => _mutations.regenerationUncertain;
   bool get decisionOutcomeUnknown => _mutations.decisionOutcomeUnknown;
   ResultsRecoveryDraft? recoveryDraft(String key) =>
@@ -174,10 +178,18 @@ class ResultsWorkspaceController extends ChangeNotifier {
       _accessVerificationPending || _accessVerificationFailure != null;
   Object? get authorizationVerificationFailure => _accessVerificationFailure;
   bool ownsReview(int epoch) => capabilities.canMutate && epoch == reviewEpoch;
+  bool ownsRead(int epoch) => capabilities.canRead && epoch == _readEpoch;
 
-  ResultsProtectedDialogRegistration registerProtectedDialog(int epoch) {
-    final registration = ResultsProtectedDialogRegistration(this, epoch);
-    if (ownsReview(epoch)) {
+  ResultsProtectedDialogRegistration registerProtectedDialog(
+    int epoch, {
+    bool requiresMutation = true,
+  }) {
+    final registration = ResultsProtectedDialogRegistration(
+      this,
+      epoch,
+      requiresMutation: requiresMutation,
+    );
+    if (requiresMutation ? ownsReview(epoch) : ownsRead(epoch)) {
       _dialogs.add(registration);
     } else {
       registration.invalidate();
@@ -185,11 +197,11 @@ class ResultsWorkspaceController extends ChangeNotifier {
     return registration;
   }
 
-  void _invalidateDialogs() {
+  void _invalidateDialogs({bool mutationOnly = false}) {
     for (final dialog in List<ResultsProtectedDialogRegistration>.of(
       _dialogs,
     )) {
-      dialog.invalidate();
+      if (!mutationOnly || dialog.requiresMutation) dialog.invalidate();
     }
     _dialogs.clear();
   }
@@ -285,6 +297,8 @@ class ResultsWorkspaceController extends ChangeNotifier {
     switch (kind) {
       case ResultsResourceKind.transcript:
         await loadTranscript();
+      case ResultsResourceKind.coverage:
+        await loadCoverage();
       case ResultsResourceKind.speakers:
         await loadSpeakers();
       case ResultsResourceKind.summary:
@@ -299,6 +313,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
   }
 
   void _clearProtectedState() {
+    _readEpoch++;
     _invalidateDialogs();
     _mutations.invalidate();
     _accessVerificationPending = false;
@@ -317,6 +332,9 @@ class ResultsWorkspaceController extends ChangeNotifier {
     _authorizationAbsent.clear();
     _requests.clear();
     transcript = const ResultsResource<Transcript>(
+      phase: ResultsResourcePhase.forbidden,
+    );
+    coverage = const ResultsResource<TranscriptCoverage>(
       phase: ResultsResourcePhase.forbidden,
     );
     speakers = const ResultsResource<SpeakerReviewSnapshot>(
@@ -376,7 +394,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
       return;
     }
     if (_capabilities.canMutate && !next.canMutate) {
-      _invalidateDialogs();
+      _invalidateDialogs(mutationOnly: true);
       _mutations.invalidate();
       _decisionRecoveryReview = null;
       _decisionRecoveryGeneration = null;
@@ -399,6 +417,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
   Object _beginAuthorizationVerification() {
     final ticket = Object();
     _authorizationTicket = ticket;
+    _readEpoch++;
     _accessVerificationPending = true;
     _accessVerificationFailure = null;
     _invalidateDialogs();
@@ -486,6 +505,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
 
   void _setAuthorizationPhase(ResultsResourcePhase phase) {
     transcript = transcript.copyWith(phase: phase, clearData: true);
+    coverage = coverage.copyWith(phase: phase, clearData: true);
     speakers = speakers.copyWith(phase: phase, clearData: true);
     summary = summary.copyWith(phase: phase, clearData: true);
     summaryVersions = summaryVersions.copyWith(phase: phase, clearData: true);
@@ -501,6 +521,8 @@ class ResultsWorkspaceController extends ChangeNotifier {
     switch (kind) {
       case ResultsResourceKind.transcript:
         transcript = transcript.copyWith(phase: phase, failure: failure);
+      case ResultsResourceKind.coverage:
+        coverage = coverage.copyWith(phase: phase, failure: failure);
       case ResultsResourceKind.speakers:
         speakers = speakers.copyWith(phase: phase, failure: failure);
       case ResultsResourceKind.summary:
@@ -520,7 +542,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
   void _applyVerifiedCapabilities(ResultsAccessVerification access) {
     final canMutate = access.canMutate ?? _capabilities.canMutate;
     if (_capabilities.canMutate && !canMutate) {
-      _invalidateDialogs();
+      _invalidateDialogs(mutationOnly: true);
       _mutations.invalidate();
     }
     _capabilities = ResultsCapabilities(
@@ -543,6 +565,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
 
   Future<void> _reload(ResultsResourceKind kind) => switch (kind) {
     ResultsResourceKind.transcript => loadTranscript(force: true),
+    ResultsResourceKind.coverage => loadCoverage(force: true),
     ResultsResourceKind.speakers => loadSpeakers(force: true),
     ResultsResourceKind.summary => loadSummary(force: true),
     ResultsResourceKind.summaryVersions => loadSummaryVersions(force: true),
@@ -552,6 +575,8 @@ class ResultsWorkspaceController extends ChangeNotifier {
 
   Future<void> loadTranscript({bool force = false}) =>
       _loadTranscript(force: force);
+  Future<void> loadCoverage({bool force = false}) =>
+      _loadCoverage(force: force);
   Future<void> loadSpeakers({bool force = false}) =>
       _loadSpeakers(force: force);
   Future<void> loadSummary({bool force = false}) => _loadSummary(force: force);
@@ -588,6 +613,23 @@ class ResultsWorkspaceController extends ChangeNotifier {
       () => speakers,
       (value) => speakers = value,
       (value) => value.clusters.isEmpty,
+      force: force,
+    );
+  }
+
+  Future<void> _loadCoverage({required bool force}) {
+    final generation = _generations[ResultsResourceKind.coverage] ?? 0;
+    return _load<TranscriptCoverage>(
+      ResultsResourceKind.coverage,
+      () => repository.currentTranscriptCoverage(
+        sessionScope: sessionScope,
+        meetingId: meetingId,
+        stillAuthorized: () =>
+            _ownsGeneration(ResultsResourceKind.coverage, generation),
+      ),
+      () => coverage,
+      (value) => coverage = value,
+      (value) => value.regions.isEmpty,
       force: force,
     );
   }
@@ -810,6 +852,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
     SpeechSegment snapshot,
     String text, {
     required int epoch,
+    String? reason,
   }) async {
     _requireMutation(epoch);
     _requireCurrentSegment(snapshot);
@@ -817,6 +860,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
       ResultsMutationGroup.transcript,
       <ResultsResourceKind>{
         ResultsResourceKind.transcript,
+        ResultsResourceKind.coverage,
         ResultsResourceKind.speakers,
         ResultsResourceKind.summary,
         ResultsResourceKind.summaryVersions,
@@ -828,6 +872,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
         meetingId: meetingId,
         snapshot: snapshot,
         text: text,
+        reason: reason,
       ),
     );
   }
@@ -851,6 +896,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
       ResultsMutationGroup.transcript,
       <ResultsResourceKind>{
         ResultsResourceKind.transcript,
+        ResultsResourceKind.coverage,
         ResultsResourceKind.speakers,
         ResultsResourceKind.summary,
         ResultsResourceKind.summaryVersions,
@@ -1243,54 +1289,82 @@ class ResultsWorkspaceController extends ChangeNotifier {
 /// Registration owned by one protected dialog route. It never looks up a
 /// replacement workspace, so a delayed callback cannot act on a new meeting
 /// or session context.
-class ResultsProtectedDialogRegistration {
-  ResultsProtectedDialogRegistration(this._workspace, this.epoch);
+class ResultsProtectedDialogRegistration extends ChangeNotifier {
+  ResultsProtectedDialogRegistration(
+    this._workspace,
+    this.epoch, {
+    required this.requiresMutation,
+  });
 
   final ResultsWorkspaceController _workspace;
   final int epoch;
+  final bool requiresMutation;
   BuildContext? _context;
+  NavigatorState? _navigator;
   ModalRoute<dynamic>? _route;
   bool _valid = true;
   bool _dismissScheduled = false;
+  bool _disposed = false;
 
-  bool get isValid => _valid && _workspace.ownsReview(epoch);
+  bool get isValid =>
+      _valid &&
+      (requiresMutation
+          ? _workspace.ownsReview(epoch)
+          : _workspace.ownsRead(epoch));
 
   void attach(BuildContext context) {
+    if (_disposed) return;
     _context = context;
-    _route = ModalRoute.of(context);
+    _route ??= ModalRoute.of(context);
+    _navigator ??= Navigator.of(context);
     if (!isValid) invalidate();
   }
 
   void invalidate() {
+    if (_disposed) return;
     if (!_valid) {
       _scheduleDismiss();
       return;
     }
     _valid = false;
+    notifyListeners();
     _scheduleDismiss();
   }
 
+  @override
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     _valid = false;
     _workspace._releaseDialog(this);
     _context = null;
     _route = null;
+    _navigator = null;
+    super.dispose();
   }
 
   void _scheduleDismiss() {
+    if (_disposed) return;
     if (_dismissScheduled) return;
     _dismissScheduled = true;
+    // A post-frame callback does not request another frame. Invalidation can
+    // happen while the owning workspace is being disposed, when no unrelated
+    // rebuild is guaranteed to occur.
+    WidgetsBinding.instance.ensureVisualUpdate();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _dismissScheduled = false;
       final context = _context;
       final route = _route;
-      if (context == null ||
+      final navigator = _navigator;
+      if (_disposed ||
+          context == null ||
           route == null ||
+          navigator == null ||
           !route.isActive ||
           !context.mounted) {
         return;
       }
-      Navigator.of(context).removeRoute(route);
+      navigator.removeRoute(route);
     });
   }
 }

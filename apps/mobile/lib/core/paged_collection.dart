@@ -146,7 +146,11 @@ class PageWindow<T> {
 
   /// Returns false for a response from an earlier reset generation. Duplicate
   /// and out-of-order results fail without changing accumulated data.
-  bool accept(PagedCollection<T> page, {required PageRequestToken request}) {
+  bool accept(
+    PagedCollection<T> page, {
+    required PageRequestToken request,
+    String Function(T item)? identity,
+  }) {
     if (!identical(request._owner, _owner)) {
       throw StateError('Page request belongs to a different collection.');
     }
@@ -155,7 +159,12 @@ class PageWindow<T> {
       throw StateError('Page sequence changed. Refresh the list.');
     }
 
-    _items.addAll(page.items);
+    final seen = identity == null ? <String>{} : _items.map(identity).toSet();
+    for (final item in page.items) {
+      if (identity == null || seen.add(identity(item))) {
+        _items.add(item);
+      }
+    }
     currentPage = page.page;
     nextPage = page.page + 1;
     totalElements = page.totalElements;

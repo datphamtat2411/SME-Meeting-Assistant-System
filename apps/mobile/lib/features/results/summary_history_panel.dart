@@ -8,6 +8,7 @@ import '../../core/widgets.dart';
 import 'results_models.dart';
 import 'results_workspace_controller.dart';
 import 'results_presentation.dart';
+import 'summary_history_controller.dart';
 
 class SummaryHistoryPanel extends StatefulWidget {
   const SummaryHistoryPanel({super.key, required this.workspace});
@@ -19,10 +20,29 @@ class SummaryHistoryPanel extends StatefulWidget {
 
 class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
   bool busy = false;
+  late SummaryHistoryController history;
 
   @override
   void initState() {
     super.initState();
+    history = SummaryHistoryController(widget.workspace);
+    unawaited(history.load());
+  }
+
+  @override
+  void didUpdateWidget(covariant SummaryHistoryPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.workspace, widget.workspace)) {
+      history.dispose();
+      history = SummaryHistoryController(widget.workspace);
+      unawaited(history.load());
+    }
+  }
+
+  @override
+  void dispose() {
+    history.dispose();
+    super.dispose();
   }
 
   Future<void> edit(ResultsSummary summary) async {
@@ -182,16 +202,65 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
     if (mounted) setState(() => busy = false);
   }
 
+  Future<void> compare(ResultsSummary current, SummaryVersion version) async {
+    final epoch = widget.workspace.readEpoch;
+    await showResultsReviewDialog<void>(
+      context: context,
+      workspace: widget.workspace,
+      epoch: epoch,
+      requiresMutation: false,
+      builder: (dialog) => AlertDialog(
+        title: Text(
+          'So sánh phiên bản ${current.versionNumber} và ${version.versionNumber}',
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Bản đang chọn',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+              SelectableText(current.content),
+              const Divider(height: 28),
+              Text(
+                'Bản lịch sử · ${version.sourceType}',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              SelectableText(version.content),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog),
+            child: const Text('Đóng'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _sourceLabel(String source) => switch (source) {
+    'AI' || 'AI_GENERATED' => 'AI tạo',
+    'HUMAN_EDIT' => 'Con người chỉnh sửa',
+    _ => source,
+  };
+
+  String _qualityLabel(String quality) => switch (quality) {
+    'CONFIRMED' || 'READY' => 'Đã kiểm tra',
+    'WARNING' || 'READY_WITH_WARNINGS' => 'Có cảnh báo',
+    _ => quality,
+  };
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: widget.workspace,
+    animation: Listenable.merge(<Listenable>[widget.workspace, history]),
     builder: (context, _) {
       final current = widget.workspace.summary.hasData
           ? widget.workspace.summary.data
           : null;
-      final versions = widget.workspace.summaryVersions.hasData
-          ? widget.workspace.summaryVersions.data?.items
-          : null;
+      final versions = history.items;
       return ListView(
         padding: const EdgeInsets.all(18),
         children: [
@@ -200,7 +269,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
             trailing: IconButton(
               onPressed: () {
                 unawaited(widget.workspace.loadSummary(force: true));
-                unawaited(widget.workspace.loadSummaryVersions(force: true));
+                unawaited(history.load(refresh: true));
               },
               icon: const Icon(Icons.refresh),
             ),
@@ -228,6 +297,10 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
                       ),
+                      Text(
+                        _sourceLabel(current.sourceType),
+                        style: const TextStyle(color: Palette.muted),
+                      ),
                       if (current.isStale)
                         const StatePill(
                           'COMPLETED_WITH_WARNINGS',
@@ -236,7 +309,28 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                     ],
                   ),
                   const SizedBox(height: 10),
+                  Text(
+                    'Chất lượng: ${_qualityLabel(current.qualityStatus)}',
+                    style: const TextStyle(color: Palette.muted),
+                  ),
+                  if (current.transcriptId != null)
+                    Text(
+                      'Nguồn transcript: ${current.transcriptId}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Palette.muted,
+                      ),
+                    ),
+                  const SizedBox(height: 8),
                   SelectableText(current.content),
+                  if (current.aiProducer != null)
+                    Text(
+                      'Nhà sản xuất AI: ${current.aiProducer!['model'] ?? current.aiProducer!['provider'] ?? 'Không rõ'}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Palette.muted,
+                      ),
+                    ),
                   if (current.aiWarnings.isNotEmpty)
                     Text(
                       current.aiWarnings.join('\n'),
@@ -288,12 +382,16 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
           ],
           const SizedBox(height: 16),
           const SectionHeading('Lịch sử phiên bản'),
-          if (versions == null)
-            resultsResourceMessage(
-              widget.workspace.summaryVersions,
-              label: 'Lịch sử phiên bản',
-              onRetry: () => widget.workspace.loadSummaryVersions(force: true),
+          if (history.phase == SummaryHistoryPhase.loading ||
+              history.phase == SummaryHistoryPhase.refreshing)
+            const LinearProgressIndicator()
+          else if (history.phase == SummaryHistoryPhase.failed)
+            MessagePanel(
+              title: 'Không thể tải lịch sử phiên bản',
+              onRetry: () => unawaited(history.load(refresh: true)),
             )
+          else if (history.phase == SummaryHistoryPhase.forbidden)
+            const MessagePanel(title: 'Bạn không có quyền xem lịch sử này')
           else if (versions.isEmpty)
             const MessagePanel(title: 'Chưa có lịch sử')
           else
@@ -303,25 +401,42 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                   contentPadding: EdgeInsets.zero,
                   title: Text('Phiên bản ${version.versionNumber}'),
                   subtitle: Text(
-                    '${version.sourceType} · ${version.qualityStatus}',
+                    '${_sourceLabel(version.sourceType)} · ${_qualityLabel(version.qualityStatus)}'
+                    '${version.isStale ? ' · Nguồn đã cũ' : ''}',
                   ),
-                  trailing: version.isCurrent
-                      ? const StatePill('CONFIRMED', label: 'Hiện tại')
-                      : TextButton(
-                          onPressed:
-                              busy ||
-                                  widget.workspace.mutationBusy(
-                                    ResultsMutationGroup.summary,
-                                  ) ||
-                                  version.isStale ||
-                                  current == null ||
-                                  !widget.workspace.capabilities.canMutate
-                              ? null
-                              : () => activateVersion(current, version),
-                          child: const Text('Kích hoạt'),
+                  trailing: PopupMenuButton<String>(
+                    onSelected: (value) {
+                      if (value == 'compare' && current != null) {
+                        unawaited(compare(current, version));
+                      } else if (value == 'activate' && current != null) {
+                        unawaited(activateVersion(current, version));
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(
+                        value: 'compare',
+                        child: Text('So sánh'),
+                      ),
+                      if (!version.isCurrent &&
+                          !version.isStale &&
+                          current != null &&
+                          widget.workspace.capabilities.canMutate)
+                        const PopupMenuItem(
+                          value: 'activate',
+                          child: Text('Kích hoạt'),
                         ),
+                    ],
+                  ),
                 ),
               ),
+            ),
+          if (history.hasMore)
+            OutlinedButton.icon(
+              onPressed: history.isLoading
+                  ? null
+                  : () => unawaited(history.loadMore()),
+              icon: const Icon(Icons.expand_more),
+              label: const Text('Tải thêm phiên bản'),
             ),
         ],
       );

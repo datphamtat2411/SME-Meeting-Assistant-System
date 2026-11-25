@@ -24,8 +24,8 @@ class _ResultsPanelState extends State<ResultsPanel> {
   int selected = 0;
 
   Set<ResultsResourceKind> _resourcesFor(int index) => switch (index) {
-    0 => {ResultsResourceKind.summary, ResultsResourceKind.summaryVersions},
-    1 => {ResultsResourceKind.transcript},
+    0 => {ResultsResourceKind.summary},
+    1 => {ResultsResourceKind.transcript, ResultsResourceKind.coverage},
     2 => {ResultsResourceKind.decisions},
     3 => {ResultsResourceKind.speakers},
     _ => {ResultsResourceKind.minutes},

@@ -11,6 +11,7 @@ import '../recording/media_contracts.dart';
 
 enum ResultsResourceKind {
   transcript,
+  coverage,
   speakers,
   summary,
   summaryVersions,

@@ -470,21 +470,54 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                     )
             : Column(
                 children: [
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.all(12),
-                    child: SegmentedButton<int>(
-                      segments: const [
-                        ButtonSegment(value: 0, label: Text('Tổng quan')),
-                        ButtonSegment(value: 1, label: Text('Biên bản AI')),
-                        ButtonSegment(value: 2, label: Text('Ghi âm')),
-                        ButtonSegment(value: 3, label: Text('Thành viên')),
-                        ButtonSegment(value: 4, label: Text('Xử lý')),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        for (final tab in const [
+                          (0, 'Tổng quan', Icons.dashboard_outlined),
+                          (1, 'Biên bản AI', Icons.auto_awesome_outlined),
+                          (2, 'Ghi âm', Icons.mic_none_outlined),
+                          (3, 'Thành viên', Icons.people_outline),
+                          (4, 'Xử lý', Icons.sync_outlined),
+                        ])
+                          Semantics(
+                            button: true,
+                            selected: _tab == tab.$1,
+                            label: tab.$2,
+                            child: GestureDetector(
+                              onTap: state.activeMutation == null
+                                  ? () => setState(() => _tab = tab.$1)
+                                  : null,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: _tab == tab.$1
+                                      ? Theme.of(context)
+                                            .colorScheme
+                                            .secondaryContainer
+                                      : Theme.of(context)
+                                            .colorScheme
+                                            .surfaceContainerHighest,
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(tab.$3, size: 17),
+                                    const SizedBox(width: 6),
+                                    Text(tab.$2),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
                       ],
-                      selected: {_tab},
-                      onSelectionChanged: state.activeMutation == null
-                          ? (value) => setState(() => _tab = value.first)
-                          : null,
                     ),
                   ),
                   Expanded(

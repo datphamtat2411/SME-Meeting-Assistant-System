@@ -124,6 +124,62 @@ class ResultsRepository {
         .toList(growable: false);
   }
 
+  Future<List<TranscriptCoverageRegion>> coverage({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+  }) async {
+    final response = await _get(
+      sessionScope,
+      '/meetings/$meetingId/transcript/coverage',
+    );
+    return response
+        .objectArrayData()
+        .map(
+          (raw) => TranscriptCoverageRegion.fromJson(raw, response: response),
+        )
+        .toList(growable: false);
+  }
+
+  Future<TranscriptCoverage> currentTranscriptCoverage({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+    bool Function()? stillAuthorized,
+  }) async {
+    final authorized = stillAuthorized ?? () => true;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      if (!authorized()) throw _accessChanged();
+      final before = await currentTranscript(
+        sessionScope: sessionScope,
+        meetingId: meetingId,
+      );
+      if (!authorized()) throw _accessChanged();
+      final regions = await coverage(
+        sessionScope: sessionScope,
+        meetingId: meetingId,
+      );
+      if (!authorized()) throw _accessChanged();
+      final after = await currentTranscript(
+        sessionScope: sessionScope,
+        meetingId: meetingId,
+      );
+      if (!authorized()) throw _accessChanged();
+      if (before.id == after.id &&
+          before.etag != null &&
+          before.etag == after.etag) {
+        return TranscriptCoverage(
+          transcriptId: before.id,
+          transcriptEtag: before.etag!,
+          regions: List.unmodifiable(regions),
+        );
+      }
+    }
+    throw const ApiFailure(
+      412,
+      'RESULTS_REVIEW_CHANGED',
+      'Transcript đã thay đổi. Vui lòng tải lại và xem xét lại.',
+    );
+  }
+
   Future<SpeakerReviewSnapshot> speakerReview({
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
@@ -236,11 +292,15 @@ class ResultsRepository {
     required String meetingId,
     required SpeechSegment snapshot,
     required String text,
+    String? reason,
   }) async {
     final response = await _patch(
       sessionScope,
       '/meetings/$meetingId/transcript/segments/${snapshot.id}',
-      {'text': text},
+      {
+        'text': text,
+        if (reason != null && reason.trim().isNotEmpty) 'reason': reason,
+      },
       etag: snapshot.etag,
     );
     return _validatedMutationResponse(response, requireBodyEtag: true);

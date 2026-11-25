@@ -324,6 +324,46 @@ void main() {
       expect(window.items, ['same', 'same']);
     });
 
+    test('can deduplicate paged identities for history views', () {
+      final window = PageWindow<String>();
+      window.accept(
+        _decode(
+          _response(
+            ['v1', 'v2'],
+            page: 0,
+            size: 2,
+            totalElements: 3,
+            totalPages: 2,
+            hasNext: true,
+            hasPrevious: false,
+          ),
+          requestedPage: 0,
+          requestedSize: 2,
+        ),
+        request: window.beginRequest(),
+        identity: (item) => item,
+      );
+      window.accept(
+        _decode(
+          _response(
+            ['v2', 'v3'],
+            page: 1,
+            size: 2,
+            totalElements: 3,
+            totalPages: 2,
+            hasNext: false,
+            hasPrevious: true,
+          ),
+          requestedPage: 1,
+          requestedSize: 2,
+        ),
+        request: window.beginRequest(),
+        identity: (item) => item,
+      );
+
+      expect(window.items, ['v1', 'v2', 'v3']);
+    });
+
     test(
       'reset invalidates in-flight page responses from the previous generation',
       () {

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
@@ -30,11 +31,14 @@ class ProcessingTimelinePanel extends StatefulWidget {
 
 class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     with WidgetsBindingObserver {
-  late Future<List<ProcessingJobRecord>> future;
+  List<ProcessingJobRecord> jobs = const <ProcessingJobRecord>[];
+  Object? failure;
+  bool loading = true;
   bool retrying = false;
   AuthenticatedSessionScope? sessionScope;
   MeetingCapabilities? _capabilities;
   ProcessingObservation? observation;
+  bool _initializing = true;
 
   @override
   void initState() {
@@ -43,8 +47,11 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     sessionScope = widget.api.requireAuthenticatedSessionScope();
     _capabilities = widget.capabilities;
     widget.processingManager.addListener(_managerChanged);
-    _managerChanged();
+    _managerChanged(update: false);
     _startObservation();
+    _initializing = false;
+    _managerChanged(update: false);
+    if (!_allows(MeetingOperation.readMedia)) loading = false;
   }
 
   @override
@@ -60,11 +67,14 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
       observation?.dispose();
       observation = null;
       sessionScope = nextScope;
-      future = Future<List<ProcessingJobRecord>>.value(const []);
+      jobs = const <ProcessingJobRecord>[];
+      failure = null;
+      loading = true;
       if (_allows(MeetingOperation.readMedia)) {
         _startObservation();
       }
-      _managerChanged();
+      _managerChanged(update: false);
+      if (!_allows(MeetingOperation.readMedia)) loading = false;
       return;
     }
     final hasReadAccess = _allows(MeetingOperation.readMedia);
@@ -73,7 +83,9 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     } else if (hadReadAccess && !hasReadAccess) {
       observation?.dispose();
       observation = null;
-      future = Future<List<ProcessingJobRecord>>.value(const []);
+      jobs = const <ProcessingJobRecord>[];
+      failure = null;
+      loading = false;
     }
   }
 
@@ -92,7 +104,10 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
       );
     } catch (error) {
       if (mounted) {
-        setState(() => future = Future<List<ProcessingJobRecord>>.error(error));
+        setState(() {
+          failure = error;
+          loading = false;
+        });
       }
     }
   }
@@ -113,9 +128,11 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   void reload() {
     if (!mounted) return;
     if (!_allows(MeetingOperation.readMedia)) {
-      setState(
-        () => future = Future<List<ProcessingJobRecord>>.value(const []),
-      );
+      setState(() {
+        jobs = const <ProcessingJobRecord>[];
+        failure = null;
+        loading = false;
+      });
       return;
     }
     final scope = sessionScope;
@@ -132,17 +149,33 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     _managerChanged();
   }
 
-  void _managerChanged() {
+  void _managerChanged({bool update = true}) {
     if (!mounted) return;
     final scope = sessionScope;
     final state = scope == null
         ? null
         : widget.processingManager.stateFor(widget.meetingId, scope: scope);
-    setState(
-      () => future = Future<List<ProcessingJobRecord>>.value(
-        state?.jobs ?? const <ProcessingJobRecord>[],
-      ),
+    final nextJobs = List<ProcessingJobRecord>.unmodifiable(
+      state?.jobs ?? const <ProcessingJobRecord>[],
     );
+    final nextFailure = state?.failure;
+    final nextLoading = state == null;
+    if (listEquals(jobs, nextJobs) &&
+        failure == nextFailure &&
+        loading == nextLoading) {
+      return;
+    }
+    void apply() {
+      jobs = nextJobs;
+      failure = nextFailure;
+      loading = nextLoading;
+    }
+
+    if (!update || _initializing) {
+      apply();
+      return;
+    }
+    setState(apply);
   }
 
   Future<void> retry(ProcessingJobRecord candidate) async {
@@ -168,13 +201,36 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   }
 
   @override
-  Widget build(BuildContext context) => AsyncContent<List<ProcessingJobRecord>>(
-    future: future,
-    retry: reload,
-    builder: (jobs) => RefreshIndicator(
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(36),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+    if (failure != null) {
+      return MessagePanel(
+        icon: Icons.cloud_off_outlined,
+        title: 'Không thể tải dữ liệu',
+        description: failure is ApiFailure
+            ? (failure as ApiFailure).message
+            : 'Đã xảy ra lỗi không mong muốn.',
+        onRetry: reload,
+      );
+    }
+    return RefreshIndicator(
       onRefresh: () async {
         reload();
-        await future;
+        final scope = sessionScope;
+        if (scope != null && _allows(MeetingOperation.readMedia)) {
+          await widget.processingManager.refresh(
+            widget.meetingId,
+            scope: scope,
+            explicit: true,
+          );
+        }
       },
       child: ListView(
         padding: const EdgeInsets.all(18),
@@ -262,6 +318,6 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
           }),
         ],
       ),
-    ),
-  );
+    );
+  }
 }

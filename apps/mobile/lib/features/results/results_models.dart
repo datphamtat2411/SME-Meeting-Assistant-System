@@ -93,6 +93,70 @@ class SpeakerCandidate {
   final String displayName;
 }
 
+class TranscriptCoverageRegion {
+  const TranscriptCoverageRegion({
+    required this.id,
+    required this.startMs,
+    required this.endMs,
+    required this.status,
+    required this.recovered,
+    required this.retryCount,
+  });
+
+  final String id;
+  final int startMs;
+  final int endMs;
+  final String status;
+  final bool recovered;
+  final int retryCount;
+
+  factory TranscriptCoverageRegion.fromJson(
+    Map<String, dynamic> raw, {
+    ApiResult? response,
+  }) {
+    final startMs = requiredInt(raw, 'startMs', response: response);
+    final endMs = requiredInt(raw, 'endMs', response: response);
+    final status = requiredString(
+      raw,
+      'coverageStatus',
+      response: response,
+      nonEmpty: true,
+    );
+    if (endMs < startMs ||
+        !const {'COVERED', 'SUSPICIOUS', 'UNRESOLVED_ERROR'}.contains(status)) {
+      invalidApiData(response: response);
+    }
+    return TranscriptCoverageRegion(
+      id: requiredIdentifier(raw, 'id', response: response),
+      startMs: startMs,
+      endMs: endMs,
+      status: status,
+      recovered: requiredBool(raw, 'recovered', response: response),
+      retryCount: requiredInt(
+        raw,
+        'retryCount',
+        response: response,
+        minimum: 0,
+      ),
+    );
+  }
+}
+
+/// Coverage is a separate server representation. The bracketed transcript
+/// identity prevents a coverage response from being shown beside a newer
+/// transcript publication.
+class TranscriptCoverage {
+  const TranscriptCoverage({
+    required this.transcriptId,
+    required this.transcriptEtag,
+    required this.regions,
+  });
+
+  final String transcriptId;
+  final String transcriptEtag;
+  final List<TranscriptCoverageRegion> regions;
+}
+
 class ResultsSummary {
   const ResultsSummary({
     required this.id,
@@ -109,6 +173,7 @@ class ResultsSummary {
     required this.createdByUserId,
     required this.aiWarnings,
     required this.etag,
+    this.aiProducer,
   });
 
   final String id;
@@ -125,6 +190,7 @@ class ResultsSummary {
   final String? createdByUserId;
   final List<String> aiWarnings;
   final String etag;
+  final Map<String, dynamic>? aiProducer;
 
   factory ResultsSummary.fromResult(ApiResult response) {
     final raw = response.objectData();
@@ -166,6 +232,7 @@ class ResultsSummary {
       ),
       aiWarnings: _strings(raw, 'aiWarnings', response),
       etag: _requiredEtag(response),
+      aiProducer: optionalObject(raw, 'aiProducer', response: response),
     );
   }
 }

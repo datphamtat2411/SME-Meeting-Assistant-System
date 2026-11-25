@@ -141,4 +141,56 @@ void main() {
     expect(segment.etag, '"s-server-token"');
     expect(decision.etag, '"dec-server-token"');
   });
+
+  test('parses transcript coverage evidence and summary provenance', () {
+    final coverage = TranscriptCoverageRegion.fromJson({
+      'id': 'coverage-1',
+      'startMs': 100,
+      'endMs': 900,
+      'coverageStatus': 'SUSPICIOUS',
+      'recovered': true,
+      'retryCount': 2,
+    });
+    final summary = ResultsSummary.fromResult(
+      ApiResult(
+        {
+          'id': 'summary-1',
+          'meetingId': 'meeting-1',
+          'versionNumber': 2,
+          'content': 'Summary',
+          'sourceType': 'AI',
+          'qualityStatus': 'READY_WITH_WARNINGS',
+          'processingJobId': null,
+          'transcriptId': 'transcript-1',
+          'contentRevision': 3,
+          'isStale': true,
+          'createdAt': '2026-11-23T10:00:00Z',
+          'createdByUserId': null,
+          'aiWarnings': <String>['low coverage'],
+          'aiProducer': {'provider': 'test', 'model': 'model-1'},
+        },
+        const {},
+        '"summary-token"',
+      ),
+    );
+
+    expect(coverage.status, 'SUSPICIOUS');
+    expect(coverage.retryCount, 2);
+    expect(summary.transcriptId, 'transcript-1');
+    expect(summary.aiProducer?['model'], 'model-1');
+  });
+
+  test('rejects invalid transcript coverage status and timing', () {
+    expect(
+      () => TranscriptCoverageRegion.fromJson({
+        'id': 'coverage-1',
+        'startMs': 900,
+        'endMs': 100,
+        'coverageStatus': 'UNKNOWN',
+        'recovered': false,
+        'retryCount': 0,
+      }),
+      throwsA(isA<ApiFailure>()),
+    );
+  });
 }
