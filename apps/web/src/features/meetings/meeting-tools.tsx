@@ -110,7 +110,7 @@ export function MeetingTools({
         <MinutesPanel meetingId={meetingId} />
         <ExportPanel
           meetingId={meetingId}
-          canManage={capabilities.canMutateIntelligence}
+          canExport={capabilities.canReadMeetingContent}
         />
       </div>
     )

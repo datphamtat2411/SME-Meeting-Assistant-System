@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
@@ -7,6 +8,7 @@ import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import type { MeetingView } from './data/detail-api'
 import type { MeetingListResponse } from './data/list-api'
 import { MeetingWorkspacePage } from './meeting-workspace'
+import type { MeetingWorkspaceSection } from './meeting-workspace-navigation'
 
 const toastSuccess = vi.hoisted(() => vi.fn())
 
@@ -133,6 +135,149 @@ const availabilityPagination = {
   hasPrevious: false,
 }
 
+const workspaceMinutesMeetingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const workspaceSummaryId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const workspaceTranscriptId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+
+function workspaceMinutes(
+  overrides: {
+    summary?: Record<string, unknown>
+    transcript?: Record<string, unknown>
+    confirmedDecisions?: unknown[]
+    officialActionItems?: unknown[]
+  } = {}
+) {
+  return {
+    schemaVersion: 1,
+    assembledAt: '2026-11-25T12:00:00Z',
+    sourceFingerprint: 'a'.repeat(64),
+    completeness: 'COMPLETE',
+    proposalsIncluded: false,
+    warnings: [],
+    meeting: {
+      id: workspaceMinutesMeetingId,
+      title: 'Workspace result fixture',
+      description: null,
+      organizerUserId: workspaceMinutesMeetingId,
+      status: 'ENDED',
+      scheduledStartAt: null,
+      scheduledEndAt: null,
+      startedAt: null,
+      endedAt: '2026-11-25T12:00:00Z',
+    },
+    summary: {
+      availability: 'NOT_AVAILABLE',
+      id: null,
+      versionNumber: null,
+      content: null,
+      sourceType: null,
+      qualityStatus: null,
+      transcriptId: null,
+      contentRevision: null,
+      selectionEpoch: 0,
+      isStale: false,
+      aiWarnings: [],
+      ...overrides.summary,
+    },
+    confirmedDecisions: overrides.confirmedDecisions ?? [],
+    officialActionItems: overrides.officialActionItems ?? [],
+    transcript: {
+      availability: 'NOT_AVAILABLE',
+      id: null,
+      versionNumber: null,
+      status: null,
+      unresolvedSegments: 0,
+      unresolvedCoverageRegions: 0,
+      ...overrides.transcript,
+    },
+  }
+}
+
+async function renderWorkspaceResults(minutes: unknown) {
+  const workspaceMeeting = {
+    ...detail,
+    organizerUserId: 'current-user',
+    createdByUserId: 'current-user',
+    roomId: null,
+  }
+  vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+    data: workspaceMeeting,
+    meta: {},
+    etag: 'workspace-results-etag',
+  })
+  vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+    if (url === '/meetings/meeting-1/participants') {
+      return {
+        data: [{ ...participants[0], userId: 'current-user' }],
+        meta: {},
+      }
+    }
+    throw new Error(`Unexpected metadata GET ${url}`)
+  })
+  vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+    if (url.endsWith('/media') || url.endsWith('/processing-jobs')) return []
+    if (url.endsWith('/minutes')) {
+      if (minutes instanceof Error) throw minutes
+      return minutes
+    }
+    throw new Error(`Unexpected protected read ${url}`)
+  })
+
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  queryClient.setQueryData(currentUserQueryKey, {
+    userId: 'current-user',
+    displayName: 'Current User',
+  })
+  const screen = await render(
+    <QueryClientProvider client={queryClient}>
+      <MeetingWorkspacePage meetingId='meeting-1' />
+    </QueryClientProvider>
+  )
+  return { screen, queryClient }
+}
+
+function installWorkspaceRecorder() {
+  const track = { stop: vi.fn() }
+  class FakeMediaRecorder {
+    static isTypeSupported = vi.fn(() => true)
+    static instances: FakeMediaRecorder[] = []
+    state: RecordingState = 'inactive'
+    mimeType = 'audio/mp4;codecs=mp4a.40.2'
+    ondataavailable: ((event: { data: Blob }) => void) | null = null
+    onstop: (() => void) | null = null
+    onerror: (() => void) | null = null
+
+    constructor() {
+      FakeMediaRecorder.instances.push(this)
+    }
+
+    start() {
+      this.state = 'recording'
+      this.ondataavailable?.({
+        data: new Blob(['workspace-capture'], { type: 'audio/mp4' }),
+      })
+    }
+
+    stop() {
+      this.state = 'inactive'
+      this.onstop?.()
+    }
+  }
+
+  Object.defineProperty(navigator, 'mediaDevices', {
+    configurable: true,
+    value: {
+      getUserMedia: vi.fn().mockResolvedValue({
+        getTracks: () => [track],
+      }),
+    },
+  })
+  vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+  return { track, recorder: FakeMediaRecorder }
+}
+
 const scheduledEditableMeeting = {
   ...editableMeeting,
   status: 'SCHEDULED' as const,
@@ -239,6 +384,7 @@ async function renderEditableWorkspace(
 describe('MeetingWorkspacePage', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     toastSuccess.mockReset()
   })
 
@@ -249,7 +395,7 @@ describe('MeetingWorkspacePage', () => {
       etag: '"m-meeting-1-7"',
     })
     vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
-      if (url === '/meetings/meeting-1/participants') {
+      if (url.endsWith('/participants')) {
         return { data: participants, meta: {} }
       }
       if (url === '/rooms/room-1') {
@@ -346,7 +492,7 @@ describe('MeetingWorkspacePage', () => {
       etag: 'etag-current',
     })
     vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
-      if (url === '/meetings/meeting-1/participants') {
+      if (url.endsWith('/participants')) {
         return {
           data: [{ ...participants[0], userId: 'current-user' }],
           meta: {},
@@ -392,6 +538,122 @@ describe('MeetingWorkspacePage', () => {
       .not.toBeInTheDocument()
     expect(protectedReads).toContain('/meetings/meeting-1/media')
     expect(protectedReads).toContain('/meetings/meeting-1/processing-jobs')
+  })
+
+  it('retains active and completed recording content across workspace navigation', async () => {
+    const liveMeeting = {
+      ...detail,
+      organizerUserId: 'current-user',
+      createdByUserId: 'current-user',
+      roomId: null,
+      status: 'IN_PROGRESS' as const,
+      startedAt: '2026-11-25T09:00:00Z',
+      endedAt: null,
+    }
+    const { track, recorder } = installWorkspaceRecorder()
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: liveMeeting,
+      meta: {},
+      etag: 'live-workspace-etag',
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url.endsWith('/participants')) {
+        return {
+          data: [{ ...participants[0], userId: 'current-user' }],
+          meta: {},
+        }
+      }
+      throw new Error(`Unexpected metadata GET ${url}`)
+    })
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url.endsWith('/media') || url.endsWith('/processing-jobs')) return []
+      if (url.endsWith('/minutes')) return workspaceMinutes()
+      throw new Error(`Unexpected protected read ${url}`)
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'current-user',
+      displayName: 'Current User',
+    })
+
+    function NavigationHarness() {
+      const [section, setSection] =
+        useState<MeetingWorkspaceSection>('recording')
+      const [meetingId, setMeetingId] = useState('meeting-1')
+      return (
+        <>
+          <button type='button' onClick={() => setMeetingId('meeting-2')}>
+            Switch meeting
+          </button>
+          <MeetingWorkspacePage
+            meetingId={meetingId}
+            section={section}
+            onSectionChange={(nextSection) => setSection(nextSection)}
+          />
+        </>
+      )
+    }
+
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <NavigationHarness />
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByRole('button', { name: 'Start recording' }))
+      .toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Start recording' })
+    )
+    await expect
+      .element(screen.getByText('Recording in progress…'))
+      .toBeInTheDocument()
+    expect(recorder.instances).toHaveLength(1)
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    await expect
+      .element(screen.getByText('Recording in progress in this meeting'))
+      .toBeInTheDocument()
+    expect(track.stop).not.toHaveBeenCalled()
+
+    const retainedPanel = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-slot="tabs-content"]')
+    ).find((element) => element.textContent?.includes('Record meeting audio'))
+    expect(retainedPanel).toBeDefined()
+    expect(retainedPanel?.hidden).toBe(true)
+    expect(retainedPanel?.getAttribute('aria-hidden')).toBe('true')
+    expect(retainedPanel?.inert).toBe(true)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Stop recording' })
+    )
+    await expect
+      .poll(() => retainedPanel?.textContent ?? '')
+      .toContain('captured (M4A/AAC declaration)')
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Recording' }))
+    await expect
+      .element(screen.getByText(/captured \(M4A\/AAC declaration\)/))
+      .toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'Recording' }))
+    await expect
+      .element(screen.getByText(/captured \(M4A\/AAC declaration\)/))
+      .toBeInTheDocument()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Switch meeting' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Start recording' }))
+      .toBeInTheDocument()
+    expect(track.stop).toHaveBeenCalled()
+    await expect
+      .element(screen.getByText(/captured \(M4A\/AAC declaration\)/))
+      .not.toBeInTheDocument()
   })
 
   it('does not request protected workspace data when active membership cannot be verified', async () => {
@@ -526,7 +788,7 @@ describe('MeetingWorkspacePage', () => {
             endedAt: detail.endedAt,
           },
           summary: {
-            availability: 'MISSING',
+            availability: 'NOT_AVAILABLE',
             id: null,
             versionNumber: null,
             content: null,
@@ -541,7 +803,7 @@ describe('MeetingWorkspacePage', () => {
           confirmedDecisions: [],
           officialActionItems: [],
           transcript: {
-            availability: 'MISSING',
+            availability: 'NOT_AVAILABLE',
             id: null,
             versionNumber: null,
             status: null,
@@ -580,6 +842,113 @@ describe('MeetingWorkspacePage', () => {
     await expect
       .element(screen.getByText('Intelligence ready'))
       .not.toBeInTheDocument()
+  })
+
+  it('renders processing and review-required result states without treating them as available', async () => {
+    const { screen } = await renderWorkspaceResults(
+      workspaceMinutes({
+        summary: {
+          availability: 'NEEDS_REVIEW',
+          id: workspaceSummaryId,
+          versionNumber: 2,
+          content: 'Review this summary',
+          sourceType: 'AI_GENERATED',
+          qualityStatus: 'READY_WITH_WARNINGS',
+          transcriptId: workspaceTranscriptId,
+          contentRevision: 4,
+          selectionEpoch: 2,
+          isStale: false,
+          aiWarnings: ['Review warning'],
+        },
+        transcript: {
+          availability: 'PROCESSING',
+          id: workspaceTranscriptId,
+          versionNumber: 2,
+          status: 'PROCESSING',
+        },
+      })
+    )
+
+    await expect
+      .element(screen.getByText('Processing', { exact: true }).last())
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Summary action required', { exact: true }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Review intelligence' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Transcript not available', { exact: true }))
+      .not.toBeInTheDocument()
+  })
+
+  it('keeps confirmed decisions discoverable when the summary is not available', async () => {
+    const { screen } = await renderWorkspaceResults(
+      workspaceMinutes({
+        confirmedDecisions: [
+          {
+            id: workspaceSummaryId,
+            content: 'A confirmed decision',
+            status: 'CONFIRMED',
+            sourceType: 'HUMAN_CONFIRMED',
+          },
+        ],
+      })
+    )
+
+    await expect
+      .element(
+        screen.getByText('Other confirmed results available', { exact: true })
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Review intelligence' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('No summary available', { exact: true }))
+      .not.toBeInTheDocument()
+  })
+
+  it('keeps failed and unknown availability distinct from confirmed absence', async () => {
+    const { screen } = await renderWorkspaceResults(
+      workspaceMinutes({
+        summary: { availability: 'FUTURE_BACKEND_STATE' },
+        transcript: {
+          availability: 'FAILED',
+          id: workspaceTranscriptId,
+          versionNumber: 2,
+          status: 'FAILED',
+        },
+      })
+    )
+
+    await expect
+      .element(screen.getByText('Failed', { exact: true }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Summary unknown status', { exact: true }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Transcript not available', { exact: true }))
+      .not.toBeInTheDocument()
+  })
+
+  it('reports a minutes-query failure instead of presenting result availability', async () => {
+    const { screen } = await renderWorkspaceResults(
+      new CoreApiError({
+        status: 503,
+        kind: 'http',
+        message: 'Minutes unavailable',
+      })
+    )
+
+    await expect
+      .element(screen.getByText('Unable to verify', { exact: true }).last())
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry' }).last())
+      .toBeInTheDocument()
   })
 
   it('shows the edit action only when the current user is the organizer of an editable meeting', async () => {

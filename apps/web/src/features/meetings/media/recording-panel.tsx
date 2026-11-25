@@ -136,6 +136,10 @@ export function RecordingPanel({
     if (!canRecordAudio && recorder.current?.state === 'recording') {
       recorder.current.stop()
     }
+    if (!canRecordAudio) {
+      permissionRequestGeneration.current += 1
+      activePermissionRequest.current = null
+    }
     if (!canSubmitMedia && !recording && !busy) {
       discard()
     }
@@ -169,12 +173,14 @@ export function RecordingPanel({
     let media: MediaStream | undefined
     try {
       media = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const ownsRequest = activePermissionRequest.current === requestGeneration
       if (
         !isLifecycleActive(generation) ||
-        activePermissionRequest.current !== requestGeneration ||
+        !ownsRequest ||
         !canRecordAudioRef.current
       ) {
         releaseStream(media)
+        if (ownsRequest) activePermissionRequest.current = null
         return
       }
       activePermissionRequest.current = null
@@ -260,12 +266,14 @@ export function RecordingPanel({
         })
       }
     } catch (error) {
+      const ownsRequest = activePermissionRequest.current === requestGeneration
       const isCurrentRequest =
         isLifecycleActive(generation) &&
-        activePermissionRequest.current === requestGeneration
+        ownsRequest &&
+        canRecordAudioRef.current
       releaseStream(media)
+      if (ownsRequest) activePermissionRequest.current = null
       if (!isCurrentRequest) return
-      activePermissionRequest.current = null
       toast.error('Microphone access failed', {
         description: error instanceof Error ? error.message : undefined,
       })

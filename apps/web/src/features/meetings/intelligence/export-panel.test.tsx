@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
+import { userEvent } from 'vitest/browser'
 import { ExportPanel } from './export-panel'
 
 const exportMocks = vi.hoisted(() => ({
@@ -66,26 +68,110 @@ vi.mock('./export-api', () => ({
   accessMinutesExport: exportMocks.accessMinutesExport,
   exportStatusQuery: (exportId: string) => ({
     queryKey: ['export', exportId],
-    queryFn: async () => {
-      throw new Error('No export status should be fetched before admission.')
-    },
+    queryFn: async () => ({
+      exportId,
+      meetingId: '11111111-1111-4111-8111-111111111111',
+      format: 'PDF',
+      status: 'READY',
+      attemptCount: 1,
+      createdAt: '2026-11-23T00:00:00Z',
+      readyAt: '2026-11-23T00:01:00Z',
+      safeErrorCode: null,
+      freshness: 'CURRENT',
+      freshnessCheckedAt: '2026-11-23T00:01:00Z',
+    }),
     retry: false,
   }),
 }))
 
-describe('ExportPanel proposal boundary', () => {
-  it('does not admit a durable export when Core marks proposals as included', async () => {
-    const screen = await render(
-      <QueryClientProvider
-        client={
-          new QueryClient({
-            defaultOptions: { queries: { retry: false } },
-          })
-        }
+const exportId = '55555555-5555-4555-8555-555555555555'
+const exportCapability = {
+  exportId,
+  accessUrl: 'https://localhost/download/export.pdf',
+  filename: 'meeting-minutes.pdf',
+  contentType: 'application/pdf',
+  expiresAt: '2026-11-23T00:05:00Z',
+  freshness: 'CURRENT',
+}
+
+function renderPanel(canExport = true) {
+  return render(
+    <QueryClientProvider
+      client={
+        new QueryClient({
+          defaultOptions: { queries: { retry: false } },
+        })
+      }
+    >
+      <ExportPanel
+        meetingId='11111111-1111-4111-8111-111111111111'
+        canExport={canExport}
+      />
+    </QueryClientProvider>
+  )
+}
+
+function ExportContextHarness() {
+  const [canExport, setCanExport] = useState(true)
+  const [meetingId, setMeetingId] = useState(
+    '11111111-1111-4111-8111-111111111111'
+  )
+  return (
+    <>
+      <button type='button' onClick={() => setCanExport(false)}>
+        Revoke export access
+      </button>
+      <button type='button' onClick={() => setCanExport(true)}>
+        Restore export access
+      </button>
+      <button
+        type='button'
+        onClick={() => setMeetingId('22222222-2222-4222-8222-222222222222')}
       >
-        <ExportPanel meetingId='11111111-1111-4111-8111-111111111111' />
-      </QueryClientProvider>
-    )
+        Switch meeting
+      </button>
+      <ExportPanel meetingId={meetingId} canExport={canExport} />
+    </>
+  )
+}
+
+function renderContextHarness() {
+  return render(
+    <QueryClientProvider
+      client={
+        new QueryClient({
+          defaultOptions: { queries: { retry: false } },
+        })
+      }
+    >
+      <ExportContextHarness />
+    </QueryClientProvider>
+  )
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
+describe('ExportPanel authorization and download boundary', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    minutesData.value = {
+      ...minutesData.value,
+      completeness: 'COMPLETE',
+      proposalsIncluded: false,
+    }
+    exportMocks.createMinutesExport.mockResolvedValue({ exportId })
+    exportMocks.accessMinutesExport.mockResolvedValue(exportCapability)
+  })
+
+  it('does not admit a durable export when Core marks proposals as included', async () => {
+    minutesData.value = { ...minutesData.value, proposalsIncluded: true }
+    const screen = await renderPanel()
 
     const generatePdf = screen.getByRole('button', { name: 'Generate PDF' })
     await expect.element(generatePdf).toBeDisabled()
@@ -97,5 +183,111 @@ describe('ExportPanel proposal boundary', () => {
       )
       .toBeInTheDocument()
     expect(exportMocks.createMinutesExport).not.toHaveBeenCalled()
+  })
+
+  it('allows an authorized meeting-content reader to generate and download an export', async () => {
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+    const screen = await renderPanel(true)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await expect
+      .element(screen.getByRole('button', { name: 'Download' }))
+      .toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }))
+
+    await expect
+      .poll(() => exportMocks.accessMinutesExport.mock.calls.length)
+      .toBe(1)
+    expect(clickSpy).toHaveBeenCalledOnce()
+  })
+
+  it('does not offer export operations without meeting-content access', async () => {
+    const screen = await renderPanel(false)
+
+    await expect
+      .element(
+        screen.getByText(
+          'Export is unavailable for the current meeting access.'
+        )
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Generate PDF' }))
+      .not.toBeInTheDocument()
+    expect(exportMocks.createMinutesExport).not.toHaveBeenCalled()
+  })
+
+  it('discards a download capability when authorization is revoked while it is pending', async () => {
+    const pending = deferred<typeof exportCapability>()
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+    exportMocks.accessMinutesExport.mockReturnValue(pending.promise)
+    const screen = await renderContextHarness()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }))
+    await expect
+      .poll(() => exportMocks.accessMinutesExport.mock.calls.length)
+      .toBe(1)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Revoke export access' })
+    )
+    pending.resolve(exportCapability)
+
+    await expect.poll(() => clickSpy.mock.calls.length).toBe(0)
+  })
+
+  it('discards a download capability when the originating context unmounts while it is pending', async () => {
+    const pending = deferred<typeof exportCapability>()
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+    exportMocks.accessMinutesExport.mockReturnValue(pending.promise)
+    const screen = await renderPanel(true)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }))
+    await expect
+      .poll(() => exportMocks.accessMinutesExport.mock.calls.length)
+      .toBe(1)
+
+    screen.unmount()
+    pending.resolve(exportCapability)
+
+    await expect.poll(() => clickSpy.mock.calls.length).toBe(0)
+  })
+
+  it('invalidates pending downloads when the meeting changes and preserves a later valid download', async () => {
+    const first = deferred<typeof exportCapability>()
+    const second = deferred<typeof exportCapability>()
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+    exportMocks.accessMinutesExport
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const screen = await renderContextHarness()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }))
+    await expect
+      .poll(() => exportMocks.accessMinutesExport.mock.calls.length)
+      .toBe(1)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Switch meeting' })
+    )
+    first.resolve(exportCapability)
+    await expect.poll(() => clickSpy.mock.calls.length).toBe(0)
+    await expect
+      .element(screen.getByRole('button', { name: 'Download' }))
+      .not.toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }))
+    second.resolve(exportCapability)
+    await expect.poll(() => clickSpy.mock.calls.length).toBe(1)
   })
 })

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
@@ -431,8 +431,24 @@ function MeetingWorkspace({
   const notifiedEditCommits = useRef(new Set<string>())
   const [recordingState, setRecordingState] =
     useState<RecordingStateChange | null>(null)
+  const [recordingHasBeenActivated, updateRecordingRetention] = useReducer(
+    (retained: boolean, action: { isActive: boolean; isAllowed: boolean }) =>
+      action.isAllowed ? retained || action.isActive : false,
+    false
+  )
   const activeSection = resolveMeetingWorkspaceSection(section, capabilities)
   const canEdit = capabilities.canEditMeeting
+  const recordingIsAllowed = isMeetingWorkspaceSectionAllowed(
+    'recording',
+    capabilities
+  )
+
+  useEffect(() => {
+    updateRecordingRetention({
+      isActive: activeSection === 'recording',
+      isAllowed: recordingIsAllowed,
+    })
+  }, [activeSection, recordingIsAllowed])
 
   useEffect(() => {
     if (section !== activeSection) {
@@ -497,7 +513,7 @@ function MeetingWorkspace({
         />
       )}
       <div className='space-y-5'>
-        {recordingState?.recording && (
+        {capabilities.canReadMeetingContent && recordingState?.recording && (
           <div
             role='status'
             aria-live='polite'
@@ -613,36 +629,43 @@ function MeetingWorkspace({
           {(
             ['recording', 'transcript', 'intelligence', 'action-items'] as const
           ).map((workspaceSection) => {
-            const shouldMount =
-              workspaceSection === 'recording' &&
-              capabilities.canReadMeetingContent
+            const isAllowed = isMeetingWorkspaceSectionAllowed(
+              workspaceSection,
+              capabilities
+            )
             const isActive = activeSection === workspaceSection
+            const shouldRetain =
+              workspaceSection === 'recording' &&
+              recordingHasBeenActivated &&
+              isAllowed
+            const shouldRender = isAllowed && (isActive || shouldRetain)
             return (
               <TabsContent
                 key={workspaceSection}
                 value={workspaceSection}
-                forceMount={shouldMount ? true : undefined}
+                forceMount={
+                  workspaceSection === 'recording' && shouldRender
+                    ? true
+                    : undefined
+                }
                 className='mt-6'
                 hidden={!isActive}
                 aria-hidden={!isActive}
+                inert={!isActive}
               >
-                {isActive &&
-                  (isMeetingWorkspaceSectionAllowed(
-                    workspaceSection,
-                    capabilities
-                  ) ? (
-                    <MeetingTools
-                      meetingId={meeting.id}
-                      section={workspaceSection}
-                      onRecordingStateChange={handleRecordingStateChange}
-                    />
-                  ) : (
-                    <WorkspaceAuthorizationState
-                      resolution={
-                        capabilities.authorizationResolution ?? 'unresolved'
-                      }
-                    />
-                  ))}
+                {shouldRender ? (
+                  <MeetingTools
+                    meetingId={meeting.id}
+                    section={workspaceSection}
+                    onRecordingStateChange={handleRecordingStateChange}
+                  />
+                ) : isActive && !isAllowed ? (
+                  <WorkspaceAuthorizationState
+                    resolution={
+                      capabilities.authorizationResolution ?? 'unresolved'
+                    }
+                  />
+                ) : null}
               </TabsContent>
             )
           })}
@@ -804,12 +827,18 @@ function WorkspaceResultsOverview({
   const summaryAvailability = minutes.isSuccess
     ? canonicalResultAvailability(minutes.data.summary.availability)
     : undefined
-  const hasDerivedResults = Boolean(
+  const hasSummaryArtifact = Boolean(minutes.data?.summary.id)
+  const hasConfirmedResults = Boolean(
     minutes.data &&
-    (summaryAvailability === 'AVAILABLE' ||
-      minutes.data.confirmedDecisions.length > 0 ||
+    (minutes.data.confirmedDecisions.length > 0 ||
       minutes.data.officialActionItems.length > 0)
   )
+  const hasDerivedResults = Boolean(
+    minutes.data && (hasSummaryArtifact || hasConfirmedResults)
+  )
+  const hasReviewableSummary =
+    summaryAvailability === 'AVAILABLE' ||
+    summaryAvailability === 'NEEDS_REVIEW'
 
   return (
     <Card>
@@ -937,7 +966,7 @@ function WorkspaceResultsOverview({
               ? 'Checking availability'
               : minutes.isError
                 ? 'Unable to verify'
-                : transcriptAvailability === 'MISSING'
+                : transcriptAvailability === 'NOT_AVAILABLE'
                   ? 'Transcript not available'
                   : resultAvailabilityLabel(
                       minutes.data.transcript.availability
@@ -948,9 +977,11 @@ function WorkspaceResultsOverview({
               ? 'Checking the latest meeting results.'
               : minutes.isError
                 ? 'Transcript availability could not be verified.'
-                : transcriptAvailability === 'MISSING'
+                : transcriptAvailability === 'NOT_AVAILABLE'
                   ? 'No transcript artifact is available yet.'
-                  : `${minutes.data.transcript.unresolvedSegments} unresolved segments · ${minutes.data.transcript.unresolvedCoverageRegions} unresolved speech regions.`
+                  : transcriptAvailability === 'PROCESSING'
+                    ? 'Core is still processing the transcript.'
+                    : `${minutes.data.transcript.unresolvedSegments} unresolved segments · ${minutes.data.transcript.unresolvedCoverageRegions} unresolved speech regions.`
           }
           kind={
             minutes.isPending
@@ -963,7 +994,8 @@ function WorkspaceResultsOverview({
             minutes.isError
               ? { label: 'Retry', onClick: () => void minutes.refetch() }
               : minutes.isSuccess &&
-                  transcriptAvailability !== 'MISSING' &&
+                  transcriptAvailability !== 'NOT_AVAILABLE' &&
+                  transcriptAvailability !== 'PROCESSING' &&
                   transcriptAvailability !== 'UNKNOWN' &&
                   transcriptAvailability !== 'FAILED'
                 ? {
@@ -982,10 +1014,12 @@ function WorkspaceResultsOverview({
               : minutes.isError
                 ? 'Unable to verify'
                 : hasDerivedResults
-                  ? summaryAvailability === 'MISSING'
-                    ? 'Other confirmed results available'
+                  ? hasSummaryArtifact
+                    ? `Summary ${resultAvailabilityLabel(minutes.data.summary.availability).toLocaleLowerCase()}`
+                    : 'Other confirmed results available'
+                  : summaryAvailability === 'NOT_AVAILABLE'
+                    ? 'No summary available'
                     : `Summary ${resultAvailabilityLabel(minutes.data.summary.availability).toLocaleLowerCase()}`
-                  : 'No summary available'
           }
           description={
             minutes.isPending
@@ -999,14 +1033,16 @@ function WorkspaceResultsOverview({
               ? 'pending'
               : minutes.isError
                 ? 'error'
-                : hasDerivedResults
-                  ? summaryAvailability === 'NEEDS_REVIEW'
-                    ? 'warning'
-                    : 'available'
-                  : 'unavailable'
+                : hasSummaryArtifact
+                  ? resultAvailabilityKind(summaryAvailability)
+                  : hasConfirmedResults
+                    ? 'available'
+                    : resultAvailabilityKind(summaryAvailability)
           }
           action={
-            minutes.isSuccess && hasDerivedResults
+            minutes.isSuccess &&
+            (hasConfirmedResults ||
+              (hasSummaryArtifact && hasReviewableSummary))
               ? {
                   label: 'Review intelligence',
                   onClick: () => onSectionChange?.('intelligence'),
@@ -1171,10 +1207,12 @@ function processingResultKind(
 
 function resultAvailabilityKind(
   availability: ReturnType<typeof canonicalResultAvailability> | undefined
-): 'available' | 'unavailable' | 'error' | 'warning' | 'neutral' {
+): 'pending' | 'available' | 'unavailable' | 'error' | 'warning' | 'neutral' {
   switch (availability) {
     case 'AVAILABLE':
       return 'available'
+    case 'PROCESSING':
+      return 'pending'
     case 'NEEDS_REVIEW':
       return 'warning'
     case 'FAILED':

@@ -1,6 +1,7 @@
 export type ResultAvailability =
   | 'AVAILABLE'
-  | 'MISSING'
+  | 'NOT_AVAILABLE'
+  | 'PROCESSING'
   | 'NEEDS_REVIEW'
   | 'FAILED'
   | 'UNKNOWN'
@@ -10,7 +11,8 @@ export function canonicalResultAvailability(
 ): ResultAvailability {
   switch (value) {
     case 'AVAILABLE':
-    case 'MISSING':
+    case 'NOT_AVAILABLE':
+    case 'PROCESSING':
     case 'NEEDS_REVIEW':
     case 'FAILED':
       return value
@@ -25,8 +27,10 @@ export function resultAvailabilityLabel(
   switch (canonicalResultAvailability(value)) {
     case 'AVAILABLE':
       return 'Available'
-    case 'MISSING':
+    case 'NOT_AVAILABLE':
       return 'Not available'
+    case 'PROCESSING':
+      return 'Processing'
     case 'NEEDS_REVIEW':
       return 'Action required'
     case 'FAILED':

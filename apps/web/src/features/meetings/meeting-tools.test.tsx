@@ -53,7 +53,7 @@ const minutes = {
     endedAt: null,
   },
   summary: {
-    availability: 'MISSING',
+    availability: 'NOT_AVAILABLE',
     id: null,
     versionNumber: null,
     content: null,

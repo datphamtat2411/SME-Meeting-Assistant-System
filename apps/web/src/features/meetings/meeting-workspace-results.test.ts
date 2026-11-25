@@ -7,7 +7,8 @@ import {
 describe('meeting workspace result availability', () => {
   it.each([
     ['AVAILABLE', 'AVAILABLE', 'Available'],
-    ['MISSING', 'MISSING', 'Not available'],
+    ['NOT_AVAILABLE', 'NOT_AVAILABLE', 'Not available'],
+    ['PROCESSING', 'PROCESSING', 'Processing'],
     ['NEEDS_REVIEW', 'NEEDS_REVIEW', 'Action required'],
     ['FAILED', 'FAILED', 'Failed'],
     ['FUTURE_STATE', 'UNKNOWN', 'Unknown status'],

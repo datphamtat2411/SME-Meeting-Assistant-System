@@ -51,6 +51,9 @@ function CapabilityHarness() {
       <button type='button' onClick={() => setCanRecordAudio(false)}>
         Revoke recording admission
       </button>
+      <button type='button' onClick={() => setCanRecordAudio(true)}>
+        Restore recording admission
+      </button>
       <RecordingPanel
         meetingId={meetingId}
         canRecordAudio={canRecordAudio}
@@ -335,5 +338,90 @@ describe('RecordingPanel', () => {
     await expect.poll(() => track.stop.mock.calls.length).toBeGreaterThan(0)
     expect(recorder.instances).toHaveLength(0)
     expect(mediaMocks.uploadMeetingFile).not.toHaveBeenCalled()
+  })
+
+  it('allows a new permission request after an invalidated request resolves', async () => {
+    const first = deferred<{ getTracks: () => { stop: () => void }[] }>()
+    const second = deferred<{ getTracks: () => { stop: () => void }[] }>()
+    const firstTrack = { stop: vi.fn() }
+    const secondTrack = { stop: vi.fn() }
+    const getUserMedia = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+    const { recorder } = installRecorder({ getUserMedia })
+    const screen = await render(
+      <QueryClientProvider client={queryClient()}>
+        <CapabilityHarness />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Start recording' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Revoke recording admission' })
+    )
+    first.resolve({ getTracks: () => [firstTrack] })
+    await expect
+      .poll(() => firstTrack.stop.mock.calls.length)
+      .toBeGreaterThan(0)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Restore recording admission' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Start recording' })
+    )
+    second.resolve({ getTracks: () => [secondTrack] })
+
+    await expect
+      .element(screen.getByText('Recording in progress…'))
+      .toBeInTheDocument()
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(recorder.instances).toHaveLength(1)
+  })
+
+  it('does not let an obsolete request clear a newer permission request', async () => {
+    const first = deferred<{ getTracks: () => { stop: () => void }[] }>()
+    const second = deferred<{ getTracks: () => { stop: () => void }[] }>()
+    const firstTrack = { stop: vi.fn() }
+    const secondTrack = { stop: vi.fn() }
+    const getUserMedia = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+    const { recorder } = installRecorder({ getUserMedia })
+    const screen = await render(
+      <QueryClientProvider client={queryClient()}>
+        <CapabilityHarness />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Start recording' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Revoke recording admission' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Restore recording admission' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Start recording' })
+    )
+
+    first.resolve({ getTracks: () => [firstTrack] })
+    await expect
+      .poll(() => firstTrack.stop.mock.calls.length)
+      .toBeGreaterThan(0)
+    expect(recorder.instances).toHaveLength(0)
+
+    second.resolve({ getTracks: () => [secondTrack] })
+    await expect
+      .element(screen.getByText('Recording in progress…'))
+      .toBeInTheDocument()
+    expect(recorder.instances).toHaveLength(1)
+    expect(secondTrack.stop).not.toHaveBeenCalled()
   })
 })

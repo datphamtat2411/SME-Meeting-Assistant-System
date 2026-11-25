@@ -17,15 +17,30 @@ import { minutesQuery } from './minutes-api'
 
 export function ExportPanel({
   meetingId,
-  canManage = true,
+  canExport,
 }: {
   meetingId: string
-  canManage?: boolean
+  canExport: boolean
 }) {
-  const canManageRef = useRef(canManage)
+  const canExportRef = useRef(canExport)
+  const mounted = useRef(false)
+  const lifecycleGeneration = useRef(0)
+  const downloadOperationGeneration = useRef(0)
+  const meetingIdRef = useRef(meetingId)
   useEffect(() => {
-    canManageRef.current = canManage
-  }, [canManage])
+    canExportRef.current = canExport
+  }, [canExport])
+  useEffect(() => {
+    meetingIdRef.current = meetingId
+    mounted.current = true
+    const generation = ++lifecycleGeneration.current
+    return () => {
+      if (lifecycleGeneration.current !== generation) return
+      mounted.current = false
+      lifecycleGeneration.current += 1
+      downloadOperationGeneration.current += 1
+    }
+  }, [meetingId])
   const [exportId, setExportId] = useState('')
   const [unavailable, setUnavailable] = useState(false)
   const idempotencyKeys = useRef<Record<'PDF' | 'MARKDOWN', string>>({
@@ -47,7 +62,7 @@ export function ExportPanel({
   })
   const create = useMutation({
     mutationFn: (format: 'PDF' | 'MARKDOWN') => {
-      if (!canManageRef.current) {
+      if (!canExportRef.current) {
         throw new Error('Minutes export is no longer authorized.')
       }
       return createMinutesExport(
@@ -78,10 +93,24 @@ export function ExportPanel({
   })
   const download = useMutation({
     mutationFn: async () => {
-      if (!canManageRef.current) {
+      if (!canExportRef.current) {
         throw new Error('Minutes export is no longer authorized.')
       }
+      const operation = {
+        meetingId: meetingIdRef.current,
+        lifecycle: lifecycleGeneration.current,
+        generation: ++downloadOperationGeneration.current,
+      }
+      const isCurrentOperation = () =>
+        mounted.current &&
+        canExportRef.current &&
+        meetingIdRef.current === operation.meetingId &&
+        lifecycleGeneration.current === operation.lifecycle &&
+        downloadOperationGeneration.current === operation.generation
+
+      if (!isCurrentOperation()) return
       const result = await accessMinutesExport(exportId)
+      if (!isCurrentOperation()) return
       if (result.freshness !== 'CURRENT')
         throw new Error('Export is not current. Generate a fresh copy.')
       const url = new URL(result.accessUrl)
@@ -119,7 +148,7 @@ export function ExportPanel({
             deployment. Your administrator can confirm whether public export
             admission and its worker are enabled.
           </p>
-        ) : (
+        ) : canExport ? (
           <div className='flex flex-wrap gap-2'>
             <Button
               size='sm'
@@ -145,8 +174,12 @@ export function ExportPanel({
               Generate PDF
             </Button>
           </div>
+        ) : (
+          <p className='text-sm text-muted-foreground'>
+            Export is unavailable for the current meeting access.
+          </p>
         )}
-        {unavailable && (
+        {unavailable && canExport && (
           <Button
             size='sm'
             variant='outline'
@@ -199,7 +232,8 @@ export function ExportPanel({
                 {status.data.safeErrorCode}
               </span>
             )}
-            {status.data.status === 'READY' &&
+            {canExport &&
+              status.data.status === 'READY' &&
               status.data.freshness === 'CURRENT' && (
                 <Button
                   size='sm'
