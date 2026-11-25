@@ -33,13 +33,20 @@ import {
 } from '@/features/auth/session/current-user'
 import { MeetingLifecycleActions } from './components/meeting-lifecycle-actions'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
-import { meetingDetailQueryOptions, type MeetingView } from './data/detail-api'
+import {
+  meetingDetailQueryOptions,
+  type MeetingView,
+  type ParticipantView,
+} from './data/detail-api'
 import { formatMeetingSchedule as formatSchedule } from './data/meeting-schedule-format'
+import type { MeetingMedia } from './media/media-api'
 import {
   MeetingSessionBoundary,
   useMeetingSession,
 } from './media/meeting-session-context'
+import { PlaybackControls } from './media/playback-controls'
 import { RecordingPanel } from './media/recording-panel'
+import { useOptionalMeetingAuthorization } from './meeting-authorization-context'
 
 const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
 const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
@@ -59,10 +66,22 @@ export function LiveMeetingPage({ meetingId }: { meetingId: string }) {
 function LiveMeetingContent({ meetingId }: { meetingId: string }) {
   const queryClient = useQueryClient()
   const session = useMeetingSession()
+  const sharedAuthorization = useOptionalMeetingAuthorization()
   const { recording, stopRecording } = session
-  const detailQuery = useQuery(meetingDetailQueryOptions(meetingId))
-  const currentUser = queryClient.getQueryData<AuthContext>(currentUserQueryKey)
-  const meetingStatus = detailQuery.data?.meeting.status
+  const detailQuery = useQuery({
+    ...meetingDetailQueryOptions(meetingId),
+    enabled: !sharedAuthorization,
+  })
+  const fallbackUser =
+    queryClient.getQueryData<AuthContext>(currentUserQueryKey)
+  const detail = sharedAuthorization?.meeting
+    ? {
+        meeting: sharedAuthorization.meeting,
+        etag: sharedAuthorization.etag ?? '',
+      }
+    : detailQuery.data
+  const currentUser = sharedAuthorization?.identity ?? fallbackUser
+  const meetingStatus = detail?.meeting.status
 
   useEffect(() => {
     if (
@@ -90,20 +109,46 @@ function LiveMeetingContent({ meetingId }: { meetingId: string }) {
           </Link>
         </Button>
 
-        {detailQuery.isPending ? (
-          <LiveMeetingSkeleton />
-        ) : detailQuery.isError ? (
+        {sharedAuthorization?.detailQuery.isError ? (
           <LiveMeetingError
-            error={detailQuery.error}
-            onRetry={() => void detailQuery.refetch()}
+            error={sharedAuthorization.detailQuery.error}
+            onRetry={() => sharedAuthorization.detailQuery.refetch()}
           />
-        ) : (
+        ) : sharedAuthorization &&
+          (!sharedAuthorization.identity ||
+            !sharedAuthorization.canReadProtectedData) ? (
+          <LiveMeetingAccessState
+            status={sharedAuthorization.status}
+            onRetry={() => void sharedAuthorization.retry()}
+          />
+        ) : (sharedAuthorization?.detailQuery.isPending ||
+            detailQuery.isPending) &&
+          !detail ? (
+          <LiveMeetingSkeleton />
+        ) : (sharedAuthorization?.detailQuery.isError || detailQuery.isError) &&
+          !detail ? (
+          <LiveMeetingError
+            error={sharedAuthorization?.detailQuery.error ?? detailQuery.error}
+            onRetry={() =>
+              void (
+                sharedAuthorization?.detailQuery.refetch() ??
+                detailQuery.refetch()
+              )
+            }
+          />
+        ) : detail ? (
           <LiveMeetingDetail
-            detail={detailQuery.data}
+            detail={detail}
             currentUserId={currentUser?.userId}
             currentUserName={currentUser?.displayName}
+            participants={sharedAuthorization?.participants}
+            canManageMeeting={
+              sharedAuthorization?.capabilities.canManageMeeting
+            }
+            recording={recording}
+            media={session.media.data ?? []}
           />
-        )}
+        ) : null}
       </Main>
     </>
   )
@@ -113,13 +158,33 @@ function LiveMeetingDetail({
   detail,
   currentUserId,
   currentUserName,
+  participants,
+  canManageMeeting,
+  recording,
+  media,
 }: {
   detail: { meeting: MeetingView; etag: string }
   currentUserId?: string
   currentUserName?: string
+  participants?: ParticipantView[]
+  canManageMeeting?: boolean
+  recording: ReturnType<typeof useMeetingSession>['recording']
+  media: MeetingMedia[]
 }) {
   const { meeting, etag } = detail
   const isLive = meeting.status === 'IN_PROGRESS'
+  const isOrganizer =
+    canManageMeeting ?? currentUserId === meeting.organizerUserId
+  const canSubmitMedia =
+    canManageMeeting ?? (isOrganizer && meeting.status !== 'CANCELLED')
+  const reviewableRecording =
+    recording.artifact !== null ||
+    recording.state === 'requesting-permission' ||
+    recording.state === 'recording' ||
+    recording.state === 'stopping'
+  const activeParticipants = (participants ?? []).filter(
+    (participant) => participant.removedAt === null
+  )
 
   return (
     <>
@@ -151,7 +216,7 @@ function LiveMeetingDetail({
                 View meeting workspace
               </Link>
             </Button>
-            {isLive && (
+            {isLive && isOrganizer && (
               <MeetingLifecycleActions
                 meeting={meeting}
                 etag={etag}
@@ -230,20 +295,20 @@ function LiveMeetingDetail({
                 label='Recording'
                 value={
                   isLive
-                    ? currentUserId === meeting.organizerUserId
-                      ? 'Ready to start'
-                      : 'Organizer controlled'
-                    : 'Review in workspace'
+                    ? recordingMetric(recording)
+                    : reviewableRecording
+                      ? recordingMetric(recording)
+                      : 'Review in workspace'
                 }
               />
             </CardContent>
           </Card>
 
-          {isLive && currentUserId === meeting.organizerUserId ? (
+          {isOrganizer && (isLive || reviewableRecording) ? (
             <RecordingPanel
               meetingId={meeting.id}
-              canRecordAudio
-              canSubmitMedia
+              canRecordAudio={isLive}
+              canSubmitMedia={canSubmitMedia}
             />
           ) : (
             <Card>
@@ -262,6 +327,7 @@ function LiveMeetingDetail({
               </CardContent>
             </Card>
           )}
+          <LivePlaybackSources media={media} />
         </div>
 
         <div className='space-y-6'>
@@ -276,14 +342,32 @@ function LiveMeetingDetail({
               </CardDescription>
             </CardHeader>
             <CardContent className='space-y-3 pt-5'>
-              <div className='flex items-center justify-between gap-3 text-sm'>
-                <span className='text-muted-foreground'>Organizer</span>
-                <span className='text-end font-medium'>
-                  {currentUserId === meeting.organizerUserId
-                    ? (currentUserName ?? meeting.organizerUserId)
-                    : meeting.organizerUserId}
-                </span>
-              </div>
+              {activeParticipants.length > 0 ? (
+                activeParticipants.map((participant) => (
+                  <div
+                    key={participant.id}
+                    className='flex items-center justify-between gap-3 text-sm'
+                  >
+                    <span className='text-muted-foreground'>
+                      {participant.userId === meeting.organizerUserId
+                        ? 'Organizer'
+                        : 'Participant'}
+                    </span>
+                    <span className='text-end font-medium'>
+                      {participant.displayName?.trim() || participant.userId}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className='flex items-center justify-between gap-3 text-sm'>
+                  <span className='text-muted-foreground'>Organizer</span>
+                  <span className='text-end font-medium'>
+                    {currentUserId === meeting.organizerUserId
+                      ? (currentUserName ?? meeting.organizerUserId)
+                      : meeting.organizerUserId}
+                  </span>
+                </div>
+              )}
               <p className='text-sm text-muted-foreground'>
                 Remote presence and speaking activity are not provided by the
                 current meeting contract.
@@ -358,6 +442,78 @@ function LifecycleSummary({ meeting }: { meeting: MeetingView }) {
       </CardContent>
     </Card>
   )
+}
+
+function LivePlaybackSources({ media }: { media: MeetingMedia[] }) {
+  const session = useMeetingSession()
+  const available = media.filter((item) => item.status === 'AVAILABLE')
+  if (available.length === 0 && session.playback.kind === 'idle') return null
+
+  return (
+    <Card>
+      <CardHeader className='border-b'>
+        <CardTitle>Shared audio playback</CardTitle>
+        <CardDescription>
+          Playback remains bound to the selected meeting source while moving
+          between Detail and Live Meeting.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className='space-y-3 pt-5'>
+        {available.length > 0 && (
+          <div className='space-y-2'>
+            {available.map((source) => (
+              <div
+                key={source.id}
+                className='flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3'
+              >
+                <span className='truncate text-sm font-medium'>
+                  {source.originalFilename}
+                </span>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={
+                    session.playback.isLoading &&
+                    session.playback.sourceMediaId === source.id
+                  }
+                  onClick={() => void session.playRemoteMedia(source)}
+                >
+                  {session.playback.isLoading &&
+                  session.playback.sourceMediaId === source.id
+                    ? 'Opening…'
+                    : 'Select source'}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+        <PlaybackControls />
+      </CardContent>
+    </Card>
+  )
+}
+
+function recordingMetric(
+  recording: ReturnType<typeof useMeetingSession>['recording']
+): string {
+  switch (recording.state) {
+    case 'requesting-permission':
+      return 'Requesting microphone'
+    case 'recording':
+      return `Recording · ${formatDuration(recording.durationMs)}`
+    case 'stopping':
+      return 'Finalizing capture'
+    case 'completed':
+      if (recording.uploadStatus === 'submitting') return 'Submitting'
+      if (recording.uploadStatus === 'uncertain') return 'Submission uncertain'
+      if (recording.uploadStatus === 'failed') return 'Submission failed'
+      return 'Completed audio ready'
+    case 'failed':
+      return 'Capture or submission failed'
+    default:
+      return 'Ready to start'
+  }
 }
 
 function lifecycleDescription(status: MeetingView['status']) {
@@ -484,6 +640,36 @@ function LiveMeetingError({
         <Button className='mt-6' onClick={onRetry}>
           <RefreshCw />
           Retry
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function LiveMeetingAccessState({
+  status,
+  onRetry,
+}: {
+  status: string
+  onRetry: () => void
+}) {
+  const denied =
+    status === 'confirmed-authorization-denial' ||
+    status === 'confirmed-authentication-loss'
+  return (
+    <Card>
+      <CardContent className='flex flex-col items-center justify-center px-6 py-16 text-center'>
+        <AlertCircle className='size-10 text-destructive' />
+        <h1 className='mt-4 text-xl font-semibold'>
+          {denied ? 'Meeting access denied' : 'Unable to verify meeting access'}
+        </h1>
+        <p className='mt-2 max-w-lg text-sm text-muted-foreground'>
+          Protected Live Meeting details and controls remain hidden until the
+          shared meeting authorization context is established.
+        </p>
+        <Button className='mt-6' onClick={onRetry}>
+          <RefreshCw />
+          Retry verification
         </Button>
       </CardContent>
     </Card>

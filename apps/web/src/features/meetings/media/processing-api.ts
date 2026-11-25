@@ -41,6 +41,15 @@ const path = (meetingId: string) =>
 export type ProcessingOperationOptions = {
   idempotencyKey?: string
   signal?: AbortSignal
+  expectedMeetingId?: string
+  expectedSourceMediaId?: string
+}
+
+export class ProcessingOperationCancelledError extends Error {
+  constructor() {
+    super('The processing operation was cancelled.')
+    this.name = 'ProcessingOperationCancelledError'
+  }
 }
 
 function newIdempotencyKey(): string {
@@ -68,15 +77,21 @@ function isUncertain(error: unknown): boolean {
   )
 }
 
+function assertNotAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new ProcessingOperationCancelledError()
+}
+
 async function reconcileAdmission(
   meetingId: string,
-  cause: unknown
+  cause: unknown,
+  signal?: AbortSignal
 ): Promise<never> {
+  assertNotAborted(signal)
   try {
     // A normal job read does not expose the initiating idempotency key.
     // Refresh the server view for observability, but never infer that any
     // returned job belongs to the timed-out mutation.
-    await listProcessingJobs(meetingId)
+    await listProcessingJobs(meetingId, signal)
   } catch {
     // A failed read-back leaves the mutation outcome unresolved.
   }
@@ -91,11 +106,18 @@ async function reconcileAdmission(
   })
 }
 
-async function reconcileRetry(jobId: string, cause: unknown) {
+async function reconcileRetry(
+  jobId: string,
+  cause: unknown,
+  signal?: AbortSignal
+): Promise<never> {
+  // The retry read-back is intentionally not used to attribute a result to
+  // the timed-out mutation. It only keeps the operation unresolved.
+  assertNotAborted(signal)
   try {
     // A job read has no operation correlation for the timed-out retry.
     // Status, retry count, and stage changes may predate this request.
-    await getProcessingJob(jobId)
+    await getProcessingJob(jobId, signal)
   } catch {
     // A failed read-back leaves the mutation outcome unresolved.
   }
@@ -121,6 +143,7 @@ export function processingJobsQuery(meetingId: string) {
     refetchOnWindowFocus: true,
     refetchInterval: (query) => {
       const jobs = query.state.data
+      if (query.state.error) return false
       if (!jobs) return 6000
       return jobs.some((job) =>
         ['PENDING', 'QUEUED', 'RUNNING'].includes(job.status)
@@ -152,25 +175,43 @@ export function selectProcessingAttempt(
     return jobs.find((job) => job.id === selectedJobId)
   }
   const active = jobs.filter((job) => activeProcessingStatuses.has(job.status))
-  if (active.length === 1) return active[0]
-  if (active.length > 1) return undefined
+  const review = jobs.filter((job) => job.status === 'WAITING_FOR_REVIEW')
+  const relevant = [...active, ...review]
+  if (relevant.length === 1) return relevant[0]
+  if (relevant.length > 1) return undefined
   if (jobs.length === 1) return jobs[0]
+  if (jobs.some((job) => !terminalProcessingStatuses.has(job.status))) {
+    return undefined
+  }
   const terminal = jobs.filter((job) =>
     terminalProcessingStatuses.has(job.status)
   )
   return terminal.length === 1 ? terminal[0] : undefined
 }
 
-async function listProcessingJobs(meetingId: string): Promise<ProcessingJob[]> {
-  return processingJobSchema
-    .array()
-    .parse(await coreApi.get<unknown>(path(meetingId)))
+async function listProcessingJobs(
+  meetingId: string,
+  signal?: AbortSignal
+): Promise<ProcessingJob[]> {
+  const response = signal
+    ? await coreApi.get<unknown>(path(meetingId), { signal })
+    : await coreApi.get<unknown>(path(meetingId))
+  return processingJobSchema.array().parse(response)
 }
 
-async function getProcessingJob(jobId: string): Promise<ProcessingJob> {
-  return processingJobSchema.parse(
-    await coreApi.get<unknown>('/processing-jobs/' + encodeURIComponent(jobId))
-  )
+async function getProcessingJob(
+  jobId: string,
+  signal?: AbortSignal
+): Promise<ProcessingJob> {
+  const response = signal
+    ? await coreApi.get<unknown>(
+        '/processing-jobs/' + encodeURIComponent(jobId),
+        { signal }
+      )
+    : await coreApi.get<unknown>(
+        '/processing-jobs/' + encodeURIComponent(jobId)
+      )
+  return processingJobSchema.parse(response)
 }
 
 export function processingJobQuery(jobId: string) {
@@ -195,6 +236,7 @@ export async function requestProcessing(
   const request = { mediaId, ...(reprocessOfJobId ? { reprocessOfJobId } : {}) }
   const idempotencyKey = options.idempotencyKey ?? newIdempotencyKey()
   try {
+    assertNotAborted(options.signal)
     const job = processingJobSchema.parse(
       await coreApi.post<unknown>(
         path(meetingId),
@@ -202,6 +244,7 @@ export async function requestProcessing(
         requestOptions(idempotencyKey, options.signal)
       )
     )
+    assertNotAborted(options.signal)
     if (
       job.meetingId !== meetingId ||
       job.sourceMediaId !== mediaId ||
@@ -211,8 +254,14 @@ export async function requestProcessing(
     }
     return job
   } catch (error) {
+    if (
+      error instanceof ProcessingOperationCancelledError ||
+      options.signal?.aborted
+    ) {
+      throw new ProcessingOperationCancelledError()
+    }
     if (!isUncertain(error)) throw error
-    return reconcileAdmission(meetingId, error)
+    return reconcileAdmission(meetingId, error, options.signal)
   }
 }
 export async function retryProcessing(
@@ -222,15 +271,33 @@ export async function retryProcessing(
 ) {
   const idempotencyKey = options.idempotencyKey ?? newIdempotencyKey()
   try {
-    return processingJobSchema.parse(
+    assertNotAborted(options.signal)
+    const job = processingJobSchema.parse(
       await coreApi.post<unknown>(
         '/processing-jobs/' + encodeURIComponent(jobId) + '/retry',
         stageCode ? { stageCode } : {},
         requestOptions(idempotencyKey, options.signal)
       )
     )
+    assertNotAborted(options.signal)
+    if (
+      job.id !== jobId ||
+      (options.expectedMeetingId &&
+        job.meetingId !== options.expectedMeetingId) ||
+      (options.expectedSourceMediaId &&
+        job.sourceMediaId !== options.expectedSourceMediaId)
+    ) {
+      throw new Error('Core returned a processing job for a different retry.')
+    }
+    return job
   } catch (error) {
+    if (
+      error instanceof ProcessingOperationCancelledError ||
+      options.signal?.aborted
+    ) {
+      throw new ProcessingOperationCancelledError()
+    }
     if (!isUncertain(error)) throw error
-    return reconcileRetry(jobId, error)
+    return reconcileRetry(jobId, error, options.signal)
   }
 }

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
@@ -10,6 +11,10 @@ const mediaMocks = vi.hoisted(() => ({
   uploadMeetingFile: vi.fn(),
   reconcileMeetingMedia: vi.fn(),
 }))
+const toastMocks = vi.hoisted(() => ({
+  error: vi.fn(),
+  success: vi.fn(),
+}))
 
 vi.mock('./media-api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./media-api')>()
@@ -21,10 +26,7 @@ vi.mock('./media-api', async (importOriginal) => {
 })
 
 vi.mock('sonner', () => ({
-  toast: {
-    error: vi.fn(),
-    success: vi.fn(),
-  },
+  toast: toastMocks,
 }))
 
 const meetingId = '11111111-1111-4111-8111-111111111111'
@@ -43,11 +45,44 @@ function renderPanel() {
   )
 }
 
+function UploadCapabilityHarness() {
+  const [canSubmitMedia, setCanSubmitMedia] = useState(true)
+  return (
+    <>
+      <button type='button' onClick={() => setCanSubmitMedia(false)}>
+        Revoke media submission
+      </button>
+      <button type='button' onClick={() => setCanSubmitMedia(true)}>
+        Restore media submission
+      </button>
+      <UploadPanel meetingId={meetingId} canSubmitMedia={canSubmitMedia} />
+    </>
+  )
+}
+
+function renderCapabilityHarness() {
+  return render(
+    <QueryClientProvider client={queryClient()}>
+      <UploadCapabilityHarness />
+    </QueryClientProvider>
+  )
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 describe('UploadPanel', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     mediaMocks.uploadMeetingFile.mockReset()
     mediaMocks.reconcileMeetingMedia.mockReset()
+    toastMocks.error.mockReset()
+    toastMocks.success.mockReset()
     vi.spyOn(coreApi, 'get').mockResolvedValue([])
   })
 
@@ -127,5 +162,61 @@ describe('UploadPanel', () => {
       .element(screen.getByRole('button', { name: 'Check upload status' }))
       .toBeInTheDocument()
     await expect.element(screen.getByText('meeting.wav')).toBeInTheDocument()
+  })
+
+  it('does not claim upload success after media submission admission is revoked', async () => {
+    const upload = deferred<unknown>()
+    mediaMocks.uploadMeetingFile.mockImplementation(
+      async (
+        _meetingId: string,
+        _file: File,
+        _sourceType: string,
+        options: { canContinue?: () => void }
+      ) => {
+        const result = await upload.promise
+        options.canContinue?.()
+        return result
+      }
+    )
+    const screen = await renderCapabilityHarness()
+    await userEvent.upload(
+      screen.getByLabelText('Select WAV, MP3, or AAC M4A audio file'),
+      new File(['wav'], 'meeting.wav', { type: 'audio/wav' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Upload and finalize' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Uploading…' }))
+      .toBeDisabled()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Revoke media submission' })
+    )
+    await expect
+      .element(screen.getByLabelText('Select WAV, MP3, or AAC M4A audio file'))
+      .not.toBeInTheDocument()
+    upload.resolve({
+      id: '22222222-2222-4222-8222-222222222222',
+      meetingId,
+      sourceType: 'UPLOAD',
+      status: 'AVAILABLE',
+      originalFilename: 'meeting.wav',
+      contentType: 'audio/wav',
+      sizeBytes: 3,
+      durationMs: 1000,
+      sha256: null,
+      createdAt: '2030-01-01T00:00:00Z',
+      availableAt: '2030-01-01T00:00:01Z',
+      failureCode: null,
+    })
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Restore media submission' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry submission' }))
+      .toBeEnabled()
+    expect(toastMocks.success).not.toHaveBeenCalled()
   })
 })

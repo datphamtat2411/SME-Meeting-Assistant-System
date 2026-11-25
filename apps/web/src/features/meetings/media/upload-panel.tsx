@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useRef, useState } from 'react'
 import { FileAudio, Play, UploadCloud } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -10,11 +9,12 @@ import {
   RequestError,
   RequestLoading,
 } from '@/components/request-state'
-import { meetingMediaQuery, type MeetingMedia } from './media-api'
+import type { MeetingMedia } from './media-api'
 import {
   MeetingSessionBoundary,
   useMeetingSession,
 } from './meeting-session-context'
+import { PlaybackControls } from './playback-controls'
 
 function phaseLabel(
   phase: ReturnType<typeof useMeetingSession>['importedMedia']['phase']
@@ -47,33 +47,26 @@ export function UploadPanel({
   canSubmitMedia: boolean
 }) {
   return (
-    <MeetingSessionBoundary meetingId={meetingId}>
-      <UploadPanelContent
-        meetingId={meetingId}
-        canSubmitMedia={canSubmitMedia}
-      />
+    <MeetingSessionBoundary
+      meetingId={meetingId}
+      fallbackCapabilities={{
+        canSubmitMedia,
+        canReadMedia: true,
+      }}
+    >
+      <UploadPanelContent canSubmitMedia={canSubmitMedia} />
     </MeetingSessionBoundary>
   )
 }
 
-function UploadPanelContent({
-  meetingId,
-  canSubmitMedia,
-}: {
-  meetingId: string
-  canSubmitMedia: boolean
-}) {
+function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
   const fileInput = useRef<HTMLInputElement>(null)
   const session = useMeetingSession()
   const imported = session.importedMedia
   const playback = session.playback
-  const query = useQueryForMedia(meetingId)
+  const query = session.media
   const submitting = imported.status === 'submitting'
   const [checking, setChecking] = useState(false)
-
-  useEffect(() => {
-    if (!imported.file && fileInput.current) fileInput.current.value = ''
-  }, [imported.file])
 
   function selectFile(next: File | null) {
     session.selectImportedFile(next)
@@ -199,7 +192,7 @@ function UploadPanelContent({
             error={query.error}
             retry={() => void query.refetch()}
           />
-        ) : query.data.length === 0 ? (
+        ) : !query.data || query.data.length === 0 ? (
           <RequestEmpty title='No source files uploaded' />
         ) : (
           <div className='space-y-3'>
@@ -215,43 +208,7 @@ function UploadPanelContent({
             ))}
           </div>
         )}
-        {playback.kind !== 'idle' && (
-          <div className='space-y-2 rounded-lg border bg-muted/10 p-3'>
-            <div className='flex items-center justify-between gap-2'>
-              <p className='text-sm font-medium'>
-                {playback.kind === 'local'
-                  ? 'Local preview'
-                  : 'Source playback'}
-                : {playback.filename ?? 'recording'}
-              </p>
-              <Button
-                type='button'
-                size='sm'
-                variant='ghost'
-                onClick={session.stopPlayback}
-              >
-                Stop
-              </Button>
-            </div>
-            {playback.error ? (
-              <p role='alert' className='text-sm text-destructive'>
-                {playback.error}
-              </p>
-            ) : playback.isLoading ? (
-              <p role='status' className='text-sm text-muted-foreground'>
-                Opening a protected playback resource…
-              </p>
-            ) : playback.objectUrl ? (
-              <audio
-                controls
-                preload='metadata'
-                src={playback.objectUrl}
-                className='w-full'
-                aria-label={`Playback ${playback.filename ?? 'source recording'}`}
-              />
-            ) : null}
-          </div>
-        )}
+        {playback.kind !== 'idle' && <PlaybackControls />}
       </CardContent>
     </Card>
   )
@@ -306,10 +263,6 @@ function MediaRow({
       </Button>
     </div>
   )
-}
-
-function useQueryForMedia(meetingId: string) {
-  return useQuery(meetingMediaQuery(meetingId))
 }
 
 function formatDuration(durationMs: number): string {

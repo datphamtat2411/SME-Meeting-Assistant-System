@@ -8,6 +8,7 @@ import {
   useMeetingSession,
   type RecordingCaptureState,
 } from './meeting-session-context'
+import { PlaybackControls } from './playback-controls'
 
 function formatDuration(durationMs: number): string {
   const seconds = Math.floor(durationMs / 1000)
@@ -37,7 +38,14 @@ export function RecordingPanel(props: {
   canSubmitMedia: boolean
 }) {
   return (
-    <MeetingSessionBoundary meetingId={props.meetingId}>
+    <MeetingSessionBoundary
+      meetingId={props.meetingId}
+      fallbackCapabilities={{
+        canRecordAudio: props.canRecordAudio,
+        canSubmitMedia: props.canSubmitMedia,
+        canReadMedia: true,
+      }}
+    >
       <RecordingPanelContent {...props} />
     </MeetingSessionBoundary>
   )
@@ -267,13 +275,14 @@ function RecordingPanelContent({
               )}
             </div>
             {recording.artifact.previewUrl ? (
-              <audio
-                controls
-                preload='metadata'
-                src={recording.artifact.previewUrl}
-                className='w-full'
-                aria-label='Completed recording preview'
-              />
+              session.playback.kind === 'local' &&
+              session.playback.artifactId === recording.artifact.artifactId ? (
+                <PlaybackControls />
+              ) : (
+                <p className='text-sm text-muted-foreground'>
+                  Select “Use shared player” to preview this recording.
+                </p>
+              )
             ) : (
               <p className='text-sm text-muted-foreground'>
                 This browser cannot create a local preview URL. The recording

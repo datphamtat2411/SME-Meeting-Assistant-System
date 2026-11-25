@@ -124,6 +124,12 @@ export type MediaUploadOptions = {
   idempotencyKey?: string
   onPhase?: (phase: MediaUploadPhase) => void
   signal?: AbortSignal
+  /**
+   * Called immediately before a consequential phase. The meeting-scoped
+   * ingestion owner uses this to re-check operation identity and authorization
+   * after asynchronous preparation.
+   */
+  canContinue?: () => void
   uploadTransport?: SignedMediaTransport
 }
 
@@ -159,6 +165,13 @@ export class MediaUploadError extends Error {
     this.name = 'MediaUploadError'
     this.outcome = options.outcome ?? 'failed'
     this.mediaId = options.mediaId
+  }
+}
+
+export class MediaUploadCancelledError extends Error {
+  constructor(message = 'The media operation was cancelled.') {
+    super(message)
+    this.name = 'MediaUploadCancelledError'
   }
 }
 
@@ -420,10 +433,12 @@ function newIdempotencyKey(): string {
 async function reconcileAfterUncertainMediaMutation(
   meetingId: string,
   mediaId: string,
-  cause: unknown
+  cause: unknown,
+  signal?: AbortSignal
 ): Promise<MeetingMedia> {
+  if (signal?.aborted) throw new MediaUploadCancelledError()
   try {
-    const media = await getMeetingMedia(meetingId, mediaId)
+    const media = await getMeetingMedia(meetingId, mediaId, signal)
     if (media.status === 'AVAILABLE') return media
     if (media.status === 'REJECTED' || media.status === 'FAILED') {
       throw mediaFailure(media)
@@ -480,8 +495,13 @@ export async function uploadMeetingFile(
   const declaration = validateMeetingAudioFile(file)
   const idempotencyKey = options.idempotencyKey ?? newIdempotencyKey()
   let intent: MediaUploadIntent
+  const assertCanContinue = () => {
+    if (options.signal?.aborted) throw new MediaUploadCancelledError()
+    options.canContinue?.()
+  }
 
   try {
+    assertCanContinue()
     const response = await coreApi.post<unknown>(
       mediaPath(meetingId) + '/uploads',
       {
@@ -497,6 +517,9 @@ export async function uploadMeetingFile(
     )
     intent = readUploadIntent(response)
   } catch (error) {
+    if (error instanceof MediaUploadCancelledError || options.signal?.aborted) {
+      throw new MediaUploadCancelledError()
+    }
     if (isUncertainCoreError(error)) {
       throw new MediaUploadError(
         'The upload intent outcome is uncertain. Retry this same operation explicitly or choose a new file.',
@@ -521,6 +544,7 @@ export async function uploadMeetingFile(
   }
 
   if (intent.status === 'AVAILABLE') {
+    assertCanContinue()
     options.onPhase?.('available-replay')
     const media = await getMeetingMedia(
       meetingId,
@@ -556,12 +580,14 @@ export async function uploadMeetingFile(
   }
 
   options.onPhase?.('intent-created')
+  assertCanContinue()
   const uploadUrl = resolveMediaCapability(
     intent.uploadUrl,
     'PUT',
     meetingId,
     intent.mediaId
   )
+  assertCanContinue()
   options.onPhase?.('storage-uploading')
 
   let response: Response
@@ -579,11 +605,15 @@ export async function uploadMeetingFile(
       }
     )
   } catch (error) {
+    if (error instanceof MediaUploadCancelledError || options.signal?.aborted) {
+      throw new MediaUploadCancelledError()
+    }
     options.onPhase?.('reconciling')
     return await reconcileAfterUncertainMediaMutation(
       meetingId,
       intent.mediaId,
-      error
+      error,
+      options.signal
     )
   }
   if (!response.ok) {
@@ -593,6 +623,7 @@ export async function uploadMeetingFile(
     )
   }
   options.onPhase?.('storage-uploaded')
+  assertCanContinue()
   options.onPhase?.('finalizing')
 
   let finalized: MeetingMedia
@@ -608,11 +639,15 @@ export async function uploadMeetingFile(
         )
     finalized = readMedia(response)
   } catch (error) {
+    if (error instanceof MediaUploadCancelledError || options.signal?.aborted) {
+      throw new MediaUploadCancelledError()
+    }
     options.onPhase?.('reconciling')
     return await reconcileAfterUncertainMediaMutation(
       meetingId,
       intent.mediaId,
-      error
+      error,
+      options.signal
     )
   }
 
@@ -631,9 +666,10 @@ function defaultMediaTransport(url: string, init: RequestInit) {
 
 export async function reconcileMeetingMedia(
   meetingId: string,
-  mediaId: string
+  mediaId: string,
+  signal?: AbortSignal
 ): Promise<MeetingMedia> {
-  const media = await getMeetingMedia(meetingId, mediaId)
+  const media = await getMeetingMedia(meetingId, mediaId, signal)
   if (media.status === 'AVAILABLE') return media
   if (media.status === 'REJECTED' || media.status === 'FAILED') {
     throw mediaFailure(media)

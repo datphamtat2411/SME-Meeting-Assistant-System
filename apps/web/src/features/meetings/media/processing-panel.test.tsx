@@ -252,6 +252,30 @@ describe('ProcessingPanel', () => {
     expect(toastMocks.error).not.toHaveBeenCalled()
   })
 
+  it('keeps human review as an explicit processing state', async () => {
+    apiMocks.jobs.push({
+      ...failedJob,
+      status: 'WAITING_FOR_REVIEW',
+      currentStage: 'TRANSCRIPTION_REVIEW',
+      errorCode: null,
+      errorSummary: null,
+      retryable: false,
+    })
+    const screen = await renderPanel()
+
+    await expect
+      .element(
+        screen.getByText(
+          'Human review is required before downstream intelligence can continue. Open Transcript to review the source.'
+        )
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Action required'))
+      .toBeInTheDocument()
+    expect(toastMocks.success).not.toHaveBeenCalled()
+  })
+
   it('shows an uncertain retry without a success toast and keeps the job visible', async () => {
     apiMocks.jobs.push(failedJob)
     const screen = await renderPanel()

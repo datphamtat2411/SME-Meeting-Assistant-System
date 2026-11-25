@@ -59,16 +59,12 @@ import {
 } from './data/meeting-cache'
 import type { MeetingParticipantRefresh } from './data/participant-management-api'
 import { minutesQuery } from './intelligence/minutes-api'
-import { meetingMediaQuery } from './media/media-api'
 import {
   MeetingSessionBoundary,
   useOptionalMeetingSession,
 } from './media/meeting-session-context'
-import {
-  processingJobsQuery,
-  selectProcessingAttempt,
-} from './media/processing-api'
 import { presentProcessingStatus } from './media/processing-status-presentation'
+import { useOptionalMeetingAuthorization } from './meeting-authorization-context'
 import { MeetingTools } from './meeting-tools'
 import {
   deriveMeetingWorkspaceCapabilities,
@@ -136,8 +132,46 @@ function MeetingWorkspacePageContent({
     replace?: boolean
   ) => void
 }) {
+  const sharedAuthorization = useOptionalMeetingAuthorization()
   const verification = useCurrentUserVerification()
   const identity = verification.identity
+
+  if (sharedAuthorization) {
+    return (
+      <>
+        <Header fixed>
+          <HeaderActions />
+        </Header>
+        <Main className='flex flex-1 flex-col gap-6'>
+          <Button asChild variant='ghost' className='-ms-3 w-fit'>
+            <Link to='/meetings'>
+              <ArrowLeft />
+              Back to Meetings
+            </Link>
+          </Button>
+          {sharedAuthorization.detailQuery.isError ? (
+            <SharedMeetingWorkspaceIdentityBoundary
+              meetingId={meetingId}
+              section={section}
+              onSectionChange={onSectionChange}
+            />
+          ) : !sharedAuthorization.identity ||
+            !sharedAuthorization.canReadProtectedData ? (
+            <SessionVerificationState
+              status={sharedAuthorization.status}
+              onRetry={() => void sharedAuthorization.retry()}
+            />
+          ) : (
+            <SharedMeetingWorkspaceIdentityBoundary
+              meetingId={meetingId}
+              section={section}
+              onSectionChange={onSectionChange}
+            />
+          )}
+        </Main>
+      </>
+    )
+  }
 
   return (
     <>
@@ -175,6 +209,130 @@ function MeetingWorkspacePageContent({
         )}
       </Main>
     </>
+  )
+}
+
+function SharedMeetingWorkspaceIdentityBoundary({
+  meetingId,
+  section,
+  onSectionChange,
+}: {
+  meetingId: string
+  section: MeetingWorkspaceSection
+  onSectionChange?: (
+    section: MeetingWorkspaceSection,
+    replace?: boolean
+  ) => void
+}) {
+  const shared = useOptionalMeetingAuthorization()
+  const queryClient = useQueryClient()
+  const roomQuery = useQuery({
+    ...roomFilterOptionByIdQueryOptions(shared?.meeting?.roomId ?? undefined),
+    enabled: Boolean(shared?.meeting?.roomId && shared.isEstablished),
+  })
+  const organizerQuery = useQuery({
+    ...organizerFilterOptionByIdQueryOptions(shared?.meeting?.organizerUserId),
+    enabled: Boolean(
+      shared?.meeting?.organizerUserId &&
+      shared.meeting?.organizerUserId !== shared.identity?.userId &&
+      shared.isEstablished
+    ),
+  })
+
+  useEffect(() => {
+    if (!shared?.meeting) return
+    queryClient.setQueriesData<MeetingListCacheData>(
+      { queryKey: meetingListQueryKey },
+      (cachedData) => updateMeetingListCacheData(cachedData, shared.meeting!)
+    )
+  }, [queryClient, shared?.meeting])
+
+  if (!shared || !shared.scopeReady || shared.detailQuery.isPending) {
+    return <MeetingWorkspaceSkeleton />
+  }
+  if (shared.detailQuery.isError) {
+    return (
+      <MeetingDetailError
+        error={shared.detailQuery.error}
+        onRetry={() => shared.detailQuery.refetch()}
+      />
+    )
+  }
+  if (!shared.meeting || !shared.identity) return null
+
+  const participants: ParticipantState = {
+    data: shared.participantsQuery.isError
+      ? undefined
+      : shared.participantsQuery.data,
+    isPending:
+      shared.participantsQuery.isPending && !shared.participantsQuery.data,
+    isError: shared.participantsQuery.isError,
+    onRetry: () => void shared.participantsQuery.refetch(),
+  }
+  const handleParticipantReconciled = (
+    refresh: MeetingParticipantRefresh,
+    _confirmed: boolean
+  ) => {
+    queryClient.setQueryData(['meetings', 'detail', meetingId], refresh.detail)
+    queryClient.setQueryData(
+      ['meetings', 'participants', meetingId],
+      refresh.participants
+    )
+    void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
+    void queryClient.invalidateQueries({
+      queryKey: ['rooms', 'availability'],
+    })
+  }
+
+  return (
+    <MeetingWorkspaceProvider
+      value={{
+        meetingId,
+        identity: shared.identity,
+        meeting: shared.meeting,
+        etag: shared.etag ?? '',
+        membership: shared.membership,
+        participants: shared.participants,
+        capabilities: shared.capabilities,
+      }}
+    >
+      <MeetingWorkspace
+        meeting={shared.meeting}
+        etag={shared.etag ?? ''}
+        currentUser={shared.identity}
+        capabilities={shared.capabilities}
+        section={section}
+        onSectionChange={onSectionChange}
+        participants={participants}
+        room={{
+          hasId: Boolean(shared.meeting.roomId),
+          data: roomQuery.isError ? undefined : roomQuery.data,
+          isPending: Boolean(shared.meeting.roomId) && roomQuery.isPending,
+          isError: roomQuery.isError,
+          onRetry: () => void roomQuery.refetch(),
+        }}
+        organizer={{
+          hasId: Boolean(shared.meeting.organizerUserId),
+          data:
+            shared.meeting.organizerUserId === shared.identity.userId
+              ? {
+                  id: shared.identity.userId,
+                  name: shared.identity.displayName,
+                }
+              : organizerQuery.isError
+                ? undefined
+                : organizerQuery.data,
+          isPending:
+            shared.meeting.organizerUserId !== shared.identity.userId &&
+            organizerQuery.isPending,
+          isError:
+            shared.meeting.organizerUserId !== shared.identity.userId &&
+            organizerQuery.isError,
+          onRetry: () => void organizerQuery.refetch(),
+        }}
+        onParticipantReconciled={handleParticipantReconciled}
+      />
+    </MeetingWorkspaceProvider>
   )
 }
 
@@ -461,6 +619,27 @@ function MeetingWorkspace({
   const session = useOptionalMeetingSession()
   const activeSection = resolveMeetingWorkspaceSection(section, capabilities)
   const canEdit = capabilities.canEditMeeting
+  const updateFallbackCapabilities = session?.updateFallbackCapabilities
+
+  useEffect(() => {
+    if (!updateFallbackCapabilities) return
+    updateFallbackCapabilities({
+      canAdmitProcessing: capabilities.canAdmitProcessing,
+      canReadMedia: capabilities.canReadMedia,
+      canReadProcessing: capabilities.canReadProcessing,
+      canRecoverProcessing: capabilities.canRecoverProcessing,
+      canRecordAudio: capabilities.canRecordAudio,
+      canSubmitMedia: capabilities.canSubmitMedia,
+    })
+  }, [
+    capabilities.canAdmitProcessing,
+    capabilities.canReadMedia,
+    capabilities.canReadProcessing,
+    capabilities.canRecoverProcessing,
+    capabilities.canRecordAudio,
+    capabilities.canSubmitMedia,
+    updateFallbackCapabilities,
+  ])
 
   useEffect(() => {
     if (section !== activeSection) {
@@ -804,19 +983,19 @@ function WorkspaceResultsOverview({
   ) => void
 }) {
   const session = useOptionalMeetingSession()
-  const media = useQuery(meetingMediaQuery(meetingId))
-  const jobs = useQuery(processingJobsQuery(meetingId))
+  const media = session?.media
+  const jobs = session?.processing.jobs
   const minutes = useQuery(minutesQuery(meetingId))
 
-  const availableMedia = media.data?.filter(
-    (item) => item.status === 'AVAILABLE'
-  )
-  const observedJob = jobs.data
-    ? selectProcessingAttempt(jobs.data, session?.selectedProcessingJobId)
-    : undefined
-  const hasAmbiguousAttempts = Boolean(
-    jobs.data && jobs.data.length > 1 && !observedJob
-  )
+  const mediaData = media?.data ?? []
+  const mediaIsPending = media?.isPending ?? true
+  const mediaIsError = media?.isError ?? false
+  const jobsData = jobs?.data ?? []
+  const jobsIsPending = jobs?.isPending ?? true
+  const jobsIsError = jobs?.isError ?? false
+  const availableMedia = mediaData.filter((item) => item.status === 'AVAILABLE')
+  const observedJob = session?.processing.selectedJob
+  const hasAmbiguousAttempts = Boolean(jobsData.length > 1 && !observedJob)
   const processingState = observedJob
     ? presentProcessingStatus(observedJob.status)
     : undefined
@@ -853,49 +1032,49 @@ function WorkspaceResultsOverview({
           icon={<Mic />}
           title='Source media'
           state={
-            media.isPending
+            mediaIsPending
               ? 'Checking availability'
-              : media.isError
+              : mediaIsError
                 ? 'Unable to verify'
-                : media.data.length === 0
+                : mediaData.length === 0
                   ? 'No source media'
-                  : `${availableMedia?.length ?? 0} available · ${media.data.length} total`
+                  : `${availableMedia.length} available · ${mediaData.length} total`
           }
           description={
-            media.isPending
+            mediaIsPending
               ? 'Checking Core for finalized meeting recordings.'
-              : media.isError
+              : mediaIsError
                 ? 'The media list could not be verified. This is separate from the meeting lifecycle.'
-                : media.data.length === 0
+                : mediaData.length === 0
                   ? 'No source recording has been confirmed by Core.'
-                  : media.data
+                  : mediaData
                       .filter((item) => item.status !== 'AVAILABLE')
                       .map((item) => `${item.originalFilename}: ${item.status}`)
                       .join(' · ') ||
                     'Finalized source files are available to review.'
           }
           kind={
-            media.isPending
+            mediaIsPending
               ? 'pending'
-              : media.isError
+              : mediaIsError
                 ? 'error'
                 : availableMedia?.length
                   ? 'available'
                   : 'unavailable'
           }
           action={
-            !media.isPending &&
-            !media.isError &&
-            media.data.length === 0 &&
+            !mediaIsPending &&
+            !mediaIsError &&
+            mediaData.length === 0 &&
             capabilities.canSubmitMedia
               ? {
                   label: 'Add a recording',
                   onClick: () => onSectionChange?.('recording'),
                 }
-              : media.isError
+              : mediaIsError
                 ? {
                     label: 'Retry',
-                    onClick: () => void media.refetch(),
+                    onClick: () => void media?.refetch(),
                   }
                 : undefined
           }
@@ -904,9 +1083,9 @@ function WorkspaceResultsOverview({
           icon={<Clock3 />}
           title='Processing'
           state={
-            jobs.isPending
+            jobsIsPending
               ? 'Checking status'
-              : jobs.isError
+              : jobsIsError
                 ? 'Unable to verify'
                 : hasAmbiguousAttempts
                   ? 'Select an attempt'
@@ -915,9 +1094,9 @@ function WorkspaceResultsOverview({
                     : 'Not started'
           }
           description={
-            jobs.isPending
+            jobsIsPending
               ? 'Checking the current Core processing job list.'
-              : jobs.isError
+              : jobsIsError
                 ? 'Processing status could not be verified.'
                 : hasAmbiguousAttempts
                   ? 'Several processing attempts are recorded. Open Recording to select the attempt that should remain in view.'
@@ -936,17 +1115,17 @@ function WorkspaceResultsOverview({
                     : 'An ended meeting does not imply that processing has been requested.'
           }
           kind={
-            jobs.isPending
+            jobsIsPending
               ? 'pending'
-              : jobs.isError
+              : jobsIsError
                 ? 'error'
                 : observedJob
                   ? processingResultKind(processingState?.kind)
                   : 'unavailable'
           }
           action={
-            jobs.isError
-              ? { label: 'Retry', onClick: () => void jobs.refetch() }
+            jobsIsError
+              ? { label: 'Retry', onClick: () => void jobs?.refetch() }
               : observedJob?.status === 'WAITING_FOR_REVIEW'
                 ? {
                     label: 'Review transcript',
@@ -954,7 +1133,7 @@ function WorkspaceResultsOverview({
                   }
                 : observedJob ||
                     hasAmbiguousAttempts ||
-                    (availableMedia?.length && capabilities.canAdmitProcessing)
+                    (availableMedia.length && capabilities.canAdmitProcessing)
                   ? {
                       label: 'Review processing',
                       onClick: () => onSectionChange?.('recording'),
@@ -1099,9 +1278,9 @@ function WorkspaceResultsOverview({
           }
         />
         {meeting.status === 'ENDED' &&
-          !media.isPending &&
-          !media.isError &&
-          media.data.length === 0 && (
+          !mediaIsPending &&
+          !mediaIsError &&
+          mediaData.length === 0 && (
             <p className='pt-3 text-xs text-muted-foreground'>
               Meeting ended{' '}
               {meeting.endedAt

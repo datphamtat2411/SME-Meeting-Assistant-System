@@ -10,10 +10,12 @@ import type { MeetingListResponse } from './data/list-api'
 import { MeetingWorkspacePage } from './meeting-workspace'
 import type { MeetingWorkspaceSection } from './meeting-workspace-navigation'
 
+const toastError = vi.hoisted(() => vi.fn())
 const toastSuccess = vi.hoisted(() => vi.fn())
 
 vi.mock('sonner', () => ({
   toast: {
+    error: toastError,
     success: toastSuccess,
   },
 }))
@@ -385,6 +387,7 @@ describe('MeetingWorkspacePage', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    toastError.mockReset()
     toastSuccess.mockReset()
   })
 

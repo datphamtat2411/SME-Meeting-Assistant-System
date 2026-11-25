@@ -1,5 +1,14 @@
-import { createFileRoute, Outlet, useMatchRoute } from '@tanstack/react-router'
-import { MeetingSessionProvider } from '@/features/meetings/media/meeting-session-context'
+import {
+  createFileRoute,
+  Outlet,
+  useBlocker,
+  useMatchRoute,
+} from '@tanstack/react-router'
+import {
+  MeetingSessionProvider,
+  useMeetingSession,
+} from '@/features/meetings/media/meeting-session-context'
+import { MeetingAuthorizationProvider } from '@/features/meetings/meeting-authorization-context'
 import { MeetingWorkspacePage } from '@/features/meetings/meeting-workspace'
 import {
   meetingWorkspaceSectionSchema,
@@ -33,19 +42,51 @@ function MeetingRoute() {
   }
 
   return (
-    <MeetingSessionProvider key={meetingId} meetingId={meetingId}>
-      {isLiveRoute ? (
-        <Outlet />
-      ) : (
-        <MeetingWorkspacePage
-          key={meetingId}
-          meetingId={meetingId}
-          section={
-            search.section ?? meetingWorkspaceSectionSchema.enum.overview
-          }
-          onSectionChange={changeSection}
-        />
-      )}
-    </MeetingSessionProvider>
+    <MeetingAuthorizationProvider key={meetingId} meetingId={meetingId}>
+      <MeetingSessionProvider key={meetingId} meetingId={meetingId}>
+        <MeetingNavigationGuard />
+        {isLiveRoute ? (
+          <Outlet />
+        ) : (
+          <MeetingWorkspacePage
+            key={meetingId}
+            meetingId={meetingId}
+            section={
+              search.section ?? meetingWorkspaceSectionSchema.enum.overview
+            }
+            onSectionChange={changeSection}
+          />
+        )}
+      </MeetingSessionProvider>
+    </MeetingAuthorizationProvider>
   )
+}
+
+function MeetingNavigationGuard() {
+  const session = useMeetingSession()
+  useBlocker({
+    enableBeforeUnload: () => session.hasUnsavedResources,
+    shouldBlockFn: ({ next }) => {
+      if (!session.hasUnsavedResources) return false
+      const nextMeetingId =
+        typeof next.params === 'object' &&
+        next.params !== null &&
+        'meetingId' in next.params &&
+        typeof next.params.meetingId === 'string'
+          ? next.params.meetingId
+          : undefined
+      if (nextMeetingId === session.meetingId) return false
+      if (
+        session.authorization?.isConfirmedAccessLoss ||
+        session.authorization?.status === 'confirmed-authentication-loss' ||
+        session.authorization?.status === 'confirmed-authorization-denial'
+      ) {
+        return false
+      }
+      return !window.confirm(
+        'Active or unsaved meeting audio will be lost if you leave this meeting. Leave anyway?'
+      )
+    },
+  })
+  return null
 }
