@@ -109,7 +109,7 @@ export type MeetingSessionContextValue = {
   hasUnsavedTranscriptReview: boolean
   hasUnsavedIntelligence: boolean
   setIntelligenceDraftDirty: (
-    feature: 'summary' | 'decisions',
+    feature: 'summary' | 'decisions' | 'actions',
     dirty: boolean
   ) => void
   setTranscriptReviewDirty: (dirty: boolean) => void

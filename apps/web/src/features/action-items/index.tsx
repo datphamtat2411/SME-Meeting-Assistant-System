@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { Link, useBlocker } from '@tanstack/react-router'
 import { ListChecks, Plus, Search } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -81,6 +81,11 @@ export function ActionItemsPage() {
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState<ActionItem | null>(null)
   const managementCapability = useQuery(managementCapabilityQuery())
+  const [dirty, setDirty] = useState(false)
+  useBlocker({
+    enableBeforeUnload: dirty,
+    shouldBlockFn: () => dirty && !window.confirm('Unsaved or unresolved Action Item work may be lost. Leave anyway?'),
+  })
 
   function selectView(next: string) {
     const nextView = next as ActionView
@@ -193,6 +198,7 @@ export function ActionItemsPage() {
         open={open}
         onOpenChange={setOpen}
         item={selected}
+        onDirtyChange={setDirty}
         canManageActionItems={managementCapability.data?.canCreate === true}
       />
     </>

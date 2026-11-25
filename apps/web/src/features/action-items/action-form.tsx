@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Search } from 'lucide-react'
 import { toast } from 'sonner'
+import { normalizeCoreApiError } from '@/lib/core-api'
+import { useOptionalMeetingSession } from '@/features/meetings/media/meeting-session-context'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -18,16 +20,20 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { invalidateMeetingArtifacts } from '@/features/meetings/intelligence/query-invalidation'
 import {
+  actionDetail,
   actionDetailQuery,
   assigneeCandidatesQuery,
   buildActionPatch,
   createAction,
   managementTargetsQuery,
   patchAction,
+  rebaseActionDraft,
+  type ActionEditValues,
   type ActionDraft,
   type ActionItem,
   type ActionMutationResult,
 } from './action-api'
+import { useActionOperationScope } from './action-operation-scope'
 
 export function ActionForm({
   open,
@@ -35,12 +41,14 @@ export function ActionForm({
   item,
   meetingId,
   canManageActionItems = false,
+  onDirtyChange,
 }: {
   open: boolean
   onOpenChange: (value: boolean) => void
   item?: ActionItem | null
   meetingId?: string
   canManageActionItems?: boolean
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const qc = useQueryClient()
   const [title, setTitle] = useState(item?.title ?? '')
@@ -70,10 +78,16 @@ export function ActionForm({
   const [unresolvedCreate, setUnresolvedCreate] = useState<ActionDraft | null>(
     null
   )
-  const [idempotencyKey] = useState(() => crypto.randomUUID())
+  const intent = useRef<{ payload: ActionDraft; key: string } | null>(null)
+  const submitting = useRef(false)
   const initializedReview = useRef<string | null>(null)
   const operation = useRef(0)
   const isFixedMeeting = Boolean(item || meetingId)
+  const captureScope = useActionOperationScope(
+    item?.id ?? `new:${meeting}`,
+    open && (item ? snapshot?.item.capabilities.canEdit === true && item.capabilities.canEdit : canManageActionItems)
+  )
+  const setMeetingDirty = useOptionalMeetingSession()?.setIntelligenceDraftDirty
   const detail = useQuery({
     ...actionDetailQuery(item?.id),
     enabled: open && Boolean(item),
@@ -120,152 +134,154 @@ export function ActionForm({
     item,
   ])
 
+  type Submission = {
+    owns: () => boolean
+    reviewed: ActionMutationResult | null
+    pending: ActionEditValues
+    creation: { payload: ActionDraft; key: string } | null
+    recovering: boolean
+  }
   const mutation = useMutation({
-    mutationFn: async (): Promise<ActionMutationResult> => {
-      if (item) {
-        const reviewed = snapshot
-        if (!reviewed)
-          throw new Error(
-            'The authoritative Action Item snapshot is still loading.'
-          )
-        if (!reviewed.item.capabilities.canEdit) {
-          throw new Error('Action Item editing is no longer authorized.')
-        }
+    mutationFn: async (submission: Submission): Promise<ActionMutationResult> => {
+      if (!submission.owns())
+        throw new Error('The Action Item operation is no longer authorized.')
+      if (submission.reviewed) {
+        const reviewed = submission.reviewed
         return patchAction(
-          item.id,
+          reviewed.item.id,
           reviewed.etag,
-          buildActionPatch(reviewed.item, {
-            title,
-            details,
-            assigneeUserId: assignee,
-            dueDate,
-          })
+          buildActionPatch(reviewed.item, submission.pending)
         )
       }
-      if (!canManageActionItems) {
-        throw new Error('Action Item management is not authorized.')
-      }
-      if (!meeting || !assignee) {
-        throw new Error('Select an authorized meeting and active assignee.')
-      }
-      const payload = unresolvedCreate ?? {
-        meetingId: meeting,
-        title: title.trim(),
-        details: details.trim() || null,
-        assigneeUserId: assignee,
-        dueDate: dueDate || null,
-      }
-      return createAction(payload, idempotencyKey)
+      if (!submission.creation) throw new Error('Creation intent is unavailable.')
+      return createAction(submission.creation.payload, submission.creation.key)
     },
-    onSuccess: (result) => {
+    onSuccess: (result, submission) => {
+      submitting.current = false
+      if (!submission.owns()) return
+      intent.current = null
       setUnresolvedCreate(null)
-      if (item) {
-        setSnapshot(result)
-        qc.setQueryData(['action-items', 'detail', item.id], result)
-      }
       toast.success(item ? 'Action Item saved' : 'Official Action Item created')
       invalidateMeetingArtifacts(qc, result.item.meetingId, { actions: true })
+      operation.current += 1
       onOpenChange(false)
     },
-    onError: (error) => {
-      const status =
-        typeof error === 'object' &&
-        error !== null &&
-        'status' in error &&
-        typeof error.status === 'number'
-          ? error.status
-          : undefined
-      if (item && status === 412 && snapshot) {
-        const pending = { title, details, assigneeUserId: assignee, dueDate }
-        void reconcileConflict(item.id, snapshot.item, pending)
+    onError: async (error, submission) => {
+      submitting.current = false
+      if (!submission.owns()) return
+      const failure = normalizeCoreApiError(error)
+      if (submission.reviewed && (failure.status === 412 || failure.status === 409)) {
+        const reviewed = submission.reviewed.item
+        const pending = submission.pending
+        setConflict({
+          reviewed,
+          pending,
+          latest: null,
+          latestResult: null,
+          message: 'Loading the current Action Item…',
+        })
+        try {
+          const latest = await actionDetail(reviewed.id)
+          if (!submission.owns()) return
+          setConflict({ reviewed, pending, latest: latest.item, latestResult: latest })
+        } catch (error) {
+          if (!submission.owns()) return
+          setConflict({
+            reviewed,
+            pending,
+            latest: null,
+            latestResult: null,
+            message: error instanceof Error ? error.message : 'Current state is unavailable.',
+          })
+        }
         return
       }
       const uncertain =
-        typeof error === 'object' &&
-        error !== null &&
-        'recoveryOutcome' in error &&
-        error.recoveryOutcome === 'uncertain'
-      if (!item && uncertain) {
-        setUnresolvedCreate({
+        failure.recoveryOutcome === 'uncertain' ||
+        failure.isNetworkError ||
+        failure.isServerError ||
+        failure.kind === 'malformed'
+      if (submission.creation && (uncertain || submission.recovering)) {
+        setUnresolvedCreate(submission.creation.payload)
+        toast.error('Creation outcome is uncertain', {
+          description: 'Retry this unchanged intent to recover the same Action Item.',
+        })
+        return
+      }
+      if (submission.creation) intent.current = null
+      toast.error(
+        item ? 'Unable to save Action Item' : 'Unable to create Action Item',
+        { description: error instanceof Error ? error.message : undefined }
+      )
+    },
+  })
+
+  const editingAllowed = item
+    ? snapshot?.item.capabilities.canEdit === true &&
+      item.capabilities.canEdit && !detail.isError
+    : canManageActionItems
+  const canClearAssignee =
+    snapshot?.item.status === 'PROPOSED' &&
+    snapshot.item.capabilities.canAssign
+  const displayItem = snapshot?.item ?? item
+  const pending = { title, details, assigneeUserId: assignee, dueDate }
+  const dirty = open && Boolean(
+    mutation.isPending || unresolvedCreate || conflict ||
+    (item
+      ? snapshot && Object.keys(buildActionPatch(snapshot.item, pending)).length
+      : title || details || assignee || dueDate)
+  )
+
+  useLayoutEffect(() => {
+    setMeetingDirty?.('actions', dirty)
+    onDirtyChange?.(dirty)
+    return () => {
+      setMeetingDirty?.('actions', false)
+      onDirtyChange?.(false)
+    }
+  }, [dirty, setMeetingDirty, onDirtyChange])
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    if (
+      submitting.current || mutation.isPending || conflict || !editingAllowed ||
+      !title.trim() || !meeting || (!item && !assignee)
+    ) return
+    const scope = captureScope()
+    const identity = ++operation.current
+    const owns = () => scope() && operation.current === identity
+    if (!owns()) return
+    if (!item && !intent.current) {
+      intent.current = {
+        payload: {
           meetingId: meeting,
           title: title.trim(),
           details: details.trim() || null,
           assigneeUserId: assignee,
           dueDate: dueDate || null,
-        })
-        toast.error('Creation outcome is uncertain', {
-          description:
-            'Keep this intent unchanged and retry to recover the same Action Item.',
-        })
-        return
+        },
+        key: crypto.randomUUID(),
       }
-      toast.error(
-        item ? 'Unable to save Action Item' : 'Unable to create Action Item',
-        {
-          description: error instanceof Error ? error.message : undefined,
-        }
-      )
-    },
-  })
-
-  async function reconcileConflict(
-    id: string,
-    reviewed: ActionItem,
-    pending: {
-      title: string
-      details: string
-      assigneeUserId: string
-      dueDate: string
     }
-  ) {
-    const identity = ++operation.current
-    try {
-      const latest = await import('./action-api').then(({ actionDetail }) =>
-        actionDetail(id)
-      )
-      if (operation.current !== identity) return
-      setConflict({
-        reviewed,
-        latest: latest.item,
-        latestResult: latest,
-        pending,
-      })
-    } catch (error) {
-      if (operation.current !== identity) return
-      setConflict({
-        reviewed,
-        latest: null,
-        latestResult: null,
-        pending,
-        message:
-          error instanceof Error
-            ? error.message
-            : 'The current Action Item state is no longer available.',
-      })
-    }
+    submitting.current = true
+    mutation.mutate({
+      owns,
+      reviewed: item ? snapshot : null,
+      pending,
+      creation: item ? null : intent.current,
+      recovering: Boolean(unresolvedCreate),
+    })
   }
-
-  function submit(event: FormEvent) {
-    event.preventDefault()
-    if (mutation.isPending || (unresolvedCreate && !meeting)) return
-    if (!title.trim() || !meeting || (!item && !assignee)) return
-    mutation.mutate()
-  }
-
-  const editingAllowed = !item || snapshot?.item.capabilities.canEdit === true
-  const canClearAssignee =
-    item?.status === 'PROPOSED' &&
-    snapshot?.item.capabilities.canAssign === true
-  const displayItem = snapshot?.item ?? item
 
   function close(next: boolean) {
+    if (!next && (submitting.current || mutation.isPending)) return
     if (!next && unresolvedCreate) {
       toast.warning('Unresolved creation kept open', {
-        description:
-          'Retry the same intent or explicitly abandon it after acknowledging that it may already exist.',
+        description: 'Recover this request or explicitly abandon it.',
       })
       return
     }
+    if (!next && dirty && !window.confirm('Discard your unsaved Action Item changes?')) return
     if (!next) operation.current += 1
     onOpenChange(next)
   }
@@ -313,23 +329,33 @@ export function ActionForm({
                   Current: {conflict.latest.title} · version{' '}
                   {conflict.latest.version}
                 </p>
+                <div className='space-y-1 text-xs'>
+                  <p>Server details: {conflict.latest.details ?? 'None'}</p>
+                  <p>Server assignee: {conflict.latest.assignee?.displayName ?? 'Unassigned'}</p>
+                  <p>Server due date: {conflict.latest.dueDate ?? 'None'}</p>
+                  <p>Server status: {conflict.latest.status}</p>
+                  <p>Only the fields you originally changed will be retained. Review any overlapping changes before saving again.</p>
+                </div>
                 <Button
                   type='button'
                   size='sm'
                   variant='outline'
+                  disabled={!conflict.latest.capabilities.canEdit}
                   onClick={() => {
+                    const latest = conflict.latest!
+                    const next = rebaseActionDraft(conflict.reviewed, latest, conflict.pending)
                     setSnapshot(conflict.latestResult!)
-                    setTitle(conflict.latest!.title)
-                    setDetails(conflict.latest!.details ?? '')
-                    setAssignee(conflict.latest!.assigneeUserId ?? '')
-                    setAssigneeLabel(
-                      conflict.latest!.assignee?.displayName ?? ''
-                    )
-                    setDueDate(conflict.latest!.dueDate ?? '')
+                    setTitle(next.title)
+                    setDetails(next.details)
+                    setAssignee(next.assigneeUserId)
+                    if (next.assigneeUserId === (latest.assigneeUserId ?? ''))
+                      setAssigneeLabel(latest.assignee?.displayName ?? '')
+                    setDueDate(next.dueDate)
                     setConflict(null)
+                    operation.current += 1
                   }}
                 >
-                  Use current state as new baseline
+                  Review current state and keep my changes
                 </Button>
               </>
             ) : (
@@ -347,13 +373,13 @@ export function ActionForm({
             {isFixedMeeting ? (
               <div className='rounded-lg border p-3 text-sm'>
                 <span>{meetingLabel || 'Authorized meeting'} · </span>
-                <Link
+                {(!item || displayItem?.capabilities.canAccessMeeting) && <Link
                   to='/meetings/$meetingId'
                   params={{ meetingId: meetingId ?? meeting }}
                   className='font-medium underline'
                 >
                   Open meeting
-                </Link>
+                </Link>}
               </div>
             ) : (
               <>
@@ -361,7 +387,7 @@ export function ActionForm({
                   aria-label='Find authorized Action Item meeting'
                   placeholder='Search meetings you may manage (2+ characters)'
                   value={meetingSearch}
-                  disabled={Boolean(unresolvedCreate)}
+                  disabled={mutation.isPending || Boolean(unresolvedCreate)}
                   onChange={(event) => setMeetingSearch(event.target.value)}
                 />
                 {meeting ? (
@@ -384,7 +410,10 @@ export function ActionForm({
                       key={target.id}
                       type='button'
                       className='flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover:bg-accent'
+                      disabled={mutation.isPending || Boolean(unresolvedCreate)}
                       onClick={() => {
+                        setAssignee('')
+                        setAssigneeLabel('')
                         setMeeting(target.id)
                         setMeetingLabel(target.label)
                       }}
@@ -412,7 +441,7 @@ export function ActionForm({
               required
               maxLength={500}
               value={title}
-              disabled={!editingAllowed || Boolean(unresolvedCreate)}
+              disabled={!editingAllowed || mutation.isPending || Boolean(conflict) || Boolean(unresolvedCreate)}
               onChange={(event) => setTitle(event.target.value)}
             />
           </div>
@@ -422,7 +451,7 @@ export function ActionForm({
               id='action-details'
               maxLength={10000}
               value={details}
-              disabled={!editingAllowed || Boolean(unresolvedCreate)}
+              disabled={!editingAllowed || mutation.isPending || Boolean(conflict) || Boolean(unresolvedCreate)}
               onChange={(event) => setDetails(event.target.value)}
             />
           </div>
@@ -433,7 +462,7 @@ export function ActionForm({
               <Input
                 id='action-assignee'
                 value={userSearch}
-                disabled={!editingAllowed || Boolean(unresolvedCreate)}
+                disabled={!editingAllowed || mutation.isPending || Boolean(conflict) || Boolean(unresolvedCreate)}
                 placeholder='Search active organizational users (2+ characters)'
                 onChange={(event) => setUserSearch(event.target.value)}
               />
@@ -449,6 +478,7 @@ export function ActionForm({
                     type='button'
                     variant='link'
                     size='sm'
+                    disabled={!editingAllowed || mutation.isPending || Boolean(conflict)}
                     onClick={() => {
                       setAssignee('')
                       setAssigneeLabel('')
@@ -476,6 +506,7 @@ export function ActionForm({
                   key={candidate.id}
                   type='button'
                   className='flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover:bg-accent'
+                  disabled={!editingAllowed || mutation.isPending || Boolean(conflict) || Boolean(unresolvedCreate)}
                   onClick={() => {
                     setAssignee(candidate.id)
                     setAssigneeLabel(candidate.displayName)
@@ -506,7 +537,7 @@ export function ActionForm({
               id='action-due'
               type='date'
               value={dueDate}
-              disabled={!editingAllowed || Boolean(unresolvedCreate)}
+              disabled={!editingAllowed || mutation.isPending || Boolean(conflict) || Boolean(unresolvedCreate)}
               onChange={(event) => setDueDate(event.target.value)}
             />
           </div>
@@ -517,6 +548,21 @@ export function ActionForm({
                 Retry keeps the same normalized payload and idempotency key. Do
                 not change this content until the outcome is resolved.
               </p>
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={mutation.isPending}
+                onClick={() => {
+                  if (!window.confirm('The Action Item may already exist. Abandon local recovery and close this form?')) return
+                  operation.current += 1
+                  intent.current = null
+                  invalidateMeetingArtifacts(qc, meeting, { actions: true })
+                  onOpenChange(false)
+                }}
+              >
+                Abandon local recovery
+              </Button>
             </div>
           )}
           <DialogFooter>
@@ -531,6 +577,7 @@ export function ActionForm({
             <Button
               disabled={
                 mutation.isPending ||
+                Boolean(conflict) ||
                 !editingAllowed ||
                 !title.trim() ||
                 !meeting ||

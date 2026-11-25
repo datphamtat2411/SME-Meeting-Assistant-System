@@ -81,11 +81,12 @@ export function MeetingSessionProvider({
   const [intelligenceDrafts, setIntelligenceDrafts] = useState({
     summary: false,
     decisions: false,
+    actions: false,
   })
   const hasUnsavedIntelligence =
-    intelligenceDrafts.summary || intelligenceDrafts.decisions
+    intelligenceDrafts.summary || intelligenceDrafts.decisions || intelligenceDrafts.actions
   const setIntelligenceDraftDirty = useCallback(
-    (feature: 'summary' | 'decisions', dirty: boolean) => {
+    (feature: 'summary' | 'decisions' | 'actions', dirty: boolean) => {
       setIntelligenceDrafts((current) =>
         current[feature] === dirty ? current : { ...current, [feature]: dirty }
       )

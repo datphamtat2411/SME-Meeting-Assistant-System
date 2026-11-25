@@ -273,6 +273,24 @@ export function buildActionPatch(
   return patch
 }
 
+/** Keep only the user's explicitly changed fields when reviewing a new baseline. */
+export function rebaseActionDraft(
+  reviewed: ActionItem,
+  latest: ActionItem,
+  pending: ActionEditValues
+): ActionEditValues {
+  const changed = buildActionPatch(reviewed, pending)
+  return {
+    title: changed.title ?? latest.title,
+    details: (changed.details !== undefined ? changed.details : latest.details) ?? '',
+    assigneeUserId:
+      (changed.assigneeUserId !== undefined
+        ? changed.assigneeUserId
+        : latest.assigneeUserId) ?? '',
+    dueDate: (changed.dueDate !== undefined ? changed.dueDate : latest.dueDate) ?? '',
+  }
+}
+
 export async function patchAction(
   id: string,
   etag: string,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildActionPatch,
+  rebaseActionDraft,
   serializeActionFilter,
   type ActionEditValues,
   type ActionItem,
@@ -100,6 +101,22 @@ describe('Action Item adapter contracts', () => {
       assigneeUserId: null,
       dueDate: null,
     })
+  })
+
+  it('rebases only intended edits and preserves concurrent assignment', () => {
+    const latest = { ...item, assigneeUserId: '99999999-9999-4999-8999-999999999999' }
+    const pending = {
+      title: item.title,
+      details: '',
+      assigneeUserId: item.assigneeUserId!,
+      dueDate: '2026-12-31',
+    }
+    const rebased = rebaseActionDraft(item, latest, pending)
+    expect(buildActionPatch(latest, rebased)).toEqual({
+      details: null,
+      dueDate: '2026-12-31',
+    })
+    expect(rebased.assigneeUserId).toBe(latest.assigneeUserId)
   })
 
   it('does not fabricate an empty update', () => {
