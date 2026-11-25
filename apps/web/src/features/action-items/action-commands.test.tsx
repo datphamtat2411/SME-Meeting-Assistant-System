@@ -210,9 +210,7 @@ describe('Action Item reviewed operation ownership', () => {
     )
     const screen = await render(view(managed))
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await expect
-      .element(screen.getByRole('alertdialog'))
-      .toBeInTheDocument()
+    await expect.element(screen.getByRole('alertdialog')).toBeInTheDocument()
 
     await screen.rerender(view(officialOpenItem))
     await expect
@@ -227,9 +225,7 @@ describe('Action Item reviewed operation ownership', () => {
       .element(screen.getByRole('alertdialog'))
       .not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await expect
-      .element(screen.getByRole('alertdialog'))
-      .toBeInTheDocument()
+    await expect.element(screen.getByRole('alertdialog')).toBeInTheDocument()
     expect(detail).toHaveBeenCalledTimes(2)
   })
 
@@ -252,12 +248,14 @@ describe('Action Item reviewed operation ownership', () => {
       .spyOn(coreApi, 'getWithMetaAndEtag')
       .mockResolvedValueOnce(reviewResult(officialOpenItem, '"reviewed"'))
       .mockResolvedValueOnce(reviewResult(latest, '"latest"'))
-    const post = vi.spyOn(coreApi, 'postWithMetaAndEtag').mockResolvedValue(
-      reviewResult(
-        { ...latest, id: '99999999-9999-4999-8999-999999999999' },
-        '"invalid"'
+    const post = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValue(
+        reviewResult(
+          { ...latest, id: '99999999-9999-4999-8999-999999999999' },
+          '"invalid"'
+        )
       )
-    )
     const screen = await render(
       <QueryClientProvider client={client}>
         <ActionCommands item={officialOpenItem} />

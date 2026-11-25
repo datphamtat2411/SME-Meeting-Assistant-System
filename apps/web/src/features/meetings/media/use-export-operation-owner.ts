@@ -351,18 +351,18 @@ export function useExportOperationOwner({
       : undefined
   const confirmedLoss = Boolean(
     authorization?.isConfirmedAccessLoss ||
-      authorization?.status === 'confirmed-authentication-loss' ||
-      authorization?.status === 'confirmed-authorization-denial' ||
-      lifecycle.state === 'confirmed' ||
-      (authorization?.scopeReady &&
-        authorization.capabilities.authorizationResolution === 'denied')
+    authorization?.status === 'confirmed-authentication-loss' ||
+    authorization?.status === 'confirmed-authorization-denial' ||
+    lifecycle.state === 'confirmed' ||
+    (authorization?.scopeReady &&
+      authorization.capabilities.authorizationResolution === 'denied')
   )
   const contentAuthorized = Boolean(
     authorization?.scopeReady &&
-      authorization.canReadProtectedData &&
-      authorization.capabilities.canReadMeetingContent &&
-      !confirmedLoss &&
-      lifecycle.state === 'idle'
+    authorization.canReadProtectedData &&
+    authorization.capabilities.canReadMeetingContent &&
+    !confirmedLoss &&
+    lifecycle.state === 'idle'
   )
 
   useEffect(() => {

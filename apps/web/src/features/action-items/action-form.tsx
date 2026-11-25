@@ -1,9 +1,4 @@
-import {
-  useLayoutEffect,
-  useRef,
-  useState,
-  type FormEvent,
-} from 'react'
+import { useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Search } from 'lucide-react'
@@ -68,9 +63,10 @@ export function ActionForm({
   const [meetingSearch, setMeetingSearch] = useState('')
   const [userSearch, setUserSearch] = useState('')
   const [snapshot, setSnapshot] = useState<
-    (ActionMutationResult & {
-      capture: ReturnType<typeof useActionOperationScope>
-    }) | null
+    | (ActionMutationResult & {
+        capture: ReturnType<typeof useActionOperationScope>
+      })
+    | null
   >(null)
   const [conflict, setConflict] = useState<{
     reviewed: ActionItem
@@ -98,13 +94,13 @@ export function ActionForm({
   })
   const canEditCurrent = Boolean(
     item?.capabilities.canEdit &&
-      detail.data?.item.capabilities.canEdit &&
-      !detail.isError
+    detail.data?.item.capabilities.canEdit &&
+    !detail.isError
   )
   const canAssignCurrent = Boolean(
     item?.capabilities.canAssign &&
-      detail.data?.item.capabilities.canAssign &&
-      !detail.isError
+    detail.data?.item.capabilities.canAssign &&
+    !detail.isError
   )
   const captureScope = useActionOperationScope(
     item ? `${item.id}:assign:${canAssignCurrent}` : `new:${meeting}`,

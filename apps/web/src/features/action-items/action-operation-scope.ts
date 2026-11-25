@@ -1,4 +1,9 @@
-import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from 'react'
+import {
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useSyncExternalStore,
+} from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   getAuthLifecycleSnapshot,
@@ -36,14 +41,14 @@ export function useActionOperationScope(resource: string, allowed: boolean) {
   const sessionId = identity?.session?.id
   const available = Boolean(
     allowed &&
-      actorId &&
-      sessionId &&
-      !currentUser.isError &&
-      lifecycle.startsWith('idle:') &&
-      (!authorization ||
-        (authorization.scopeReady &&
-          authorization.capabilities.canReadActionItems &&
-          !authorization.isConfirmedAccessLoss))
+    actorId &&
+    sessionId &&
+    !currentUser.isError &&
+    lifecycle.startsWith('idle:') &&
+    (!authorization ||
+      (authorization.scopeReady &&
+        authorization.capabilities.canReadActionItems &&
+        !authorization.isConfirmedAccessLoss))
   )
   const scope = `${resource}:${actorId ?? ''}:${sessionId ?? ''}:${available}:${lifecycle}`
   const activeScope = useRef(scope)

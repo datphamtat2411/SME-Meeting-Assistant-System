@@ -210,9 +210,7 @@ export function ActionCommands({
         description: error instanceof Error ? error.message : undefined,
       })
     } finally {
-      setPendingReview((pending) =>
-        pending?.owns === owns ? null : pending
-      )
+      setPendingReview((pending) => (pending?.owns === owns ? null : pending))
     }
   }
 
