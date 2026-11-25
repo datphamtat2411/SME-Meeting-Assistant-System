@@ -180,6 +180,31 @@ describe('Summary API contracts', () => {
     expect(get).toHaveBeenCalledWith(`/processing-jobs/${jobId}`)
   })
 
+  it('publishes a validated receipt before starting exact-job observation', async () => {
+    const receipt = {
+      processingJobId: jobId,
+      meetingId,
+      status: 'PENDING',
+      transcriptId,
+      contentRevision: 9,
+    }
+    vi.spyOn(coreApi, 'post').mockResolvedValue(receipt)
+    const onAdmission = vi.fn()
+    const get = vi.spyOn(coreApi, 'get').mockImplementation(async () => {
+      expect(onAdmission).toHaveBeenCalledExactlyOnceWith(receipt)
+      return job()
+    })
+
+    await requestSummaryRegeneration(
+      meetingId,
+      'original-key',
+      undefined,
+      onAdmission
+    )
+
+    expect(get).toHaveBeenCalledTimes(1)
+  })
+
   it('retains the admitted job identity when exact observation fails', async () => {
     const post = vi.spyOn(coreApi, 'post').mockResolvedValue({
       processingJobId: jobId,

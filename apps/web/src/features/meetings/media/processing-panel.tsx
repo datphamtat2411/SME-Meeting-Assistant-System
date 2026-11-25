@@ -233,6 +233,10 @@ function ProcessingPanelContent({
                     : operation.kind === 'summary-regeneration'
                       ? 'Summary regeneration'
                       : 'Processing retry'
+              const observingSummary =
+                operation.kind === 'summary-regeneration' &&
+                Boolean(operation.jobId) &&
+                Boolean(processing.summaryObservationStatus)
               return (
                 <div
                   key={operation.logicalIdentity}
@@ -243,14 +247,20 @@ function ProcessingPanelContent({
                       role='status'
                       className='text-sm font-medium text-amber-700'
                     >
-                      {operation.status === 'pending'
-                        ? `${label} is in progress.`
-                        : `${label} outcome is uncertain.`}
+                      {observingSummary
+                        ? processing.summaryObservationStatus === 'unavailable'
+                          ? 'Regeneration admitted; status unavailable.'
+                          : 'Regeneration admitted; tracking exact job.'
+                        : operation.status === 'pending'
+                          ? `${label} is in progress.`
+                          : `${label} outcome is uncertain.`}
                     </p>
                     <p className='text-xs text-muted-foreground'>
-                      {operation.status === 'uncertain'
-                        ? 'Check current server status. Matching server data alone does not confirm this operation.'
-                        : 'Wait for this operation to settle before issuing another command.'}
+                      {observingSummary
+                        ? 'Refresh the admitted job without repeating the generation request.'
+                        : operation.status === 'uncertain'
+                          ? 'Check current server status. Matching server data alone does not confirm this operation.'
+                          : 'Wait for this operation to settle before issuing another command.'}
                     </p>
                     {operation.sourceMediaId && (
                       <p className='text-xs text-muted-foreground'>
@@ -266,16 +276,31 @@ function ProcessingPanelContent({
                       </p>
                     )}
                   </div>
-                  {operation.status === 'uncertain' && (
+                  {observingSummary ? (
                     <Button
                       size='sm'
                       variant='outline'
-                      onClick={() => void recoverOperation(operation)}
+                      disabled={
+                        processing.summaryObservationStatus === 'checking'
+                      }
+                      onClick={() =>
+                        void processing.refreshSummaryObservation?.()
+                      }
                     >
-                      {operation.replayPermitted
-                        ? 'Replay original request'
-                        : 'Check current server status'}
+                      Refresh regeneration status
                     </Button>
+                  ) : (
+                    operation.status === 'uncertain' && (
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        onClick={() => void recoverOperation(operation)}
+                      >
+                        {operation.replayPermitted
+                          ? 'Replay original request'
+                          : 'Check current server status'}
+                      </Button>
+                    )
                   )}
                 </div>
               )

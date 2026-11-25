@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react'
 import {
+  queryOptions,
   useQuery,
   useQueryClient,
   type UseQueryResult,
@@ -46,6 +47,7 @@ type ProcessingExecution = {
   controller: AbortController
   requestStarted: boolean
   replayingUncertain: boolean
+  authorizationKind?: 'admission' | 'recovery'
 }
 
 type ProcessingOperation = {
@@ -107,6 +109,8 @@ export type ProcessingCoordinatorValue = {
   ) => Promise<ProcessingCommandResult>
   refreshObservation: () => Promise<void>
   summaryRegenerationJob?: ProcessingJob
+  summaryObservationStatus?: 'checking' | 'tracking' | 'unavailable'
+  refreshSummaryObservation?: () => Promise<void>
   invalidate: (discardRecovery?: boolean) => void
 }
 
@@ -218,6 +222,38 @@ function reprocessingIdentity(jobId: string): string {
 
 const summaryRegenerationIdentity = 'summary-regeneration'
 
+function summaryObservationQuery(
+  meetingId: string,
+  operationId: string | undefined,
+  jobId: string | undefined,
+  scopeId: string
+) {
+  return queryOptions({
+    queryKey: [
+      'processing-jobs',
+      meetingId,
+      'summary-observation',
+      operationId,
+      jobId,
+      scopeId,
+    ],
+    queryFn: async ({ signal }) => {
+      if (!jobId) throw new Error('Missing admitted regeneration job.')
+      const job = await getProcessingJob(jobId, signal)
+      if (
+        job.id !== jobId ||
+        job.meetingId !== meetingId ||
+        job.jobType !== 'DERIVED_STAGE_PROCESSING'
+      ) {
+        throw new Error('Core returned a different regeneration job.')
+      }
+      return job
+    },
+    retry: false,
+    staleTime: 0,
+  })
+}
+
 function latestStageAttempt(job: ProcessingJob, stageCode: string) {
   return job.stageRuns
     .filter((stage) => stage.stageCode === stageCode)
@@ -229,6 +265,9 @@ function latestStageAttempt(job: ProcessingJob, stageCode: string) {
 function operationAuthorizationKind(
   operation: ProcessingOperation
 ): 'admission' | 'recovery' {
+  if (operation.execution?.authorizationKind) {
+    return operation.execution.authorizationKind
+  }
   return operation.kind === 'retry' ||
     operation.kind === 'stage-retry' ||
     (operation.kind === 'summary-regeneration' && operation.jobId !== undefined)
@@ -398,6 +437,9 @@ export function useProcessingCoordinator({
         operation.execution?.controller.abort()
       }
       operations.current.clear()
+      void queryClient.cancelQueries({
+        queryKey: ['processing-jobs', meetingId, 'summary-observation'],
+      })
       const current = authorizationRef.current
       if (discardRecovery && current?.identityId) {
         clearStoredSummaryOperation(
@@ -413,7 +455,7 @@ export function useProcessingCoordinator({
       setSelectedJobId(null)
       publishOperations()
     },
-    [meetingId, publishOperations]
+    [meetingId, publishOperations, queryClient]
   )
 
   const suspendUnauthorizedExecutions = useCallback(() => {
@@ -528,28 +570,39 @@ export function useProcessingCoordinator({
         summaryRegenerationIdentity
       )
       if (
+        !jobs.isError &&
         summaryOperation?.jobId === job.id &&
-        terminalStatus(job.status) &&
+        job.meetingId === meetingId &&
+        job.jobType === 'DERIVED_STAGE_PROCESSING' &&
         summaryOperation.status !== 'retired'
       ) {
-        // Keep only the operation's exact terminal observation for the
-        // presentation layer. It is no longer unresolved and is removed when
-        // a genuinely new regeneration intent is acquired.
-        summaryOperation.observedJob = job
-        summaryOperation.status = 'retired'
-        summaryOperation.execution = null
-        clearStoredSummaryOperation(
-          summaryOperation.meetingId,
-          summaryOperation.storageActorId ?? summaryOperation.actorId
-        )
-        publishOperations()
+        if (terminalStatus(job.status)) {
+          // Preserve the terminal observation without keeping the intent active.
+          summaryOperation.observedJob = job
+          summaryOperation.status = 'retired'
+          summaryOperation.execution = null
+          clearStoredSummaryOperation(
+            summaryOperation.meetingId,
+            summaryOperation.storageActorId ?? summaryOperation.actorId
+          )
+          publishOperations()
+        } else if (
+          !summaryOperation.execution &&
+          activeStatus(job.status) &&
+          (summaryOperation.status !== 'pending' ||
+            summaryOperation.observedJob !== job)
+        ) {
+          summaryOperation.observedJob = job
+          summaryOperation.status = 'pending'
+          publishOperations()
+        }
       }
       lifecycle.current.set(job.id, nextSignature)
     }
     for (const jobId of lifecycle.current.keys()) {
       if (!currentIds.has(jobId)) lifecycle.current.delete(jobId)
     }
-  }, [jobs.data, meetingId, publishOperations, queryClient])
+  }, [jobs.data, jobs.isError, meetingId, publishOperations, queryClient])
 
   // Recover the caller-held regeneration key after a reload. Only operation
   // metadata is retained; protected summary/transcript content is never
@@ -561,9 +614,6 @@ export function useProcessingCoordinator({
       !authorization?.scopeReady ||
       authorization.isConfirmedAccessLoss ||
       !authorization.canReadProcessing ||
-      !jobs.data ||
-      jobs.isError ||
-      jobs.isFetching ||
       operations.current.has(summaryRegenerationIdentity)
     ) {
       return
@@ -571,9 +621,15 @@ export function useProcessingCoordinator({
     const storageActorId = authorization.sessionId ?? actorId
     const stored = readStoredSummaryOperation(meetingId, storageActorId)
     if (!stored) return
-    const job = stored.jobId
-      ? jobs.data.find((item) => item.id === stored.jobId)
-      : undefined
+    const job =
+      stored.jobId && jobs.isSuccess && !jobs.isFetching
+        ? jobs.data?.find(
+            (item) =>
+              item.id === stored.jobId &&
+              item.meetingId === meetingId &&
+              item.jobType === 'DERIVED_STAGE_PROCESSING'
+          )
+        : undefined
     const restored: ProcessingOperation = {
       operationId: stored.jobId ?? stored.idempotencyKey,
       logicalIdentity: summaryRegenerationIdentity,
@@ -602,7 +658,7 @@ export function useProcessingCoordinator({
   }, [
     authorization,
     jobs.data,
-    jobs.isError,
+    jobs.isSuccess,
     jobs.isFetching,
     meetingId,
     publishOperations,
@@ -775,11 +831,15 @@ export function useProcessingCoordinator({
   const runOperation = useCallback(
     async (
       operation: ProcessingOperation,
-      request: (signal: AbortSignal) => Promise<ProcessingJob>,
+      request: (
+        signal: AbortSignal,
+        recordAdmission: (jobId: string) => void
+      ) => Promise<ProcessingJob>,
       options: { preserveConfirmedSummaryOnError?: boolean } = {}
     ): Promise<ProcessingCommandResult> => {
       const execution = operation.execution
       if (!execution) return { status: 'blocked' }
+      execution.authorizationKind = operationAuthorizationKind(operation)
       const isCurrent = () => {
         const currentAuthorization = authorizationRef.current
         return (
@@ -801,7 +861,18 @@ export function useProcessingCoordinator({
 
       try {
         execution.requestStarted = true
-        const job = await request(execution.controller.signal)
+        const job = await request(execution.controller.signal, (jobId) => {
+          if (!isCurrent() || operation.kind !== 'summary-regeneration') {
+            return
+          }
+          operation.jobId = jobId
+          storeSummaryOperation(
+            operation.meetingId,
+            operation.storageActorId ?? operation.actorId,
+            { idempotencyKey: operation.idempotencyKey, jobId }
+          )
+          publishOperations()
+        })
         if (!isCurrent()) return { status: 'blocked' }
         const isRetry =
           operation.kind === 'retry' || operation.kind === 'stage-retry'
@@ -811,8 +882,8 @@ export function useProcessingCoordinator({
             job.sourceMediaId !== operation.sourceMediaId) ||
           (isRetry && job.id !== operation.jobId) ||
           (operation.kind === 'summary-regeneration' &&
-            operation.jobId !== undefined &&
-            job.id !== operation.jobId) ||
+            (job.jobType !== 'DERIVED_STAGE_PROCESSING' ||
+              (operation.jobId !== undefined && job.id !== operation.jobId))) ||
           (operation.kind === 'admission' && job.reprocessOfJobId !== null) ||
           (operation.kind === 'reprocessing' &&
             (job.id === operation.jobId ||
@@ -888,7 +959,10 @@ export function useProcessingCoordinator({
               jobId: admittedJobId,
             }
           )
-        } else if (options.preserveConfirmedSummaryOnError) {
+        } else if (
+          options.preserveConfirmedSummaryOnError ||
+          (operation.kind === 'summary-regeneration' && operation.jobId)
+        ) {
           // The admission is already confirmed by the operation's job id.
           // A read failure only suspends observation; it must not discard the
           // operation or make a new admission eligible.
@@ -1163,10 +1237,18 @@ export function useProcessingCoordinator({
       if (!operation?.jobId) return Promise.resolve({ status: 'blocked' })
       return runOperation(
         operation,
-        (signal) => getProcessingJob(operation.jobId!, signal),
+        () =>
+          queryClient.fetchQuery(
+            summaryObservationQuery(
+              meetingId,
+              operation.operationId,
+              operation.jobId,
+              operation.storageActorId ?? operation.actorId
+            )
+          ),
         { preserveConfirmedSummaryOnError: true }
       )
-    }, [acquireOperation, isAuthorized, meetingId, runOperation])
+    }, [acquireOperation, isAuthorized, meetingId, queryClient, runOperation])
 
   const regenerateSummary =
     useCallback(async (): Promise<ProcessingCommandResult> => {
@@ -1180,7 +1262,10 @@ export function useProcessingCoordinator({
       if (existing?.jobId) {
         const snapshot = getAuthoritativeSnapshot()
         const observed = snapshot?.jobs.find(
-          (job) => job.id === existing?.jobId
+          (job) =>
+            job.id === existing?.jobId &&
+            job.meetingId === meetingId &&
+            job.jobType === 'DERIVED_STAGE_PROCESSING'
         )
         if (observed && terminalStatus(observed.status)) {
           existing.observedJob = observed
@@ -1225,8 +1310,13 @@ export function useProcessingCoordinator({
         storageActorId: authorizationRef.current?.sessionId ?? undefined,
       })
       if (!operation) return { status: 'blocked' }
-      return runOperation(operation, (signal) =>
-        requestSummaryRegeneration(meetingId, operation.idempotencyKey, signal)
+      return runOperation(operation, (signal, recordAdmission) =>
+        requestSummaryRegeneration(
+          meetingId,
+          operation.idempotencyKey,
+          signal,
+          (admission) => recordAdmission(admission.processingJobId)
+        )
       )
     }, [
       acquireOperation,
@@ -1378,10 +1468,121 @@ export function useProcessingCoordinator({
   const summaryOperation = operationSnapshot.find(
     (operation) => operation.logicalIdentity === summaryRegenerationIdentity
   )
-  const summaryRegenerationJob = summaryOperation?.jobId
-    ? (jobs.data?.find((job) => job.id === summaryOperation.jobId) ??
-      summaryOperation.observedJob)
-    : undefined
+  const summaryJobId = summaryOperation?.jobId
+  const scopeId =
+    authorization?.sessionId ?? authorization?.identityId ?? 'standalone'
+  const summaryOperationInScope =
+    summaryOperation !== undefined &&
+    summaryOperation.meetingId === meetingId &&
+    summaryOperation.actorId === (authorization?.identityId ?? 'standalone') &&
+    (summaryOperation.storageActorId ?? summaryOperation.actorId) === scopeId &&
+    processingReadEnabled &&
+    !authorization?.isConfirmedAccessLoss
+  const collectionSummaryJob = jobs.data?.find(
+    (job) =>
+      job.id === summaryJobId &&
+      job.meetingId === meetingId &&
+      job.jobType === 'DERIVED_STAGE_PROCESSING'
+  )
+  const summaryObservationRequired = Boolean(
+    summaryJobId &&
+      summaryOperationInScope &&
+      summaryOperation?.status !== 'retired' &&
+      !summaryOperation?.execution &&
+      (jobs.isError || !collectionSummaryJob)
+  )
+  // Collection observation can be incomplete or fail independently. The
+  // admitted job remains authoritative and has its own protected read query.
+  const exactSummaryObservation = useQuery({
+    ...summaryObservationQuery(
+      meetingId,
+      summaryOperation?.operationId,
+      summaryJobId,
+      scopeId
+    ),
+    enabled: summaryObservationRequired,
+    refetchInterval: (query) =>
+      query.state.error || terminalStatus(query.state.data?.status ?? '')
+        ? false
+        : 6000,
+  })
+  const summaryObservationJob = exactSummaryObservation.data
+  const summaryObservationFailed = exactSummaryObservation.isError
+  const summaryOperationId = summaryOperation?.operationId
+  useEffect(() => {
+    if (!summaryObservationRequired || !summaryObservationJob) return
+    const operation = operations.current.get(summaryRegenerationIdentity)
+    if (
+      !operation ||
+      operation.operationId !== summaryOperationId ||
+      operation.jobId !== summaryObservationJob.id ||
+      operation.generation !== generation.current ||
+      operation.status === 'retired' ||
+      operation.execution ||
+      authorizationRef.current?.isConfirmedAccessLoss ||
+      !canReadProcessing(authorizationRef.current, fallbackRef.current) ||
+      summaryObservationFailed
+    ) {
+      return
+    }
+    const terminal = terminalStatus(summaryObservationJob.status)
+    if (
+      operation.observedJob === summaryObservationJob &&
+      operation.status === 'pending' &&
+      !terminal
+    ) {
+      return
+    }
+    operation.observedJob = summaryObservationJob
+    operation.status = terminal ? 'retired' : 'pending'
+    if (terminal) {
+      clearStoredSummaryOperation(
+        operation.meetingId,
+        operation.storageActorId ?? operation.actorId
+      )
+      invalidateMeetingArtifacts(queryClient, meetingId)
+      void queryClient.invalidateQueries({
+        queryKey: ['processing-jobs', meetingId],
+        exact: true,
+      })
+    }
+    publishOperations()
+  }, [
+    meetingId,
+    publishOperations,
+    queryClient,
+    summaryObservationFailed,
+    summaryObservationJob,
+    summaryObservationRequired,
+    summaryOperationId,
+  ])
+  const refetchSummaryObservation = exactSummaryObservation.refetch
+  const refreshSummaryObservation = useCallback(async () => {
+    const operation = operations.current.get(summaryRegenerationIdentity)
+    if (
+      !summaryObservationRequired ||
+      !operation ||
+      operation.operationId !== summaryOperationId ||
+      operation.generation !== generation.current ||
+      operation.status === 'retired' ||
+      operation.execution ||
+      authorizationRef.current?.isConfirmedAccessLoss ||
+      !canReadProcessing(authorizationRef.current, fallbackRef.current)
+    ) {
+      return
+    }
+    await refetchSummaryObservation({ cancelRefetch: false })
+  }, [
+    refetchSummaryObservation,
+    summaryObservationRequired,
+    summaryOperationId,
+  ])
+  const summaryRegenerationJob =
+    summaryOperationInScope && summaryOperation?.jobId
+      ? summaryOperation.status === 'retired' || summaryObservationRequired
+        ? summaryOperation.observedJob
+        : (collectionSummaryJob ?? summaryOperation.observedJob)
+      : undefined
 
   return {
     jobs,
@@ -1404,6 +1605,14 @@ export function useProcessingCoordinator({
     reprocess,
     regenerateSummary,
     summaryRegenerationJob,
+    summaryObservationStatus: summaryObservationRequired
+      ? summaryObservationFailed
+        ? 'unavailable'
+        : exactSummaryObservation.isFetching
+          ? 'checking'
+          : 'tracking'
+      : undefined,
+    refreshSummaryObservation,
     recoverOperation,
     refreshObservation,
     invalidate,

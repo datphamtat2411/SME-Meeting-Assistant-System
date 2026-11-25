@@ -179,7 +179,8 @@ function uncertainRegenerationObservation(
 export async function requestSummaryRegeneration(
   meetingId: string,
   idempotencyKey: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onAdmission?: (admission: SummaryRegenerationAdmission) => void
 ) {
   let rawAdmission: unknown
   try {
@@ -231,6 +232,9 @@ export async function requestSummaryRegeneration(
       { recoveryOutcome: 'uncertain' as const }
     )
   }
+  // Publish the validated receipt before any further asynchronous read. The
+  // meeting owner can now persist the exact job even if observation is aborted.
+  onAdmission?.(admission)
   let job: z.infer<typeof processingJobSchema>
   try {
     job = processingJobSchema.parse(

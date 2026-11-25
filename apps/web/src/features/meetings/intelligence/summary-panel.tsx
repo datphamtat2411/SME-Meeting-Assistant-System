@@ -295,7 +295,12 @@ function SummaryPanelContent({
 
   const regenerate = useMutation({
     onMutate: captureRegenerationScope,
-    mutationFn: async () => {
+    mutationFn: async ({
+      recovering,
+    }: {
+      recovering: boolean
+      observing: boolean
+    }) => {
       const currentAuthorization = authorizationRef.current
       if (
         !canRegenerateRef.current ||
@@ -308,7 +313,7 @@ function SummaryPanelContent({
         throw new Error('Summary regeneration is no longer authorized.')
       }
       if (session) {
-        return regenerationUncertain
+        return recovering
           ? session.processing.recoverOperation(regenerationIdentity)
           : session.processing.regenerateSummary()
       }
@@ -316,7 +321,7 @@ function SummaryPanelContent({
         'Summary regeneration requires the meeting processing owner.'
       )
     },
-    onSuccess: (result, _variables, ownsScope) => {
+    onSuccess: (result, { recovering, observing }, ownsScope) => {
       if (!ownsScope?.()) return
       if (result.status === 'blocked') {
         toast.error('Regeneration is not available', {
@@ -326,18 +331,30 @@ function SummaryPanelContent({
         return
       }
       refreshArtifacts()
-      toast.success('Summary regeneration admitted', {
-        description:
-          'Core accepted the regeneration request. Follow its processing status and review any resulting version.',
-      })
+      toast.success(
+        observing
+          ? 'Regeneration status refreshed'
+          : recovering
+            ? 'Original regeneration request recovered'
+            : 'Summary regeneration admitted',
+        {
+          description:
+            'Follow the admitted job status and review any resulting version.',
+        }
+      )
     },
-    onError: (error, _variables, ownsScope) => {
+    onError: (error, { observing }, ownsScope) => {
       if (!ownsScope?.()) return
       const normalized = normalizeCoreApiError(error)
+      const admitted =
+        observing ||
+        (typeof error === 'object' && error !== null && 'admittedJobId' in error)
       toast.error(
-        normalized.recoveryOutcome === 'uncertain'
-          ? 'Regeneration admission is uncertain'
-          : 'Could not request regeneration',
+        admitted
+          ? 'Regeneration status is unavailable'
+          : normalized.recoveryOutcome === 'uncertain'
+            ? 'Regeneration admission is uncertain'
+            : 'Could not request regeneration',
         {
           description:
             normalized.status === 503
@@ -414,9 +431,20 @@ function SummaryPanelContent({
                   !session ||
                   regenerate.isPending ||
                   regenerationInProgress ||
+                  Boolean(session.processing.summaryObservationStatus) ||
                   !protectedScopeReady
                 }
-                onClick={() => regenerate.mutate()}
+                onClick={() =>
+                  regenerate.mutate({
+                    recovering: regenerationUncertain,
+                    observing: Boolean(
+                      session?.processing.unresolvedOperations.find(
+                        (operation) =>
+                          operation.logicalIdentity === regenerationIdentity
+                      )?.jobId
+                    ),
+                  })
+                }
               >
                 <RefreshCw
                   className={regenerate.isPending ? 'animate-spin' : undefined}
@@ -432,13 +460,36 @@ function SummaryPanelContent({
         </div>
       </CardHeader>
       <CardContent className='space-y-6 p-5'>
+        {session?.processing.summaryObservationStatus && (
+          <div className='space-y-2 rounded-md border p-3 text-sm' role='status'>
+            <p>
+              {session.processing.summaryObservationStatus === 'unavailable'
+                ? 'Regeneration was admitted, but its current status is unavailable. Refresh the exact job without requesting generation again.'
+                : 'Regeneration was admitted. Tracking the exact job independently of the processing list.'}
+            </p>
+            <Button
+              size='sm'
+              variant='outline'
+              disabled={
+                session.processing.summaryObservationStatus === 'checking'
+              }
+              onClick={() =>
+                void session.processing.refreshSummaryObservation?.()
+              }
+            >
+              Refresh regeneration status
+            </Button>
+          </div>
+        )}
         {regenerationJob && (
           <div
             role='status'
             className='space-y-1 rounded-md border p-3 text-sm'
           >
             <p className='font-medium'>
-              Summary regeneration:{' '}
+              {session?.processing.summaryObservationStatus === 'unavailable'
+                ? 'Last observed regeneration status:'
+                : 'Summary regeneration:'}{' '}
               {regenerationJob.status.replace(/_/g, ' ').toLowerCase()}
             </p>
             {regenerationJob.warningSummary && (

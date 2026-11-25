@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
@@ -14,6 +14,7 @@ import {
   type ProcessingAuthorization,
   type ProcessingOperationKind,
 } from './processing-coordinator'
+import { ProcessingPanel } from './processing-panel'
 
 const processingMocks = vi.hoisted(() => ({
   media: [] as Array<Record<string, unknown>>,
@@ -221,7 +222,7 @@ function CoordinatorHarness() {
   )
 }
 
-async function renderCoordinator() {
+async function renderCoordinator(includeProcessingPanel = false) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -237,6 +238,9 @@ async function renderCoordinator() {
         }}
       >
         <CoordinatorHarness />
+        {includeProcessingPanel && (
+          <ProcessingPanel meetingId={meetingId} canManageProcessing />
+        )}
       </MeetingSessionProvider>
     </QueryClientProvider>
   )
@@ -337,6 +341,7 @@ describe('meeting-scoped processing command owner', () => {
     ]
     processingMocks.jobs = []
     processingMocks.getProcessingJob.mockReset()
+    processingMocks.requestSummaryRegeneration.mockReset()
   })
 
   it('excludes processing and review commands in both directions', async () => {
@@ -396,6 +401,7 @@ describe('meeting-scoped processing command owner', () => {
       )
       .mockResolvedValueOnce(
         processingJob({
+          jobType: 'DERIVED_STAGE_PROCESSING',
           status: 'PENDING',
           retryable: false,
           currentStage: 'GENERATING_SUMMARY',
@@ -426,8 +432,8 @@ describe('meeting-scoped processing command owner', () => {
     const actorId = fullAuthorization.identityId!
     const storageKey = `sme:summary-regeneration:${meetingId}:${actorId}`
     const admitted = processingJob({
-      status: 'RUNNING',
       jobType: 'DERIVED_STAGE_PROCESSING',
+      status: 'RUNNING',
       currentStage: 'GENERATING_SUMMARY',
       retryable: false,
     })
@@ -483,6 +489,7 @@ describe('meeting-scoped processing command owner', () => {
 
   it('does not replay a known active Summary Regeneration job', async () => {
     const admitted = processingJob({
+      jobType: 'DERIVED_STAGE_PROCESSING',
       id: failedJobId,
       status: 'PENDING',
       retryable: false,
@@ -504,6 +511,9 @@ describe('meeting-scoped processing command owner', () => {
     await expect
       .element(screen.getByTestId('summary-state'))
       .toHaveTextContent('summary-pending')
+    await expect
+      .poll(() => processingMocks.getProcessingJob.mock.calls.length)
+      .toBeGreaterThanOrEqual(1)
     expect(processingMocks.getProcessingJob).toHaveBeenCalledWith(
       admitted.id,
       expect.any(AbortSignal)
@@ -512,6 +522,7 @@ describe('meeting-scoped processing command owner', () => {
 
   it('keeps a confirmed regeneration job when read-back fails and recovers observation', async () => {
     const admitted = processingJob({
+      jobType: 'DERIVED_STAGE_PROCESSING',
       id: failedJobId,
       status: 'RUNNING',
       retryable: false,
@@ -523,7 +534,9 @@ describe('meeting-scoped processing command owner', () => {
         admittedJobId: admitted.id,
       })
     )
-    processingMocks.getProcessingJob.mockResolvedValue(admitted)
+    processingMocks.getProcessingJob
+      .mockRejectedValueOnce(new Error('Observation is unavailable.'))
+      .mockResolvedValue(admitted)
     const { screen } = await renderCoordinator()
     const button = screen.getByRole('button', { name: 'Regenerate summary' })
 
@@ -531,11 +544,14 @@ describe('meeting-scoped processing command owner', () => {
     await expect
       .element(screen.getByTestId('summary-state'))
       .toHaveTextContent('summary-uncertain')
+    await expect
+      .poll(() => processingMocks.getProcessingJob.mock.calls.length)
+      .toBe(1)
     await userEvent.click(button)
 
     await expect
       .poll(() => processingMocks.getProcessingJob.mock.calls.length)
-      .toBe(1)
+      .toBeGreaterThanOrEqual(2)
     expect(processingMocks.requestSummaryRegeneration).toHaveBeenCalledTimes(1)
     await expect
       .element(screen.getByTestId('summary-state'))
@@ -544,12 +560,14 @@ describe('meeting-scoped processing command owner', () => {
 
   it('retires the exact terminal job before allocating a new regeneration intent', async () => {
     const admitted = processingJob({
+      jobType: 'DERIVED_STAGE_PROCESSING',
       id: failedJobId,
       status: 'RUNNING',
       retryable: false,
       currentStage: 'GENERATING_SUMMARY',
     })
     const terminal = processingJob({
+      jobType: 'DERIVED_STAGE_PROCESSING',
       id: failedJobId,
       status: 'COMPLETED_WITH_WARNINGS',
       retryable: false,
@@ -560,30 +578,36 @@ describe('meeting-scoped processing command owner', () => {
       .mockResolvedValueOnce(admitted)
       .mockResolvedValueOnce(
         processingJob({
+          jobType: 'DERIVED_STAGE_PROCESSING',
           id: '77777777-7777-4777-8777-777777777777',
           status: 'RUNNING',
           retryable: false,
           currentStage: 'GENERATING_SUMMARY',
         })
       )
-    processingMocks.getProcessingJob.mockResolvedValueOnce(terminal)
-    const { screen } = await renderCoordinator()
+    processingMocks.getProcessingJob.mockResolvedValue(terminal)
+    const { client, screen } = await renderCoordinator()
     const button = screen.getByRole('button', { name: 'Regenerate summary' })
 
     await userEvent.click(button)
     await expect
       .poll(() => processingMocks.requestSummaryRegeneration.mock.calls.length)
       .toBe(1)
-    await userEvent.click(button)
+    // Collection omission must start exact observation without another command.
     await expect
       .poll(() => processingMocks.getProcessingJob.mock.calls.length)
-      .toBe(1)
+      .toBeGreaterThanOrEqual(1)
     await expect
       .element(screen.getByTestId('summary-state'))
       .toHaveTextContent('summary-idle')
     await expect
       .element(screen.getByTestId('summary-job'))
       .toHaveTextContent(`${terminal.id}:Generated with a review warning.`)
+    await expect
+      .poll(
+        () => client.getQueryState(['processing-jobs', meetingId])?.fetchStatus
+      )
+      .toBe('idle')
 
     await userEvent.click(button)
     await expect
@@ -596,6 +620,164 @@ describe('meeting-scoped processing command owner', () => {
       processingMocks.requestSummaryRegeneration.mock.calls[1][1]
     ).not.toBe(processingMocks.requestSummaryRegeneration.mock.calls[0][1])
   })
+
+  it('recovers missing job observation through the actual processing panel without replaying admission', async () => {
+    const admitted = processingJob({
+      jobType: 'DERIVED_STAGE_PROCESSING',
+      status: 'RUNNING',
+      currentStage: 'GENERATING_SUMMARY',
+    })
+    const terminal = { ...admitted, status: 'COMPLETED' }
+    processingMocks.requestSummaryRegeneration.mockResolvedValueOnce(admitted)
+    processingMocks.getProcessingJob
+      .mockRejectedValueOnce(new Error('Temporary observation failure.'))
+      .mockResolvedValue(terminal)
+    const { screen } = await renderCoordinator(true)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Regenerate summary' })
+    )
+    const refresh = screen.getByRole('button', {
+      name: 'Refresh regeneration status',
+    })
+    await expect.element(refresh).toBeEnabled()
+    await expect
+      .poll(() => processingMocks.getProcessingJob.mock.calls.length)
+      .toBe(1)
+    await userEvent.click(refresh)
+    await expect
+      .element(screen.getByTestId('summary-state'))
+      .toHaveTextContent('summary-idle')
+    expect(processingMocks.requestSummaryRegeneration).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([true, false])(
+    'restores the original regeneration intent after owner teardown (known receipt: %s)',
+    async (knownReceipt) => {
+      const storageKey = `sme:summary-regeneration:${meetingId}:${fullAuthorization.identityId}`
+      const admitted = processingJob({
+        jobType: 'DERIVED_STAGE_PROCESSING',
+        status: 'RUNNING',
+        currentStage: 'GENERATING_SUMMARY',
+      })
+      const readBack = deferred<ProcessingJob>()
+      processingMocks.requestSummaryRegeneration.mockImplementationOnce(
+        (_meeting, _key, _signal, onAdmission) => {
+          if (knownReceipt) onAdmission({ processingJobId: admitted.id })
+          return readBack.promise
+        }
+      )
+      processingMocks.getProcessingJob.mockResolvedValue(admitted)
+
+      function Owner() {
+        const processing = useProcessingCoordinator({
+          meetingId,
+          authorization: fullAuthorization,
+        })
+        const invalidate = processing.invalidate
+        useEffect(() => () => invalidate(false), [invalidate])
+        return (
+          <>
+            <button
+              type='button'
+              onClick={() =>
+                void processing.regenerateSummary().catch(() => undefined)
+              }
+            >
+              Request generation
+            </button>
+            <output data-testid='recovered-job'>
+              {processing.summaryRegenerationJob?.id ?? 'none'}
+            </output>
+            <output data-testid='recovery-state'>
+              {processing.isOperationUncertain('summary-regeneration')
+                ? 'uncertain'
+                : 'settled'}
+            </output>
+          </>
+        )
+      }
+      function Harness() {
+        const [mounted, setMounted] = useState(true)
+        return (
+          <>
+            <button type='button' onClick={() => setMounted(!mounted)}>
+              Toggle owner
+            </button>
+            {mounted && <Owner />}
+          </>
+        )
+      }
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      })
+      const screen = await render(
+        <QueryClientProvider client={client}>
+          <Harness />
+        </QueryClientProvider>
+      )
+      try {
+        await expect
+          .poll(() => client.getQueryData(['processing-jobs', meetingId]))
+          .toBeDefined()
+        await expect
+          .poll(() => client.getQueryData(['meeting-media', meetingId]))
+          .toBeDefined()
+        await userEvent.click(
+          screen.getByRole('button', { name: 'Request generation' })
+        )
+        await expect
+          .poll(() => sessionStorage.getItem(storageKey))
+          .toContain(knownReceipt ? admitted.id : '"jobId":null')
+        const original = sessionStorage.getItem(storageKey)
+        const toggle = screen.getByRole('button', { name: 'Toggle owner' })
+        await userEvent.click(toggle)
+        expect(sessionStorage.getItem(storageKey)).toBe(original)
+        readBack.resolve(admitted)
+        await userEvent.click(toggle)
+        if (!knownReceipt) {
+          await expect
+            .element(screen.getByTestId('recovery-state'))
+            .toHaveTextContent('uncertain')
+          await expect
+            .poll(
+              () =>
+                client.getQueryState(['processing-jobs', meetingId])?.fetchStatus
+            )
+            .toBe('idle')
+          await expect
+            .poll(
+              () => client.getQueryState(['meeting-media', meetingId])?.fetchStatus
+            )
+            .toBe('idle')
+          processingMocks.requestSummaryRegeneration.mockResolvedValueOnce(
+            admitted
+          )
+          await userEvent.click(
+            screen.getByRole('button', { name: 'Request generation' })
+          )
+        }
+        await expect
+          .element(screen.getByTestId('recovered-job'))
+          .toHaveTextContent(admitted.id)
+        expect(processingMocks.requestSummaryRegeneration).toHaveBeenCalledTimes(
+          knownReceipt ? 1 : 2
+        )
+        if (knownReceipt) {
+          expect(processingMocks.getProcessingJob).toHaveBeenCalledWith(
+            admitted.id,
+            expect.any(AbortSignal)
+          )
+        } else {
+          expect(
+            processingMocks.requestSummaryRegeneration.mock.calls[1][1]
+          ).toBe(processingMocks.requestSummaryRegeneration.mock.calls[0][1])
+        }
+      } finally {
+        sessionStorage.removeItem(storageKey)
+      }
+    }
+  )
 
   it('blocks incompatible retries and reprocessing while an admission is pending', async () => {
     const admission = deferred<ProcessingJob>()
