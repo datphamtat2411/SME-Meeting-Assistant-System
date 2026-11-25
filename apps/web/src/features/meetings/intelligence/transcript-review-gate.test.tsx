@@ -18,6 +18,8 @@ const sessionMocks = vi.hoisted(() => ({
       releaseReviewCommand: vi.fn(),
       setReviewWorkBlocked: vi.fn(),
       unresolvedOperations: [],
+      jobs: { isSuccess: true, isFetching: false, data: [] as unknown[] },
+      media: { isSuccess: true, isFetching: false, data: [] as unknown[] },
     },
   },
 }))
@@ -157,10 +159,15 @@ describe('transcript review gate lifecycle', () => {
     vi.restoreAllMocks()
     sessionMocks.session.processing.reconcileJob.mockReset()
     sessionMocks.session.processing.claimReviewCommand.mockReturnValue(true)
-    sessionMocks.session.processing.getAuthoritativeSnapshot.mockReturnValue({
+    const snapshot = {
       jobs: [{ ...admittedJob, status: 'WAITING_FOR_REVIEW' }],
       media: [{ id: sourceMediaId, meetingId, status: 'AVAILABLE' }],
-    })
+    }
+    sessionMocks.session.processing.getAuthoritativeSnapshot.mockReturnValue(
+      snapshot
+    )
+    sessionMocks.session.processing.jobs.data = snapshot.jobs
+    sessionMocks.session.processing.media.data = snapshot.media
   })
 
   it('replays uncertain acknowledgement with the same idempotency key, then admits separately', async () => {

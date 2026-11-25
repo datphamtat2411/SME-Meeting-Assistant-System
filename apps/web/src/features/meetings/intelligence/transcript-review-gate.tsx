@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -130,6 +131,7 @@ type AdmissionOperation = {
 type Scope = {
   meetingId: string
   actorId: string | null
+  accessLost: boolean
 }
 
 function createIdentity(prefix: string): string {
@@ -208,7 +210,11 @@ function operationView(
 }
 
 function sameScope(left: Scope, right: Scope): boolean {
-  return left.meetingId === right.meetingId && left.actorId === right.actorId
+  return (
+    left.meetingId === right.meetingId &&
+    left.actorId === right.actorId &&
+    left.accessLost === right.accessLost
+  )
 }
 
 function canManageReview(
@@ -229,6 +235,7 @@ export function TranscriptReviewGateProvider({
   meetingId,
   fallbackCanManageReview = false,
   canonicalSnapshot,
+  canonicalEvidenceReady = false,
   validateCurrentEvidence,
   refreshEvidence,
   children,
@@ -236,6 +243,7 @@ export function TranscriptReviewGateProvider({
   meetingId: string
   fallbackCanManageReview?: boolean
   canonicalSnapshot?: TranscriptReview | null
+  canonicalEvidenceReady?: boolean
   validateCurrentEvidence?: (evidence: TranscriptReviewEvidence) => string | null
   refreshEvidence?: () => void
   children: ReactNode
@@ -243,12 +251,16 @@ export function TranscriptReviewGateProvider({
   const authorization = useOptionalMeetingAuthorization()
   const session = useMeetingSession()
   const actorId = authorization?.identity?.userId ?? null
+  const accessLost = Boolean(
+    authorization?.isConfirmedAccessLoss ||
+      authorization?.capabilities.authorizationResolution === 'denied'
+  )
   const authorizationRef = useRef(authorization)
   const sessionRef = useRef(session)
   const evidenceValidatorRef = useRef(validateCurrentEvidence)
   const refreshEvidenceRef = useRef(refreshEvidence)
   const fallbackCanManageReviewRef = useRef(fallbackCanManageReview)
-  const scopeRef = useRef<Scope>({ meetingId, actorId })
+  const scopeRef = useRef<Scope>({ meetingId, actorId, accessLost })
   const generationRef = useRef(0)
   const acknowledgementRef = useRef<AcknowledgementOperation | null>(null)
   const admissionRef = useRef<AdmissionOperation | null>(null)
@@ -367,7 +379,7 @@ export function TranscriptReviewGateProvider({
 
   useLayoutEffect(() => {
     const previousScope = scopeRef.current
-    const nextScope = { meetingId, actorId }
+    const nextScope = { meetingId, actorId, accessLost }
     const scopeChanged = !sameScope(previousScope, nextScope)
 
     scopeRef.current = nextScope
@@ -380,7 +392,7 @@ export function TranscriptReviewGateProvider({
       clearCurrentScope()
       return
     }
-  }, [actorId, clearCurrentScope, meetingId, suspendOperation])
+  }, [accessLost, actorId, clearCurrentScope, meetingId, suspendOperation])
 
   // Keep a real previous authorization bit. The scope effect above cannot
   // derive it from the current value twice.
@@ -389,26 +401,12 @@ export function TranscriptReviewGateProvider({
     const current = authorizedNow
     const previous = previousAuthorizationRef.current
     previousAuthorizationRef.current = current
-    if (
-      authorization?.isConfirmedAccessLoss ||
-      authorization?.capabilities.authorizationResolution === 'denied'
-    ) {
-      generationRef.current += 1
-      clearCurrentScope()
-      return
-    }
     if (previous === true && !current) {
       generationRef.current += 1
       suspendOperation(acknowledgementRef.current)
       suspendOperation(admissionRef.current)
     }
-  }, [
-    authorization?.isConfirmedAccessLoss,
-    authorization?.capabilities.authorizationResolution,
-    authorizedNow,
-    clearCurrentScope,
-    suspendOperation,
-  ])
+  }, [authorizedNow, suspendOperation])
 
   const setMutationBlocked = useCallback((blocked: boolean) => {
     mutationBlockedRef.current = blocked
@@ -495,18 +493,6 @@ export function TranscriptReviewGateProvider({
     setDigestError(null)
   }, [invalidateProof])
 
-  useLayoutEffect(() => {
-    if (canonicalSnapshot === undefined) return
-    const base = authorizedNow && canonicalSnapshot
-      ? evidenceBase(canonicalSnapshot)
-      : null
-    if (!base || !canonicalSnapshot) {
-      clearEvidence()
-      return
-    }
-    observeEvidence(base, canonicalSnapshot.transcript.segments)
-  }, [authorizedNow, canonicalSnapshot, clearEvidence, observeEvidence])
-
   const isCurrentAcknowledgement = useCallback(
     (operation: AcknowledgementOperation, execution: Execution) => {
       const currentAuthorization = authorizationRef.current
@@ -550,39 +536,23 @@ export function TranscriptReviewGateProvider({
 
   const freshEligibility = useCallback(
     (proof: TranscriptReviewEvidence): string | null => {
-      if (proof.meetingId !== scopeRef.current.meetingId) {
-        return 'The transcript belongs to another meeting.'
-      }
       const evidenceProblem = evidenceValidatorRef.current?.(proof)
       if (evidenceProblem) return evidenceProblem
-      const snapshot = sessionRef.current.processing.getAuthoritativeSnapshot()
-      if (!snapshot) return 'Current job and source evidence are not verified.'
-      const job = snapshot.jobs.find((item) => item.id === proof.processingJobId)
-      if (
-        !job ||
-        job.meetingId !== proof.meetingId ||
-        job.sourceMediaId !== proof.sourceMediaId ||
-        job.jobType !== 'OFFLINE_MEETING_PROCESSING' ||
-        job.status !== 'WAITING_FOR_REVIEW'
-      ) {
-        return 'The exact processing job is not waiting for transcript review.'
-      }
-      if (!snapshot.media.some((item) =>
-        item.id === proof.sourceMediaId &&
-        item.meetingId === proof.meetingId &&
-        item.status === 'AVAILABLE'
-      )) {
-        return 'The reviewed source media is not available.'
-      }
-      return null
+      return reviewJobEligibility(
+        proof,
+        scopeRef.current.meetingId,
+        sessionRef.current.processing.getAuthoritativeSnapshot()
+      )
     },
     []
   )
 
-  const hasUncertainOperation = useCallback(() =>
-    acknowledgementRef.current?.status === 'uncertain' ||
-    admissionRef.current?.status === 'uncertain',
-  [])
+  const hasUncertainOperation = useCallback(
+    () =>
+      acknowledgementRef.current?.status === 'uncertain' ||
+      admissionRef.current?.status === 'uncertain',
+    []
+  )
 
   const runAcknowledgement = useCallback(
     async (
@@ -861,21 +831,43 @@ export function TranscriptReviewGateProvider({
     []
   )
 
+  const ownsEvidenceObservation = canonicalSnapshot !== undefined
+  const currentBase = canonicalSnapshot ? evidenceBase(canonicalSnapshot) : null
+  const evidenceVerified = Boolean(
+    evidence &&
+      (!ownsEvidenceObservation ||
+        (canonicalEvidenceReady &&
+          currentBase &&
+          transcriptReviewEvidenceInputFingerprint(currentBase) ===
+            evidence.inputFingerprint))
+  )
   const receiptIsCurrent = Boolean(
     authorizedNow &&
-    receipt && evidence && receiptProofFingerprint === evidence.fingerprint
+      evidenceVerified &&
+      receipt &&
+      evidence &&
+      receiptProofFingerprint === evidence.fingerprint
   )
+  const { jobs, media } = session.processing
+  const observedSnapshot =
+    jobs?.isSuccess &&
+    media?.isSuccess &&
+    !jobs.isFetching &&
+    !media.isFetching &&
+    jobs.data &&
+    media.data
+      ? { jobs: jobs.data, media: media.data }
+      : null
   const eligibilityMessage = !authorizedNow
     ? 'The current actor cannot manage transcript review.'
     : mutationBlocked
       ? 'Finish or discard unresolved transcript review work.'
-      : !evidence
+      : !evidence || !evidenceVerified
         ? 'Current transcript evidence is not verified.'
-        : freshEligibility(evidence) ??
+        : (reviewJobEligibility(evidence, meetingId, observedSnapshot) ??
           (session.processing.unresolvedOperations.length > 0
             ? 'Resolve the outstanding processing operation first.'
-            : null)
-  const ownsEvidenceObservation = canonicalSnapshot !== undefined
+            : null))
   const value = useMemo<TranscriptReviewGateValue>(
     () => ({
       meetingId,
@@ -931,12 +923,71 @@ export function TranscriptReviewGateProvider({
 
   return (
     <TranscriptReviewGateContext.Provider value={value}>
+      {ownsEvidenceObservation && (
+        <CanonicalEvidenceObserver
+          snapshot={authorizedNow ? (canonicalSnapshot ?? null) : null}
+        />
+      )}
       {children}
     </TranscriptReviewGateContext.Provider>
   )
 }
 
-function evidenceBase(snapshot: TranscriptReview): TranscriptReviewEvidenceBase | null {
+function reviewJobEligibility(
+  proof: TranscriptReviewEvidence,
+  meetingId: string,
+  snapshot: {
+    jobs: readonly ProcessingJob[]
+    media: readonly { id: string; meetingId: string; status: string }[]
+  } | null
+): string | null {
+  if (proof.meetingId !== meetingId) {
+    return 'The transcript belongs to another meeting.'
+  }
+  if (!snapshot) return 'Current job and source evidence are not verified.'
+  const job = snapshot.jobs.find((item) => item.id === proof.processingJobId)
+  if (
+    !job ||
+    job.meetingId !== proof.meetingId ||
+    job.sourceMediaId !== proof.sourceMediaId ||
+    job.jobType !== 'OFFLINE_MEETING_PROCESSING' ||
+    job.status !== 'WAITING_FOR_REVIEW'
+  ) {
+    return 'The exact processing job is not waiting for transcript review.'
+  }
+  if (
+    !snapshot.media.some(
+      (item) =>
+        item.id === proof.sourceMediaId &&
+        item.meetingId === proof.meetingId &&
+        item.status === 'AVAILABLE'
+    )
+  ) {
+    return 'The reviewed source media is not available.'
+  }
+  return null
+}
+
+function CanonicalEvidenceObserver({
+  snapshot,
+}: {
+  snapshot: TranscriptReview | null
+}) {
+  const { clearEvidence, observeEvidence } = useTranscriptReviewGate()
+  useEffect(() => {
+    const base = snapshot ? evidenceBase(snapshot) : null
+    if (!base || !snapshot) {
+      clearEvidence()
+      return
+    }
+    observeEvidence(base, snapshot.transcript.segments)
+  }, [snapshot, clearEvidence, observeEvidence])
+  return null
+}
+
+function evidenceBase(
+  snapshot: TranscriptReview
+): TranscriptReviewEvidenceBase | null {
   const transcript = snapshot.transcript
   if (
     !transcript.finalizedAt ||
@@ -1022,15 +1073,22 @@ export function TranscriptReviewGateBoundary({
   }, [meetingId, queryClient])
   // Reading both observers keeps their verification transitions reactive.
   const canonicalSnapshot =
-    enabled && transcript.isSuccess && coverage.isSuccess && speakers.isSuccess
-      ? transcript.data
-      : null
+    enabled && transcript.isSuccess ? transcript.data : null
+  const canonicalEvidenceReady = Boolean(
+    canonicalSnapshot &&
+      !transcript.isFetching &&
+      coverage.isSuccess &&
+      !coverage.isFetching &&
+      speakers.isSuccess &&
+      !speakers.isFetching
+  )
 
   return (
     <TranscriptReviewGateProvider
       meetingId={meetingId}
       fallbackCanManageReview={fallbackCanManageReview}
       canonicalSnapshot={canonicalSnapshot}
+      canonicalEvidenceReady={canonicalEvidenceReady}
       validateCurrentEvidence={validateCurrentEvidence}
       refreshEvidence={refreshEvidence}
     >
