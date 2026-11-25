@@ -431,7 +431,7 @@ function installSharedWorkspaceApi(options: {
     meta: {},
     etag: '"shared-meeting-etag"',
   })
-  vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+  vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) => {
     if (url === '/meetings/meeting-1/participants') {
       if (options.participantError) throw options.participantError
       return { data: options.participants ?? [], meta: {} }
@@ -449,6 +449,7 @@ function installSharedWorkspaceApi(options: {
       }
     }
     if (url === '/action-items') {
+      expect(config?.params?.meetingId).toBe('meeting-1')
       actionItemReads.push(url)
       return {
         data: options.actionItems ?? [],
@@ -1026,6 +1027,7 @@ describe('MeetingWorkspacePage', () => {
             content: 'A confirmed decision',
             status: 'CONFIRMED',
             sourceType: 'HUMAN_CONFIRMED',
+            version: 1,
           },
         ],
       })
@@ -1839,7 +1841,7 @@ describe('MeetingWorkspacePage', () => {
     )
 
     await expect
-      .element(screen.getByText('No action items for this meeting'))
+      .element(screen.getByText('No proposals await review'))
       .toBeInTheDocument()
     await expect.poll(() => actionItemReads.length).toBeGreaterThan(0)
     expect(protectedReads).toEqual([])
@@ -1873,7 +1875,7 @@ describe('MeetingWorkspacePage', () => {
     )
 
     await expect
-      .element(screen.getByText('No action items for this meeting'))
+      .element(screen.getByText('No proposals await review'))
       .toBeInTheDocument()
     await expect
       .element(screen.getByRole('tab', { name: 'Transcript' }))

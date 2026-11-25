@@ -48,7 +48,7 @@ export function MeetingTools({
     contentRevision?: number
   ) => void
 }) {
-  const { capabilities } = useMeetingWorkspace()
+  const { capabilities, identity, participants } = useMeetingWorkspace()
   const reviewGate = useOptionalTranscriptReviewGate()
 
   if (section === 'recording') {
@@ -160,7 +160,19 @@ export function MeetingTools({
           canManageDecisions={capabilities.canMutateIntelligence}
           onEvidenceNavigate={onEvidenceNavigate}
         />
-        <MinutesPanel meetingId={meetingId} />
+        <MinutesPanel
+          meetingId={meetingId}
+          names={Object.fromEntries([
+            ...participants.flatMap((participant) =>
+              participant.displayName
+                ? [[participant.userId, participant.displayName]]
+                : []
+            ),
+            [identity.userId, identity.displayName],
+          ])}
+          onOpenActions={onSectionChange ? () => onSectionChange('action-items') : undefined}
+          onOpenTranscript={onSectionChange ? () => onSectionChange('transcript') : undefined}
+        />
         <ExportPanel
           meetingId={meetingId}
           canExport={capabilities.canReadMeetingContent}

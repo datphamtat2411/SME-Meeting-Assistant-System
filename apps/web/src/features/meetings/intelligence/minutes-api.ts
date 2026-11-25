@@ -21,7 +21,7 @@ const actionSchema = z
     id: z.string().uuid(),
     title: z.string(),
     details: z.string().nullable().optional(),
-    status: z.string(),
+    status: z.enum(['PROPOSED', 'OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED']),
     sourceType: z.string(),
     assigneeUserId: z.string().uuid().nullable(),
     dueDate: z.string().nullable(),
@@ -45,12 +45,14 @@ const decisionSchema = z
     evidenceSegmentIds: z.array(z.string().uuid()).default([]),
     isStale: z.boolean().default(false),
     aiWarnings: z.array(z.string()).default([]),
+    aiUncertainty: z.string().nullable().optional(),
+    confirmedAt: z.string().nullable().optional(),
   })
   .passthrough()
 
 export const minutesSchema = z
   .object({
-    schemaVersion: z.number().int(),
+    schemaVersion: z.literal(1),
     assembledAt: z.string(),
     sourceFingerprint: z.string().regex(/^[0-9a-f]{64}$/i),
     completeness: z.enum(['COMPLETE', 'PARTIAL', 'NEEDS_REVIEW']),

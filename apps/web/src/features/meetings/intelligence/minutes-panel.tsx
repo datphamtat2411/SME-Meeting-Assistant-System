@@ -27,7 +27,17 @@ function SnapshotBadge({ value }: { value: string }) {
   )
 }
 
-export function MinutesPanel({ meetingId }: { meetingId: string }) {
+export function MinutesPanel({
+  meetingId,
+  names = {},
+  onOpenActions,
+  onOpenTranscript,
+}: {
+  meetingId: string
+  names?: Record<string, string>
+  onOpenActions?: () => void
+  onOpenTranscript?: () => void
+}) {
   const query = useQuery(minutesQuery(meetingId))
   if (query.isPending) {
     return (
@@ -59,6 +69,10 @@ export function MinutesPanel({ meetingId }: { meetingId: string }) {
 
   const minutes = query.data
   const proposalsIncluded = minutes.proposalsIncluded
+  const person = (id: string | null) =>
+    id ? (names[id] ?? 'Name unavailable') : 'Unassigned'
+  const time = (value: string | null) =>
+    value ? new Date(value).toLocaleString() : 'Not recorded'
   return (
     <Card>
       <CardHeader className='border-b'>
@@ -92,10 +106,13 @@ export function MinutesPanel({ meetingId }: { meetingId: string }) {
             <p className='mt-1 font-medium'>{minutes.meeting.title}</p>
             <p className='text-xs text-muted-foreground'>
               {minutes.meeting.status.replace(/_/g, ' ')}
-              {minutes.meeting.scheduledStartAt
-                ? ` · ${minutes.meeting.scheduledStartAt}`
-                : ''}
+              · Organizer: {person(minutes.meeting.organizerUserId)}
             </p>
+            {minutes.meeting.description && (
+              <p className='mt-2 whitespace-pre-wrap'>{minutes.meeting.description}</p>
+            )}
+            <p>Scheduled: {time(minutes.meeting.scheduledStartAt)} – {time(minutes.meeting.scheduledEndAt)}</p>
+            <p>Actual: {time(minutes.meeting.startedAt)} – {time(minutes.meeting.endedAt)}</p>
           </div>
           <div>
             <p className='text-xs font-medium tracking-wide text-muted-foreground uppercase'>
@@ -104,9 +121,10 @@ export function MinutesPanel({ meetingId }: { meetingId: string }) {
             <p className='mt-1 text-xs'>
               Assembled {minutes.assembledAt} · schema v{minutes.schemaVersion}
             </p>
-            <p className='font-mono text-[11px] break-all text-muted-foreground'>
-              {minutes.sourceFingerprint}
-            </p>
+            <details className='mt-1 text-xs text-muted-foreground'>
+              <summary>Source fingerprint</summary>
+              <p className='font-mono break-all'>{minutes.sourceFingerprint}</p>
+            </details>
           </div>
         </section>
 
@@ -126,16 +144,17 @@ export function MinutesPanel({ meetingId }: { meetingId: string }) {
 
         <section className='space-y-3'>
           <div className='flex flex-wrap items-center justify-between gap-2'>
-            <h3 className='text-lg font-semibold'>Approved Summary</h3>
+            <h3 className='text-lg font-semibold'>Current Summary</h3>
             <SnapshotBadge value={minutes.summary.availability} />
           </div>
           <p className='text-sm whitespace-pre-wrap'>
             {minutes.summary.content ||
-              'No approved Summary is currently available.'}
+              'No current Summary is available.'}
           </p>
           <div className='flex flex-wrap gap-2 text-xs text-muted-foreground'>
             <span>Source: {minutes.summary.sourceType ?? 'not available'}</span>
             <span>Version: {minutes.summary.versionNumber ?? '—'}</span>
+            <span>Quality: {minutes.summary.qualityStatus ?? 'not available'}</span>
             <span>
               Transcript revision: {minutes.summary.contentRevision ?? '—'}
             </span>
@@ -183,6 +202,12 @@ export function MinutesPanel({ meetingId }: { meetingId: string }) {
                       {decision.contentRevision ?? '—'}
                     </p>
                   )}
+                  {decision.aiUncertainty && (
+                    <p className='text-xs text-muted-foreground'>Uncertainty: {decision.aiUncertainty}</p>
+                  )}
+                  {decision.aiWarnings.map((warning) => (
+                    <p key={warning} className='text-xs text-amber-700'>{warning}</p>
+                  ))}
                   {decision.evidenceSegmentIds.length > 0 && (
                     <p className='mt-1 text-xs text-muted-foreground'>
                       Evidence references: {decision.evidenceSegmentIds.length}
@@ -199,9 +224,15 @@ export function MinutesPanel({ meetingId }: { meetingId: string }) {
             <h3 className='text-lg font-semibold'>
               Official Action Items ({minutes.officialActionItems.length})
             </h3>
-            <Button asChild size='sm' variant='link'>
-              <Link to='/action-items'>Open Action Item workspace</Link>
-            </Button>
+            {onOpenActions ? (
+              <Button size='sm' variant='link' onClick={onOpenActions}>
+                Review meeting Action Items
+              </Button>
+            ) : (
+              <Button asChild size='sm' variant='link'>
+                <Link to='/action-items'>Open Action Item workspace</Link>
+              </Button>
+            )}
           </div>
           {minutes.officialActionItems.length === 0 ? (
             <p className='text-sm text-muted-foreground'>
@@ -223,7 +254,7 @@ export function MinutesPanel({ meetingId }: { meetingId: string }) {
                     <SnapshotBadge value={item.status} />
                   </div>
                   <p className='mt-2 text-xs text-muted-foreground'>
-                    {item.sourceType} · due {item.dueDate ?? 'none'} · version{' '}
+                    {item.sourceType} · Assignee: {person(item.assigneeUserId)} · due {item.dueDate ?? 'none'} · version{' '}
                     {item.version}
                   </p>
                 </article>
@@ -236,6 +267,11 @@ export function MinutesPanel({ meetingId }: { meetingId: string }) {
           <div className='flex flex-wrap items-center justify-between gap-2'>
             <h3 className='font-semibold'>Transcript source</h3>
             <SnapshotBadge value={minutes.transcript.availability} />
+            {onOpenTranscript && (
+              <Button size='sm' variant='link' onClick={onOpenTranscript}>
+                Review transcript
+              </Button>
+            )}
           </div>
           <div className='grid gap-2 text-sm sm:grid-cols-2'>
             <p className='break-all'>
@@ -249,6 +285,7 @@ export function MinutesPanel({ meetingId }: { meetingId: string }) {
               Content revision: {minutes.transcript.contentRevision ?? '—'} ·
               duration {minutes.transcript.durationMs ?? '—'} ms
             </p>
+            <p>Suspicious segments: {minutes.transcript.suspiciousSegments ?? '—'}</p>
             <p>Unresolved segments: {minutes.transcript.unresolvedSegments}</p>
             <p>
               Unresolved speech regions:{' '}

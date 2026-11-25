@@ -146,6 +146,7 @@ function workspaceValue(meetingId: string) {
 function installReadOnlyCore() {
   const mediaReads: string[] = []
   const getSpy = vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+    if (url === '/auth/me') return identity
     mediaReads.push(url)
     if (/\/media$/.test(url)) return []
     if (/\/processing-jobs$/.test(url)) return []
@@ -189,8 +190,12 @@ function installReadOnlyCore() {
     })
   const getWithMetaSpy = vi
     .spyOn(coreApi, 'getWithMeta')
-    .mockImplementation(async (url) => {
-      if (url === '/action-items' || /\/decisions$/.test(url)) {
+    .mockImplementation(async (url, config) => {
+      if (url === '/action-items') {
+        mediaReads.push(`${url}?meetingId=${config?.params?.meetingId}`)
+        return { data: [], meta: { pagination: emptyPagination } }
+      }
+      if (/\/decisions$/.test(url)) {
         return { data: [], meta: { pagination: emptyPagination } }
       }
       if (/\/summary\/versions$/.test(url)) {
@@ -319,7 +324,7 @@ describe('MeetingTools section composition', () => {
   it.each([
     ['transcript', 'Transcript not available yet'],
     ['intelligence', 'No summary available'],
-    ['action-items', 'No action items for this meeting'],
+    ['action-items', 'No proposals await review'],
   ] as const)(
     'mounts the %s section using its existing feature panels',
     async (section, expectedText) => {

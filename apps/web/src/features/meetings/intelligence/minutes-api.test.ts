@@ -85,6 +85,12 @@ describe('canonical Minutes adapter', () => {
     expect(parseMinutes(validMinutes()).meeting.id).toBe(meetingId)
   })
 
+  it('rejects an unsupported schema version', () => {
+    expect(() => parseMinutes({ ...validMinutes(), schemaVersion: 2 })).toThrowError(
+      CoreApiError
+    )
+  })
+
   it('rejects malformed fingerprints and unconfirmed work', () => {
     expect(() =>
       parseMinutes({
