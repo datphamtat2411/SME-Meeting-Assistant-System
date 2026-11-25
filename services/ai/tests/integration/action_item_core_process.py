@@ -107,7 +107,10 @@ async def run(config):
             error = await asyncio.wait_for(done.get(), 45)
             if error:
                 raise error
-            assert len(acked) == 1 and len(adapter.requests) == 1 and core.accepts == 1
+            assert (len(acked), len(adapter.requests), core.accepts) == (1, 1, 1), (
+                f"mode={config['mode']}: ack/model/accept counts="
+                f"{len(acked)}/{len(adapter.requests)}/{core.accepts}"
+            )
             await broker.stop()
             await broker.drain()
             # Fresh coordinator process state and a real broker redelivery. The

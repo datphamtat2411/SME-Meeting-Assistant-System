@@ -306,7 +306,8 @@ class ActionItemWorkerAcceptanceIntegrationTests {
                 if(!finished) process.destroyForcibly();
                 String stdout=new String(process.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
                 assertThat(finished).as("Python coordinator timeout").isTrue();
-                assertThat(process.exitValue()).as("Python coordinator stderr: %s",Files.readString(stderr)).isZero();
+                assertThat(process.exitValue()).as("Python coordinator mode=%s stderr: %s",
+                    mode,Files.readString(stderr)).isZero();
                 var report=WorkerJson.MAPPER.readTree(stdout);
                 assertThat(report.get("acknowledged").asInt()).isEqualTo(2);
                 assertThat(report.get("modelCalls").asInt()).isEqualTo(1);
