@@ -269,12 +269,15 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                             widget.workspace.mutationBusy(
                               ResultsMutationGroup.summary,
                             ) ||
-                            !widget.workspace.capabilities.canMutate
+                            !widget.workspace.capabilities.canMutate ||
+                            widget.workspace.acceptedRegenerationJobId != null
                         ? null
                         : regenerate,
                     icon: const Icon(Icons.auto_awesome),
                     label: Text(
-                      widget.workspace.regenerationUncertain
+                      widget.workspace.acceptedRegenerationJobId != null
+                          ? 'Đang xử lý'
+                          : widget.workspace.regenerationUncertain
                           ? 'Kiểm tra lại'
                           : 'Tạo lại AI',
                     ),

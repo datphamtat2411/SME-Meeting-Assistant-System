@@ -370,8 +370,8 @@ class ResultsWorkspaceController extends ChangeNotifier {
       return;
     }
     if (!changed) return;
-    if (!_capabilities.canRead ||
-        (!_capabilities.canMutate && next.canMutate)) {
+    final grantsMutation = !_capabilities.canMutate && next.canMutate;
+    if (!_capabilities.canRead || grantsMutation) {
       unawaited(_verifyAuthorization());
       return;
     }
@@ -436,8 +436,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
       if (!_ownsAuthorizationCheck(ticket)) return;
       _authorizationTicket = null;
       _authorizationRecheckRequested = false;
-      if (error is ApiFailure &&
-          (error.status == 401 || error.status == 403 || error.status == 404)) {
+      if (error is ApiFailure && {401, 403, 404}.contains(error.status)) {
         _denyAccess();
         return;
       }
@@ -1095,7 +1094,8 @@ class ResultsWorkspaceController extends ChangeNotifier {
       var page = first;
       for (var index = 0; index < first.totalPages || index == 0; index++) {
         _requireMutation(epoch);
-        if ((_generations[ResultsResourceKind.decisions] ?? 0) != generation ||
+        final current = _generations[ResultsResourceKind.decisions] ?? 0;
+        if (current != generation ||
             page.page != index ||
             page.totalPages != first.totalPages ||
             page.totalElements != first.totalElements ||

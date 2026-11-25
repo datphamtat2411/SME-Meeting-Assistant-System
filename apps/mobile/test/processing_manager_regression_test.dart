@@ -12,7 +12,7 @@ import 'package:sme_meeting_assistant/features/recording/local_media_repository.
 import 'support/meeting_test_support.dart';
 
 void main() {
-  test('Results catches processing outcomes across an observation gap', () async {
+  test('Results catches outcomes across an observation gap', () async {
     var completed = false;
     final client = MeetingTestHttpClient((request) async {
       if (request.url.path.endsWith('/media')) {
@@ -76,7 +76,10 @@ void main() {
     );
     expect(invalidation.revision, before + 1);
     expect(invalidation.resources, contains(ResultsResourceKind.summary));
-    expect(invalidation.resources, isNot(contains(ResultsResourceKind.transcript)));
+    expect(
+      invalidation.resources,
+      isNot(contains(ResultsResourceKind.transcript)),
+    );
     resumed.reconcileCurrent();
     expect(invalidation.revision, before + 1);
     resumed.dispose();
