@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   useMutation,
   useQuery,
@@ -506,8 +500,9 @@ function TranscriptReviewWorkspaceContent({
       )
     : undefined
   const meetingJobs =
-    session.processing.jobs.data?.filter((job) => job.meetingId === meetingId) ??
-    []
+    session.processing.jobs.data?.filter(
+      (job) => job.meetingId === meetingId
+    ) ?? []
   const activeJobs = meetingJobs.filter((job) =>
     ['PENDING', 'QUEUED', 'RUNNING', 'WAITING_FOR_REVIEW'].includes(job.status)
   )
@@ -562,7 +557,9 @@ function TranscriptReviewWorkspaceContent({
     mappingDraft &&
     mappingDraft.userId !== undefined &&
     mappingDraft.transcriptId === transcriptValue?.id &&
-    availableSpeakers.some((speaker) => speaker.id === mappingDraft.speakerId) &&
+    availableSpeakers.some(
+      (speaker) => speaker.id === mappingDraft.speakerId
+    ) &&
     (mappingDraft.userId === null ||
       eligibleCandidates.some((member) => member.id === mappingDraft.userId))
   )
@@ -1050,7 +1047,10 @@ function TranscriptReviewWorkspaceContent({
               Refresh transcript
             </Button>
             {replacementDraft && (
-              <div role='alert' className='space-y-2 rounded-lg border p-3 text-sm'>
+              <div
+                role='alert'
+                className='space-y-2 rounded-lg border p-3 text-sm'
+              >
                 <p>
                   Core replaced the transcript. Previous drafts cannot be
                   applied to this new evidence.
@@ -1077,7 +1077,10 @@ function TranscriptReviewWorkspaceContent({
               </div>
             )}
             {hasUncertainty && (
-              <div role='alert' className='space-y-2 rounded-lg border p-3 text-sm'>
+              <div
+                role='alert'
+                className='space-y-2 rounded-lg border p-3 text-sm'
+              >
                 <p>
                   A previous write has an uncertain outcome. Matching server
                   data alone cannot confirm it.
@@ -1784,8 +1787,7 @@ function SpeakerMappingCard({
                       size='sm'
                       variant='outline'
                       disabled={
-                        mutationPending ||
-                        (activeSpeakerId !== null && !active)
+                        mutationPending || (activeSpeakerId !== null && !active)
                       }
                       onClick={() => onSelectSpeaker(speaker.id)}
                     >

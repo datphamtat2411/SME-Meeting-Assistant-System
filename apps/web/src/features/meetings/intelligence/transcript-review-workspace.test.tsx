@@ -296,56 +296,54 @@ describe('TranscriptReviewWorkspace', () => {
       if (url.endsWith('/speaker-clusters')) return currentSpeakers
       throw new Error(`Unexpected GET ${url}`)
     })
-    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockImplementation(
-      async (url) => ({
-        data: url.endsWith('/transcript')
-          ? currentTranscript
-          : {
-              id: meetingId,
-              title: 'Meeting',
-              description: null,
-              organizerUserId: candidate.id,
-              roomId: null,
-              scheduledStartAt: null,
-              scheduledEndAt: null,
-              status: 'ENDED',
-              startedAt: null,
-              endedAt: null,
-              cancelledAt: null,
-              cancellationReason: null,
-              createdByUserId: candidate.id,
-              createdAt: '2026-11-25T09:00:00Z',
-              updatedAt: '2026-11-25T09:00:00Z',
-            },
-        meta: {},
-        etag: `"t-transcript-${currentTranscript.contentRevision}"`,
-      })
-    )
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockImplementation(async (url) => ({
+      data: url.endsWith('/transcript')
+        ? currentTranscript
+        : {
+            id: meetingId,
+            title: 'Meeting',
+            description: null,
+            organizerUserId: candidate.id,
+            roomId: null,
+            scheduledStartAt: null,
+            scheduledEndAt: null,
+            status: 'ENDED',
+            startedAt: null,
+            endedAt: null,
+            cancelledAt: null,
+            cancellationReason: null,
+            createdByUserId: candidate.id,
+            createdAt: '2026-11-25T09:00:00Z',
+            updatedAt: '2026-11-25T09:00:00Z',
+          },
+      meta: {},
+      etag: `"t-transcript-${currentTranscript.contentRevision}"`,
+    }))
     const participants = vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue({
-        data: [
-          {
-            id: 'participant-1',
-            meetingId,
-            userId: candidate.id,
-            addedByUserId: null,
-            addedAt: '2026-11-25T09:00:00Z',
-            removedAt: null,
-            removedByUserId: null,
-            displayName: candidate.displayName,
-          },
-          {
-            id: 'removed-participant',
-            meetingId,
-            userId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-            addedByUserId: null,
-            addedAt: '2026-11-25T09:00:00Z',
-            removedAt: '2026-11-25T10:00:00Z',
-            removedByUserId: null,
-            displayName: 'Nguyễn Removed',
-          },
-        ],
-        meta: {},
-      })
+      data: [
+        {
+          id: 'participant-1',
+          meetingId,
+          userId: candidate.id,
+          addedByUserId: null,
+          addedAt: '2026-11-25T09:00:00Z',
+          removedAt: null,
+          removedByUserId: null,
+          displayName: candidate.displayName,
+        },
+        {
+          id: 'removed-participant',
+          meetingId,
+          userId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          addedByUserId: null,
+          addedAt: '2026-11-25T09:00:00Z',
+          removedAt: '2026-11-25T10:00:00Z',
+          removedByUserId: null,
+          displayName: 'Nguyễn Removed',
+        },
+      ],
+      meta: {},
+    })
     const patch = vi.spyOn(coreApi, 'patch').mockImplementation(async (url) => {
       if (url.endsWith(`/speaker-clusters/${speakerId}`)) {
         currentTranscript = {
@@ -539,9 +537,9 @@ describe('TranscriptReviewWorkspace', () => {
       .element(screen.getByText('Nội dung thứ hai'))
       .toBeInTheDocument()
     const activeSegment = () =>
-      document.querySelector('[data-playback-active="true"]')?.getAttribute(
-        'data-segment-id'
-      )
+      document
+        .querySelector('[data-playback-active="true"]')
+        ?.getAttribute('data-segment-id')
     expect(activeSegment()).toBe(secondSegmentId)
     sessionMocks.session.playback.currentTimeMs = 1500
     await screen.rerender(view())

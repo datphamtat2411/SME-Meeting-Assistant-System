@@ -201,9 +201,12 @@ export function reviewCoverageQuery(
       if (!evidence) throw new Error('A transcript snapshot is required.')
       return readBoundEvidence(meetingId, evidence, signal, async () =>
         coverageSchema.array().parse(
-          await coreApi.get<unknown>(route(meetingId) + '/transcript/coverage', {
-            signal,
-          })
+          await coreApi.get<unknown>(
+            route(meetingId) + '/transcript/coverage',
+            {
+              signal,
+            }
+          )
         )
       )
     },
