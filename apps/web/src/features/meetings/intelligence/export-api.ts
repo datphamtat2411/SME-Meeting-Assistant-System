@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { queryOptions } from '@tanstack/react-query'
-import { coreApi } from '@/lib/core-api'
+import { CoreApiError, coreApi, normalizeCoreApiError } from '@/lib/core-api'
 
 export const exportStatusSchema = z.object({
   exportId: z.string().uuid(),
@@ -25,18 +25,48 @@ const exportAdmissionSchema = z.object({
 })
 export type ExportAdmission = z.infer<typeof exportAdmissionSchema>
 
-export function createMinutesExport(
+export async function createMinutesExport(
   meetingId: string,
   format: ExportStatus['format'],
-  idempotencyKey: string = crypto.randomUUID()
+  idempotencyKey: string
 ) {
-  return coreApi
-    .post<unknown>(
+  try {
+    const value = await coreApi.post<unknown>(
       '/meetings/' + encodeURIComponent(meetingId) + '/exports',
       { format },
       { headers: { 'Idempotency-Key': idempotencyKey } }
     )
-    .then((value) => exportAdmissionSchema.parse(value))
+    const receipt = exportAdmissionSchema.safeParse(value)
+    if (
+      !receipt.success ||
+      receipt.data.meetingId !== meetingId ||
+      receipt.data.format !== format
+    ) {
+      throw new CoreApiError({
+        message: 'Export admission response could not be verified.',
+        code: 'MALFORMED_RESPONSE',
+        kind: 'malformed',
+      })
+    }
+    return receipt.data
+  } catch (error) {
+    const failure = normalizeCoreApiError(error)
+    if (
+      failure.isNetworkError ||
+      failure.isServerError ||
+      failure.kind === 'malformed' ||
+      failure.recoveryOutcome === 'uncertain'
+    ) {
+      throw new CoreApiError({
+        message: 'Export admission is uncertain. Recover the original request.',
+        code: 'EXPORT_ADMISSION_UNCERTAIN',
+        kind: failure.kind,
+        recoveryOutcome: 'uncertain',
+        cause: error,
+      })
+    }
+    throw error
+  }
 }
 export function exportStatusQuery(exportId: string) {
   return queryOptions({

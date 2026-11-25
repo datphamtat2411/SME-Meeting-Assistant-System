@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { ExportPanel } from './export-panel'
+import { CoreApiError } from '@/lib/core-api'
 
 const exportMocks = vi.hoisted(() => ({
   createMinutesExport: vi.fn(),
@@ -232,6 +233,26 @@ describe('ExportPanel authorization and download boundary', () => {
       .poll(() => exportMocks.accessMinutesExport.mock.calls.length)
       .toBe(1)
     await expect.poll(() => clickSpy.mock.calls.length).toBe(0)
+  })
+
+  it('recovers ambiguous export admission with the original key', async () => {
+    exportMocks.createMinutesExport.mockRejectedValueOnce(
+      new CoreApiError({
+        message: 'Connection interrupted',
+        code: 'EXPORT_ADMISSION_UNCERTAIN',
+        kind: 'network',
+        recoveryOutcome: 'uncertain',
+      })
+    )
+    const screen = await renderPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    const recover = screen.getByRole('button', { name: 'Recover PDF request' })
+    await expect.element(recover).toBeEnabled()
+    await userEvent.click(recover)
+    await expect.poll(() => exportMocks.createMinutesExport.mock.calls.length).toBe(2)
+    expect(exportMocks.createMinutesExport.mock.calls[0]).toEqual(
+      exportMocks.createMinutesExport.mock.calls[1]
+    )
   })
 
   it('does not offer export operations without meeting-content access', async () => {
