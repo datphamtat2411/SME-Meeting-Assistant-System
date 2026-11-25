@@ -113,3 +113,83 @@ Do not infer or synthesize ETags from model versions or identifiers.
   the debug build.
 - Physical-device acceptance and full-system/live-backend end-to-end testing
   remain separate required gates before production readiness.
+
+## M04 recording and media acceptance
+
+The M04 implementation uses the existing recording, managed-media, submission,
+and processing coordinators. Recording and import are separate from submission:
+neither action starts an upload automatically.
+
+### Supported operation
+
+- Native capture is foreground-only and requires Android `RECORD_AUDIO`.
+  Captures are WAV PCM, 16 kHz, mono. Recording is permitted only for an
+  authorized `IN_PROGRESS` meeting.
+- Managed import accepts `.wav`, `.mp3`, and `.m4a` sources, canonicalized as
+  `audio/wav`, `audio/mpeg`, and `audio/mp4`. The selected source is copied into
+  private managed storage; the original external file is not deleted.
+- Recording and import are limited to 90 minutes and 512 MiB by default.
+- Submission is explicit: upload-intent creation, signed PUT, Core media
+  finalization, processing admission, and processing observation remain
+  distinct states.
+- Upload capabilities and signed URLs are transient. A signed PUT sends only
+  the capability-required content type and source bytes, not Core API
+  credentials.
+- Local audio is retained after submission and is discarded only by an
+  explicit local action. Local discard does not delete remote media.
+- Retry and deliberate reprocessing are operation-specific and preserve source,
+  parent, and idempotency identity. A missing local source does not prevent
+  reconciliation of an already identified remote media resource.
+- Cancellation stops foreground work where the transport can observe it.
+  An ambiguous remote mutation remains durable and requires explicit
+  reconciliation; cancellation is not treated as proof that the remote write
+  did not happen. There are no background microphone services or background
+  upload workers.
+
+### M04 automated evidence
+
+The final local verification run completed with 358 Flutter tests passing,
+`flutter analyze` reporting no issues, Dart formatting clean, the static native
+configuration validator passing, eight Android Gradle diagnostic tests passing,
+merged-manifest/Android native verification passing, and a debug APK build
+passing. Fixture and local-storage tests are not live-service or physical-device
+evidence.
+
+The W03-R01 regression verifies that durable unresolved transfer evidence
+survives a later cancelled attempt: pending remote media is finalized through
+the same resource with zero upload-intent replay and zero repeated PUT. An
+already AVAILABLE remote resource is reconciled without local source bytes.
+
+### Live and physical-device procedure
+
+For live acceptance, use a dedicated authenticated test account, a disposable
+authorized meeting, a compatible Core API, configured object storage, and
+available processing workers. Launch with an explicit API base URL and verify
+intent creation, signed PUT, finalization, admission, observation, capability
+renewal, interrupted submission recovery, authorization rejection, and session
+isolation. Do not use production credentials, signed URLs, or meeting audio in
+evidence.
+
+For Android acceptance, use a supported physical device with USB or wireless
+ADB, grant and revoke microphone permission, execute a representative capture
+and import, navigate away and back through the recording indicator, background
+and restart the app, interrupt capture/upload where reproducible, and record
+the actual duration and file size. An emulator, fake capture adapter, fixture
+HTTP client, or debug APK build does not satisfy physical-device acceptance.
+
+No compatible Core API/test account or responsive physical Android device was
+available in this verification environment. Consequently live backend,
+object-storage-through-Core, processing-worker, and physical-device scenarios
+remain `BLOCKED_EXTERNAL`/`NOT_EXECUTED`; they must not be reported as passed.
+The local RustFS/RabbitMQ infrastructure being present is not equivalent to a
+running compatible Core API and authenticated end-to-end environment.
+
+### M04 known boundaries
+
+- Backend conflict responses, including HTTP 409, do not currently distinguish
+  every remote media condition. Mobile preserves reconciliation-required state
+  rather than inferring that an object is absent or retransmitting unsafely.
+- Processing completion and transcript review remain downstream service/module
+  boundaries. Mobile represents available processing stages and review-required
+  states but does not implement full transcript review or meeting intelligence.
+- Android is the validated platform. iOS is preserved but deferred.

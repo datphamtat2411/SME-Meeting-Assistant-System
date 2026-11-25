@@ -303,8 +303,9 @@ void main() {
             checkpoint == UploadOperationCheckpoint.binaryTransferConfirmed
             ? 3
             : 0,
-        attemptCount: 1,
-        attemptOutcome: OperationAttemptOutcome.succeeded,
+        attemptCount: 2,
+        attemptOutcome: OperationAttemptOutcome.cancelled,
+        recoveryRequired: true,
       );
       await repository.discard(scope: scope, assetId: asset.id);
       final capabilities = MeetingCapabilityPolicy.evaluate(
@@ -387,6 +388,125 @@ void main() {
       }
     });
   }
+
+  test(
+    'retained transfer uncertainty is not hidden by a cancelled recovery',
+    () async {
+      var intentRequests = 0;
+      var putRequests = 0;
+      var finalizeRequests = 0;
+      final client = MeetingTestHttpClient((request) async {
+        final path = request.url.path;
+        if (request.method == 'GET' && path.endsWith('/media/$testMediaId')) {
+          return meetingApiSuccess(_pendingMediaJson());
+        }
+        if (request.method == 'POST' && path.endsWith('/media/uploads')) {
+          intentRequests++;
+          return meetingApiSuccess(<String, dynamic>{
+            'mediaId': testMediaId,
+            'status': 'PENDING_UPLOAD',
+            'uploadUrl': 'https://storage.example.test/object',
+            'expiresAt': DateTime.now()
+                .toUtc()
+                .add(const Duration(minutes: 10))
+                .toIso8601String(),
+            'requiredContentType': 'audio/wav',
+          });
+        }
+        if (request.method == 'PUT') {
+          putRequests++;
+          await request.finalize().drain<void>();
+          return streamedResponse(200);
+        }
+        if (request.method == 'POST' && path.endsWith('/finalize')) {
+          finalizeRequests++;
+          return meetingApiSuccess(_availableMediaJson());
+        }
+        throw StateError('Unexpected request $path');
+      });
+      final api = createMeetingTestApi(client);
+      await signInMeetingTestApi(api);
+      final directory = await Directory.systemTemp.createTemp('sme-r01-');
+      final database = await LocalMediaDatabase.open(
+        databasePath: '${directory.path}/media.db',
+        databaseFactory: databaseFactoryFfi,
+      );
+      final repository = LocalMediaRepository(
+        persistence: LocalMediaPersistence(database),
+        storage: ManagedMediaStorage(
+          root: Directory('${directory.path}/managed'),
+        ),
+      );
+      final coordinator = SubmissionCoordinator(
+        api: api,
+        localMedia: repository,
+        mediaRepository: MediaRepository(api: api),
+        processingRepository: ProcessingRepository(api: api),
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await repository.dispose();
+        await directory.delete(recursive: true);
+        api.dispose();
+      });
+
+      final scope = api.requireAuthenticatedSessionScope();
+      final source = File('${directory.path}/meeting.wav')
+        ..writeAsBytesSync(<int>[1, 2, 3]);
+      final asset = await repository.rememberSourceFile(
+        scope: scope,
+        meetingId: testMeetingId,
+        source: source,
+        sourceType: LocalMediaSourceType.recording,
+        originalFilename: 'meeting.wav',
+        contentType: 'audio/wav',
+        expectedSizeBytes: 3,
+      );
+      final operation = await repository.beginUploadOperation(
+        scope: scope,
+        asset: asset,
+        idempotencyKey: 'r01-uncertain-transfer',
+      );
+      await repository.updateUploadOperation(
+        operation,
+        scope: scope,
+        checkpoint: UploadOperationCheckpoint.intentConfirmed,
+        remoteMediaId: testMediaId,
+        attemptCount: 2,
+        attemptOutcome: OperationAttemptOutcome.cancelled,
+        recoveryRequired: true,
+      );
+      final capabilities = MeetingCapabilityPolicy.evaluate(
+        callerId: testUserId,
+        meeting: Meeting.fromJson(meetingTestJson(status: 'IN_PROGRESS')),
+      );
+
+      final result = await coordinator.resume(
+        operationId: operation.id,
+        scope: scope,
+        capabilities: capabilities,
+        admitProcessing: false,
+      );
+
+      expect(result.lifecycle, SubmissionLifecycleState.mediaAvailable);
+      expect(result.media?.id, testMediaId);
+      expect(result.uploadOperation?.id, operation.id);
+      expect(intentRequests, 0);
+      expect(putRequests, 0);
+      expect(finalizeRequests, 1);
+      final persisted = await repository.findUploadOperationById(
+        scope: scope,
+        operationId: operation.id,
+      );
+      expect(persisted?.id, operation.id);
+      expect(persisted?.remoteMediaId, testMediaId);
+      expect(
+        persisted?.checkpoint,
+        UploadOperationCheckpoint.finalizationConfirmed,
+      );
+      expect(persisted?.recoveryRequired, isFalse);
+    },
+  );
 
   test(
     'workspace recovery projects durable upload operations before retrying',
@@ -496,3 +616,10 @@ Map<String, dynamic> _availableMediaJson({
   'availableAt': '2026-11-24T12:01:00Z',
   'failureCode': null,
 };
+
+Map<String, dynamic> _pendingMediaJson({String id = testMediaId}) =>
+    <String, dynamic>{
+      ..._availableMediaJson(id: id),
+      'status': 'PENDING_UPLOAD',
+      'availableAt': null,
+    };

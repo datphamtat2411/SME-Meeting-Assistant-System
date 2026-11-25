@@ -648,6 +648,7 @@ class SubmissionCoordinator extends ChangeNotifier {
               UploadOperationCheckpoint.binaryTransferConfirmed ||
           current.checkpoint ==
               UploadOperationCheckpoint.finalizationConfirmed ||
+          current.recoveryRequired ||
           current.attemptOutcome == OperationAttemptOutcome.uncertain) {
         final finalized = await _finalizePending(
           scope: scope,
