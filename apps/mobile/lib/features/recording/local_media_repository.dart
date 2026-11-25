@@ -106,6 +106,8 @@ class LocalMediaRepository {
   final Map<String, LocalMediaAssetLease> _writerLeases =
       <String, LocalMediaAssetLease>{};
   final Map<String, Set<String>> _readerLeaseIds = <String, Set<String>>{};
+  final Map<String, Future<void>> _importIdentityTails =
+      <String, Future<void>>{};
   bool _disposed = false;
 
   static LocalMediaRepository fromReady({
@@ -1702,8 +1704,7 @@ class LocalMediaRepository {
           expectedVersion: current.version,
         ),
       );
-      final duplicate = await _findImportDuplicate(
-        persistence: persistence,
+      final identityKey = _importIdentityKey(
         deploymentScope: deploymentScope,
         ownerUserId: ownerUserId,
         meetingId: meetingId,
@@ -1711,55 +1712,72 @@ class LocalMediaRepository {
         originalFilename: originalFilename,
         contentType: contentType,
         integrity: integrity,
-        excludingAssetId: current.id,
       );
-      if (duplicate != null) {
-        try {
-          return await _withLifecycleLock(
-            () => _reuseVerifiedImportDuplicate(
-              persistence: persistence,
-              storage: storage,
-              current: current,
-              candidate: duplicate.asset,
-              stagedPath: stagedPath,
-            ),
-          );
-        } finally {
-          await duplicate.lease.release();
-        }
-      }
-
-      current = await _withLifecycleLock(
-        () => persistence.updateAsset(
-          current.copyWith(
-            lifecycle: LocalMediaLifecycle.promotionPending,
-            updatedAt: _utcNow(),
-          ),
-          expectedVersion: current.version,
-        ),
-      );
-      // The writer lease fences discard and recovery while the external file
-      // move and integrity inspection happen outside the global lifecycle lock.
-      await storage.promote(stagedPath, current.managedRelativePath);
-      final managedIntegrity = await storage.inspectFile(
-        current.managedRelativePath,
-      );
-      if (managedIntegrity.sizeBytes != integrity.sizeBytes ||
-          managedIntegrity.sha256 != integrity.sha256) {
-        throw const FileSystemException(
-          'The promoted media file failed integrity verification.',
+      // Hashing and source consumption remain outside the repository-wide
+      // lifecycle lock. Only equivalent completed imports share this narrow
+      // identity lock, which covers the final deduplication decision and
+      // promotion boundary.
+      return await _withImportIdentityLock(identityKey, () async {
+        final duplicate = await _findImportDuplicate(
+          persistence: persistence,
+          deploymentScope: deploymentScope,
+          ownerUserId: ownerUserId,
+          meetingId: meetingId,
+          sourceType: sourceType,
+          originalFilename: originalFilename,
+          contentType: contentType,
+          integrity: integrity,
+          excludingAssetId: current.id,
         );
-      }
-      return await _withLifecycleLock(
-        () => persistence.updateAsset(
-          current.copyWith(
-            lifecycle: LocalMediaLifecycle.ready,
-            readyAt: _utcNow(),
-            updatedAt: _utcNow(),
+        if (duplicate != null) {
+          try {
+            return await _withLifecycleLock(
+              () => _reuseVerifiedImportDuplicate(
+                persistence: persistence,
+                storage: storage,
+                current: current,
+                candidate: duplicate.asset,
+                stagedPath: stagedPath,
+              ),
+            );
+          } finally {
+            await duplicate.lease.release();
+          }
+        }
+
+        current = await _withLifecycleLock(
+          () => persistence.updateAsset(
+            current.copyWith(
+              lifecycle: LocalMediaLifecycle.promotionPending,
+              updatedAt: _utcNow(),
+            ),
+            expectedVersion: current.version,
           ),
-          expectedVersion: current.version,
-        ),
-      );
+        );
+        // The writer lease fences discard and recovery while the external file
+        // move and integrity inspection happen outside the global lifecycle
+        // lock, but remain inside the equivalent-content lock.
+        await storage.promote(stagedPath, current.managedRelativePath);
+        final managedIntegrity = await storage.inspectFile(
+          current.managedRelativePath,
+        );
+        if (managedIntegrity.sizeBytes != integrity.sizeBytes ||
+            managedIntegrity.sha256 != integrity.sha256) {
+          throw const FileSystemException(
+            'The promoted media file failed integrity verification.',
+          );
+        }
+        return await _withLifecycleLock(
+          () => persistence.updateAsset(
+            current.copyWith(
+              lifecycle: LocalMediaLifecycle.ready,
+              readyAt: _utcNow(),
+              updatedAt: _utcNow(),
+            ),
+            expectedVersion: current.version,
+          ),
+        );
+      });
     } catch (_) {
       await _markImportInterrupted(persistence: persistence, current: current);
       rethrow;
@@ -2268,6 +2286,39 @@ class LocalMediaRepository {
       }
     }();
   }
+
+  Future<T> _withImportIdentityLock<T>(
+    String key,
+    Future<T> Function() action,
+  ) {
+    final previous = _importIdentityTails[key] ?? Future<void>.value();
+    final release = Completer<void>();
+    _importIdentityTails[key] = release.future;
+    return () async {
+      await previous;
+      try {
+        return await action();
+      } finally {
+        release.complete();
+        if (identical(_importIdentityTails[key], release.future)) {
+          _importIdentityTails.remove(key);
+        }
+      }
+    }();
+  }
+
+  String _importIdentityKey({
+    required String deploymentScope,
+    required String ownerUserId,
+    required String meetingId,
+    required LocalMediaSourceType sourceType,
+    required String originalFilename,
+    required String contentType,
+    required LocalMediaFileIntegrity integrity,
+  }) =>
+      '$deploymentScope\u0000$ownerUserId\u0000$meetingId\u0000'
+      '${sourceType.wireValue}\u0000$originalFilename\u0000$contentType\u0000'
+      '${integrity.sizeBytes}\u0000${integrity.sha256.toLowerCase()}';
 
   LocalMediaAssetLease _acquireWriterLease(
     String assetId, {

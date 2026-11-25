@@ -13,9 +13,16 @@ import 'package:sme_meeting_assistant/features/meetings/meeting_form.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 
 class MeetingsPage extends StatefulWidget {
-  const MeetingsPage({super.key, required this.dependencies});
+  const MeetingsPage({
+    super.key,
+    required this.dependencies,
+    this.focusMeetingId,
+    this.onFocusConsumed,
+  });
 
   final AppDependencies dependencies;
+  final String? focusMeetingId;
+  final VoidCallback? onFocusConsumed;
 
   @override
   State<MeetingsPage> createState() => _MeetingsPageState();
@@ -37,6 +44,26 @@ class _MeetingsPageState extends State<MeetingsPage> {
       invalidation: widget.dependencies.meetingInvalidation,
     );
     unawaited(_controller.initialize());
+    _openFocusedMeeting();
+  }
+
+  @override
+  void didUpdateWidget(covariant MeetingsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.focusMeetingId != null &&
+        widget.focusMeetingId != oldWidget.focusMeetingId) {
+      _openFocusedMeeting();
+    }
+  }
+
+  void _openFocusedMeeting() {
+    final meetingId = widget.focusMeetingId;
+    if (meetingId == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || widget.focusMeetingId != meetingId) return;
+      widget.onFocusConsumed?.call();
+      _openDetail(meetingId);
+    });
   }
 
   @override

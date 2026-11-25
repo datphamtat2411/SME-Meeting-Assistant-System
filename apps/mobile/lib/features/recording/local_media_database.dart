@@ -37,6 +37,15 @@ class LocalMediaDatabase {
         onUpgrade: (db, oldVersion, newVersion) async {
           await _upgradeSchema(db, oldVersion, newVersion);
         },
+        // Some V6 installations were opened before the admission invariant
+        // was added. Keep schema maintenance idempotent for those databases
+        // without requiring a destructive migration or a version bump.
+        onOpen: (db) async {
+          await db.transaction((txn) async {
+            await _createInitialProcessingAdmissionIndex(txn);
+            await _createInitialProcessingAdmissionTriggers(txn);
+          });
+        },
       ),
     );
     return LocalMediaDatabase._(database, resolvedPath);

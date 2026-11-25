@@ -294,7 +294,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
           !api.isCurrentAuthenticatedSession(scope) ||
           _scopes[key] != scope ||
           _observationGenerations[key] != generation ||
-          (_consumers[key] ?? 0) == 0) {
+          ((_consumers[key] ?? 0) == 0 && !explicit)) {
         return;
       }
       final media = results[0] as List<MediaRecord>;
@@ -330,7 +330,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
           !api.isCurrentAuthenticatedSession(scope) ||
           _scopes[key] != scope ||
           _observationGenerations[key] != generation ||
-          (_consumers[key] ?? 0) == 0) {
+          ((_consumers[key] ?? 0) == 0 && !explicit)) {
         return;
       }
       if (error is ApiFailure && (error.status == 401 || error.status == 403)) {
@@ -547,6 +547,20 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     MeetingCapabilities? capabilities,
   }) async {
     api.requireCurrentAuthenticatedSession(scope);
+    final authoritativeParent = await processingRepository.get(
+      parent.id,
+      sessionScope: scope,
+    );
+    if (authoritativeParent.meetingId.toLowerCase() !=
+            parent.meetingId.toLowerCase() ||
+        authoritativeParent.id.toLowerCase() != parent.id.toLowerCase()) {
+      throw const ApiFailure(
+        409,
+        'PROCESSING_REPROCESS_NOT_ALLOWED',
+        'The parent job does not belong to the current meeting.',
+      );
+    }
+    parent = authoritativeParent;
     await _requireCurrentCapability(
       scope,
       parent.meetingId,

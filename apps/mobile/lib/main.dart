@@ -86,6 +86,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
   late final Listenable applicationState = Listenable.merge(<Listenable>[
     api,
     appearance,
+    widget.dependencies.recording,
   ]);
 
   @override
@@ -365,6 +366,7 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int index = 0;
+  String? _focusMeetingId;
 
   @override
   Widget build(BuildContext context) {
@@ -401,7 +403,11 @@ class _AppShellState extends State<AppShell> {
         openMeetings: () => setState(() => index = 1),
         openActions: () => setState(() => index = 2),
       ),
-      MeetingsPage(dependencies: widget.dependencies),
+      MeetingsPage(
+        dependencies: widget.dependencies,
+        focusMeetingId: _focusMeetingId,
+        onFocusConsumed: () => setState(() => _focusMeetingId = null),
+      ),
       ActionItemsPage(api: widget.api),
       AssistantPage(api: widget.api),
       ProfilePage(
@@ -411,31 +417,52 @@ class _AppShellState extends State<AppShell> {
       ),
     ];
     final wide = MediaQuery.sizeOf(context).width >= 700;
+    final capture = widget.dependencies.recording.state;
+    final activeRecording =
+        capture.isCapturing &&
+        capture.meetingId != null &&
+        capture.sessionScope != null &&
+        widget.api.isCurrentAuthenticatedSession(capture.sessionScope!);
     return Scaffold(
       body: SafeArea(
-        child: Row(
+        child: Column(
           children: [
-            if (wide)
-              NavigationRail(
-                extended: MediaQuery.sizeOf(context).width > 1000,
-                selectedIndex: index,
-                onDestinationSelected: (i) => setState(() => index = i),
-                leading: const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 20),
-                  child: Icon(Icons.graphic_eq_rounded, size: 32),
-                ),
-                destinations: destinations
-                    .map(
-                      (item) => NavigationRailDestination(
-                        icon: item.icon,
-                        selectedIcon: item.selectedIcon,
-                        label: Text(item.label),
-                      ),
-                    )
-                    .toList(),
+            if (activeRecording)
+              _ActiveRecordingBanner(
+                meetingId: capture.meetingId!,
+                elapsed: capture.elapsed,
+                onOpen: () => setState(() {
+                  _focusMeetingId = capture.meetingId;
+                  index = 1;
+                }),
               ),
             Expanded(
-              child: IndexedStack(index: index, children: pages),
+              child: Row(
+                children: [
+                  if (wide)
+                    NavigationRail(
+                      extended: MediaQuery.sizeOf(context).width > 1000,
+                      selectedIndex: index,
+                      onDestinationSelected: (i) => setState(() => index = i),
+                      leading: const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 20),
+                        child: Icon(Icons.graphic_eq_rounded, size: 32),
+                      ),
+                      destinations: destinations
+                          .map(
+                            (item) => NavigationRailDestination(
+                              icon: item.icon,
+                              selectedIcon: item.selectedIcon,
+                              label: Text(item.label),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  Expanded(
+                    child: IndexedStack(index: index, children: pages),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -449,4 +476,41 @@ class _AppShellState extends State<AppShell> {
             ),
     );
   }
+}
+
+class _ActiveRecordingBanner extends StatelessWidget {
+  const _ActiveRecordingBanner({
+    required this.meetingId,
+    required this.elapsed,
+    required this.onOpen,
+  });
+
+  final String meetingId;
+  final Duration elapsed;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.red.withValues(alpha: 0.08),
+    child: InkWell(
+      onTap: onOpen,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+        child: Row(
+          children: [
+            const Icon(Icons.fiber_manual_record, color: Colors.red, size: 16),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Đang ghi âm · ${elapsed.toString().split('.').first} · Cuộc họp $meetingId',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            TextButton(onPressed: onOpen, child: const Text('Mở')),
+          ],
+        ),
+      ),
+    ),
+  );
 }

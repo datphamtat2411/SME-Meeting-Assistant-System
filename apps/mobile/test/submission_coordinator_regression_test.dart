@@ -480,19 +480,19 @@ Map<String, dynamic> _admittedJobJson() => <String, dynamic>{
   'stageRuns': <Map<String, dynamic>>[],
 };
 
-Map<String, dynamic> _availableMediaJson({String id = testMediaId}) =>
-    <String, dynamic>{
-      'id': id,
-      'meetingId': testMeetingId,
-      'sourceType': 'RECORDING',
-      'status': 'AVAILABLE',
-      'originalFilename': 'meeting.wav',
-      'contentType': 'audio/wav',
-      'sizeBytes': 3,
-      'durationMs': 1000,
-      'sha256':
-          '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
-      'createdAt': '2026-11-24T12:00:00Z',
-      'availableAt': '2026-11-24T12:01:00Z',
-      'failureCode': null,
-    };
+Map<String, dynamic> _availableMediaJson({
+  String id = testMediaId,
+}) => <String, dynamic>{
+  'id': id,
+  'meetingId': testMeetingId,
+  'sourceType': 'RECORDING',
+  'status': 'AVAILABLE',
+  'originalFilename': 'meeting.wav',
+  'contentType': 'audio/wav',
+  'sizeBytes': 3,
+  'durationMs': 1000,
+  'sha256': '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
+  'createdAt': '2026-11-24T12:00:00Z',
+  'availableAt': '2026-11-24T12:01:00Z',
+  'failureCode': null,
+};

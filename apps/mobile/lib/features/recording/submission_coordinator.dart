@@ -1097,7 +1097,8 @@ class SubmissionCoordinator extends ChangeNotifier {
 
   void _validateIntent(MediaUploadIntent intent, UploadOperation operation) {
     if (operation.remoteMediaId != null &&
-        operation.remoteMediaId!.toLowerCase() != intent.mediaId.toLowerCase()) {
+        operation.remoteMediaId!.toLowerCase() !=
+            intent.mediaId.toLowerCase()) {
       throw const SubmissionReconciliationException(
         'The renewed upload intent identifies a different remote resource.',
       );
