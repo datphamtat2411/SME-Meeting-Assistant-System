@@ -6,6 +6,8 @@ on:
       - develop
       - 'api/**'
       - 'integration/**'
+      # M05 contains an additive Core API reviewed-source contract.
+      - 'mobile/module-meeting-results'
   pull_request:
     branches:
       - develop
