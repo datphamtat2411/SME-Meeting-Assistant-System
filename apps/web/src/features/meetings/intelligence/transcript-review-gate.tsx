@@ -878,6 +878,16 @@ export function TranscriptReviewGateProvider({
     acknowledgementView.status === 'uncertain' ||
     admissionView.status === 'pending' ||
     admissionView.status === 'uncertain'
+  useEffect(() => {
+    if (!hasUnresolvedOperation || accessLost) return
+    const preventDiscard = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue =
+        'A transcript review request has not been resolved. Leave anyway?'
+    }
+    window.addEventListener('beforeunload', preventDiscard)
+    return () => window.removeEventListener('beforeunload', preventDiscard)
+  }, [accessLost, hasUnresolvedOperation])
   const ownsEvidenceObservation = canonicalSnapshot !== undefined
   const currentBase = canonicalSnapshot ? evidenceBase(canonicalSnapshot) : null
   const evidenceVerified = Boolean(

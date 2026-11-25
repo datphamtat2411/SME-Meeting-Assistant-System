@@ -142,6 +142,12 @@ function PlaybackHarness() {
       </button>
       <button
         type='button'
+        onClick={() => session.setTranscriptReviewDirty(true)}
+      >
+        Mark transcript review dirty
+      </button>
+      <button
+        type='button'
         onClick={() => session.cancelPendingSeek('transcript-a')}
       >
         Cancel transcript A
@@ -476,5 +482,28 @@ describe('meeting session ownership boundaries', () => {
     await expect
       .element(screen.getByTestId('selected-file'))
       .toHaveTextContent('empty')
+  })
+
+  it('protects unsaved transcript review work from browser unload', async () => {
+    const screen = await render(
+      <QueryClientProvider client={queryClient()}>
+        <MeetingSessionProvider
+          meetingId={meetingId}
+          fallbackCapabilities={{
+            canReadMedia: true,
+            canReadProcessing: false,
+          }}
+        >
+          <PlaybackHarness />
+        </MeetingSessionProvider>
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Mark transcript review dirty' })
+    )
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
   })
 })

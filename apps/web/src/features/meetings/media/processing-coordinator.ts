@@ -224,7 +224,7 @@ function operationAuthorizationKind(
     : 'admission'
 }
 
-function authorizedForOperation(
+export function authorizedForProcessingOperation(
   kind: 'admission' | 'recovery',
   authorization: ProcessingAuthorization | null | undefined,
   fallback: CoordinatorOptions['fallback']
@@ -589,6 +589,11 @@ export function useProcessingCoordinator({
           operations.current.get(operation.logicalIdentity) === operation &&
           operation.execution === execution &&
           !execution.controller.signal.aborted &&
+          authorizedForProcessingOperation(
+            operationAuthorizationKind(operation),
+            currentAuthorization,
+            fallbackRef.current
+          ) &&
           !currentAuthorization?.isConfirmedAccessLoss &&
           (!currentAuthorization ||
             (currentAuthorization.scopeReady &&
@@ -955,7 +960,7 @@ export function useProcessingCoordinator({
       const replayPermitted = Boolean(
         operation.execution === null &&
         snapshot &&
-        authorizedForOperation(
+        authorizedForProcessingOperation(
           operationAuthorizationKind(operation),
           authorization,
           fallback

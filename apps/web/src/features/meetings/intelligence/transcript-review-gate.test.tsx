@@ -227,6 +227,39 @@ describe('transcript review gate lifecycle', () => {
     )
   })
 
+  it('protects an unresolved review request from browser unload', async () => {
+    vi.spyOn(coreApi, 'post').mockRejectedValue(
+      new CoreApiError({
+        message: 'The acknowledgement outcome is uncertain.',
+        code: 'ACK_UNCERTAIN',
+        kind: 'network',
+        recoveryOutcome: 'uncertain',
+      })
+    )
+    const screen = await render(
+      <TranscriptReviewGateProvider
+        meetingId={meetingId}
+        fallbackCanManageReview
+      >
+        <ReviewGateProbe />
+      </TranscriptReviewGateProvider>
+    )
+
+    await expect
+      .element(screen.getByTestId('digest-status'))
+      .toHaveTextContent('ready')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Acknowledge', exact: true })
+    )
+    await expect
+      .element(screen.getByTestId('ack-status'))
+      .toHaveTextContent('uncertain')
+
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+  })
+
   it('invalidates the receipt when the observed transcript proof changes', async () => {
     vi.spyOn(coreApi, 'post').mockResolvedValue(receipt)
     const screen = await render(

@@ -321,15 +321,28 @@ export function MeetingSessionProvider({
   )
 
   useEffect(() => {
-    if (!hasUnsavedResources) return
+    const accessLost = Boolean(
+      authorization?.isConfirmedAccessLoss ||
+      authorization?.status === 'confirmed-authentication-loss' ||
+      authorization?.status === 'confirmed-authorization-denial'
+    )
+    if ((!hasUnsavedResources && !hasUnsavedTranscriptReview) || accessLost) {
+      return
+    }
     const preventDiscard = (event: BeforeUnloadEvent) => {
       event.preventDefault()
-      event.returnValue =
-        'A recording or local media has not been submitted. Leave anyway?'
+      event.returnValue = hasUnsavedTranscriptReview
+        ? 'Meeting review work has not been saved. Leave anyway?'
+        : 'A recording or local media has not been submitted. Leave anyway?'
     }
     window.addEventListener('beforeunload', preventDiscard)
     return () => window.removeEventListener('beforeunload', preventDiscard)
-  }, [hasUnsavedResources])
+  }, [
+    authorization?.isConfirmedAccessLoss,
+    authorization?.status,
+    hasUnsavedResources,
+    hasUnsavedTranscriptReview,
+  ])
 
   const selectRemoteSource = useCallback(
     (sourceMediaId: string) =>
