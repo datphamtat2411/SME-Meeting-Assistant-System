@@ -616,10 +616,7 @@ void main() {
           admitProcessing: false,
         );
         final operation = first.uploadOperation!;
-        expect(
-          operation.checkpoint,
-          UploadOperationCheckpoint.intentConfirmed,
-        );
+        expect(operation.checkpoint, UploadOperationCheckpoint.intentConfirmed);
         expect(operation.attemptOutcome, OperationAttemptOutcome.uncertain);
         expect(operation.recoveryRequired, isTrue);
         expect(intentRequests, 1);

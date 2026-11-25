@@ -275,7 +275,10 @@ void main() {
         () =>
             fixture.controller.recording.state.lifecycle ==
                 RecordingLifecycleState.failed &&
-            find.text('Không thể hoàn tất thao tác').evaluate().isNotEmpty,
+            find
+                .text('Không thể hoàn tất thao tác', skipOffstage: false)
+                .evaluate()
+                .isNotEmpty,
         reason: 'the cancelled import to settle and reload the workspace',
         maxPumps: 400,
       );
