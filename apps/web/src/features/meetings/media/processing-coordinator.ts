@@ -257,11 +257,9 @@ function summaryObservationQuery(
 function latestStageAttempt(job: ProcessingJob, stageCode: string) {
   return job.stageRuns
     .filter((stage) => stage.stageCode === stageCode)
-    .reduce<ProcessingJob['stageRuns'][number] | undefined>(
-      (latest, stage) =>
-        !latest || stage.attemptNumber > latest.attemptNumber ? stage : latest,
-      undefined
-    )
+    .reduce<
+      ProcessingJob['stageRuns'][number] | undefined
+    >((latest, stage) => (!latest || stage.attemptNumber > latest.attemptNumber ? stage : latest), undefined)
 }
 
 function operationAuthorizationKind(
@@ -1488,10 +1486,10 @@ export function useProcessingCoordinator({
   )
   const summaryObservationRequired = Boolean(
     summaryJobId &&
-      summaryOperationInScope &&
-      summaryOperation?.status !== 'retired' &&
-      !summaryOperation?.execution &&
-      (jobs.isError || !collectionSummaryJob)
+    summaryOperationInScope &&
+    summaryOperation?.status !== 'retired' &&
+    !summaryOperation?.execution &&
+    (jobs.isError || !collectionSummaryJob)
   )
   // Collection observation can be incomplete or fail independently. The
   // admitted job remains authoritative and has its own protected read query.
@@ -1574,7 +1572,11 @@ export function useProcessingCoordinator({
       return
     }
     await refetchSummaryObservation({ cancelRefetch: false })
-  }, [refetchSummaryObservation, summaryObservationRequired, summaryOperationId])
+  }, [
+    refetchSummaryObservation,
+    summaryObservationRequired,
+    summaryOperationId,
+  ])
   const summaryRegenerationJob =
     summaryOperationInScope && summaryOperation?.jobId
       ? summaryOperation.status === 'retired' || summaryObservationRequired
