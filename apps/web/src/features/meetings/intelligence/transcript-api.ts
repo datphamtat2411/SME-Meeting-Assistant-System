@@ -97,18 +97,125 @@ export function transcriptQuery(meetingId: string) {
   })
 }
 
+export async function fetchTranscriptReview(
+  meetingId: string,
+  signal?: AbortSignal
+): Promise<TranscriptReview> {
+  const response = await coreApi.getWithMetaAndEtag<unknown>(
+    route(meetingId) + '/transcript',
+    { signal }
+  )
+  const transcript = transcriptSchema.parse(response.data)
+  if (transcript.meetingId !== meetingId) {
+    throw new CoreApiError({
+      message: 'Core returned a transcript for another meeting.',
+      code: 'MALFORMED_RESPONSE',
+      kind: 'malformed',
+    })
+  }
+  return { transcript, etag: requiredEtag(response.etag) }
+}
+
 export function transcriptReviewQuery(meetingId: string) {
   return queryOptions({
     queryKey: ['transcript', meetingId, 'review'],
-    queryFn: async ({ signal }): Promise<TranscriptReview> => {
-      const response = await coreApi.getWithMetaAndEtag<unknown>(
-        route(meetingId) + '/transcript',
-        { signal }
+    queryFn: ({ signal }) => fetchTranscriptReview(meetingId, signal),
+    retry: false,
+  })
+}
+
+export function sameTranscriptEvidence(
+  left: TranscriptReview,
+  right: TranscriptReview
+): boolean {
+  const a = left.transcript
+  const b = right.transcript
+  return (
+    a.meetingId === b.meetingId &&
+    a.id === b.id &&
+    a.sourceMediaId === b.sourceMediaId &&
+    a.processingJobId === b.processingJobId &&
+    a.versionNumber === b.versionNumber &&
+    a.contentRevision === b.contentRevision &&
+    left.etag === right.etag
+  )
+}
+
+// Supplementary endpoints do not carry a transcript identity. Bracket their
+// read with canonical evidence checks; do not treat the result as atomic.
+async function readBoundEvidence<T>(
+  meetingId: string,
+  snapshot: TranscriptReview,
+  signal: AbortSignal,
+  read: () => Promise<T>
+): Promise<T> {
+  const check = async () => {
+    const current = await fetchTranscriptReview(meetingId, signal)
+    if (!sameTranscriptEvidence(snapshot, current)) {
+      throw new CoreApiError({
+        message: 'Transcript evidence changed. Reload the current snapshot.',
+        code: 'TRANSCRIPT_EVIDENCE_CHANGED',
+        kind: 'malformed',
+      })
+    }
+  }
+  await check()
+  const data = await read()
+  await check()
+  return data
+}
+
+export function reviewCoverageQuery(
+  meetingId: string,
+  snapshot: TranscriptReview | undefined
+) {
+  return queryOptions({
+    queryKey: [
+      'transcript',
+      meetingId,
+      'coverage',
+      snapshot?.transcript.id,
+      snapshot?.transcript.contentRevision,
+      snapshot?.etag,
+    ],
+    enabled: Boolean(snapshot),
+    queryFn: ({ signal }) => {
+      if (!snapshot) throw new Error('A transcript snapshot is required.')
+      return readBoundEvidence(meetingId, snapshot, signal, async () =>
+        coverageSchema.array().parse(
+          await coreApi.get<unknown>(route(meetingId) + '/transcript/coverage', {
+            signal,
+          })
+        )
       )
-      return {
-        transcript: transcriptSchema.parse(response.data),
-        etag: requiredEtag(response.etag),
-      }
+    },
+    retry: false,
+  })
+}
+
+export function reviewSpeakersQuery(
+  meetingId: string,
+  snapshot: TranscriptReview | undefined
+) {
+  return queryOptions({
+    queryKey: [
+      'transcript',
+      meetingId,
+      'speakers',
+      snapshot?.transcript.id,
+      snapshot?.transcript.contentRevision,
+      snapshot?.etag,
+    ],
+    enabled: Boolean(snapshot),
+    queryFn: ({ signal }) => {
+      if (!snapshot) throw new Error('A transcript snapshot is required.')
+      return readBoundEvidence(meetingId, snapshot, signal, async () =>
+        speakerSchema.array().parse(
+          await coreApi.get<unknown>(route(meetingId) + '/speaker-clusters', {
+            signal,
+          })
+        )
+      )
     },
     retry: false,
   })
@@ -143,7 +250,7 @@ export function speakerClustersQuery(meetingId: string) {
 }
 export async function correctTranscriptSegment(
   meetingId: string,
-  segment: Transcript['segments'][number],
+  segment: Pick<Transcript['segments'][number], 'id' | 'version'>,
   text: string,
   reason: string,
   signal?: AbortSignal

@@ -78,6 +78,7 @@ export type PlaybackState = {
   pendingSeek: {
     sourceMediaId: string
     positionMs: number
+    ownerKey?: string
   } | null
   error: string | null
 }
@@ -105,6 +106,8 @@ export type MeetingSessionContextValue = {
   processing: ProcessingCoordinatorValue
   selectedProcessingJobId: string | null
   hasUnsavedResources: boolean
+  hasUnsavedTranscriptReview: boolean
+  setTranscriptReviewDirty: (dirty: boolean) => void
   updateFallbackCapabilities: (
     capabilities: Partial<FallbackCapabilities>
   ) => void
@@ -125,7 +128,12 @@ export type MeetingSessionContextValue = {
   play: () => Promise<void>
   pause: () => void
   seek: (positionMs: number) => void
-  seekToSource: (sourceMediaId: string, positionMs: number) => Promise<void>
+  seekToSource: (
+    sourceMediaId: string,
+    positionMs: number,
+    ownerKey?: string
+  ) => Promise<void>
+  cancelPendingSeek: (ownerKey: string) => void
   setPlaybackRate: (rate: number) => void
   stopPlayback: () => void
   selectProcessingJob: (jobId: string | null) => void

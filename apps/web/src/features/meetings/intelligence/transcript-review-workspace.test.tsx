@@ -43,6 +43,8 @@ const sessionMocks = vi.hoisted(() => ({
     },
     playback: { kind: 'idle' },
     seekToSource: vi.fn(),
+    cancelPendingSeek: vi.fn(),
+    setTranscriptReviewDirty: vi.fn(),
   },
 }))
 
@@ -185,7 +187,8 @@ describe('TranscriptReviewWorkspace', () => {
     )
     expect(sessionMocks.session.seekToSource).toHaveBeenCalledWith(
       sourceMediaId,
-      2000
+      2000,
+      expect.any(String)
     )
   })
 
@@ -200,7 +203,7 @@ describe('TranscriptReviewWorkspace', () => {
     vi.spyOn(coreApi, 'getWithMetaAndEtag').mockImplementation(async () => ({
       data: currentTranscript,
       meta: {},
-      etag: '"t-transcript-8"',
+      etag: `"t-transcript-${currentTranscript.contentRevision}"`,
     }))
     const patch = vi.spyOn(coreApi, 'patch').mockImplementation(async () => {
       currentTranscript = {
@@ -257,7 +260,10 @@ describe('TranscriptReviewWorkspace', () => {
     expect(patch).toHaveBeenCalledWith(
       `/meetings/${meetingId}/transcript/segments/${firstSegmentId}`,
       { text: 'Bản chỉnh sửa của người dùng', reason: null },
-      { headers: { 'If-Match': `"s-${firstSegmentId}-3"` } }
+      {
+        headers: { 'If-Match': `"s-${firstSegmentId}-3"` },
+        signal: expect.any(AbortSignal),
+      }
     )
   })
 
@@ -269,32 +275,71 @@ describe('TranscriptReviewWorkspace', () => {
       organizationalUnitName: null,
     }
     let currentSpeakers = speakers
+    let currentTranscript = initialTranscript
     vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
       if (url.endsWith('/transcript')) return initialTranscript
       if (url.endsWith('/transcript/coverage')) return coverage
       if (url.endsWith('/speaker-clusters')) return currentSpeakers
       throw new Error(`Unexpected GET ${url}`)
     })
-    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
-      data: initialTranscript,
-      meta: {},
-      etag: '"t-transcript-8"',
-    })
-    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue({
-      data: [candidate],
-      meta: {
-        pagination: {
-          page: 0,
-          size: 20,
-          totalElements: 1,
-          totalPages: 1,
-          hasNext: false,
-          hasPrevious: false,
-        },
-      },
-    })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockImplementation(
+      async (url) => ({
+        data: url.endsWith('/transcript')
+          ? currentTranscript
+          : {
+              id: meetingId,
+              title: 'Meeting',
+              description: null,
+              organizerUserId: candidate.id,
+              roomId: null,
+              scheduledStartAt: null,
+              scheduledEndAt: null,
+              status: 'ENDED',
+              startedAt: null,
+              endedAt: null,
+              cancelledAt: null,
+              cancellationReason: null,
+              createdByUserId: candidate.id,
+              createdAt: '2026-11-25T09:00:00Z',
+              updatedAt: '2026-11-25T09:00:00Z',
+            },
+        meta: {},
+        etag: `"t-transcript-${currentTranscript.contentRevision}"`,
+      })
+    )
+    const participants = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockResolvedValue({
+        data: [
+          {
+            id: 'participant-1',
+            meetingId,
+            userId: candidate.id,
+            addedByUserId: null,
+            addedAt: '2026-11-25T09:00:00Z',
+            removedAt: null,
+            removedByUserId: null,
+            displayName: candidate.displayName,
+          },
+          {
+            id: 'removed-participant',
+            meetingId,
+            userId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            addedByUserId: null,
+            addedAt: '2026-11-25T09:00:00Z',
+            removedAt: '2026-11-25T10:00:00Z',
+            removedByUserId: null,
+            displayName: 'Nguyễn Removed',
+          },
+        ],
+        meta: {},
+      })
     const patch = vi.spyOn(coreApi, 'patch').mockImplementation(async (url) => {
       if (url.endsWith(`/speaker-clusters/${speakerId}`)) {
+        currentTranscript = {
+          ...currentTranscript,
+          contentRevision: currentTranscript.contentRevision + 1,
+        }
         currentSpeakers = [
           {
             ...speakers[0],
@@ -335,28 +380,101 @@ describe('TranscriptReviewWorkspace', () => {
     await expect
       .element(screen.getByRole('button', { name: /Nguyễn Văn A/ }))
       .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: /Nguyễn Removed/ }))
+      .not.toBeInTheDocument()
+    expect(participants).toHaveBeenCalledWith(
+      `/meetings/${meetingId}/participants`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
     await userEvent.click(screen.getByRole('button', { name: /Nguyễn Văn A/ }))
     await expect
       .element(screen.getByRole('button', { name: 'Unmap' }))
       .toBeInTheDocument()
 
+    await expect
+      .element(screen.getByRole('button', { name: 'Unmap' }))
+      .toBeEnabled()
     await userEvent.click(screen.getByRole('button', { name: 'Unmap' }))
     await expect
       .element(screen.getByRole('button', { name: 'Map' }))
       .toBeInTheDocument()
 
-    expect(patch).toHaveBeenCalledTimes(2)
+    await expect.poll(() => patch.mock.calls.length).toBe(2)
     expect(patch).toHaveBeenNthCalledWith(
       1,
       `/meetings/${meetingId}/speaker-clusters/${speakerId}`,
       { userId: candidate.id },
-      { headers: { 'If-Match': '"t-transcript-8"' } }
+      {
+        headers: { 'If-Match': '"t-transcript-8"' },
+        signal: expect.any(AbortSignal),
+      }
     )
     expect(patch).toHaveBeenNthCalledWith(
       2,
       `/meetings/${meetingId}/speaker-clusters/${speakerId}`,
       { userId: null },
-      { headers: { 'If-Match': '"t-transcript-8"' } }
+      {
+        headers: { 'If-Match': '"t-transcript-9"' },
+        signal: expect.any(AbortSignal),
+      }
     )
+  })
+
+  it('does not overwrite a segment refreshed while a draft is open', async () => {
+    const client = createQueryClient()
+    let current = initialTranscript
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url.endsWith('/transcript/coverage')) return coverage
+      if (url.endsWith('/speaker-clusters')) return speakers
+      throw new Error(`Unexpected GET ${url}`)
+    })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockImplementation(async () => ({
+      data: current,
+      meta: {},
+      etag: `"t-transcript-${current.contentRevision}"`,
+    }))
+    const patch = vi.spyOn(coreApi, 'patch').mockResolvedValue({})
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <TranscriptReviewWorkspace
+          meetingId={meetingId}
+          canReadMeetingContent
+          canCorrectTranscript
+          canMapSpeakers={false}
+          canReadMedia
+        />
+      </QueryClientProvider>
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Correct' }).first()
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Corrected text' }),
+      'My unsaved correction'
+    )
+    current = {
+      ...current,
+      contentRevision: 9,
+      segments: current.segments.map((segment) =>
+        segment.id === firstSegmentId
+          ? { ...segment, text: 'Concurrent correction', version: 4 }
+          : segment
+      ),
+    }
+    await client.refetchQueries({
+      queryKey: ['transcript', meetingId, 'review'],
+      exact: true,
+    })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save correction' })
+    )
+    await expect
+      .element(screen.getByText(/changed from version 3/i))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Corrected text' }))
+      .toHaveValue('My unsaved correction')
+    expect(patch).not.toHaveBeenCalled()
   })
 })

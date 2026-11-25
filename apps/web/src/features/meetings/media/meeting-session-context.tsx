@@ -77,6 +77,7 @@ export function MeetingSessionProvider({
   const authorizationRef = useRef<MeetingAuthorizationContextValue | null>(
     authorization
   )
+  const [hasUnsavedTranscriptReview, setTranscriptReviewDirty] = useState(false)
   const [fallbackOverrides, setFallbackOverrides] = useState<
     Partial<FallbackCapabilities>
   >({})
@@ -219,6 +220,7 @@ export function MeetingSessionProvider({
     pause,
     seek,
     seekToSource: seekRemoteToSource,
+    cancelPendingSeek,
     setPlaybackRate,
     stopPlayback,
     stopLocalArtifact,
@@ -335,11 +337,12 @@ export function MeetingSessionProvider({
     [processing.media.data, selectRemoteMedia]
   )
   const seekToSource = useCallback(
-    (sourceMediaId: string, positionMs: number) =>
+    (sourceMediaId: string, positionMs: number, ownerKey?: string) =>
       seekRemoteToSource(
         sourceMediaId,
         positionMs,
-        processing.media.data ?? []
+        processing.media.data ?? [],
+        ownerKey
       ),
     [processing.media.data, seekRemoteToSource]
   )
@@ -355,6 +358,8 @@ export function MeetingSessionProvider({
       processing,
       selectedProcessingJobId: processing.selectedJobId,
       hasUnsavedResources,
+      hasUnsavedTranscriptReview,
+      setTranscriptReviewDirty,
       updateFallbackCapabilities,
       startRecording,
       stopRecording,
@@ -374,14 +379,17 @@ export function MeetingSessionProvider({
       pause,
       seek,
       seekToSource,
+      cancelPendingSeek,
       setPlaybackRate,
       stopPlayback,
       selectProcessingJob: processing.selectProcessingJob,
     }),
     [
       authorization,
+      cancelPendingSeek,
       discardRecording,
       hasUnsavedResources,
+      hasUnsavedTranscriptReview,
       importedMedia,
       pause,
       play,

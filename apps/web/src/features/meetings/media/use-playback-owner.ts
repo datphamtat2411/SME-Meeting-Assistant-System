@@ -32,8 +32,10 @@ export type PlaybackOwner = {
   seekToSource: (
     sourceMediaId: string,
     positionMs: number,
-    media: MeetingMedia[]
+    media: MeetingMedia[],
+    ownerKey?: string
   ) => Promise<void>
+  cancelPendingSeek: (ownerKey: string) => void
   setPlaybackRate: (rate: number) => void
   stopPlayback: () => void
   stopLocalArtifact: (artifactId: string) => void
@@ -89,6 +91,7 @@ export function usePlaybackOwner({
   const pendingSeek = useRef<{
     sourceMediaId: string
     positionMs: number
+    ownerKey?: string
   } | null>(null)
   const audioElement = useRef<HTMLAudioElement>(null)
   const audioSourceOwner = useRef<{
@@ -198,7 +201,7 @@ export function usePlaybackOwner({
   )
 
   const playRemoteMedia = useCallback(
-    async (media: MeetingMedia) => {
+    async (media: MeetingMedia, preservePendingSeek = false) => {
       const currentAuthorization = authorizationRef.current
       if (
         media.status !== 'AVAILABLE' ||
@@ -218,7 +221,7 @@ export function usePlaybackOwner({
       const sourceGeneration = ++playbackSourceGeneration.current
       const actorId = currentAuthorization?.identity?.userId ?? null
       const requestedSeek =
-        pendingSeek.current?.sourceMediaId === media.id
+        preservePendingSeek && pendingSeek.current?.sourceMediaId === media.id
           ? pendingSeek.current
           : null
       if (!requestedSeek) pendingSeek.current = null
@@ -250,7 +253,7 @@ export function usePlaybackOwner({
           !controller.signal.aborted &&
           playbackGeneration.current === generation &&
           playbackSourceGeneration.current === sourceGeneration &&
-          playbackRef.current.sourceMediaId === media.id &&
+          playbackRequest.current === controller &&
           canReadMedia() &&
           (!current ||
             (current.meetingId === meetingId &&
@@ -265,6 +268,7 @@ export function usePlaybackOwner({
           media.id,
           { signal: controller.signal }
         )
+        if (!isCurrent()) return
         const blob = await mediaApi.fetchMediaCapability(capability.url, {
           signal: controller.signal,
         })
@@ -325,6 +329,7 @@ export function usePlaybackOwner({
       ) {
         return
       }
+      pendingSeek.current = null
       playbackRequest.current?.abort()
       playbackRequest.current = null
       playbackGeneration.current += 1
@@ -446,18 +451,32 @@ export function usePlaybackOwner({
     async (
       sourceMediaId: string,
       positionMs: number,
-      media: MeetingMedia[]
+      media: MeetingMedia[],
+      ownerKey?: string
     ) => {
       if (!Number.isFinite(positionMs) || positionMs < 0) return
+      if (!canReadMedia()) return
+      pendingSeek.current = {
+        sourceMediaId,
+        positionMs,
+        ...(ownerKey ? { ownerKey } : {}),
+      }
+      setPlayback((current) => ({
+        ...current,
+        pendingSeek: pendingSeek.current,
+      }))
       const current = playbackRef.current
       const owner = audioSourceOwner.current
       if (
         current.kind === 'remote' &&
         current.sourceMediaId === sourceMediaId &&
         owner &&
+        owner.url === current.objectUrl &&
         isOwnerAuthorized(owner)
       ) {
-        seek(positionMs)
+        if (audioElement.current && audioElement.current.readyState >= 1) {
+          seek(positionMs)
+        }
         return
       }
 
@@ -467,20 +486,21 @@ export function usePlaybackOwner({
           item.meetingId === meetingId &&
           item.status === 'AVAILABLE'
       )
-      if (!canReadMedia()) return
-
-      pendingSeek.current = {
-        sourceMediaId,
-        positionMs: Math.max(0, positionMs),
+      if (
+        source &&
+        !(current.sourceMediaId === sourceMediaId && current.isLoading)
+      ) {
+        await playRemoteMedia(source, true)
       }
-      setPlayback((currentPlayback) => ({
-        ...currentPlayback,
-        pendingSeek: pendingSeek.current,
-      }))
-      if (source) await playRemoteMedia(source)
     },
     [canReadMedia, isOwnerAuthorized, meetingId, playRemoteMedia, seek]
   )
+
+  const cancelPendingSeek = useCallback((ownerKey: string) => {
+    if (pendingSeek.current?.ownerKey !== ownerKey) return
+    pendingSeek.current = null
+    setPlayback((current) => ({ ...current, pendingSeek: null }))
+  }, [])
 
   const setPlaybackRate = useCallback(
     (rate: number) => {
@@ -528,11 +548,11 @@ export function usePlaybackOwner({
     if (
       current.kind === 'remote' &&
       current.sourceMediaId === pending.sourceMediaId &&
-      audioSourceOwner.current
+      (audioSourceOwner.current || current.isLoading)
     ) {
       return
     }
-    void playRemoteMedia(source)
+    void playRemoteMedia(source, true)
   }, [canReadMedia, media, meetingId, playRemoteMedia])
 
   useEffect(() => {
@@ -577,6 +597,7 @@ export function usePlaybackOwner({
       const pending = pendingSeek.current
       const owner = audioSourceOwner.current
       if (
+        audio.readyState < 1 ||
         !pending ||
         !owner ||
         owner.kind !== 'remote' ||
@@ -686,6 +707,7 @@ export function usePlaybackOwner({
     pause,
     seek,
     seekToSource,
+    cancelPendingSeek,
     setPlaybackRate,
     stopPlayback,
     stopLocalArtifact,

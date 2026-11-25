@@ -65,9 +65,12 @@ function MeetingRoute() {
 function MeetingNavigationGuard() {
   const session = useMeetingSession()
   useBlocker({
-    enableBeforeUnload: () => session.hasUnsavedResources,
+    enableBeforeUnload: () =>
+      session.hasUnsavedResources || session.hasUnsavedTranscriptReview,
     shouldBlockFn: ({ next }) => {
-      if (!session.hasUnsavedResources) return false
+      if (!session.hasUnsavedResources && !session.hasUnsavedTranscriptReview) {
+        return false
+      }
       const nextMeetingId =
         typeof next.params === 'object' &&
         next.params !== null &&
@@ -75,7 +78,6 @@ function MeetingNavigationGuard() {
         typeof next.params.meetingId === 'string'
           ? next.params.meetingId
           : undefined
-      if (nextMeetingId === session.meetingId) return false
       if (
         session.authorization?.isConfirmedAccessLoss ||
         session.authorization?.status === 'confirmed-authentication-loss' ||
@@ -83,6 +85,24 @@ function MeetingNavigationGuard() {
       ) {
         return false
       }
+      const sameMeeting = nextMeetingId === session.meetingId
+      const remainsInTranscript =
+        sameMeeting &&
+        next.routeId === '/_authenticated/meetings/$meetingId' &&
+        typeof next.search === 'object' &&
+        next.search !== null &&
+        'section' in next.search &&
+        next.search.section === 'transcript'
+      if (
+        session.hasUnsavedTranscriptReview &&
+        !remainsInTranscript &&
+        session.authorization?.capabilities.authorizationResolution !== 'denied'
+      ) {
+        return !window.confirm(
+          'Unsaved transcript review work may be lost. Leave anyway?'
+        )
+      }
+      if (sameMeeting || !session.hasUnsavedResources) return false
       return !window.confirm(
         'Active or unsaved meeting audio will be lost if you leave this meeting. Leave anyway?'
       )
