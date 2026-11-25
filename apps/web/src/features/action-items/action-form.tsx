@@ -343,6 +343,11 @@ export function ActionForm({
       }
     }
     submitting.current = true
+    if (!item) {
+      // Publish before dispatch, not after the mutation observer re-renders.
+      setMeetingProtection?.('pending-creation')
+      onProtectionChange?.('pending-creation')
+    }
     mutation.mutate({
       owns,
       reviewed: item ? snapshot : null,

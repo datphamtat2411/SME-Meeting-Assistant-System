@@ -289,18 +289,18 @@ describe('exact processing job ownership', () => {
     client.clear()
   })
 
-  it.each([
-    { id: secondJobId },
-    { meetingId: mediaId },
-  ])('rejects a mismatched exact job response: %j', async (overrides) => {
-    const client = new QueryClient()
-    vi.spyOn(coreApi, 'get').mockResolvedValue(jobWith(overrides))
-    const options = processingJobQuery(jobId, meetingId)
+  it.each([{ id: secondJobId }, { meetingId: mediaId }])(
+    'rejects a mismatched exact job response: %j',
+    async (overrides) => {
+      const client = new QueryClient()
+      vi.spyOn(coreApi, 'get').mockResolvedValue(jobWith(overrides))
+      const options = processingJobQuery(jobId, meetingId)
 
-    await expect(client.fetchQuery(options)).rejects.toMatchObject({
-      code: 'MALFORMED_RESPONSE',
-    })
-    expect(client.getQueryData(options.queryKey)).toBeUndefined()
-    client.clear()
-  })
+      await expect(client.fetchQuery(options)).rejects.toMatchObject({
+        code: 'MALFORMED_RESPONSE',
+      })
+      expect(client.getQueryData(options.queryKey)).toBeUndefined()
+      client.clear()
+    }
+  )
 })

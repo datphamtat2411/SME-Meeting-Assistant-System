@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useBlocker } from '@tanstack/react-router'
 import { ListChecks, Plus, Search } from 'lucide-react'
@@ -91,7 +91,10 @@ export function ActionItemsPage() {
   const [selected, setSelected] = useState<ActionItem | null>(null)
   const managementCapability = useQuery(managementCapabilityQuery())
   const queryClient = useQueryClient()
-  const [protection, setProtection] = useState<ActionDraftProtection>('none')
+  const protectionRef = useRef<ActionDraftProtection>('none')
+  const setProtection = useCallback((protection: ActionDraftProtection) => {
+    protectionRef.current = protection
+  }, [])
   function hasConfirmedSessionLoss() {
     const identity = queryClient.getQueryState(currentUserQueryKey)
     return (
@@ -102,9 +105,10 @@ export function ActionItemsPage() {
   }
   useBlocker({
     enableBeforeUnload: () =>
-      protection !== 'none' && !hasConfirmedSessionLoss(),
+      protectionRef.current !== 'none' && !hasConfirmedSessionLoss(),
     shouldBlockFn: () => {
       if (hasConfirmedSessionLoss()) return false
+      const protection = protectionRef.current
       if (blockUnresolvedActionCreation(protection)) return true
       return (
         protection === 'dirty' &&

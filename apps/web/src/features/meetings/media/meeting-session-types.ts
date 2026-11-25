@@ -111,7 +111,7 @@ export type MeetingSessionContextValue = {
   hasUnsavedResources: boolean
   hasUnsavedTranscriptReview: boolean
   hasUnsavedIntelligence: boolean
-  actionDraftProtection: ActionDraftProtection
+  getActionDraftProtection: () => ActionDraftProtection
   setActionDraftProtection: (protection: ActionDraftProtection) => void
   setIntelligenceDraftDirty: (
     feature: 'summary' | 'decisions',

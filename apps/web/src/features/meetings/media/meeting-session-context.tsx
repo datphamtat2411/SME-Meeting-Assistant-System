@@ -84,8 +84,20 @@ export function MeetingSessionProvider({
     summary: false,
     decisions: false,
   })
-  const [actionDraftProtection, setActionDraftProtection] =
+  const [actionDraftProtection, setActionDraftProtectionState] =
     useState<ActionDraftProtection>('none')
+  const actionDraftProtectionRef = useRef<ActionDraftProtection>('none')
+  const setActionDraftProtection = useCallback(
+    (protection: ActionDraftProtection) => {
+      actionDraftProtectionRef.current = protection
+      setActionDraftProtectionState(protection)
+    },
+    []
+  )
+  const getActionDraftProtection = useCallback(
+    () => actionDraftProtectionRef.current,
+    []
+  )
   const hasUnsavedIntelligence =
     intelligenceDrafts.summary ||
     intelligenceDrafts.decisions ||
@@ -417,7 +429,7 @@ export function MeetingSessionProvider({
       hasUnsavedTranscriptReview,
       setTranscriptReviewDirty,
       hasUnsavedIntelligence,
-      actionDraftProtection,
+      getActionDraftProtection,
       setActionDraftProtection,
       setIntelligenceDraftDirty,
       updateFallbackCapabilities,
@@ -451,7 +463,7 @@ export function MeetingSessionProvider({
       hasUnsavedResources,
       hasUnsavedTranscriptReview,
       hasUnsavedIntelligence,
-      actionDraftProtection,
+      getActionDraftProtection,
       setActionDraftProtection,
       setIntelligenceDraftDirty,
       importedMedia,

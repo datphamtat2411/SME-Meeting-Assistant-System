@@ -124,12 +124,14 @@ function MeetingNavigationGuard() {
       (session.hasUnsavedResources ||
         session.hasUnsavedTranscriptReview ||
         session.hasUnsavedIntelligence ||
+        session.getActionDraftProtection() !== 'none' ||
         gate.hasUnresolvedOperation),
     shouldBlockFn: ({ current, next }) => {
       if (
         !session.hasUnsavedResources &&
         !session.hasUnsavedTranscriptReview &&
         !session.hasUnsavedIntelligence &&
+        session.getActionDraftProtection() === 'none' &&
         !gate.hasUnresolvedOperation
       ) {
         return false
@@ -160,12 +162,11 @@ function MeetingNavigationGuard() {
         remainsInIntelligenceReview(currentSearch, next.search)
       const actionAccessDenied =
         session.authorization?.capabilities.authorizationResolution ===
-          'denied' &&
-        !session.authorization.capabilities.canReadActionItems
+          'denied' && !session.authorization.capabilities.canReadActionItems
       if (
         !remainsInIntelligence &&
         !actionAccessDenied &&
-        blockUnresolvedActionCreation(session.actionDraftProtection)
+        blockUnresolvedActionCreation(session.getActionDraftProtection())
       ) {
         return true
       }

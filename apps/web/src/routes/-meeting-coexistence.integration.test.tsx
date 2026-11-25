@@ -1,12 +1,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
+  createBrowserHistory,
   createMemoryHistory,
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
 import { routeTree } from '@/routeTree.gen'
 import { toast } from 'sonner'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi, resetCsrfToken } from '@/lib/core-api'
@@ -157,12 +158,15 @@ function installAuthorizedApi(review?: {
   return { detailReads, metadataReads, reads }
 }
 
-async function renderRoute(initialPath: string) {
+async function renderRoute(
+  initialPath: string,
+  history = createMemoryHistory({ initialEntries: [initialPath] })
+) {
   const queryClient = createQueryClient()
   const router = createRouter({
     routeTree,
     context: { queryClient },
-    history: createMemoryHistory({ initialEntries: [initialPath] }),
+    history,
   })
   const screen = await render(
     <QueryClientProvider client={queryClient}>
@@ -425,7 +429,10 @@ describe('generated meeting route coexistence', () => {
     const previousRead = api.metadataReads.getMockImplementation()!
     api.metadataReads.mockImplementation(async (...args) => {
       const [url] = args
-      if (url === '/action-items' || url === '/action-items/assignee-candidates') {
+      if (
+        url === '/action-items' ||
+        url === '/action-items/assignee-candidates'
+      ) {
         const candidates = url.endsWith('/assignee-candidates')
         return {
           data: candidates
@@ -464,7 +471,27 @@ describe('generated meeting route coexistence', () => {
       .mockRejectedValueOnce(timeout)
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const warning = vi.spyOn(toast, 'warning')
-    const { router, screen } = await renderRoute(`/meetings/${meetingA.id}`)
+    // Memory history does not run popstate blockers in @tanstack/history.
+    // Isolate native browser history from the Vitest runner's own history.
+    const frame = document.createElement('iframe')
+    frame.hidden = true
+    const loaded = new Promise<void>((resolve, reject) => {
+      frame.onload = () => resolve()
+      frame.onerror = () => reject(new Error('History fixture failed to load'))
+    })
+    frame.src = new URL(
+      '../test-fixtures/browser-history.html',
+      import.meta.url
+    ).href
+    document.body.append(frame)
+    onTestFinished(() => frame.remove())
+    await loaded
+    const browser = frame.contentWindow!
+    const initialPath = `/meetings/${meetingA.id}`
+    browser.history.replaceState(null, '', initialPath)
+    const history = createBrowserHistory({ window: browser })
+    onTestFinished(() => history.destroy())
+    const { router, screen } = await renderRoute(initialPath, history)
     await expect
       .element(screen.getByRole('tab', { name: 'Action Items' }))
       .toBeInTheDocument()
@@ -504,8 +531,20 @@ describe('generated meeting route coexistence', () => {
     await expect.poll(() => post.mock.calls.length).toBe(1)
     confirm.mockReturnValue(true)
 
-    router.history.back()
+    void leave()
     await expect.poll(() => warning.mock.calls.length).toBe(1)
+    expect(router.state.location.pathname).toBe(`/meetings/${meetingA.id}`)
+    await expect
+      .element(screen.getByRole('button', { name: 'Create official Action Item' }))
+      .toBeDisabled()
+
+    history.flush()
+    expect(history.canGoBack()).toBe(true)
+    router.history.back()
+    await expect.poll(() => warning.mock.calls.length).toBe(2)
+    await expect
+      .poll(() => browser.location.search)
+      .toContain('section=action-items')
     expect(router.state.location.search.section).toBe('action-items')
     expect(confirm).toHaveBeenCalledTimes(1)
 
@@ -514,7 +553,7 @@ describe('generated meeting route coexistence', () => {
       .element(screen.getByText('Creation intent unresolved'))
       .toBeInTheDocument()
     void leave()
-    await expect.poll(() => warning.mock.calls.length).toBe(2)
+    await expect.poll(() => warning.mock.calls.length).toBe(3)
     expect(router.state.location.pathname).toBe(`/meetings/${meetingA.id}`)
     expect(confirm).toHaveBeenCalledTimes(1)
 
