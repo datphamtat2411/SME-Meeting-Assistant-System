@@ -80,8 +80,10 @@ export function ActionCommands({
   const [review, setReview] = useState<Review | null>(null)
   const [pendingReview, setPendingReview] = useState<{
     owns: () => boolean
+    sourceItem: ActionItem
   } | null>(null)
-  const reviewPending = pendingReview?.owns() === true
+  const reviewPending =
+    pendingReview?.sourceItem === item && pendingReview.owns()
   const [conflict, setConflict] = useState<{
     latest: Review | null
     message: string
@@ -130,7 +132,10 @@ export function ActionCommands({
           latest: null,
           message: 'Loading the current Action Item…',
         })
-        setPendingReview({ owns: variables.owns })
+        setPendingReview({
+          owns: variables.owns,
+          sourceItem: variables.review.sourceItem,
+        })
         try {
           const latest = await actionDetail(
             variables.review.item.id,
@@ -180,7 +185,7 @@ export function ActionCommands({
       currentItem.current === sourceItem &&
       eligible(authoritativeItem.current, command)
     if (!owns()) return
-    setPendingReview({ owns })
+    setPendingReview({ owns, sourceItem })
     setConflict(null)
     try {
       const snapshot = await actionDetail(item.id, item.meetingId)

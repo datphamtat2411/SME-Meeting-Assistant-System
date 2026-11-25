@@ -1,5 +1,4 @@
 import {
-  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -69,7 +68,9 @@ export function ActionForm({
   const [meetingSearch, setMeetingSearch] = useState('')
   const [userSearch, setUserSearch] = useState('')
   const [snapshot, setSnapshot] = useState<
-    (ActionMutationResult & { owns: () => boolean }) | null
+    (ActionMutationResult & {
+      capture: ReturnType<typeof useActionOperationScope>
+    }) | null
   >(null)
   const [conflict, setConflict] = useState<{
     reviewed: ActionItem
@@ -88,7 +89,6 @@ export function ActionForm({
   )
   const intent = useRef<{ payload: ActionDraft; key: string } | null>(null)
   const submitting = useRef(false)
-  const initializedReview = useRef<string | null>(null)
   const operation = useRef(0)
   const isFixedMeeting = Boolean(item || meetingId)
   const setMeetingDirty = useOptionalMeetingSession()?.setIntelligenceDraftDirty
@@ -126,20 +126,19 @@ export function ActionForm({
       userSearch.trim().length >= 2,
   })
 
-  useEffect(() => {
-    if (
-      !detail.data ||
-      detail.isFetching ||
-      !detail.isFetchedAfterMount ||
-      detail.isError ||
-      !item ||
-      initializedReview.current === item.id
-    )
-      return
-    const owns = captureScope()
-    if (!owns()) return
-    initializedReview.current = item.id
-    setSnapshot({ ...detail.data, owns })
+  // Initialize the local draft once from the completed authoritative read.
+  // A background refetch must never replace a reviewed snapshot or its scope.
+  if (
+    open &&
+    item &&
+    !snapshot &&
+    detail.data &&
+    !detail.isFetching &&
+    detail.isFetchedAfterMount &&
+    !detail.isError &&
+    canEditCurrent
+  ) {
+    setSnapshot({ ...detail.data, capture: captureScope })
     setTitle(detail.data.item.title)
     setDetails(detail.data.item.details ?? '')
     setAssignee(detail.data.item.assigneeUserId ?? '')
@@ -147,14 +146,7 @@ export function ActionForm({
     setMeeting(detail.data.item.meetingId)
     setMeetingLabel(detail.data.item.meeting?.label ?? '')
     setDueDate(detail.data.item.dueDate ?? '')
-  }, [
-    detail.data,
-    detail.isFetching,
-    detail.isFetchedAfterMount,
-    detail.isError,
-    item,
-    captureScope,
-  ])
+  }
 
   type Submission = {
     owns: () => boolean
@@ -269,7 +261,7 @@ export function ActionForm({
   const editingAllowed = item
     ? snapshot?.item.capabilities.canEdit === true &&
       canEditCurrent &&
-      snapshot.owns()
+      snapshot.capture === captureScope
     : canManageActionItems
   const canClearAssignee =
     snapshot?.item.status === 'PROPOSED' && assignmentAllowed
@@ -308,8 +300,10 @@ export function ActionForm({
       (!item && !assignee)
     )
       return
-    const scope = item ? snapshot?.owns : captureScope()
-    if (!scope?.()) return
+    const capture = item ? snapshot?.capture : captureScope
+    if (!capture || capture !== captureScope) return
+    const scope = capture()
+    if (!scope()) return
     if (
       item &&
       snapshot &&
@@ -445,7 +439,12 @@ export function ActionForm({
                     !conflict.latest.capabilities.canEdit || !editingAllowed
                   }
                   onClick={() => {
-                    if (!snapshot?.owns() || !editingAllowed) return
+                    if (
+                      snapshot?.capture !== captureScope ||
+                      !editingAllowed ||
+                      !snapshot.capture()()
+                    )
+                      return
                     const latest = conflict.latest!
                     const next = rebaseActionDraft(
                       conflict.reviewed,
@@ -462,7 +461,7 @@ export function ActionForm({
                     }
                     setSnapshot({
                       ...conflict.latestResult!,
-                      owns: snapshot.owns,
+                      capture: snapshot.capture,
                     })
                     setTitle(next.title)
                     setDetails(next.details)
