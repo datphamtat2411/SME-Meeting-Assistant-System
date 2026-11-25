@@ -11,6 +11,7 @@ import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/main.dart';
 
 import 'support/http_test_support.dart';
+import 'support/widget_test_support.dart';
 
 const _testApiUri = 'https://api.example.test/api/v1';
 
@@ -57,7 +58,11 @@ void main() {
     await tester.pumpWidget(
       MeetingAssistantApp(dependencies: harness.dependencies),
     );
-    await identityRequested.future;
+    await pumpUntil(
+      tester,
+      () => identityRequested.isCompleted,
+      reason: 'the identity request to be dispatched',
+    );
     await tester.pump();
 
     expect(harness.api.sessionState.phase, AuthSessionPhase.verifyingIdentity);
@@ -68,7 +73,13 @@ void main() {
     identityResponse.complete(
       await jsonResponse(200, successEnvelope(_identity())),
     );
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.phase == AuthSessionPhase.authenticated &&
+          find.text('Tổng quan').evaluate().isNotEmpty,
+      reason: 'verified startup to reach the authenticated shell',
+    );
 
     expect(harness.api.sessionState.phase, AuthSessionPhase.authenticated);
     expect(find.text('Tổng quan'), findsOneWidget);
@@ -86,7 +97,14 @@ void main() {
       await tester.pumpWidget(
         MeetingAssistantApp(dependencies: harness.dependencies),
       );
-      await tester.pumpAndSettle();
+      await pumpUntil(
+        tester,
+        () =>
+            harness.api.sessionState.phase ==
+                AuthSessionPhase.unauthenticated &&
+            find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+        reason: 'startup to reach the login screen',
+      );
 
       expect(harness.api.sessionState.phase, AuthSessionPhase.unauthenticated);
       expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
@@ -106,7 +124,14 @@ void main() {
     await tester.pumpWidget(
       MeetingAssistantApp(dependencies: harness.dependencies),
     );
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.phase ==
+              AuthSessionPhase.recoverableFailure &&
+          find.text('Không thể tiếp tục phiên đăng nhập').evaluate().isNotEmpty,
+      reason: 'startup to show the recoverable session failure',
+    );
 
     expect(harness.api.sessionState.phase, AuthSessionPhase.recoverableFailure);
     expect(find.text('Không thể tiếp tục phiên đăng nhập'), findsOneWidget);
@@ -125,7 +150,13 @@ void main() {
     await tester.pumpWidget(
       MeetingAssistantApp(dependencies: harness.dependencies),
     );
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.canRetryIdentityVerification &&
+          find.text('Thử xác minh lại').evaluate().isNotEmpty,
+      reason: 'startup to show identity-verification recovery',
+    );
 
     expect(harness.api.sessionState.canRetryIdentityVerification, isTrue);
     expect(find.textContaining('Không thể xác minh danh tính'), findsOneWidget);
@@ -133,7 +164,13 @@ void main() {
     expect(find.text('Đăng nhập hệ thống'), findsNothing);
 
     await tester.tap(find.text('Thử xác minh lại'));
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.isAuthenticated &&
+          find.text('Tổng quan').evaluate().isNotEmpty,
+      reason: 'identity retry to reach the authenticated shell',
+    );
 
     expect(harness.api.sessionState.isAuthenticated, isTrue);
     expect(find.text('Tổng quan'), findsOneWidget);
@@ -156,14 +193,27 @@ void main() {
     await tester.pumpWidget(
       MeetingAssistantApp(dependencies: harness.dependencies),
     );
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'the login screen to render',
+    );
     await tester.enterText(
       find.byType(TextFormField).at(0),
       'user@example.test',
     );
     await tester.enterText(find.byType(TextFormField).at(1), 'wrong-password');
     await tester.tap(find.widgetWithText(FilledButton, 'Đăng nhập'));
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.phase == AuthSessionPhase.unauthenticated &&
+          find
+              .text('Email hoặc mật khẩu không chính xác.')
+              .evaluate()
+              .isNotEmpty,
+      reason: 'the rejected-login message to render',
+    );
 
     expect(harness.api.sessionState.phase, AuthSessionPhase.unauthenticated);
     expect(find.text('Email hoặc mật khẩu không chính xác.'), findsOneWidget);
@@ -183,7 +233,14 @@ void main() {
     await tester.pumpWidget(
       MeetingAssistantApp(dependencies: harness.dependencies),
     );
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.phase ==
+              AuthSessionPhase.reauthenticationRequired &&
+          find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'the invalidated session to require reauthentication',
+    );
 
     expect(
       harness.api.sessionState.phase,
@@ -205,7 +262,14 @@ void main() {
     await tester.pumpWidget(
       MeetingAssistantApp(dependencies: harness.dependencies),
     );
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.failure?.category ==
+              AuthFailureCategory.credentialStorage &&
+          find.byType(StartupFailureView).evaluate().isNotEmpty,
+      reason: 'the secure-storage failure view to render',
+    );
 
     expect(
       harness.api.sessionState.failure?.category,
@@ -238,7 +302,14 @@ void main() {
     await tester.pumpWidget(
       MeetingAssistantApp(dependencies: harness.dependencies),
     );
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.failure?.machineCode ==
+              'LOGOUT_RECOVERY_CLEANUP_FAILED' &&
+          find.text('Thử xóa phiên đã lưu lại').evaluate().isNotEmpty,
+      reason: 'the incomplete logout-recovery state to render',
+    );
 
     expect(
       harness.api.sessionState.failure?.machineCode,
@@ -266,7 +337,13 @@ void main() {
     );
 
     await tester.tap(find.text('Thử xóa phiên đã lưu lại'));
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.phase == AuthSessionPhase.unauthenticated &&
+          find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'logout recovery to return to the login screen',
+    );
 
     expect(harness.api.sessionState.phase, AuthSessionPhase.unauthenticated);
     expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
@@ -296,11 +373,24 @@ void main() {
     await tester.pumpWidget(
       MeetingAssistantApp(dependencies: harness.dependencies),
     );
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.isAuthenticated &&
+          find.text('Tổng quan').evaluate().isNotEmpty,
+      reason: 'startup restoration to reach the authenticated shell',
+    );
     expect(find.text('Tổng quan'), findsOneWidget);
 
-    final signOut = harness.api.signOut();
-    await logoutRequested.future;
+    late Future<AuthLogoutOutcome> signOut;
+    await tester.runAsync(() async {
+      signOut = harness.api.signOut();
+    });
+    await pumpUntil(
+      tester,
+      () => logoutRequested.isCompleted,
+      reason: 'the logout request to be dispatched',
+    );
     await tester.pump();
 
     expect(harness.api.sessionState.phase, AuthSessionPhase.signingOut);
@@ -309,8 +399,14 @@ void main() {
     expect(find.text('Đang đăng xuất...'), findsOneWidget);
 
     logoutResponse.complete(await jsonResponse(200, successEnvelope(null)));
-    await signOut;
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.phase == AuthSessionPhase.unauthenticated &&
+          find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'completed logout to return to the login screen',
+    );
+    await tester.runAsync(() => signOut);
 
     expect(harness.api.sessionState.phase, AuthSessionPhase.unauthenticated);
     expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
@@ -327,20 +423,39 @@ void main() {
     await tester.pumpWidget(
       MeetingAssistantApp(dependencies: harness.dependencies),
     );
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.isAuthenticated &&
+          find.text('Tổng quan').evaluate().isNotEmpty,
+      reason: 'startup restoration to reach the authenticated shell',
+    );
     expect(find.text('Tổng quan'), findsOneWidget);
 
-    await expectLater(
-      harness.api.signOut(),
-      throwsA(
-        isA<AuthSessionException>().having(
-          (error) => error.failure.category,
-          'category',
-          AuthFailureCategory.credentialStorage,
-        ),
-      ),
+    late Future<Object?> signOutResult;
+    await tester.runAsync(() async {
+      signOutResult = harness.api.signOut().then<Object?>(
+        (result) => result,
+        onError: (Object error, StackTrace stackTrace) => error,
+      );
+    });
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.failure?.category ==
+              AuthFailureCategory.credentialStorage &&
+          find
+              .text('Không thể xác nhận xóa phiên bảo mật')
+              .evaluate()
+              .isNotEmpty,
+      reason: 'the failed credential-deletion state to render',
     );
-    await tester.pumpAndSettle();
+    final signOutError = await tester.runAsync(() => signOutResult);
+    expect(signOutError, isA<AuthSessionException>());
+    expect(
+      (signOutError! as AuthSessionException).failure.category,
+      AuthFailureCategory.credentialStorage,
+    );
 
     expect(find.text('Tổng quan'), findsNothing);
     expect(find.text('Đăng nhập hệ thống'), findsNothing);
@@ -358,7 +473,13 @@ void main() {
     );
 
     await tester.tap(find.text('Thử xóa phiên đã lưu lại'));
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.phase == AuthSessionPhase.unauthenticated &&
+          find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'credential cleanup retry to return to the login screen',
+    );
 
     expect(harness.api.sessionState.phase, AuthSessionPhase.unauthenticated);
     expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
@@ -370,8 +491,18 @@ void main() {
       hasLength(1),
     );
 
-    await harness.api.signIn('other@example.test', 'password');
-    await tester.pumpAndSettle();
+    late Future<void> signIn;
+    await tester.runAsync(() async {
+      signIn = harness.api.signIn('other@example.test', 'password');
+    });
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.isAuthenticated &&
+          find.text('Tổng quan').evaluate().isNotEmpty,
+      reason: 'a successful sign-in to reach the authenticated shell',
+    );
+    await tester.runAsync(() => signIn);
     expect(find.text('Tổng quan'), findsOneWidget);
   });
 
@@ -384,12 +515,42 @@ void main() {
       await tester.pumpWidget(
         MeetingAssistantApp(dependencies: harness.dependencies),
       );
-      await tester.pumpAndSettle();
-      await harness.api.signIn('user@example.test', 'password');
-      await tester.pumpAndSettle();
+      await pumpUntil(
+        tester,
+        () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+        reason: 'the login screen to render',
+      );
+      late Future<void> signIn;
+      await tester.runAsync(() async {
+        signIn = harness.api.signIn('user@example.test', 'password');
+      });
+      await pumpUntil(
+        tester,
+        () =>
+            harness.api.sessionState.isAuthenticated &&
+            find.text('Tổng quan').evaluate().isNotEmpty,
+        reason: 'sign-in to reach the authenticated shell',
+      );
+      await tester.runAsync(() => signIn);
 
-      final outcome = await harness.api.signOut();
-      await tester.pumpAndSettle();
+      late Future<AuthLogoutOutcome> signOut;
+      await tester.runAsync(() async {
+        signOut = harness.api.signOut();
+      });
+      await pumpUntil(
+        tester,
+        () =>
+            harness.api.sessionState.failure?.category ==
+                AuthFailureCategory.logoutUnconfirmed &&
+            find
+                .text(
+                  'Thiết bị đã đăng xuất, nhưng máy chủ chưa xác nhận việc thu hồi phiên.',
+                )
+                .evaluate()
+                .isNotEmpty,
+        reason: 'the unconfirmed-logout message to render',
+      );
+      final outcome = await tester.runAsync(() => signOut);
 
       expect(outcome, AuthLogoutOutcome.remoteRevocationUnconfirmed);
       expect(
@@ -417,22 +578,55 @@ void main() {
     await tester.pumpWidget(
       MeetingAssistantApp(dependencies: harness.dependencies),
     );
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.isAuthenticated &&
+          find.text('Tổng quan').evaluate().isNotEmpty,
+      reason: 'startup restoration to reach the authenticated shell',
+    );
     tester
         .widget<NavigationRail>(find.byType(NavigationRail))
         .onDestinationSelected!(3);
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () =>
+          find.byType(NavigationRail).evaluate().isNotEmpty &&
+          tester
+                  .widget<NavigationRail>(find.byType(NavigationRail))
+                  .selectedIndex ==
+              3,
+      reason: 'the selected navigation destination to update',
+    );
     expect(
       tester.widget<NavigationRail>(find.byType(NavigationRail)).selectedIndex,
       3,
     );
 
-    await harness.api.signOut();
-    await tester.pumpAndSettle();
+    await tester.runAsync(() => harness.api.signOut());
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.phase == AuthSessionPhase.unauthenticated &&
+          find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'logout to return to the login screen',
+    );
     expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
 
-    await harness.api.signIn('user@example.test', 'password');
-    await tester.pumpAndSettle();
+    await tester.runAsync(
+      () => harness.api.signIn('user@example.test', 'password'),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.isAuthenticated &&
+          find.text('Tổng quan').evaluate().isNotEmpty &&
+          tester
+                  .widget<NavigationRail>(find.byType(NavigationRail))
+                  .selectedIndex ==
+              0,
+      reason: 'a fresh authenticated shell to render after sign-in',
+    );
 
     expect(find.text('Tổng quan'), findsOneWidget);
     expect(

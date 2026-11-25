@@ -132,6 +132,7 @@ jobs:
           flutter test \
             --reporter=github \
             --file-reporter=json:build/ci-evidence/flutter-test.json \
+            --timeout=2m \
             --coverage \
             --coverage-path=coverage/lcov.info
 

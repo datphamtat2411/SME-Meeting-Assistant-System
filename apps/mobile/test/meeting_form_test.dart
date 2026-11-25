@@ -5,6 +5,7 @@ import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_form.dart';
 
 import 'support/meeting_test_support.dart';
+import 'support/widget_test_support.dart';
 
 void main() {
   testWidgets('asks before dismissing a form with unsaved text', (
@@ -14,7 +15,7 @@ void main() {
       throw StateError('Unexpected request ${request.method} ${request.url}');
     });
     final api = createMeetingTestApi(client);
-    await signInMeetingTestApi(api);
+    await tester.runAsync(() => signInMeetingTestApi(api));
     final dependencies = AppDependencies(
       api: api,
       appearancePreferences: InMemoryAppearancePreferences(),
@@ -43,11 +44,19 @@ void main() {
       ),
     );
     await tester.tap(find.text('Open form'));
-    await tester.pumpAndSettle();
+    await pumpUntil(tester, () {
+      final save = find.widgetWithText(OutlinedButton, 'Lưu bản nháp');
+      return save.evaluate().isNotEmpty &&
+          tester.widget<OutlinedButton>(save).onPressed != null;
+    }, reason: 'the meeting form to become editable');
     await tester.enterText(find.byType(TextFormField).first, 'Unsaved title');
     await tester.pump();
     await tester.tap(find.byType(BackButton));
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () => find.text('Bỏ thay đổi chưa lưu?').evaluate().isNotEmpty,
+      reason: 'the unsaved-changes confirmation',
+    );
 
     expect(find.text('Bỏ thay đổi chưa lưu?'), findsOneWidget);
     expect(find.text('Tiếp tục ở lại'), findsOneWidget);
@@ -81,7 +90,7 @@ void main() {
         );
       });
       final api = createMeetingTestApi(client);
-      await signInMeetingTestApi(api);
+      await tester.runAsync(() => signInMeetingTestApi(api));
       final dependencies = AppDependencies(
         api: api,
         appearancePreferences: InMemoryAppearancePreferences(),
@@ -108,7 +117,11 @@ void main() {
         ),
       );
       await tester.tap(find.text('Open form'));
-      await tester.pumpAndSettle();
+      await pumpUntil(tester, () {
+        final save = find.widgetWithText(OutlinedButton, 'Lưu bản nháp');
+        return save.evaluate().isNotEmpty &&
+            tester.widget<OutlinedButton>(save).onPressed != null;
+      }, reason: 'the meeting form to become editable');
       await tester.enterText(
         find.byType(TextFormField).first,
         'Planning review',
@@ -117,7 +130,17 @@ void main() {
         find.widgetWithText(OutlinedButton, 'Lưu bản nháp'),
       );
       await tester.tap(find.widgetWithText(OutlinedButton, 'Lưu bản nháp'));
-      await tester.pumpAndSettle();
+      await pumpUntil(
+        tester,
+        () =>
+            find.byType(MeetingForm).evaluate().isEmpty &&
+            client.requests.any(
+              (request) =>
+                  request.method == 'POST' &&
+                  request.url.path.endsWith('/meetings'),
+            ),
+        reason: 'the meeting creation to finish and return to its caller',
+      );
 
       expect(
         client.requests.where(

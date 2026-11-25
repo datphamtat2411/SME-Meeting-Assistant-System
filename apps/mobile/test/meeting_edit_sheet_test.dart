@@ -7,6 +7,7 @@ import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_edit_sheet.dart';
 
 import 'support/meeting_test_support.dart';
+import 'support/widget_test_support.dart';
 
 void main() {
   testWidgets(
@@ -43,14 +44,16 @@ void main() {
         throw StateError('Unexpected request ${request.method} ${request.url}');
       });
       final api = createMeetingTestApi(client);
-      await signInMeetingTestApi(api);
+      await tester.runAsync(() => signInMeetingTestApi(api));
       final dependencies = AppDependencies(
         api: api,
         appearancePreferences: InMemoryAppearancePreferences(),
         httpClient: client,
       );
       addTearDown(dependencies.dispose);
-      final snapshot = await dependencies.meetings.detail(testMeetingId);
+      final snapshot = (await tester.runAsync(
+        () => dependencies.meetings.detail(testMeetingId),
+      ))!;
 
       await tester.pumpWidget(
         MaterialApp(
@@ -66,12 +69,20 @@ void main() {
 
       Future<void> chooseStartHour(int hour) async {
         await tester.tap(find.textContaining('Bắt đầu ·'));
-        await tester.pumpAndSettle();
+        await pumpUntil(
+          tester,
+          () => find.byType(DatePickerDialog).evaluate().isNotEmpty,
+          reason: 'the date picker to open',
+        );
         final date = find.text('24');
         expect(date, findsWidgets);
         await tester.tap(date.last);
         await tester.tap(find.text('OK').last);
-        await tester.pumpAndSettle();
+        await pumpUntil(
+          tester,
+          () => find.byType(TimePickerDialog).evaluate().isNotEmpty,
+          reason: 'the time picker to open',
+        );
         final am = find.text('AM');
         if (am.evaluate().isNotEmpty) {
           await tester.tap(am.last);
@@ -106,9 +117,13 @@ void main() {
             center.dy - math.cos(angle) * radius,
           ),
         );
-        await tester.pumpAndSettle();
+        await tester.pump(const Duration(milliseconds: 300));
         await tester.tap(find.text('OK'));
-        await tester.pumpAndSettle();
+        await pumpUntil(
+          tester,
+          () => find.byType(TimePickerDialog).evaluate().isEmpty,
+          reason: 'the time picker to close',
+        );
       }
 
       await chooseStartHour(11);
