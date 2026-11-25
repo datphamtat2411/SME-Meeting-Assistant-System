@@ -13,20 +13,57 @@ export const meetingWorkspaceSectionSchema = z.enum(meetingWorkspaceSections)
 
 export type MeetingWorkspaceSection = (typeof meetingWorkspaceSections)[number]
 
+export type EvidenceReferenceIssue = 'malformed' | 'incomplete'
+
 export interface MeetingWorkspaceSearch extends Record<string, unknown> {
   section?: MeetingWorkspaceSection
+  evidenceTranscriptId?: string
+  evidenceSegmentId?: string
+  evidenceReferenceIssue?: EvidenceReferenceIssue
 }
 
+const evidenceIdentifierSchema = z.string().uuid().optional().catch(undefined)
 const sectionSearchSchema = z
   .object({
     section: meetingWorkspaceSectionSchema.optional().catch(undefined),
+    evidenceTranscriptId: evidenceIdentifierSchema,
+    evidenceSegmentId: evidenceIdentifierSchema,
   })
   .passthrough()
+
+function hasSearchValue(search: Record<string, unknown>, key: string): boolean {
+  const value = search[key]
+  return value !== undefined && value !== null && value !== ''
+}
+
+function isUuid(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value
+    )
+  )
+}
 
 export function normalizeMeetingWorkspaceSearch(
   search: Record<string, unknown>
 ): MeetingWorkspaceSearch {
-  return sectionSearchSchema.parse(search) as MeetingWorkspaceSearch
+  const parsed = sectionSearchSchema.parse(search) as MeetingWorkspaceSearch
+  const hasTranscript = hasSearchValue(search, 'evidenceTranscriptId')
+  const hasSegment = hasSearchValue(search, 'evidenceSegmentId')
+  const evidenceReferenceIssue: EvidenceReferenceIssue | undefined =
+    hasTranscript !== hasSegment
+      ? 'incomplete'
+      : hasTranscript &&
+          (!isUuid(search.evidenceTranscriptId) ||
+            !isUuid(search.evidenceSegmentId))
+        ? 'malformed'
+        : undefined
+
+  return {
+    ...parsed,
+    evidenceReferenceIssue,
+  }
 }
 
 export function activeMeetingWorkspaceSection(
@@ -39,10 +76,16 @@ export function updateMeetingWorkspaceSearch(
   previous: MeetingWorkspaceSearch,
   section: MeetingWorkspaceSection
 ): MeetingWorkspaceSearch {
-  return {
+  const next: MeetingWorkspaceSearch = {
     ...previous,
     section: section === 'overview' ? undefined : section,
   }
+  if (section !== 'transcript') {
+    delete next.evidenceTranscriptId
+    delete next.evidenceSegmentId
+    delete next.evidenceReferenceIssue
+  }
+  return next
 }
 
 export function isMeetingWorkspaceSectionAllowed(

@@ -48,6 +48,7 @@ import {
 import { PlaybackControls } from '../media/playback-controls'
 import { presentProcessingStatus } from '../media/processing-status-presentation'
 import { useOptionalMeetingAuthorization } from '../meeting-authorization-context'
+import type { EvidenceReferenceIssue } from '../meeting-workspace-navigation'
 import { invalidateMeetingArtifacts } from './query-invalidation'
 import {
   correctTranscriptSegment,
@@ -61,6 +62,10 @@ import {
   type TranscriptCoverage,
   type TranscriptReview,
 } from './transcript-api'
+import {
+  useOptionalTranscriptReviewGate,
+  type TranscriptReviewDigestSegment,
+} from './transcript-review-gate'
 import {
   useTranscriptReviewOperation,
   type ReviewExecution,
@@ -245,6 +250,7 @@ export function TranscriptReviewWorkspace({
   canReadMedia,
   evidenceTranscriptId,
   evidenceSegmentId,
+  evidenceReferenceIssue,
 }: {
   meetingId: string
   canReadMeetingContent: boolean
@@ -253,6 +259,7 @@ export function TranscriptReviewWorkspace({
   canReadMedia: boolean
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
+  evidenceReferenceIssue?: EvidenceReferenceIssue
 }) {
   const authorization = useOptionalMeetingAuthorization()
   const denied = Boolean(
@@ -270,6 +277,7 @@ export function TranscriptReviewWorkspace({
         key={scopeKey}
         evidenceTranscriptId={evidenceTranscriptId}
         evidenceSegmentId={evidenceSegmentId}
+        evidenceReferenceIssue={evidenceReferenceIssue}
         meetingId={meetingId}
         canReadMeetingContent={canReadMeetingContent}
         canCorrectTranscript={canCorrectTranscript}
@@ -286,6 +294,7 @@ function TranscriptReviewWorkspaceContent({
   canMapSpeakers,
   evidenceTranscriptId,
   evidenceSegmentId,
+  evidenceReferenceIssue,
 }: {
   meetingId: string
   canReadMeetingContent: boolean
@@ -293,6 +302,7 @@ function TranscriptReviewWorkspaceContent({
   canMapSpeakers: boolean
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
+  evidenceReferenceIssue?: EvidenceReferenceIssue
 }) {
   const queryClient = useQueryClient()
   const session = useMeetingSession()
@@ -376,6 +386,7 @@ function TranscriptReviewWorkspaceContent({
     canCorrect: canEditCanonicalTranscript,
     canMap: canMapCanonicalSpeakers,
   })
+  const reviewGate = useOptionalTranscriptReviewGate()
   const { acquire, isCurrent, release, interrupted, clearInterrupted } =
     operation
   const correctionNotice: CorrectionNotice | null =
@@ -403,12 +414,17 @@ function TranscriptReviewWorkspaceContent({
     ) ||
     Boolean(mappingDraft && mappingDraft.transcriptId !== transcriptValue?.id)
   const blocked = operation.pending || hasUncertainty || replacementDraft
+  const reviewGatePending =
+    reviewGate?.acknowledgement.status === 'pending' ||
+    reviewGate?.admission.status === 'pending'
+  const setReviewGateBlocked = reviewGate?.setMutationBlocked
   const setReviewDirty = session.setTranscriptReviewDirty
   const reviewDirty =
     Object.keys(drafts).length > 0 ||
     Boolean(mappingDraft) ||
     operation.pending ||
-    hasUncertainty
+    hasUncertainty ||
+    reviewGatePending
 
   useLayoutEffect(() => {
     transcriptRef.current = transcriptSnapshot
@@ -420,6 +436,12 @@ function TranscriptReviewWorkspaceContent({
     setReviewDirty?.(!confirmedAccessLoss && reviewDirty)
     return () => setReviewDirty?.(false)
   }, [confirmedAccessLoss, reviewDirty, setReviewDirty])
+
+  useEffect(() => {
+    if (!setReviewGateBlocked) return
+    setReviewGateBlocked(blocked)
+    return () => setReviewGateBlocked(false)
+  }, [blocked, setReviewGateBlocked])
 
   useEffect(() => {
     if (!selectedSegmentId) return
@@ -822,6 +844,50 @@ function TranscriptReviewWorkspaceContent({
     }
   }
 
+  useEffect(() => {
+    if (!reviewGate?.clearEvidence || !reviewGate.observeEvidence) return
+    if (
+      !canRead ||
+      !transcriptSnapshot ||
+      !transcriptValue ||
+      !isFinalized ||
+      !transcriptValue.finalizedAt
+    ) {
+      reviewGate.clearEvidence()
+      return
+    }
+    const digestSegments: TranscriptReviewDigestSegment[] =
+      transcriptValue.segments.map((segment) => ({
+        ordinal: segment.ordinal,
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        text: segment.text,
+      }))
+    reviewGate.observeEvidence(
+      {
+        meetingId: transcriptValue.meetingId,
+        processingJobId: transcriptValue.processingJobId,
+        sourceMediaId: transcriptValue.sourceMediaId,
+        transcriptId: transcriptValue.id,
+        versionNumber: transcriptValue.versionNumber,
+        contentRevision: transcriptValue.contentRevision,
+        transcriptStatus: transcriptValue.status,
+        finalizedAt: transcriptValue.finalizedAt,
+        etag: transcriptSnapshot.etag,
+      },
+      digestSegments
+    )
+  }, [
+    canRead,
+    reviewGate?.clearEvidence,
+    reviewGate?.observeEvidence,
+    isFinalized,
+    orderedSegments,
+    reviewGate,
+    transcriptSnapshot,
+    transcriptValue,
+  ])
+
   function playFrom(positionMs: number) {
     if (!canRead || !sourceMediaId || (!sourceMedia && !sourceLoading)) return
     void session.seekToSource(sourceMediaId, positionMs, seekOwnerKey)
@@ -1123,6 +1189,13 @@ function TranscriptReviewWorkspaceContent({
                   The requested evidence is not part of the current transcript.
                 </p>
               )}
+            {evidenceReferenceIssue && (
+              <p role='status' className='text-sm text-muted-foreground'>
+                {evidenceReferenceIssue === 'incomplete'
+                  ? 'The evidence link is incomplete. Both a transcript and segment identifier are required.'
+                  : 'The evidence link is malformed and cannot be trusted.'}
+              </p>
+            )}
             <label className='flex items-center gap-2 text-sm'>
               <input
                 type='checkbox'
@@ -1449,16 +1522,29 @@ function TranscriptReviewWorkspaceContent({
         </Card>
       </main>
       <aside className='min-w-0 space-y-5'>
-        {session.playback.sourceMediaId !== sourceMediaId && sourceMedia && (
-          <Button
-            type='button'
-            variant='outline'
-            onClick={() => void session.selectRemoteSource(sourceMedia.id)}
+        {sourceMedia ? (
+          session.playback.kind === 'remote' &&
+          session.playback.sourceMediaId === sourceMedia.id ? (
+            <PlaybackControls />
+          ) : (
+            <Button
+              type='button'
+              variant='outline'
+              onClick={() => void session.selectRemoteSource(sourceMedia.id)}
+            >
+              Load transcript source audio
+            </Button>
+          )
+        ) : (
+          <p
+            role='status'
+            className='rounded-lg border border-dashed p-3 text-sm text-muted-foreground'
           >
-            Load transcript source audio
-          </Button>
+            {sourceLoading
+              ? 'Checking the transcript source audio…'
+              : 'The transcript source audio is unavailable or has been superseded. Playback evidence is disabled.'}
+          </p>
         )}
-        <PlaybackControls />
         <CoverageCard
           coverage={coverage}
           durationMs={durationMs}

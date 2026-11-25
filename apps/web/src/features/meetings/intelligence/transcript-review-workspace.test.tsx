@@ -548,5 +548,41 @@ describe('TranscriptReviewWorkspace', () => {
     sessionMocks.session.playback.sourceMediaId = processingJobId
     await screen.rerender(view())
     expect(activeSegment()).toBeUndefined()
+    await expect
+      .element(
+        screen.getByRole('button', { name: 'Load transcript source audio' })
+      )
+      .toBeInTheDocument()
+  })
+
+  it('reports a direct evidence link that is not part of the current transcript', async () => {
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url.endsWith('/transcript/coverage')) return coverage
+      if (url.endsWith('/speaker-clusters')) return speakers
+      throw new Error(`Unexpected GET ${url}`)
+    })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: initialTranscript,
+      meta: {},
+      etag: '"t-transcript-8"',
+    })
+
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <TranscriptReviewWorkspace
+          meetingId={meetingId}
+          canReadMeetingContent
+          canCorrectTranscript={false}
+          canMapSpeakers={false}
+          canReadMedia
+          evidenceTranscriptId={processingJobId}
+          evidenceSegmentId={firstSegmentId}
+        />
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByText(/requested evidence is not part/i))
+      .toBeInTheDocument()
   })
 })

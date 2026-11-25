@@ -52,8 +52,16 @@ function MeetingRoute() {
             key={meetingId}
             meetingId={meetingId}
             section={
-              search.section ?? meetingWorkspaceSectionSchema.enum.overview
+              search.evidenceTranscriptId ||
+              search.evidenceSegmentId ||
+              search.evidenceReferenceIssue
+                ? meetingWorkspaceSectionSchema.enum.transcript
+                : (search.section ??
+                  meetingWorkspaceSectionSchema.enum.overview)
             }
+            evidenceTranscriptId={search.evidenceTranscriptId}
+            evidenceSegmentId={search.evidenceSegmentId}
+            evidenceReferenceIssue={search.evidenceReferenceIssue}
             onSectionChange={changeSection}
           />
         )}
@@ -91,8 +99,13 @@ function MeetingNavigationGuard() {
         next.routeId === '/_authenticated/meetings/$meetingId' &&
         typeof next.search === 'object' &&
         next.search !== null &&
-        'section' in next.search &&
-        next.search.section === 'transcript'
+        (('section' in next.search && next.search.section === 'transcript') ||
+          ('evidenceTranscriptId' in next.search &&
+            Boolean(next.search.evidenceTranscriptId)) ||
+          ('evidenceSegmentId' in next.search &&
+            Boolean(next.search.evidenceSegmentId)) ||
+          ('evidenceReferenceIssue' in next.search &&
+            Boolean(next.search.evidenceReferenceIssue)))
       if (
         session.hasUnsavedTranscriptReview &&
         !remainsInTranscript &&

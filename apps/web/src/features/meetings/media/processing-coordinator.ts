@@ -82,6 +82,7 @@ export type ProcessingCoordinatorValue = {
   unresolvedOperations: UnresolvedProcessingOperation[]
   isOperationPending: (logicalIdentity: string) => boolean
   isOperationUncertain: (logicalIdentity: string) => boolean
+  reconcileJob: (job: ProcessingJob) => void
   selectProcessingJob: (jobId: string | null) => void
   admit: (mediaId: string) => Promise<ProcessingCommandResult>
   retry: (jobId: string, stageCode?: string) => Promise<ProcessingCommandResult>
@@ -955,6 +956,7 @@ export function useProcessingCoordinator({
     unresolvedOperations,
     isOperationPending,
     isOperationUncertain,
+    reconcileJob: reconcileConfirmedJob,
     selectProcessingJob: setSelectedJobId,
     admit,
     retry,
