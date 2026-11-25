@@ -128,7 +128,10 @@ neither action starts an upload automatically.
 - Managed import accepts `.wav`, `.mp3`, and `.m4a` sources, canonicalized as
   `audio/wav`, `audio/mpeg`, and `audio/mp4`. The selected source is copied into
   private managed storage; the original external file is not deleted.
-- Recording and import are limited to 90 minutes and 512 MiB by default.
+- Native recording has a 90-minute duration limit. Recording and import have
+  a 512 MiB local size limit by default. Import does not establish the audio
+  duration merely from the selected file size; backend media validation still
+  applies.
 - Submission is explicit: upload-intent creation, signed PUT, Core media
   finalization, processing admission, and processing observation remain
   distinct states.
@@ -148,17 +151,52 @@ neither action starts an upload automatically.
 
 ### M04 automated evidence
 
-The final local verification run completed with 358 Flutter tests passing,
-`flutter analyze` reporting no issues, Dart formatting clean, the static native
-configuration validator passing, eight Android Gradle diagnostic tests passing,
-merged-manifest/Android native verification passing, and a debug APK build
-passing. Fixture and local-storage tests are not live-service or physical-device
-evidence.
+The verified historical baseline is commit `5d76fecf598226fd86fd9429bb840e1e3cb4fde9`.
+Its [Mobile / Android verification run](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45592532646/job/139130151209)
+completed with 358 Flutter tests passing, no analyzer issues, formatting clean,
+Android configuration and credential durability checks passing, and a successful
+Android debug APK build. This evidence applies to that commit, not automatically
+to later changes. Fixture and local-storage tests are not live-service or
+physical-device evidence.
 
 The W03-R01 regression verifies that durable unresolved transfer evidence
 survives a later cancelled attempt: pending remote media is finalized through
 the same resource with zero upload-intent replay and zero repeated PUT. An
 already AVAILABLE remote resource is reconciled without local source bytes.
+
+### M04 acceptance evidence matrix
+
+The following records representative evidence from the verified baseline and
+the additional scenarios implemented in the subsequent closure patches. A
+baseline PASS is limited to the automated behavior named in the row. The
+current revision's complete CI result must be checked before treating new
+coverage as passed; it was not available when this matrix was recorded.
+
+| Scenario | Environment | Expected behavior | Baseline actual result / evidence | Current follow-up status |
+| --- | --- | --- | --- | --- |
+| W03-R01 recovery | SQLite + HTTP fixtures | No repeated PUT after retained uncertainty | PASS: retained-transfer and remote-only submission regressions | NOT_EXECUTED: chained cancelled/rejected/deferred recovery after database reopen; new failed-read regression |
+| Native recording | Fake capture adapter | Scoped capture and safe native termination handling | PASS: recording coordinator regressions | BLOCKED_EXTERNAL: actual microphone and device lifecycle |
+| Audio import | Managed filesystem + picker fixture | Retain source; cancellation and authorization enforced | PASS: import eligibility, mismatch, and cancellation regressions | NOT_EXECUTED: new widget cancellation test; BLOCKED_EXTERNAL: native picker |
+| Managed media recovery | SQLite + managed files | Retain recoverable data; enforce ownership | PASS: asset lease and existing-version database regressions | Current CI required |
+| Signed PUT | Native IOClient + local HttpServer / fixtures | Exact byte transfer, cancellation, restricted headers | PASS: signed transport tests | BLOCKED_EXTERNAL: Core-issued capability and deployed storage |
+| Media finalization | HTTP fixtures | Preserve identity and reconcile AVAILABLE | PASS: submission regressions | BLOCKED_EXTERNAL: actual Core/object storage |
+| Initial processing admission | SQLite + HTTP fixtures | One logical admission for competing calls | PASS: competing admission regression | BLOCKED_EXTERNAL: real processing service |
+| Interrupted submission | HTTP fixtures | Recover exact operation without duplicate transfer | PASS: exact-operation and remote-only recovery tests | NOT_EXECUTED: new chained failure tests; BLOCKED_EXTERNAL: live interruption |
+| Processing retry | HTTP fixtures | Reuse exact durable retry identity | PASS: retry without source-media workspace regression | BLOCKED_EXTERNAL: live job retry |
+| Deliberate reprocessing | Source review / service boundary | Preserve source and parent association | No live evidence | NOT_EXECUTED: confirmation interaction and live reprocessing |
+| Workspace interaction | Controller fixtures | Scoped state and functional cancellation | PASS: workspace controller regressions | NOT_EXECUTED: new production-widget cancellation and discard tests |
+| Navigation | Source review | Keep capture during navigation; remove old session routes | No active-recording return-navigation widget evidence | NOT_EXECUTED: new session-stack regression and actual recording navigation |
+| Session isolation | Controller and startup fixtures | Withhold protected state on logout | PASS: workspace session fencing and startup tests | NOT_EXECUTED: new pushed-route logout regression |
+| Shutdown and lifecycle | Controlled asynchronous fixtures | Drain dependent work before closing persistence | PASS: app dependency shutdown regressions | BLOCKED_EXTERNAL: actual device interruption |
+| Security and privacy | Automated transport/configuration checks | Private storage, scoped credentials, restricted upload headers | PASS: baseline checks for these named controls | BLOCKED_EXTERNAL: live authorization and device verification |
+
+Use the exact final commit's GitHub Actions logs to establish automated results.
+Do not infer live or device acceptance from fixture results. Until current
+automated verification and outstanding interaction tests are established, the
+acceptance status is NOT_ACCEPTED (verification incomplete). Once all required
+available automated checks are verified and no implementation blocker remains,
+the status may become IMPLEMENTATION_COMPLETE_PENDING_EXTERNAL_VALIDATION.
+Only completed live, physical-device, and security acceptance permits ACCEPTED.
 
 ### Live and physical-device procedure
 
