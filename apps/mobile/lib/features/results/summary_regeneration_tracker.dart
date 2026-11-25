@@ -43,7 +43,8 @@ class SummaryRegenerationTracker {
         (candidate.retryCount < previous.retryCount ||
             (candidate.retryCount == previous.retryCount &&
                 (candidate.updatedAt.isBefore(previous.updatedAt) ||
-                    previous.status.isTerminal && !candidate.status.isTerminal)))) {
+                    previous.status.isTerminal &&
+                        !candidate.status.isTerminal)))) {
       return false;
     }
     if (previous != null &&

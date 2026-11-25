@@ -51,7 +51,9 @@ class _Repository extends ResultsRepository {
     reads++;
     final failure = readFailure;
     if (failure != null) throw failure;
-    return pending == null ? transcriptValue ?? _transcript : await pending!.future;
+    return pending == null
+        ? transcriptValue ?? _transcript
+        : await pending!.future;
   }
 
   @override
@@ -59,22 +61,26 @@ class _Repository extends ResultsRepository {
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
     bool Function()? stillAuthorized,
-  }) async => coverageValue ?? const TranscriptCoverage(
-    transcriptId: 'transcript-1',
-    transcriptEtag: '"transcript-reviewed"',
-    regions: [],
-  );
+  }) async =>
+      coverageValue ??
+      const TranscriptCoverage(
+        transcriptId: 'transcript-1',
+        transcriptEtag: '"transcript-reviewed"',
+        regions: [],
+      );
 
   @override
   Future<SpeakerReviewSnapshot> speakerReview({
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
     required bool Function() stillAuthorized,
-  }) async => speakerValue ?? const SpeakerReviewSnapshot(
-    transcriptId: 'transcript-1',
-    etag: '"transcript-reviewed"',
-    clusters: [],
-  );
+  }) async =>
+      speakerValue ??
+      const SpeakerReviewSnapshot(
+        transcriptId: 'transcript-1',
+        etag: '"transcript-reviewed"',
+        clusters: [],
+      );
 
   @override
   Future<ResultsSummary> currentSummary({
@@ -325,12 +331,17 @@ void main() {
       ],
     );
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ResultsPanel(workspace: workspace))),
+      MaterialApp(
+        home: Scaffold(body: ResultsPanel(workspace: workspace)),
+      ),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.text('Transcript').first);
     await tester.pumpAndSettle();
-    expect(find.text('Chưa có bằng chứng để đánh giá độ bao phủ.'), findsOneWidget);
+    expect(
+      find.text('Chưa có bằng chứng để đánh giá độ bao phủ.'),
+      findsOneWidget,
+    );
     expect(find.text('Nguyễn Văn A'), findsWidgets);
     expect(find.text('Segment 90'), findsNothing);
     await tester.enterText(find.byType(TextField).first, 'does not exist');
@@ -350,61 +361,64 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  test('history retains pages across sections and recoverable failures', () async {
-    final (:workspace, :repository) = await _setup();
-    SummaryVersion version(int number) => SummaryVersion(
-      id: 'summary-$number',
-      versionNumber: number,
-      content: 'Version $number',
-      sourceType: 'AI',
-      qualityStatus: 'READY',
-      isStale: false,
-      isCurrent: number == 1,
-      createdAt: _createdAt,
-    );
-    repository.historyPages.addAll([
-      PagedCollection<SummaryVersion>(
-        items: [for (var number = 21; number >= 2; number--) version(number)],
-        page: 0,
-        size: 20,
-        totalElements: 21,
-        totalPages: 2,
-        hasNext: true,
-        hasPrevious: false,
-      ),
-      PagedCollection<SummaryVersion>(
-        items: [version(1)],
-        page: 1,
-        size: 20,
-        totalElements: 21,
-        totalPages: 2,
-        hasNext: false,
-        hasPrevious: true,
-      ),
-    ]);
-    final history = workspace.summaryHistory;
-    await history.load();
-    await history.loadMore();
-    expect(history.items, hasLength(21));
-    history.setActive(false);
-    history.setActive(true);
-    expect(repository.historyReads, 2);
-    repository.historyFailure = const ApiFailure(503, 'UNAVAILABLE', 'Retry');
-    await history.load(refresh: true);
-    expect(history.phase, SummaryHistoryPhase.failed);
-    expect(history.items, hasLength(21));
-    history.setActive(false);
-    workspace.invalidation.invalidate(
-      sessionScope: workspace.sessionScope,
-      meetingId: testMeetingId,
-      resources: {ResultsResourceKind.summaryVersions},
-    );
-    expect(repository.historyReads, 3);
-    repository.historyFailure = null;
-    history.setActive(true);
-    await _eventually(() => history.phase == SummaryHistoryPhase.available);
-    expect(history.items, hasLength(20));
-  });
+  test(
+    'history retains pages across sections and recoverable failures',
+    () async {
+      final (:workspace, :repository) = await _setup();
+      SummaryVersion version(int number) => SummaryVersion(
+        id: 'summary-$number',
+        versionNumber: number,
+        content: 'Version $number',
+        sourceType: 'AI',
+        qualityStatus: 'READY',
+        isStale: false,
+        isCurrent: number == 1,
+        createdAt: _createdAt,
+      );
+      repository.historyPages.addAll([
+        PagedCollection<SummaryVersion>(
+          items: [for (var number = 21; number >= 2; number--) version(number)],
+          page: 0,
+          size: 20,
+          totalElements: 21,
+          totalPages: 2,
+          hasNext: true,
+          hasPrevious: false,
+        ),
+        PagedCollection<SummaryVersion>(
+          items: [version(1)],
+          page: 1,
+          size: 20,
+          totalElements: 21,
+          totalPages: 2,
+          hasNext: false,
+          hasPrevious: true,
+        ),
+      ]);
+      final history = workspace.summaryHistory;
+      await history.load();
+      await history.loadMore();
+      expect(history.items, hasLength(21));
+      history.setActive(false);
+      history.setActive(true);
+      expect(repository.historyReads, 2);
+      repository.historyFailure = const ApiFailure(503, 'UNAVAILABLE', 'Retry');
+      await history.load(refresh: true);
+      expect(history.phase, SummaryHistoryPhase.failed);
+      expect(history.items, hasLength(21));
+      history.setActive(false);
+      workspace.invalidation.invalidate(
+        sessionScope: workspace.sessionScope,
+        meetingId: testMeetingId,
+        resources: {ResultsResourceKind.summaryVersions},
+      );
+      expect(repository.historyReads, 3);
+      repository.historyFailure = null;
+      history.setActive(true);
+      await _eventually(() => history.phase == SummaryHistoryPhase.available);
+      expect(history.items, hasLength(20));
+    },
+  );
 
   test('evidence lookup rejects a read revoked during loading', () async {
     final (:workspace, :repository) = await _setup();

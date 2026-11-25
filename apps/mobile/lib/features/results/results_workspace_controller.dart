@@ -163,6 +163,7 @@ class ResultsWorkspaceController extends ChangeNotifier
     notifyListeners();
     return true;
   }
+
   bool get regenerationUncertain => _mutations.regenerationUncertain;
   bool get decisionOutcomeUnknown => _mutations.decisionOutcomeUnknown;
   ResultsRecoveryDraft? recoveryDraft(String key) =>

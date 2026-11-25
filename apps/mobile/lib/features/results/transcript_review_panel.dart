@@ -183,10 +183,15 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
     _ => quality,
   };
 
-  void _focusRegion(TranscriptReviewProjection projection, TranscriptCoverageRegion region) {
+  void _focusRegion(
+    TranscriptReviewProjection projection,
+    TranscriptCoverageRegion region,
+  ) {
     final segment = projection.transcript.segments
-        .where((segment) =>
-            segment.startMs < region.endMs && segment.endMs > region.startMs)
+        .where(
+          (segment) =>
+              segment.startMs < region.endMs && segment.endMs > region.startMs,
+        )
         .firstOrNull;
     if (segment == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -258,7 +263,11 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
               ),
               title: Text(
                 '${durationLabel(region.startMs)}–${durationLabel(region.endMs)} · '
-                '${region.status == 'UNRESOLVED_ERROR' ? 'Không khôi phục được' : region.status == 'COVERED' ? 'Đã bao phủ' : 'Đáng ngờ'}',
+                '${region.status == 'UNRESOLVED_ERROR'
+                    ? 'Không khôi phục được'
+                    : region.status == 'COVERED'
+                    ? 'Đã bao phủ'
+                    : 'Đáng ngờ'}',
               ),
               subtitle: Text(
                 region.recovered
@@ -280,8 +289,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (focused)
-          const StatePill('READY', label: 'Đoạn đang tham chiếu'),
+        if (focused) const StatePill('READY', label: 'Đoạn đang tham chiếu'),
         Row(
           children: [
             Expanded(
@@ -374,7 +382,8 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
           })
           .toList(growable: false);
       final focus = _focus;
-      final focusIndex = focus != null &&
+      final focusIndex =
+          focus != null &&
               widget.workspace.ownsRead(focus.readEpoch) &&
               transcript.id == focus.transcriptId &&
               transcript.etag == focus.transcriptEtag
@@ -408,7 +417,10 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                         .map(
                           (value) => DropdownMenuItem(
                             value: value.key,
-                            child: Text(value.value, overflow: TextOverflow.ellipsis),
+                            child: Text(
+                              value.value,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
                         )
                         .toList(),

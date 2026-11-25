@@ -165,12 +165,14 @@ class TranscriptReviewProjection {
     this.transcript, {
     TranscriptCoverage? coverage,
     SpeakerReviewSnapshot? speakers,
-  }) : coverage = coverage != null &&
+  }) : coverage =
+           coverage != null &&
                coverage.transcriptId == transcript.id &&
                coverage.transcriptEtag == transcript.etag
            ? coverage
            : null,
-       _speakers = speakers != null &&
+       _speakers =
+           speakers != null &&
                speakers.transcriptId == transcript.id &&
                speakers.etag == transcript.etag
            ? {for (final cluster in speakers.clusters) cluster.id: cluster}
@@ -195,9 +197,11 @@ class TranscriptReviewProjection {
     return 'cluster:${segment.speakerClusterId ?? segment.speakerLabel ?? ''}';
   }
 
-  List<TranscriptCoverageRegion> get reviewRegions => coverage?.regions
-      .where((region) => region.status != 'COVERED' || region.recovered)
-      .toList(growable: false) ?? const [];
+  List<TranscriptCoverageRegion> get reviewRegions =>
+      coverage?.regions
+          .where((region) => region.status != 'COVERED' || region.recovered)
+          .toList(growable: false) ??
+      const [];
 }
 
 class TranscriptFocusRequest {

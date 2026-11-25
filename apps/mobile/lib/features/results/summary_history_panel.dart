@@ -207,39 +207,39 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
       builder: (dialog) => AnimatedBuilder(
         animation: widget.workspace,
         builder: (context, _) => AlertDialog(
-        title: Text(
-          'So sánh phiên bản ${current.versionNumber} và ${version.versionNumber}',
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (widget.workspace.summary.data?.etag != current.etag)
-                const MessagePanel(
-                  title: 'Phiên bản đang chọn đã thay đổi',
-                  description: 'Đây là nội dung tại thời điểm mở so sánh.',
+          title: Text(
+            'So sánh phiên bản ${current.versionNumber} và ${version.versionNumber}',
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (widget.workspace.summary.data?.etag != current.etag)
+                  const MessagePanel(
+                    title: 'Phiên bản đang chọn đã thay đổi',
+                    description: 'Đây là nội dung tại thời điểm mở so sánh.',
+                  ),
+                const Text(
+                  'Bản đã xem khi mở so sánh',
+                  style: TextStyle(fontWeight: FontWeight.w700),
                 ),
-              const Text(
-                'Bản đã xem khi mở so sánh',
-                style: TextStyle(fontWeight: FontWeight.w700),
-              ),
-              SelectableText(current.content),
-              const Divider(height: 28),
-              Text(
-                'Bản lịch sử · ${version.sourceType}',
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-              SelectableText(version.content),
-            ],
+                SelectableText(current.content),
+                const Divider(height: 28),
+                Text(
+                  'Bản lịch sử · ${version.sourceType}',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                SelectableText(version.content),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialog),
+              child: const Text('Đóng'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialog),
-            child: const Text('Đóng'),
-          ),
-        ],
-      ),
       ),
     );
   }
@@ -263,9 +263,10 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
               'Tác vụ đã hoàn tất nhưng có cảnh báo',
             ProcessingJobStatus.failed => 'Tạo tóm tắt thất bại',
             ProcessingJobStatus.cancelled => 'Tác vụ tạo tóm tắt đã bị hủy',
-            null => workspace.acceptedRegenerationJobId != null
-                ? 'Đã tiếp nhận, đang xác minh tiến trình'
-                : null,
+            null =>
+              workspace.acceptedRegenerationJobId != null
+                  ? 'Đã tiếp nhận, đang xác minh tiến trình'
+                  : null,
           };
     if (label == null) return const SizedBox.shrink();
     return ContentCard(
@@ -273,22 +274,29 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
-          if (job != null)
-            StatePill(job.status.wireValue),
+          if (job != null) StatePill(job.status.wireValue),
           if (job?.warningSummary != null)
-            Text(job!.warningSummary!, style: const TextStyle(color: Palette.amber)),
+            Text(
+              job!.warningSummary!,
+              style: const TextStyle(color: Palette.amber),
+            ),
           if (job?.errorSummary != null)
-            Text(job!.errorSummary!, style: const TextStyle(color: Palette.red)),
+            Text(
+              job!.errorSummary!,
+              style: const TextStyle(color: Palette.red),
+            ),
           if (job?.status.isSuccessful == true)
             const Text('Kiểm tra phiên bản đang chọn và lịch sử từ máy chủ.'),
           if (workspace.acceptedRegenerationJobId != null &&
               workspace.processingManager != null)
             TextButton(
-              onPressed: () => unawaited(workspace.processingManager!.refresh(
-                workspace.meetingId,
-                scope: workspace.sessionScope,
-                explicit: true,
-              )),
+              onPressed: () => unawaited(
+                workspace.processingManager!.refresh(
+                  workspace.meetingId,
+                  scope: workspace.sessionScope,
+                  explicit: true,
+                ),
+              ),
               child: const Text('Cập nhật tiến trình'),
             ),
         ],
@@ -299,7 +307,8 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
   Widget _regenerationButton({required bool hasSummary}) {
     final workspace = widget.workspace;
     return OutlinedButton.icon(
-      onPressed: busy ||
+      onPressed:
+          busy ||
               workspace.mutationBusy(ResultsMutationGroup.summary) ||
               !workspace.capabilities.canMutate ||
               workspace.acceptedRegenerationJobId != null
@@ -359,7 +368,8 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
               label: 'Tóm tắt',
               onRetry: () => widget.workspace.loadSummary(force: true),
             ),
-            if (widget.workspace.summary.phase == ResultsResourcePhase.notReady ||
+            if (widget.workspace.summary.phase ==
+                    ResultsResourcePhase.notReady ||
                 widget.workspace.regenerationUncertain ||
                 widget.workspace.acceptedRegenerationJobId != null)
               _regenerationButton(hasSummary: false),

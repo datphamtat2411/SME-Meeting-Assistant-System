@@ -29,7 +29,10 @@ abstract interface class SummaryHistoryAccess implements Listenable {
   String get meetingId;
   ResultsInvalidationSignal get invalidation;
   ResultsSummary? get currentSummaryForHistory;
-  Future<void> handleProtectedReadFailure(ApiFailure failure, {required int epoch});
+  Future<void> handleProtectedReadFailure(
+    ApiFailure failure, {
+    required int epoch,
+  });
 }
 
 class SummaryHistoryController extends ChangeNotifier {
@@ -51,7 +54,8 @@ class SummaryHistoryController extends ChangeNotifier {
   SummaryHistoryPhase phase = SummaryHistoryPhase.uninitialized;
   Object? failure;
 
-  List<SummaryVersion> get items => workspace.canReadHistory ? _pages.items : const [];
+  List<SummaryVersion> get items =>
+      workspace.canReadHistory ? _pages.items : const [];
   bool get hasMore => workspace.canReadHistory && _pages.hasMore;
   bool get isLoading =>
       phase == SummaryHistoryPhase.loading ||
@@ -87,17 +91,26 @@ class SummaryHistoryController extends ChangeNotifier {
     _request = operation;
     notifyListeners();
     unawaited(
-      _loadPage(target, token, generation, epoch, replace: replace)
-          .whenComplete(() {
-            if (identical(_request, operation)) _request = null;
-            completion.complete();
-            if (!_disposed && _active && workspace.canReadHistory &&
-                generation != _generation && _request == null &&
-                !_recoveringRead && _dirty &&
-                phase != SummaryHistoryPhase.failed) {
-              unawaited(load(refresh: true));
-            }
-          }),
+      _loadPage(
+        target,
+        token,
+        generation,
+        epoch,
+        replace: replace,
+      ).whenComplete(() {
+        if (identical(_request, operation)) _request = null;
+        completion.complete();
+        if (!_disposed &&
+            _active &&
+            workspace.canReadHistory &&
+            generation != _generation &&
+            _request == null &&
+            !_recoveringRead &&
+            _dirty &&
+            phase != SummaryHistoryPhase.failed) {
+          unawaited(load(refresh: true));
+        }
+      }),
     );
     return operation;
   }
@@ -132,8 +145,9 @@ class SummaryHistoryController extends ChangeNotifier {
         if (!_owns(generation, readEpoch)) return;
         if ((before != null && before.etag != canonical.etag) ||
             (!replace && _selectionTag != canonical.etag) ||
-            page.items.any((item) =>
-                item.isCurrent != (item.id == canonical.id))) {
+            page.items.any(
+              (item) => item.isCurrent != (item.id == canonical.id),
+            )) {
           throw _changed();
         }
         current = canonical;
@@ -211,7 +225,9 @@ class SummaryHistoryController extends ChangeNotifier {
     final changed = tag != null && previous != null && tag != previous;
     _observedTag = tag;
     if (changed) _markDirty();
-    if (_active && _dirty && _request == null &&
+    if (_active &&
+        _dirty &&
+        _request == null &&
         (changed || phase == SummaryHistoryPhase.forbidden)) {
       unawaited(load(refresh: true));
     }

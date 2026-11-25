@@ -24,7 +24,10 @@ void main() {
     expect(tracker.admitting, isTrue);
     tracker.admit(firstJobId);
     expect(tracker.pendingJobId, firstJobId);
-    expect(tracker.observe(ProcessingJobRecord.fromJson(_jobJson(secondJobId))), isFalse);
+    expect(
+      tracker.observe(ProcessingJobRecord.fromJson(_jobJson(secondJobId))),
+      isFalse,
+    );
     final running = ProcessingJobRecord.fromJson(_jobJson(firstJobId));
     expect(tracker.observe(running), isTrue);
     expect(tracker.pendingJobId, firstJobId);
@@ -44,66 +47,75 @@ void main() {
     expect(tracker.job, isNull);
   });
 
-  testWidgets('processing notifications cannot republish jobs after access loss', (
-    tester,
-  ) async {
-    final setup = await tester.runAsync(() async {
-      final api = createMeetingTestApi(MeetingTestHttpClient((request) async {
-        if (request.url.path.endsWith('/media')) {
-          return meetingApiSuccess(const <dynamic>[]);
-        }
-        if (request.url.path.endsWith('/processing-jobs')) {
-          return meetingApiSuccess([_jobJson(firstJobId)]);
-        }
-        throw StateError('Unexpected request ${request.url.path}');
-      }));
-      await signInMeetingTestApi(api);
-      final scope = api.requireAuthenticatedSessionScope();
-      final manager = ProcessingManager(
-        api: api,
-        mediaRepository: MediaRepository(api: api),
-        processingRepository: ProcessingRepository(api: api),
-        localMedia: LocalMediaRepository.lazyDefault(),
-      );
-      final observation = manager.startObserving(testMeetingId, scope: scope);
-      await manager.refresh(testMeetingId, scope: scope, explicit: true);
-      return (api: api, manager: manager, observation: observation, scope: scope);
-    });
-    final (:api, :manager, :observation, :scope) = setup!;
-    addTearDown(() {
-      observation.dispose();
-      manager.dispose();
-      api.dispose();
-    });
-    final meeting = Meeting.fromJson(meetingTestJson());
-    Widget panel(bool allowed) => MaterialApp(
-      home: Scaffold(
-        body: ProcessingTimelinePanel(
+  testWidgets(
+    'processing notifications cannot republish jobs after access loss',
+    (tester) async {
+      final setup = await tester.runAsync(() async {
+        final api = createMeetingTestApi(
+          MeetingTestHttpClient((request) async {
+            if (request.url.path.endsWith('/media')) {
+              return meetingApiSuccess(const <dynamic>[]);
+            }
+            if (request.url.path.endsWith('/processing-jobs')) {
+              return meetingApiSuccess([_jobJson(firstJobId)]);
+            }
+            throw StateError('Unexpected request ${request.url.path}');
+          }),
+        );
+        await signInMeetingTestApi(api);
+        final scope = api.requireAuthenticatedSessionScope();
+        final manager = ProcessingManager(
           api: api,
-          meetingId: testMeetingId,
-          processingManager: manager,
-          capabilities: MeetingCapabilityPolicy.evaluate(
-            callerId: allowed ? meeting.organizerId : null,
-            meeting: meeting,
+          mediaRepository: MediaRepository(api: api),
+          processingRepository: ProcessingRepository(api: api),
+          localMedia: LocalMediaRepository.lazyDefault(),
+        );
+        final observation = manager.startObserving(testMeetingId, scope: scope);
+        await manager.refresh(testMeetingId, scope: scope, explicit: true);
+        return (
+          api: api,
+          manager: manager,
+          observation: observation,
+          scope: scope,
+        );
+      });
+      final (:api, :manager, :observation, :scope) = setup!;
+      addTearDown(() {
+        observation.dispose();
+        manager.dispose();
+        api.dispose();
+      });
+      final meeting = Meeting.fromJson(meetingTestJson());
+      Widget panel(bool allowed) => MaterialApp(
+        home: Scaffold(
+          body: ProcessingTimelinePanel(
+            api: api,
+            meetingId: testMeetingId,
+            processingManager: manager,
+            capabilities: MeetingCapabilityPolicy.evaluate(
+              callerId: allowed ? meeting.organizerId : null,
+              meeting: meeting,
+            ),
           ),
         ),
-      ),
-    );
-    await tester.pumpWidget(panel(true));
-    await tester.pumpAndSettle();
-    expect(find.text('Job ID: $firstJobId'), findsOneWidget);
-    await tester.pumpWidget(panel(false));
-    await tester.runAsync(() => manager.refresh(
-      testMeetingId,
-      scope: scope,
-      explicit: true,
-    ));
-    await tester.pumpAndSettle();
-    expect(find.text('Job ID: $firstJobId'), findsNothing);
-    expect(find.text('Bạn không có quyền xem tiến trình xử lý'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      );
+      await tester.pumpWidget(panel(true));
+      await tester.pumpAndSettle();
+      expect(find.text('Job ID: $firstJobId'), findsOneWidget);
+      await tester.pumpWidget(panel(false));
+      await tester.runAsync(
+        () => manager.refresh(testMeetingId, scope: scope, explicit: true),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Job ID: $firstJobId'), findsNothing);
+      expect(
+        find.text('Bạn không có quyền xem tiến trình xử lý'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   test('Results catches outcomes across an observation gap', () async {
     var completed = false;
