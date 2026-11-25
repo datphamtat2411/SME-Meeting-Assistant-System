@@ -1,6 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/material.dart';
+import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
+import 'package:sme_meeting_assistant/features/recording/processing_timeline_panel.dart';
+import 'package:sme_meeting_assistant/features/recording/media_contracts.dart';
+import 'package:sme_meeting_assistant/features/results/summary_regeneration_tracker.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
 import 'package:sme_meeting_assistant/features/results/results_invalidation.dart';
@@ -12,6 +18,93 @@ import 'package:sme_meeting_assistant/features/recording/local_media_repository.
 import 'support/meeting_test_support.dart';
 
 void main() {
+  test('regeneration tracks the exact job and retains terminal outcomes', () {
+    final tracker = SummaryRegenerationTracker();
+    tracker.begin();
+    expect(tracker.admitting, isTrue);
+    tracker.admit(firstJobId);
+    expect(tracker.pendingJobId, firstJobId);
+    expect(tracker.observe(ProcessingJobRecord.fromJson(_jobJson(secondJobId))), isFalse);
+    final running = ProcessingJobRecord.fromJson(_jobJson(firstJobId));
+    expect(tracker.observe(running), isTrue);
+    expect(tracker.pendingJobId, firstJobId);
+    final failed = ProcessingJobRecord.fromJson({
+      ..._jobJson(firstJobId),
+      'status': 'FAILED',
+      'completedAt': '2026-11-24T12:02:00Z',
+      'updatedAt': '2026-11-24T12:02:00Z',
+      'errorSummary': 'Processing failed',
+    });
+    expect(tracker.observe(failed), isTrue);
+    expect(tracker.pendingJobId, isNull);
+    expect(tracker.job?.status, ProcessingJobStatus.failed);
+    expect(tracker.observe(running), isFalse);
+    expect(tracker.job, same(failed));
+    tracker.clear();
+    expect(tracker.job, isNull);
+  });
+
+  testWidgets('processing notifications cannot republish jobs after access loss', (
+    tester,
+  ) async {
+    final setup = await tester.runAsync(() async {
+      final api = createMeetingTestApi(MeetingTestHttpClient((request) async {
+        if (request.url.path.endsWith('/media')) {
+          return meetingApiSuccess(const <dynamic>[]);
+        }
+        if (request.url.path.endsWith('/processing-jobs')) {
+          return meetingApiSuccess([_jobJson(firstJobId)]);
+        }
+        throw StateError('Unexpected request ${request.url.path}');
+      }));
+      await signInMeetingTestApi(api);
+      final scope = api.requireAuthenticatedSessionScope();
+      final manager = ProcessingManager(
+        api: api,
+        mediaRepository: MediaRepository(api: api),
+        processingRepository: ProcessingRepository(api: api),
+        localMedia: LocalMediaRepository.lazyDefault(),
+      );
+      final observation = manager.startObserving(testMeetingId, scope: scope);
+      await manager.refresh(testMeetingId, scope: scope, explicit: true);
+      return (api: api, manager: manager, observation: observation, scope: scope);
+    });
+    final (:api, :manager, :observation, :scope) = setup!;
+    addTearDown(() {
+      observation.dispose();
+      manager.dispose();
+      api.dispose();
+    });
+    final meeting = Meeting.fromJson(meetingTestJson());
+    Widget panel(bool allowed) => MaterialApp(
+      home: Scaffold(
+        body: ProcessingTimelinePanel(
+          api: api,
+          meetingId: testMeetingId,
+          processingManager: manager,
+          capabilities: MeetingCapabilityPolicy.evaluate(
+            callerId: allowed ? meeting.organizerId : null,
+            meeting: meeting,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpWidget(panel(true));
+    await tester.pumpAndSettle();
+    expect(find.text('Job ID: $firstJobId'), findsOneWidget);
+    await tester.pumpWidget(panel(false));
+    await tester.runAsync(() => manager.refresh(
+      testMeetingId,
+      scope: scope,
+      explicit: true,
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('Job ID: $firstJobId'), findsNothing);
+    expect(find.text('Bạn không có quyền xem tiến trình xử lý'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   test('Results catches outcomes across an observation gap', () async {
     var completed = false;
     final client = MeetingTestHttpClient((request) async {

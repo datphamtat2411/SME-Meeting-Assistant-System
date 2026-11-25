@@ -207,7 +207,8 @@ class SummaryHistoryController extends ChangeNotifier {
     }
     if (_recoveringRead) return;
     final tag = workspace.currentSummaryForHistory?.etag;
-    final changed = tag != null && _observedTag != null && tag != _observedTag;
+    final previous = _observedTag ?? _selectionTag;
+    final changed = tag != null && previous != null && tag != previous;
     _observedTag = tag;
     if (changed) _markDirty();
     if (_active && _dirty && _request == null &&

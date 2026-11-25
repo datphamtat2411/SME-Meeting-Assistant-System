@@ -26,6 +26,11 @@ class _Repository extends ResultsRepository {
   _Repository(super.api);
   int reads = 0;
   ApiFailure? historyFailure;
+  int historyReads = 0;
+  final List<PagedCollection<SummaryVersion>> historyPages = [];
+  Transcript? transcriptValue;
+  TranscriptCoverage? coverageValue;
+  SpeakerReviewSnapshot? speakerValue;
   bool access = true;
   Object? verificationFailure;
   Completer<bool>? pendingVerification;
@@ -46,8 +51,30 @@ class _Repository extends ResultsRepository {
     reads++;
     final failure = readFailure;
     if (failure != null) throw failure;
-    return pending == null ? _transcript : await pending!.future;
+    return pending == null ? transcriptValue ?? _transcript : await pending!.future;
   }
+
+  @override
+  Future<TranscriptCoverage> currentTranscriptCoverage({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+    bool Function()? stillAuthorized,
+  }) async => coverageValue ?? const TranscriptCoverage(
+    transcriptId: 'transcript-1',
+    transcriptEtag: '"transcript-reviewed"',
+    regions: [],
+  );
+
+  @override
+  Future<SpeakerReviewSnapshot> speakerReview({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+    required bool Function() stillAuthorized,
+  }) async => speakerValue ?? const SpeakerReviewSnapshot(
+    transcriptId: 'transcript-1',
+    etag: '"transcript-reviewed"',
+    clusters: [],
+  );
 
   @override
   Future<ResultsSummary> currentSummary({
@@ -77,8 +104,10 @@ class _Repository extends ResultsRepository {
     int page = 0,
     int size = 20,
   }) async {
+    historyReads++;
     final failure = historyFailure;
     if (failure != null) throw failure;
+    if (historyPages.isNotEmpty) return historyPages[page];
     return const PagedCollection<SummaryVersion>(
       items: <SummaryVersion>[],
       page: 0,
@@ -250,6 +279,133 @@ _setup() async {
 }
 
 void main() {
+  testWidgets('evidence opens the transcript and focuses a distant segment', (
+    tester,
+  ) async {
+    final setup = await tester.runAsync(_setup);
+    final (:workspace, :repository) = setup!;
+    repository.transcriptValue = Transcript(
+      id: 'transcript-1',
+      meetingId: testMeetingId,
+      sourceMediaId: null,
+      processingJobId: null,
+      versionNumber: 1,
+      languageCode: 'vi',
+      status: 'READY',
+      durationMs: 100000,
+      finalizedAt: _createdAt,
+      contentRevision: 1,
+      segments: [
+        for (var index = 0; index < 100; index++)
+          SpeechSegment(
+            id: 'segment-$index',
+            ordinal: index,
+            text: 'Segment $index',
+            startMs: index * 1000,
+            endMs: (index + 1) * 1000,
+            speakerLabel: 'SPEAKER_01',
+            speakerClusterId: 'speaker-1',
+            quality: 'ACCEPTED',
+            version: 1,
+            etag: '"segment-$index"',
+          ),
+      ],
+      etag: '"transcript-reviewed"',
+    );
+    repository.speakerValue = const SpeakerReviewSnapshot(
+      transcriptId: 'transcript-1',
+      etag: '"transcript-reviewed"',
+      clusters: [
+        SpeakerCluster(
+          id: 'speaker-1',
+          label: 'SPEAKER_01',
+          userId: 'user-1',
+          displayName: 'Nguyễn Văn A',
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ResultsPanel(workspace: workspace))),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Transcript').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Chưa có bằng chứng để đánh giá độ bao phủ.'), findsOneWidget);
+    expect(find.text('Nguyễn Văn A'), findsWidgets);
+    expect(find.text('Segment 90'), findsNothing);
+    await tester.enterText(find.byType(TextField).first, 'does not exist');
+    await tester.pumpAndSettle();
+    final opening = TranscriptEvidenceNavigationBoundary(workspace).locate(
+      const TranscriptEvidenceReference(
+        transcriptId: 'transcript-1',
+        segmentId: 'segment-90',
+        contentRevision: 1,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect((await opening).status, TranscriptEvidenceNavigationStatus.opened);
+    expect(find.text('Segment 90'), findsOneWidget);
+    expect(find.text('Đoạn đang tham chiếu'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  test('history retains pages across sections and recoverable failures', () async {
+    final (:workspace, :repository) = await _setup();
+    SummaryVersion version(int number) => SummaryVersion(
+      id: 'summary-$number',
+      versionNumber: number,
+      content: 'Version $number',
+      sourceType: 'AI',
+      qualityStatus: 'READY',
+      isStale: false,
+      isCurrent: number == 1,
+      createdAt: _createdAt,
+    );
+    repository.historyPages.addAll([
+      PagedCollection<SummaryVersion>(
+        items: [for (var number = 21; number >= 2; number--) version(number)],
+        page: 0,
+        size: 20,
+        totalElements: 21,
+        totalPages: 2,
+        hasNext: true,
+        hasPrevious: false,
+      ),
+      PagedCollection<SummaryVersion>(
+        items: [version(1)],
+        page: 1,
+        size: 20,
+        totalElements: 21,
+        totalPages: 2,
+        hasNext: false,
+        hasPrevious: true,
+      ),
+    ]);
+    final history = workspace.summaryHistory;
+    await history.load();
+    await history.loadMore();
+    expect(history.items, hasLength(21));
+    history.setActive(false);
+    history.setActive(true);
+    expect(repository.historyReads, 2);
+    repository.historyFailure = const ApiFailure(503, 'UNAVAILABLE', 'Retry');
+    await history.load(refresh: true);
+    expect(history.phase, SummaryHistoryPhase.failed);
+    expect(history.items, hasLength(21));
+    history.setActive(false);
+    workspace.invalidation.invalidate(
+      sessionScope: workspace.sessionScope,
+      meetingId: testMeetingId,
+      resources: {ResultsResourceKind.summaryVersions},
+    );
+    expect(repository.historyReads, 3);
+    repository.historyFailure = null;
+    history.setActive(true);
+    await _eventually(() => history.phase == SummaryHistoryPhase.available);
+    expect(history.items, hasLength(20));
+  });
+
   test('evidence lookup rejects a read revoked during loading', () async {
     final (:workspace, :repository) = await _setup();
     repository.pending = Completer<Transcript>();
