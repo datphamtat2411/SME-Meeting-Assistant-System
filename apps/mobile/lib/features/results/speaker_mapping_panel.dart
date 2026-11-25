@@ -6,6 +6,7 @@ import '../../core/command_actions.dart';
 import '../../core/widgets.dart';
 import 'results_models.dart';
 import 'results_workspace_controller.dart';
+import 'results_presentation.dart';
 
 class SpeakerMappingPanel extends StatefulWidget {
   const SpeakerMappingPanel({super.key, required this.workspace});
@@ -22,7 +23,6 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
   void initState() {
     super.initState();
     unawaited(widget.workspace.loadSpeakers());
-    unawaited(widget.workspace.loadTranscript());
   }
 
   Future<void> assign(SpeakerReviewSnapshot snapshot, String clusterId,
@@ -42,8 +42,10 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
     final search = TextEditingController();
     List<SpeakerCandidate> found = const [];
     var searchGeneration = 0;
-    final user = await showDialog<String>(
+    final user = await showResultsReviewDialog<String>(
       context: context,
+      workspace: widget.workspace,
+      epoch: epoch,
       builder: (dialog) => StatefulBuilder(
         builder: (dialog, update) => AlertDialog(
           title: const Text('Gán người nói'),
@@ -109,13 +111,9 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
       final snapshot = resource.data;
       final items = snapshot?.clusters;
       if (items == null || snapshot == null) {
-        return MessagePanel(
-          title: resource.phase == ResultsResourcePhase.forbidden
-              ? 'Bạn không có quyền xem kết quả này'
-              : 'Chưa có nhóm người nói',
-          onRetry: resource.phase == ResultsResourcePhase.failed
-              ? () => unawaited(widget.workspace.loadSpeakers(force: true))
-              : null,
+        return resultsResourceMessage(
+          resource, label: 'Nhóm người nói',
+          onRetry: () => widget.workspace.loadSpeakers(force: true),
         );
       }
       return ListView(
@@ -125,6 +123,7 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
             'Nhận diện người nói',
             subtitle: 'Có thể hiệu chỉnh nhãn do AI nhận dạng.',
           ),
+          resultsRefreshNotice(resource, () => widget.workspace.loadSpeakers(force: true)),
           if (items.isEmpty)
             const MessagePanel(title: 'Chưa có nhóm người nói'),
           ...items.map(

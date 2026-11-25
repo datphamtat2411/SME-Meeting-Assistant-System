@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dependencies.dart';
 import '../../core/models.dart';
+import '../../core/widgets.dart';
 import '../meetings/meeting_foundation.dart';
 import 'decisions_review_panel.dart';
 import 'minutes_panel.dart';
@@ -40,20 +43,25 @@ class _ResultsPanelState extends State<ResultsPanel> {
     0 => {ResultsResourceKind.summary, ResultsResourceKind.summaryVersions},
     1 => {ResultsResourceKind.transcript},
     2 => {ResultsResourceKind.decisions},
-    3 => {ResultsResourceKind.speakers, ResultsResourceKind.transcript},
+    3 => {ResultsResourceKind.speakers},
     _ => {ResultsResourceKind.minutes},
   };
 
   @override
   void initState() {
     super.initState();
+    _createWorkspace();
+  }
+
+  void _createWorkspace() {
     final dependencies = widget.dependencies;
     final meeting = widget.meeting;
     final meetingCapabilities = widget.meetingCapabilities;
     if (dependencies != null &&
         meeting != null &&
         meetingCapabilities != null) {
-      final scope = widget.api.requireAuthenticatedSessionScope();
+      final scope = widget.api.authenticatedSessionScope;
+      if (scope == null) return;
       workspace = ResultsWorkspaceController(
         api: widget.api,
         repository: dependencies.results,
@@ -83,8 +91,22 @@ class _ResultsPanelState extends State<ResultsPanel> {
     final current = workspace;
     final meeting = widget.meeting;
     final meetingCapabilities = widget.meetingCapabilities;
-    if (current == null || meeting == null || meetingCapabilities == null)
+    if (current == null ||
+        oldWidget.meetingId != widget.meetingId ||
+        oldWidget.api != widget.api ||
+        oldWidget.dependencies != widget.dependencies ||
+        !current.ownsSession) {
+      current?.dispose();
+      workspace = null;
+      _createWorkspace();
       return;
+    }
+    if (meeting == null || meetingCapabilities == null) {
+      current.updateCapabilities(
+        const ResultsCapabilities(canRead: false, canMutate: false),
+      );
+      return;
+    }
     current.updateCapabilities(
       ResultsCapabilityPolicy.evaluate(
         scope: current.sessionScope,
@@ -139,7 +161,17 @@ class _ResultsPanelState extends State<ResultsPanel> {
             ],
           ),
         ),
-        Expanded(child: page),
+        Expanded(
+          child: AnimatedBuilder(
+            animation: current,
+            builder: (context, _) => current.capabilities.canRead
+                ? KeyedSubtree(key: ObjectKey(current), child: page)
+                : MessagePanel(
+                    title: 'Không thể xác minh quyền truy cập kết quả cuộc họp.',
+                    onRetry: () => unawaited(current.retryAccess()),
+                  ),
+          ),
+        ),
       ],
     );
   }

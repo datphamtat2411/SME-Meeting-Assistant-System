@@ -166,7 +166,9 @@ class ResultsRepository {
     required String meetingId,
   }) async {
     final response = await _get(sessionScope, '/meetings/$meetingId/minutes');
-    return MeetingMinutes.fromResult(response);
+    final value = MeetingMinutes.fromResult(response);
+    _requireOwnership(sessionScope, meetingId, value.meetingId);
+    return value;
   }
 
   Future<ApiResult> correctSegment({
@@ -271,7 +273,7 @@ class ResultsRepository {
       sessionScope,
       '/meetings/$meetingId/decisions/${snapshot.id}/${confirm ? 'confirm' : 'reject'}',
       const <String, dynamic>{},
-      etag: snapshot.etag,
+      etag: _requireEtag(snapshot.etag),
     );
     return _validatedMutationResponse(response, requireBodyEtag: true);
   }
@@ -335,13 +337,13 @@ class ResultsRepository {
     AuthenticatedSessionScope scope,
     String path,
     Map<String, dynamic> body, {
-    required String etag,
+    required String? etag,
   }) {
-    _requireEtag(etag);
+    final token = _requireEtag(etag);
     return api.patch(
       path,
       body,
-      headers: {'If-Match': etag},
+      headers: {'If-Match': token},
       sessionScope: scope,
     );
   }
@@ -397,13 +399,14 @@ class ResultsRepository {
     }
   }
 
-  void _requireEtag(String value) {
-    if (value.trim().isEmpty || value.contains('\r') || value.contains('\n')) {
+  String _requireEtag(String? value) {
+    if (value == null || value.trim().isEmpty || value.contains('\r') || value.contains('\n')) {
       throw const ApiFailure(
         0,
         'VERSION_MISSING',
         'Không nhận được phiên bản dữ liệu. Vui lòng tải lại.',
       );
     }
+    return value;
   }
 }

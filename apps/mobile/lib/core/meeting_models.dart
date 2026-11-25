@@ -159,7 +159,7 @@ class SpeechSegment {
   final String? speakerClusterId;
   final String quality;
   final int version;
-  final String etag;
+  final String? etag;
 
   factory SpeechSegment.fromJson(
     Map<String, dynamic> raw, {
@@ -187,7 +187,7 @@ class SpeechSegment {
         nonEmpty: true,
       ),
       version: requiredInt(raw, 'version', response: response),
-      etag: requiredString(raw, 'etag', response: response, nonEmpty: true),
+      etag: optionalString(raw, 'etag', response: response),
     );
   }
 }
@@ -280,6 +280,17 @@ class MeetingDecision {
     required this.confirmedAt,
     required this.rejectedAt,
     required this.etag,
+    this.sourceType,
+    this.transcriptId,
+    this.contentRevision,
+    this.processingJobId,
+    this.createdByUserId,
+    this.confirmedByUserId,
+    this.rejectedByUserId,
+    this.aiUncertainty,
+    this.aiWarnings = const [],
+    this.evidenceSegmentIds = const [],
+    this.aiProducer,
   });
 
   final String id;
@@ -291,7 +302,11 @@ class MeetingDecision {
   final DateTime createdAt;
   final DateTime? confirmedAt;
   final DateTime? rejectedAt;
-  final String etag;
+  final String? etag;
+  final String? sourceType, transcriptId, processingJobId, createdByUserId, confirmedByUserId, rejectedByUserId, aiUncertainty;
+  final int? contentRevision;
+  final List<String> aiWarnings, evidenceSegmentIds;
+  final Map<String, dynamic>? aiProducer;
 
   factory MeetingDecision.fromJson(
     Map<String, dynamic> raw, {
@@ -306,9 +321,28 @@ class MeetingDecision {
     createdAt: requiredTimestamp(raw, 'createdAt', response: response),
     confirmedAt: optionalTimestamp(raw, 'confirmedAt', response: response),
     rejectedAt: optionalTimestamp(raw, 'rejectedAt', response: response),
-    etag: requiredString(raw, 'etag', response: response, nonEmpty: true),
+    etag: optionalString(raw, 'etag', response: response),
+    sourceType: optionalString(raw, 'sourceType', response: response),
+    transcriptId: optionalIdentifier(raw, 'transcriptId', response: response),
+    processingJobId: optionalIdentifier(raw, 'processingJobId', response: response),
+    contentRevision: optionalInt(raw, 'contentRevision', response: response),
+    createdByUserId: optionalIdentifier(raw, 'createdByUserId', response: response),
+    confirmedByUserId: optionalIdentifier(raw, 'confirmedByUserId', response: response),
+    rejectedByUserId: optionalIdentifier(raw, 'rejectedByUserId', response: response),
+    aiUncertainty: optionalString(raw, 'aiUncertainty', response: response),
+    aiWarnings: _decisionStrings(raw['aiWarnings'], response),
+    evidenceSegmentIds: _decisionStrings(raw['evidenceSegmentIds'], response),
+    aiProducer: optionalObject(raw, 'aiProducer', response: response),
   );
 }
 
 List<SpeechSegment> speechSegments(ApiResult response) =>
     Transcript.fromResult(response).segments;
+
+List<String> _decisionStrings(dynamic value, ApiResult? response) {
+  if (value == null) return const [];
+  if (value is! List || value.any((item) => item is! String)) {
+    invalidApiData(response: response);
+  }
+  return List<String>.unmodifiable(value.cast<String>());
+}

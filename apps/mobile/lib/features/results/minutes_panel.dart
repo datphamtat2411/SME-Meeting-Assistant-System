@@ -5,8 +5,8 @@ import 'package:flutter/material.dart';
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/widgets.dart';
-import 'results_models.dart';
 import 'results_workspace_controller.dart';
+import 'results_presentation.dart';
 
 class MinutesPanel extends StatefulWidget {
   const MinutesPanel({super.key, required this.workspace});
@@ -30,14 +30,9 @@ class _MinutesPanelState extends State<MinutesPanel> {
       final resource = widget.workspace.minutes;
       final minutes = resource.data;
       if (minutes == null) {
-        return MessagePanel(
-          title: resource.phase == ResultsResourcePhase.forbidden
-              ? 'Bạn không có quyền xem kết quả này'
-              : 'Biên bản chưa sẵn sàng',
-          onRetry: resource.phase == ResultsResourcePhase.failed
-              ? () => unawaited(widget.workspace.loadMinutes(force: true))
-              : null,
-        );
+        return resultsResourceMessage(resource, label: 'Biên bản',
+          onRetry: () => widget.workspace.loadMinutes(force: true));
+
       }
       return RefreshIndicator(
         onRefresh: () => widget.workspace.loadMinutes(force: true),
@@ -45,6 +40,7 @@ class _MinutesPanelState extends State<MinutesPanel> {
           padding: const EdgeInsets.all(18),
           children: [
             const SectionHeading('Biên bản chính thức'),
+            resultsRefreshNotice(resource, () => widget.workspace.loadMinutes(force: true)),
             ContentCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -54,7 +50,7 @@ class _MinutesPanelState extends State<MinutesPanel> {
                   Text('Lập lúc: ${dateLabel(minutes.assembledAt)}'),
                   const SizedBox(height: 7),
                   const Text(
-                    'Chỉ gồm nội dung đã được xác nhận theo quy tắc Core API.',
+                    'Biên bản từ Core API; tóm tắt AI có thể cần đối chiếu.',
                     style: TextStyle(color: Palette.muted, fontSize: 12),
                   ),
                 ],

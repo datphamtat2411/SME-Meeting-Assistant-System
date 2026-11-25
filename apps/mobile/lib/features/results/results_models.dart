@@ -178,6 +178,13 @@ class SummaryVersion {
     required this.isStale,
     required this.isCurrent,
     required this.createdAt,
+    this.meetingId,
+    this.transcriptId,
+    this.contentRevision,
+    this.processingJobId,
+    this.createdByUserId,
+    this.aiWarnings = const [],
+    this.aiProducer,
   });
 
   final String id;
@@ -188,6 +195,10 @@ class SummaryVersion {
   final bool isStale;
   final bool isCurrent;
   final DateTime createdAt;
+  final String? meetingId, transcriptId, processingJobId, createdByUserId;
+  final int? contentRevision;
+  final List<String> aiWarnings;
+  final Map<String, dynamic>? aiProducer;
 
   factory SummaryVersion.fromJson(
     Map<String, dynamic> raw, {
@@ -216,6 +227,14 @@ class SummaryVersion {
     isStale: requiredBool(raw, 'isStale', response: response),
     isCurrent: requiredBool(raw, 'isCurrent', response: response),
     createdAt: requiredTimestamp(raw, 'createdAt', response: response),
+    meetingId: optionalIdentifier(raw, 'meetingId', response: response),
+    transcriptId: optionalIdentifier(raw, 'transcriptId', response: response),
+    contentRevision: optionalInt(raw, 'contentRevision', response: response),
+    processingJobId: optionalIdentifier(raw, 'processingJobId', response: response),
+    createdByUserId: optionalIdentifier(raw, 'createdByUserId', response: response),
+    aiWarnings: raw['aiWarnings'] == null ? const [] :
+      _strings(raw, 'aiWarnings', response),
+    aiProducer: optionalObject(raw, 'aiProducer', response: response),
   );
 }
 
@@ -229,9 +248,15 @@ class MeetingMinutes {
     required this.transcriptAvailability,
     required this.transcriptStatus,
     required this.warnings,
+    required this.meetingId,
+    required this.schemaVersion,
+    required this.sourceFingerprint,
   });
 
   final String completeness;
+  final String meetingId;
+  final int schemaVersion;
+  final String sourceFingerprint;
   final DateTime? assembledAt;
   final String? summaryContent;
   final List<Map<String, dynamic>> confirmedDecisions;
@@ -244,6 +269,9 @@ class MeetingMinutes {
     final raw = response.objectData();
     final transcript = requiredObject(raw, 'transcript', response: response);
     return MeetingMinutes(
+      meetingId: requiredIdentifier(requiredObject(raw, 'meeting', response: response), 'id', response: response),
+      schemaVersion: requiredInt(raw, 'schemaVersion', response: response, minimum: 1),
+      sourceFingerprint: requiredString(raw, 'sourceFingerprint', response: response, nonEmpty: true),
       completeness: requiredString(
         raw,
         'completeness',
@@ -289,7 +317,7 @@ String _requiredEtag(ApiResult response) {
 List<String> _strings(
   Map<String, dynamic> raw,
   String field,
-  ApiResult response,
+  ApiResult? response,
 ) {
   final value = raw[field];
   if (value is! List || value.any((item) => item is! String)) {

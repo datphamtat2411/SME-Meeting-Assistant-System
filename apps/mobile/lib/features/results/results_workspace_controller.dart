@@ -98,6 +98,14 @@ class ResultsWorkspaceController extends ChangeNotifier {
   bool _disposed = false;
   final ResultsMutationCoordinator _mutations = ResultsMutationCoordinator();
   int get reviewEpoch => _mutations.epoch;
+  bool get regenerationUncertain => _mutations.regenerationUncertain;
+  String? draft(String key) => capabilities.canMutate ? _mutations.draft(key) : null;
+  void keepDraft(String key, String text, int epoch) {
+    if (ownsReview(epoch)) _mutations.keepDraft(key, text);
+  }
+  void clearDraft(String key, int epoch) {
+    if (ownsReview(epoch)) _mutations.clearDraft(key);
+  }
   bool mutationBusy(ResultsMutationGroup group) => _mutations.busy(group);
   String? get acceptedRegenerationJobId => _mutations.acceptedRegenerationJobId;
   bool ownsReview(int epoch) => capabilities.canMutate && epoch == reviewEpoch;
@@ -173,6 +181,25 @@ class ResultsWorkspaceController extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  Future<void> retryAccess() async {
+    if (!ownsSession || !_accessDenied) return;
+    final epoch = reviewEpoch;
+    try {
+      final allowed = await repository.verifyReadAccess(
+        sessionScope: sessionScope, meetingId: meetingId,
+      );
+      if (!ownsSession || reviewEpoch != epoch || !allowed) return;
+      _accessDenied = false;
+      _syncProcessingObservation();
+      notifyListeners();
+      if (capabilities.canRead) {
+        await Future.wait(_active.toList().map(_reload));
+      }
+    } catch (_) {
+      // Do not restore protected data on an inconclusive access check.
+    }
   }
 
   void setActiveResources(Set<ResultsResourceKind> kinds) {
@@ -294,6 +321,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
     required bool force,
   }) {
     if (_disposed) return Future<void>.value();
+    if (force && _accessDenied) return retryAccess();
     if (!ownsSession || !capabilities.canRead) {
       write(
         ResultsResource<T>(
@@ -604,6 +632,19 @@ class ResultsWorkspaceController extends ChangeNotifier {
       _requireMutation(epoch);
       await operation();
       _requireMutation(epoch);
+    } on ApiFailure catch (failure) {
+      if (ownsReview(epoch) && ResultsMutationCoordinator.isUncertain(failure)) {
+        _invalidate(resources);
+        // Reconcile active canonical projections before returning an
+        // ambiguous outcome. Never replay the command automatically.
+        await Future.wait(resources.where(_active.contains).map(_reload));
+        throw const ApiFailure(
+          0, 'RESULTS_OUTCOME_UNKNOWN',
+          'Chưa xác định thao tác đã được lưu hay chưa. Hãy kiểm tra kết quả trước khi thử lại.',
+          remoteOutcomeAmbiguous: true,
+        );
+      }
+      rethrow;
     } finally {
       _mutations.finish(group, ticket);
       if (ownsReview(epoch)) {

@@ -9,6 +9,11 @@ class ResultsMutationCoordinator {
   final Map<ResultsMutationGroup, Object> _pending = {};
   int _epoch = 0;
   String? _regenerationKey;
+  bool regenerationUncertain = false;
+  final Map<String, String> _drafts = {};
+  String? draft(String key) => _drafts[key];
+  void keepDraft(String key, String text) => _drafts[key] = text;
+  void clearDraft(String key) => _drafts.remove(key);
   String? acceptedRegenerationJobId;
 
   int get epoch => _epoch;
@@ -17,6 +22,8 @@ class ResultsMutationCoordinator {
   void invalidate() {
     _epoch++;
     _pending.clear();
+    _drafts.clear();
+    regenerationUncertain = false;
     _regenerationKey = null;
     acceptedRegenerationJobId = null;
   }
@@ -44,11 +51,14 @@ class ResultsMutationCoordinator {
 
   void recordAdmission(String jobId) {
     acceptedRegenerationJobId = jobId;
+    regenerationUncertain = false;
     _regenerationKey = null;
   }
 
   void recordFailure(Object error) {
-    if (error is ApiFailure && !isUncertain(error)) {
+    if (isUncertain(error)) {
+      regenerationUncertain = true;
+    } else if (!regenerationUncertain) {
       _regenerationKey = null;
     }
   }

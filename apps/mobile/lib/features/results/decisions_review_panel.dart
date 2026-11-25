@@ -5,8 +5,8 @@ import 'package:flutter/material.dart';
 import '../../core/app_theme.dart';
 import '../../core/command_actions.dart';
 import '../../core/widgets.dart';
-import 'results_models.dart';
 import 'results_workspace_controller.dart';
+import 'results_presentation.dart';
 
 class DecisionsReviewPanel extends StatefulWidget {
   const DecisionsReviewPanel({super.key, required this.workspace});
@@ -28,8 +28,10 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
   Future<void> createDecision() async {
     final epoch = widget.workspace.reviewEpoch;
     final controller = TextEditingController();
-    final ok = await showDialog<bool>(
+    final ok = await showResultsReviewDialog<bool>(
       context: context,
+      workspace: widget.workspace,
+      epoch: epoch,
       builder: (dialog) => AlertDialog(
         title: const Text('Tạo quyết định'),
         content: SizedBox(
@@ -93,17 +95,11 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
               child: ListView(
                 padding: const EdgeInsets.all(18),
                 children: [
+                  resultsRefreshNotice(resource, () => widget.workspace.loadDecisions(force: true)),
                   if (items == null)
-                    MessagePanel(
-                      title: resource.phase == ResultsResourcePhase.forbidden
-                          ? 'Bạn không có quyền xem kết quả này'
-                          : 'Quyết định chưa sẵn sàng',
-                      onRetry: resource.phase == ResultsResourcePhase.failed
-                          ? () => unawaited(
-                              widget.workspace.loadDecisions(force: true),
-                            )
-                          : null,
-                    )
+                    resultsResourceMessage(resource, label: 'Quyết định',
+                      onRetry: () => widget.workspace.loadDecisions(force: true))
+
                   else if (items.isEmpty)
                     const MessagePanel(title: 'Chưa có quyết định')
                   else

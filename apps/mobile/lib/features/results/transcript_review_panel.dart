@@ -7,8 +7,8 @@ import '../../core/command_actions.dart';
 import '../../core/date_labels.dart';
 import '../../core/meeting_models.dart';
 import '../../core/widgets.dart';
-import 'results_models.dart';
 import 'results_workspace_controller.dart';
+import 'results_presentation.dart';
 
 class TranscriptReviewPanel extends StatefulWidget {
   const TranscriptReviewPanel({super.key, required this.workspace});
@@ -35,9 +35,12 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
 
   Future<void> edit(SpeechSegment segment) async {
     final epoch = widget.workspace.reviewEpoch;
-    final controller = TextEditingController(text: segment.text);
-    final ok = await showDialog<bool>(
+    final draftKey = 'segment:${segment.id}';
+    final controller = TextEditingController(text: widget.workspace.draft(draftKey) ?? segment.text);
+    final ok = await showResultsReviewDialog<bool>(
       context: context,
+      workspace: widget.workspace,
+      epoch: epoch,
       builder: (dialog) => AlertDialog(
         title: const Text('Chỉnh sửa đoạn transcript'),
         content: TextField(
@@ -61,11 +64,13 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
     final value = controller.text.trim();
     controller.dispose();
     if (ok != true || value.isEmpty || !mounted) return;
-    await runCommand(
+    widget.workspace.keepDraft(draftKey, value, epoch);
+    final saved = await runCommand(
       context,
       operation: () => widget.workspace.correctSegment(segment, value, epoch: epoch),
       successText: 'Đã cập nhật transcript.',
     );
+    if (saved) widget.workspace.clearDraft(draftKey, epoch);
   }
 
   @override
@@ -75,9 +80,9 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
       final resource = widget.workspace.transcript;
       final transcript = resource.data;
       if (transcript == null) {
-        return _resourceMessage(
-          resource,
-          onRetry: widget.workspace.loadTranscript,
+        return resultsResourceMessage(
+          resource, label: 'Transcript',
+          onRetry: () => widget.workspace.loadTranscript(force: true),
         );
       }
       final query = search.text.trim().toLowerCase();
@@ -112,8 +117,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                     subtitle:
                         '${transcript.segments.length} đoạn phát biểu có dấu thời gian',
                   ),
-                  if (resource.phase == ResultsResourcePhase.refreshing)
-                    const LinearProgressIndicator(),
+                  resultsRefreshNotice(resource, () => widget.workspace.loadTranscript(force: true)),
                   if (transcript.segments.isEmpty)
                     const MessagePanel(title: 'Transcript chưa sẵn sàng'),
                   if (transcript.segments.isNotEmpty && visible.isEmpty)
@@ -146,7 +150,8 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                                 icon: const Icon(Icons.edit_note_outlined),
                                 onPressed:
                                     widget.workspace.capabilities.canMutate &&
-                                    !widget.workspace.mutationBusy(ResultsMutationGroup.transcript)
+                                    !widget.workspace.mutationBusy(ResultsMutationGroup.transcript) &&
+                                    segment.etag != null && segment.etag!.trim().isNotEmpty
                                     ? () => edit(segment)
                                     : null,
                                 tooltip: 'Chỉnh sửa đoạn transcript',
@@ -174,24 +179,3 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
   );
 }
 
-Widget _resourceMessage<T>(
-  ResultsResource<T> resource, {
-  required Future<void> Function() onRetry,
-}) {
-  final title = switch (resource.phase) {
-    ResultsResourcePhase.forbidden => 'Bạn không có quyền xem kết quả này',
-    ResultsResourcePhase.notReady => 'Transcript chưa sẵn sàng',
-    ResultsResourcePhase.failed => 'Không thể tải transcript',
-    ResultsResourcePhase.loading ||
-    ResultsResourcePhase.uninitialized ||
-    ResultsResourcePhase.refreshing => 'Đang tải transcript',
-    ResultsResourcePhase.empty => 'Transcript chưa sẵn sàng',
-    ResultsResourcePhase.available => 'Transcript chưa sẵn sàng',
-  };
-  return MessagePanel(
-    title: title,
-    onRetry: resource.phase == ResultsResourcePhase.failed
-        ? () => unawaited(onRetry())
-        : null,
-  );
-}

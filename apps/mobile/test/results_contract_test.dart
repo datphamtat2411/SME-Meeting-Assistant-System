@@ -23,7 +23,10 @@ void main() {
 
   test('canonical minutes can exist without a transcript', () {
     final minutes = MeetingMinutes.fromResult(ApiResult({
-      'completeness': 'INCOMPLETE',
+      'completeness': 'PARTIAL',
+      'meeting': {'id': 'meeting-1'},
+      'schemaVersion': 1,
+      'sourceFingerprint': 'server-fingerprint',
       'assembledAt': '2026-11-23T10:00:00Z',
       'summary': null,
       'confirmedDecisions': <dynamic>[],

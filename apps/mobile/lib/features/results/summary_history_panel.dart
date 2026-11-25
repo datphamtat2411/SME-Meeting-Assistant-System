@@ -7,6 +7,7 @@ import '../../core/command_actions.dart';
 import '../../core/widgets.dart';
 import 'results_models.dart';
 import 'results_workspace_controller.dart';
+import 'results_presentation.dart';
 
 class SummaryHistoryPanel extends StatefulWidget {
   const SummaryHistoryPanel({super.key, required this.workspace});
@@ -28,9 +29,12 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
 
   Future<void> edit(ResultsSummary summary) async {
     final epoch = widget.workspace.reviewEpoch;
-    final controller = TextEditingController(text: summary.content);
-    final ok = await showDialog<bool>(
+    final draftKey = 'summary:${summary.meetingId}';
+    final controller = TextEditingController(text: widget.workspace.draft(draftKey) ?? summary.content);
+    final ok = await showResultsReviewDialog<bool>(
       context: context,
+      workspace: widget.workspace,
+      epoch: epoch,
       builder: (dialog) => AlertDialog(
         title: const Text('Chỉnh sửa tóm tắt'),
         content: SizedBox(
@@ -58,11 +62,13 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
     controller.dispose();
     if (ok != true || value.isEmpty || !mounted) return;
     setState(() => busy = true);
-    await runCommand(
+    widget.workspace.keepDraft(draftKey, value, epoch);
+    final saved = await runCommand(
       context,
       operation: () => widget.workspace.editSummary(summary, value, epoch: epoch),
       successText: 'Đã lưu phiên bản mới.',
     );
+    if (saved) widget.workspace.clearDraft(draftKey, epoch);
     if (mounted) setState(() => busy = false);
   }
 
@@ -82,13 +88,23 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
 
   Future<void> regenerate() async {
     final epoch = widget.workspace.reviewEpoch;
-    final ok = await confirmCommand(
-      context,
-      title: 'Tạo lại tóm tắt AI?',
-      description: 'Tạo một tác vụ xử lý mới. Phiên bản cũ vẫn được lưu.',
-      confirmLabel: 'Tạo tác vụ',
+    final retry = widget.workspace.regenerationUncertain;
+    final ok = await showResultsReviewDialog<bool>(
+      context: context,
+      workspace: widget.workspace,
+      epoch: epoch,
+      builder: (dialog) => AlertDialog(
+        title: Text(retry ? 'Kiểm tra lại yêu cầu trước?' : 'Tạo lại tóm tắt AI?'),
+        content: Text(retry
+          ? 'Tiếp tục cùng yêu cầu đã gửi; không tạo một yêu cầu mới.'
+          : 'Tạo một tác vụ xử lý mới. Phiên bản cũ vẫn được lưu.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('Hủy')),
+          FilledButton(onPressed: () => Navigator.pop(dialog, true), child: const Text('Xác nhận')),
+        ],
+      ),
     );
-    if (!ok || !mounted) return;
+    if (ok != true || !mounted) return;
     setState(() => busy = true);
     await runCommand(
       context,
@@ -118,18 +134,12 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
             ),
           ),
           if (current == null)
-            MessagePanel(
-              title:
-                  widget.workspace.summary.phase ==
-                      ResultsResourcePhase.forbidden
-                  ? 'Bạn không có quyền xem kết quả này'
-                  : 'Tóm tắt chưa sẵn sàng',
-              onRetry:
-                  widget.workspace.summary.phase == ResultsResourcePhase.failed
-                  ? () => unawaited(widget.workspace.loadSummary(force: true))
-                  : null,
+            resultsResourceMessage(
+              widget.workspace.summary, label: 'Tóm tắt',
+              onRetry: () => widget.workspace.loadSummary(force: true),
             )
           else ...[
+            resultsRefreshNotice(widget.workspace.summary, () => widget.workspace.loadSummary(force: true)),
             ContentCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -177,7 +187,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                         ? null
                         : regenerate,
                     icon: const Icon(Icons.auto_awesome),
-                    label: const Text('Tạo lại AI'),
+                    label: Text(widget.workspace.regenerationUncertain ? 'Kiểm tra lại' : 'Tạo lại AI'),
                   ),
                 ),
               ],
@@ -186,7 +196,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
           const SizedBox(height: 16),
           const SectionHeading('Lịch sử phiên bản'),
           if (versions == null)
-            const MessagePanel(title: 'Chưa tải được lịch sử phiên bản')
+            resultsResourceMessage(widget.workspace.summaryVersions, label: 'Lịch sử phiên bản', onRetry: () => widget.workspace.loadSummaryVersions(force: true))
           else if (versions.isEmpty)
             const MessagePanel(title: 'Chưa có lịch sử')
           else
