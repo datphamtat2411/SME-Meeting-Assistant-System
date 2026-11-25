@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import '../../core/api_client.dart';
+import 'summary_regeneration_tracker.dart';
 
 /// Workspace-owned command state, independent of presentation mount cycles.
 enum ResultsMutationGroup { transcript, summary, decisions }
@@ -42,7 +43,8 @@ class ResultsMutationCoordinator {
   void keepDraft(String key, ResultsRecoveryDraft draft) =>
       _drafts[key] = draft;
   void clearDraft(String key) => _drafts.remove(key);
-  String? acceptedRegenerationJobId;
+  final SummaryRegenerationTracker regeneration = SummaryRegenerationTracker();
+  String? get acceptedRegenerationJobId => regeneration.pendingJobId;
 
   int get epoch => _epoch;
   bool busy(ResultsMutationGroup group) => _pending.containsKey(group);
@@ -60,7 +62,7 @@ class ResultsMutationCoordinator {
     unknownDecisionContent = null;
     regenerationUncertain = false;
     _regenerationKey = null;
-    acceptedRegenerationJobId = null;
+    regeneration.clear();
   }
 
   Object begin(ResultsMutationGroup group) {
@@ -81,6 +83,11 @@ class ResultsMutationCoordinator {
   }
 
   String regenerationKey() {
+    // The Core API durably claims (requester, SUMMARY_REGENERATION:meeting,
+    // key) in processing_job_idempotency. Replay reads that same record;
+    // there is no time-based expiry in the current admission contract.
+    // Never mint a new key merely because the admission response was lost.
+    regeneration.begin();
     final random = Random.secure();
     return _regenerationKey ??= List<int>.generate(
       16,
@@ -89,18 +96,13 @@ class ResultsMutationCoordinator {
   }
 
   void recordAdmission(String jobId) {
-    acceptedRegenerationJobId = jobId;
+    regeneration.admit(jobId);
     regenerationUncertain = false;
     _regenerationKey = null;
   }
 
-  void completeAdmission(String jobId) {
-    if (acceptedRegenerationJobId == jobId) {
-      acceptedRegenerationJobId = null;
-    }
-  }
-
   void recordFailure(Object error) {
+    regeneration.fail(uncertain: regenerationUncertain || isUncertain(error));
     if (isUncertain(error)) {
       regenerationUncertain = true;
     } else if (!regenerationUncertain) {

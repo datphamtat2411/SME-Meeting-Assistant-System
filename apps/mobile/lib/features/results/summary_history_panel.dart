@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/app_theme.dart';
 import '../../core/command_actions.dart';
 import '../../core/widgets.dart';
+import '../recording/media_contracts.dart';
 import 'results_models.dart';
 import 'results_workspace_controller.dart';
 import 'results_presentation.dart';
@@ -144,6 +145,23 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
   Future<void> regenerate() async {
     final epoch = widget.workspace.reviewEpoch;
     final retry = widget.workspace.regenerationUncertain;
+    if (!retry) {
+      await widget.workspace.loadTranscript(force: true);
+      if (!mounted || !widget.workspace.ownsReview(epoch)) return;
+      final source = widget.workspace.transcript.data;
+      if (!widget.workspace.transcriptIsCurrent ||
+          source == null ||
+          source.finalizedAt == null ||
+          !{'READY', 'READY_WITH_WARNINGS'}.contains(source.status) ||
+          source.segments.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Cần transcript hoàn chỉnh trước khi tạo tóm tắt.'),
+          ),
+        );
+        return;
+      }
+    }
     final ok = await showResultsReviewDialog<bool>(
       context: context,
       workspace: widget.workspace,
@@ -226,6 +244,80 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
     );
   }
 
+  Widget _regenerationStatus() {
+    final workspace = widget.workspace;
+    final job = workspace.regenerationJob;
+    final label = workspace.regenerationAdmitting
+        ? 'Đang gửi yêu cầu tạo tóm tắt'
+        : workspace.regenerationUncertain
+        ? 'Chưa xác định yêu cầu đã được tiếp nhận hay chưa'
+        : workspace.regenerationAdmissionRejected
+        ? 'Yêu cầu tạo tóm tắt chưa được chấp nhận'
+        : switch (job?.status) {
+            ProcessingJobStatus.pending => 'Đã tiếp nhận, đang chờ xử lý',
+            ProcessingJobStatus.queued => 'Đang trong hàng đợi',
+            ProcessingJobStatus.running => 'AI đang tạo tóm tắt',
+            ProcessingJobStatus.waitingForReview => 'Đang chờ xem xét',
+            ProcessingJobStatus.completed => 'Tác vụ tạo tóm tắt đã hoàn tất',
+            ProcessingJobStatus.completedWithWarnings =>
+              'Tác vụ đã hoàn tất nhưng có cảnh báo',
+            ProcessingJobStatus.failed => 'Tạo tóm tắt thất bại',
+            ProcessingJobStatus.cancelled => 'Tác vụ tạo tóm tắt đã bị hủy',
+            null => workspace.acceptedRegenerationJobId != null
+                ? 'Đã tiếp nhận, đang xác minh tiến trình'
+                : null,
+          };
+    if (label == null) return const SizedBox.shrink();
+    return ContentCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+          if (job != null)
+            StatePill(job.status.wireValue),
+          if (job?.warningSummary != null)
+            Text(job!.warningSummary!, style: const TextStyle(color: Palette.amber)),
+          if (job?.errorSummary != null)
+            Text(job!.errorSummary!, style: const TextStyle(color: Palette.red)),
+          if (job?.status.isSuccessful == true)
+            const Text('Kiểm tra phiên bản đang chọn và lịch sử từ máy chủ.'),
+          if (workspace.acceptedRegenerationJobId != null &&
+              workspace.processingManager != null)
+            TextButton(
+              onPressed: () => unawaited(workspace.processingManager!.refresh(
+                workspace.meetingId,
+                scope: workspace.sessionScope,
+                explicit: true,
+              )),
+              child: const Text('Cập nhật tiến trình'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _regenerationButton({required bool hasSummary}) {
+    final workspace = widget.workspace;
+    return OutlinedButton.icon(
+      onPressed: busy ||
+              workspace.mutationBusy(ResultsMutationGroup.summary) ||
+              !workspace.capabilities.canMutate ||
+              workspace.acceptedRegenerationJobId != null
+          ? null
+          : regenerate,
+      icon: const Icon(Icons.auto_awesome),
+      label: Text(
+        workspace.acceptedRegenerationJobId != null
+            ? 'Đang xử lý'
+            : workspace.regenerationUncertain
+            ? 'Kiểm tra lại'
+            : hasSummary
+            ? 'Tạo lại AI'
+            : 'Tạo tóm tắt AI',
+      ),
+    );
+  }
+
   String _sourceLabel(String source) => switch (source) {
     'AI' || 'AI_GENERATED' => 'AI tạo',
     'HUMAN_EDIT' => 'Con người chỉnh sửa',
@@ -233,7 +325,8 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
   };
 
   String _qualityLabel(String quality) => switch (quality) {
-    'CONFIRMED' || 'READY' => 'Đã kiểm tra',
+    'CONFIRMED' => 'Đã xác nhận',
+    'READY' => 'Sẵn sàng',
     'WARNING' || 'READY_WITH_WARNINGS' => 'Có cảnh báo',
     _ => quality,
   };
@@ -259,13 +352,18 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
               icon: const Icon(Icons.refresh),
             ),
           ),
-          if (current == null)
+          _regenerationStatus(),
+          if (current == null) ...[
             resultsResourceMessage(
               widget.workspace.summary,
               label: 'Tóm tắt',
               onRetry: () => widget.workspace.loadSummary(force: true),
-            )
-          else ...[
+            ),
+            if (widget.workspace.summary.phase == ResultsResourcePhase.notReady ||
+                widget.workspace.regenerationUncertain ||
+                widget.workspace.acceptedRegenerationJobId != null)
+              _regenerationButton(hasSummary: false),
+          ] else ...[
             resultsRefreshNotice(
               widget.workspace.summary,
               () => widget.workspace.loadSummary(force: true),
@@ -300,7 +398,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                   ),
                   if (current.transcriptId != null)
                     Text(
-                      'Nguồn transcript: ${current.transcriptId}',
+                      'Nguồn transcript: ${current.transcriptId} · revision ${current.contentRevision ?? '—'}',
                       style: const TextStyle(
                         fontSize: 11,
                         color: Palette.muted,
@@ -341,27 +439,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed:
-                        busy ||
-                            widget.workspace.mutationBusy(
-                              ResultsMutationGroup.summary,
-                            ) ||
-                            !widget.workspace.capabilities.canMutate ||
-                            widget.workspace.acceptedRegenerationJobId != null
-                        ? null
-                        : regenerate,
-                    icon: const Icon(Icons.auto_awesome),
-                    label: Text(
-                      widget.workspace.acceptedRegenerationJobId != null
-                          ? 'Đang xử lý'
-                          : widget.workspace.regenerationUncertain
-                          ? 'Kiểm tra lại'
-                          : 'Tạo lại AI',
-                    ),
-                  ),
-                ),
+                Expanded(child: _regenerationButton(hasSummary: true)),
               ],
             ),
           ],

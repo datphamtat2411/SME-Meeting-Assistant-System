@@ -8,6 +8,7 @@ import '../../core/models.dart';
 import '../../core/paged_collection.dart';
 import '../meetings/meeting_foundation.dart';
 import '../recording/processing_manager.dart';
+import '../recording/media_contracts.dart';
 import 'results_invalidation.dart';
 import 'results_models.dart';
 import 'results_repository.dart';
@@ -68,7 +69,9 @@ class ResultsWorkspaceController extends ChangeNotifier
   }
 
   final ApiClient api;
+  @override
   final ResultsRepository repository;
+  @override
   final String meetingId;
   final Meeting meeting;
   ResultsCapabilities _capabilities;
@@ -80,8 +83,10 @@ class ResultsWorkspaceController extends ChangeNotifier
           _accessVerificationFailure != null
       ? const ResultsCapabilities(canRead: false, canMutate: false)
       : _capabilities;
+  @override
   final ResultsInvalidationSignal invalidation;
   final ProcessingManager? processingManager;
+  @override
   final AuthenticatedSessionScope sessionScope;
 
   ResultsResource<Transcript> transcript = const ResultsResource<Transcript>();
@@ -133,6 +138,7 @@ class ResultsWorkspaceController extends ChangeNotifier
       <ResultsProtectedDialogRegistration>{};
   int get reviewEpoch => _mutations.epoch;
   int _readEpoch = 0;
+  @override
   int get readEpoch => _readEpoch;
   TranscriptFocusRequest? _transcriptFocus;
   TranscriptFocusRequest? get transcriptFocus =>
@@ -209,10 +215,17 @@ class ResultsWorkspaceController extends ChangeNotifier
 
   bool mutationBusy(ResultsMutationGroup group) => _mutations.busy(group);
   String? get acceptedRegenerationJobId => _mutations.acceptedRegenerationJobId;
+  ProcessingJobRecord? get regenerationJob =>
+      capabilities.canRead ? _mutations.regeneration.job : null;
+  bool get regenerationAdmitting =>
+      capabilities.canRead && _mutations.regeneration.admitting;
+  bool get regenerationAdmissionRejected =>
+      capabilities.canRead && _mutations.regeneration.admissionRejected;
   bool get isAuthorizationVerificationPending =>
       _accessVerificationPending || _accessVerificationFailure != null;
   Object? get authorizationVerificationFailure => _accessVerificationFailure;
   bool ownsReview(int epoch) => capabilities.canMutate && epoch == reviewEpoch;
+  @override
   bool ownsRead(int epoch) => capabilities.canRead && epoch == _readEpoch;
 
   ResultsProtectedDialogRegistration registerProtectedDialog(
@@ -288,11 +301,15 @@ class ResultsWorkspaceController extends ChangeNotifier
           scope: sessionScope,
           seenOutcomes: _processingOutcomes,
           publishInitial: _hasObservedProcessing,
-          onTerminalOutcome: (jobId) {
-            if (_mutations.acceptedRegenerationJobId != jobId) return;
-            _mutations.completeAdmission(jobId);
-            _syncProcessingObservation();
+          onJobObserved: (job) {
+            if (!capabilities.canRead ||
+                !_mutations.regeneration.observe(job)) {
+              return;
+            }
+            // Keep the terminal record for Summary presentation. Only the
+            // pending admission lock is released on terminal state.
             notifyListeners();
+            if (job.status.isTerminal) _syncProcessingObservation();
           },
         );
         _hasObservedProcessing = true;
@@ -450,6 +467,7 @@ class ResultsWorkspaceController extends ChangeNotifier
 
   /// Feature-owned protected reads must use the same authorization recovery
   /// as workspace-owned resources.
+  @override
   Future<void> handleProtectedReadFailure(
     ApiFailure failure, {
     required int epoch,

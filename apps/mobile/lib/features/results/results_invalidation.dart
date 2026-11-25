@@ -103,6 +103,7 @@ class ResultsProcessingBridge {
     required String meetingId,
     required AuthenticatedSessionScope scope,
     this.onTerminalOutcome,
+    this.onJobObserved,
     Map<String, String>? seenOutcomes,
     bool publishInitial = false,
   }) : _manager = manager,
@@ -125,6 +126,7 @@ class ResultsProcessingBridge {
   final String _meetingId;
   final AuthenticatedSessionScope _scope;
   final void Function(String jobId)? onTerminalOutcome;
+  final void Function(ProcessingJobRecord job)? onJobObserved;
   late final ProcessingObservation _observation;
   final Map<String, String> _seenOutcomes;
   bool _disposed = false;
@@ -140,6 +142,7 @@ class ResultsProcessingBridge {
     if (state == null || state.failure != null) return;
     final affected = <ResultsResourceKind>{};
     for (final job in state.jobs) {
+      onJobObserved?.call(job);
       if (!job.status.isTerminal && !job.isWaitingForReview) continue;
       final outcome = '${job.status.wireValue}:${job.retryCount}';
       final alreadySeen = _seenOutcomes[job.id] == outcome;
