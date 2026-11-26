@@ -45,6 +45,11 @@ export default defineConfig(({ mode }) => {
         }),
       },
     },
+    // Browser tests mount React through react-dom/client. Prebundle it
+    // before running tests to avoid an optimizer-triggered iframe reload.
+    optimizeDeps: {
+      include: ['react-dom/client'],
+    },
     test: {
       silent: 'passed-only',
       unstubEnvs: true,

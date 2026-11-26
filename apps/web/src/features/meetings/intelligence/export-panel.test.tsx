@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
+import { toast } from 'sonner'
 import { CoreApiError } from '@/lib/core-api'
 import { MeetingSessionProvider } from '../media/meeting-session-context'
 import { ExportPanel } from './export-panel'
@@ -137,15 +138,15 @@ const secondExportCapability = {
   exportId: secondExportId,
 }
 
-function renderPanel(canExport = true) {
-  return render(
-    <QueryClientProvider
-      client={
-        new QueryClient({
-          defaultOptions: { queries: { retry: false } },
-        })
-      }
-    >
+function ExportSessionMount({ canExport }: { canExport: boolean }) {
+  const [client] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      })
+  )
+  return (
+    <QueryClientProvider client={client}>
       <MeetingSessionProvider meetingId='11111111-1111-4111-8111-111111111111'>
         <ExportPanel
           meetingId='11111111-1111-4111-8111-111111111111'
@@ -153,6 +154,25 @@ function renderPanel(canExport = true) {
         />
       </MeetingSessionProvider>
     </QueryClientProvider>
+  )
+}
+
+function renderPanel(canExport = true) {
+  return render(<ExportSessionMount canExport={canExport} />)
+}
+
+// Keep the runner's React root mounted. Removing the entire application
+// subtree models a same-tab reload with a fresh QueryClient and operation
+// owner, while leaving only browser sessionStorage as the recovery channel.
+function ReloadHarness() {
+  const [mounted, setMounted] = useState(true)
+  return (
+    <>
+      <button type='button' onClick={() => setMounted((value) => !value)}>
+        {mounted ? 'Unmount export session' : 'Mount export session'}
+      </button>
+      {mounted && <ExportSessionMount canExport />}
+    </>
   )
 }
 
@@ -242,7 +262,10 @@ function deferred<T>() {
 
 describe('ExportPanel authorization and download boundary', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    exportMocks.createMinutesExport.mockReset()
+    exportMocks.recoverMinutesExport.mockReset()
+    exportMocks.accessMinutesExport.mockReset()
+    exportMocks.fetchExportStatus.mockReset()
     vi.unstubAllEnvs()
     sessionStorage.clear()
     authorizationMocks.value.meetingId = '11111111-1111-4111-8111-111111111111'
@@ -280,6 +303,11 @@ describe('ExportPanel authorization and download boundary', () => {
     exportMocks.createMinutesExport.mockResolvedValue({ exportId })
     exportMocks.recoverMinutesExport.mockResolvedValue({ exportId })
     exportMocks.accessMinutesExport.mockResolvedValue(exportCapability)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllEnvs()
   })
 
   it('observes a retryable failure on the same export and only replaces terminal failures', async () => {
@@ -323,17 +351,27 @@ describe('ExportPanel authorization and download boundary', () => {
   })
 
   it('keeps a known export identity through same-tab reload without admitting again', async () => {
-    const first = await renderPanel()
-    await userEvent.click(first.getByRole('button', { name: 'Generate PDF' }))
+    const screen = await render(<ReloadHarness />)
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
     await expect
-      .element(first.getByRole('button', { name: 'Download' }))
+      .element(screen.getByRole('button', { name: 'Download' }))
       .toBeVisible()
-    first.unmount()
-
-    const second = await renderPanel()
+    const observations = exportMocks.fetchExportStatus.mock.calls.length
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Unmount export session' })
+    )
     await expect
-      .element(second.getByRole('button', { name: 'Download' }))
+      .element(screen.getByRole('region', { name: 'PDF export' }))
+      .not.toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Mount export session' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Download' }))
       .toBeVisible()
+    expect(exportMocks.fetchExportStatus.mock.calls.length).toBeGreaterThan(
+      observations
+    )
     expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
     expect(exportMocks.recoverMinutesExport).not.toHaveBeenCalled()
   })
@@ -411,14 +449,16 @@ describe('ExportPanel authorization and download boundary', () => {
     await userEvent.click(previous)
     await expect.poll(() => click.mock.calls.length).toBe(1)
     expect(exportMocks.accessMinutesExport).toHaveBeenCalledWith(exportId)
+    const downloadError = vi.spyOn(toast, 'error')
     ready.freshness = 'STALE'
+    const observations = exportMocks.fetchExportStatus.mock.calls.length
     await userEvent.click(previous)
-    await expect
-      .poll(() => exportMocks.fetchExportStatus.mock.calls.length)
-      .toBeGreaterThan(3)
+    await expect.poll(() => downloadError.mock.calls.length).toBe(1)
+    expect(exportMocks.fetchExportStatus.mock.calls.length).toBeGreaterThan(
+      observations
+    )
     expect(exportMocks.accessMinutesExport).toHaveBeenCalledOnce()
     expect(click).toHaveBeenCalledOnce()
-    click.mockRestore()
   })
 
   it('keeps one format usable when the other admission fails', async () => {
@@ -770,7 +810,7 @@ describe('ExportPanel authorization and download boundary', () => {
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(() => {})
     exportMocks.accessMinutesExport.mockReturnValue(pending.promise)
-    const screen = await renderPanel(true)
+    const screen = await render(<ReloadHarness />)
 
     await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
     await userEvent.click(screen.getByRole('button', { name: 'Download' }))
@@ -778,10 +818,21 @@ describe('ExportPanel authorization and download boundary', () => {
       .poll(() => exportMocks.accessMinutesExport.mock.calls.length)
       .toBe(1)
 
-    screen.unmount()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Unmount export session' })
+    )
+    await expect
+      .element(screen.getByRole('region', { name: 'PDF export' }))
+      .not.toBeInTheDocument()
     pending.resolve(exportCapability)
 
-    await expect.poll(() => clickSpy.mock.calls.length).toBe(0)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Mount export session' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Download' }))
+      .toBeEnabled()
+    expect(clickSpy).not.toHaveBeenCalled()
   })
 
   it('invalidates pending downloads when the meeting changes and does not leak the old operation', async () => {
