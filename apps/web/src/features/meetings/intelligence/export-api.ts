@@ -220,9 +220,13 @@ export function exportStatusQuery(
     scope?: string
   }
 ) {
+  const meetingId = expected?.meetingId
+  const format = expected?.format
+  const scope = expected?.scope
   return queryOptions({
-    queryKey: ['export', exportId, expected?.meetingId, expected?.format, expected?.scope],
-    queryFn: ({ signal }) => fetchExportStatus(exportId, expected, signal),
+    queryKey: ['export', exportId, meetingId, format, scope],
+    queryFn: ({ signal }) =>
+      fetchExportStatus(exportId, { meetingId, format }, signal),
     meta: { featureErrorBoundary: true },
     retry: false,
   })
