@@ -47,7 +47,9 @@ function startOfCivilDate(date: string, zone: string) {
     else high = mid
   }
   if (civilDate(low) !== date) {
-    throw new Error('The selected date does not exist in the reporting timezone.')
+    throw new Error(
+      'The selected date does not exist in the reporting timezone.'
+    )
   }
   return low
 }

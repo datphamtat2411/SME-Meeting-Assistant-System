@@ -175,7 +175,8 @@ export const managementDashboardSchema = z
       overdue > open + inProgress ||
       open + inProgress + done + cancelled !== totalOfficial ||
       new Set(ids).size !== ids.length ||
-      Date.parse(data.period.fromInclusive) >= Date.parse(data.period.toExclusive)
+      Date.parse(data.period.fromInclusive) >=
+        Date.parse(data.period.toExclusive)
     ) {
       context.addIssue({
         code: 'custom',

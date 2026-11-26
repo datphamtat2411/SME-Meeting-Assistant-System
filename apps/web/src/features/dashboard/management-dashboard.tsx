@@ -92,7 +92,9 @@ function ManagementReport({
       let period
       if (preset === 'custom') {
         if (!timezone) {
-          throw new Error('Verify the reporting timezone before using custom dates.')
+          throw new Error(
+            'Verify the reporting timezone before using custom dates.'
+          )
         }
         period = customPeriod(start, end, timezone)
       } else {
@@ -111,7 +113,9 @@ function ManagementReport({
         setApplied(next)
       }
     } catch (error) {
-      setFilterError(error instanceof Error ? error.message : 'Invalid filters.')
+      setFilterError(
+        error instanceof Error ? error.message : 'Invalid filters.'
+      )
     }
   }
 
@@ -180,7 +184,9 @@ function ManagementReport({
                 <option value='7'>Last 7 days</option>
                 <option value='30'>Last 30 days</option>
                 <option value='90'>Last 90 days</option>
-                <option value='custom' disabled={!timezone}>Custom dates</option>
+                <option value='custom' disabled={!timezone}>
+                  Custom dates
+                </option>
               </select>
             </label>
             <label className='space-y-1 text-sm font-medium'>
@@ -192,7 +198,9 @@ function ManagementReport({
               >
                 <option value=''>All managed units</option>
                 {availableUnits.map((unit) => (
-                  <option key={unit.id} value={unit.id}>{unit.name}</option>
+                  <option key={unit.id} value={unit.id}>
+                    {unit.name}
+                  </option>
                 ))}
               </select>
             </label>
@@ -200,7 +208,12 @@ function ManagementReport({
           {units.isError && (
             <div className='text-sm text-muted-foreground'>
               Unit names are unavailable. Aggregate reporting remains available.
-              <Button type='button' size='sm' variant='link' onClick={() => void units.refetch()}>
+              <Button
+                type='button'
+                size='sm'
+                variant='link'
+                onClick={() => void units.refetch()}
+              >
                 Retry unit lookup
               </Button>
             </div>
@@ -209,21 +222,40 @@ function ManagementReport({
             <div className='grid gap-3 sm:grid-cols-2'>
               <label className='space-y-1 text-sm font-medium'>
                 <span>Start date</span>
-                <Input type='date' value={start} onChange={(event) => setStart(event.target.value)} required />
+                <Input
+                  type='date'
+                  value={start}
+                  onChange={(event) => setStart(event.target.value)}
+                  required
+                />
               </label>
               <label className='space-y-1 text-sm font-medium'>
                 <span>End date (inclusive)</span>
-                <Input type='date' value={end} onChange={(event) => setEnd(event.target.value)} required />
+                <Input
+                  type='date'
+                  value={end}
+                  onChange={(event) => setEnd(event.target.value)}
+                  required
+                />
               </label>
               <p className='text-xs text-muted-foreground sm:col-span-2'>
                 Calendar dates use {timezone ?? 'the reporting timezone'}.
               </p>
             </div>
           )}
-          {filterError && <p role='alert' className='text-sm text-destructive'>{filterError}</p>}
+          {filterError && (
+            <p role='alert' className='text-sm text-destructive'>
+              {filterError}
+            </p>
+          )}
           <div className='flex flex-wrap gap-2'>
             <Button type='submit'>Apply filters</Button>
-            <Button type='button' variant='outline' disabled={report.isFetching} onClick={refreshReport}>
+            <Button
+              type='button'
+              variant='outline'
+              disabled={report.isFetching}
+              onClick={refreshReport}
+            >
               Refresh applied report
             </Button>
           </div>
@@ -235,39 +267,100 @@ function ManagementReport({
         ) : (
           <>
             <div className='space-y-1 text-xs text-muted-foreground'>
-              <p>Applied period: {formatPresentationInstant(data.period.fromInclusive, data.timezone)} to {formatPresentationInstant(data.period.toExclusive, data.timezone)} (exclusive)</p>
-              <p>Reporting timezone: {data.timezone} · As of {formatPresentationInstant(data.asOf, data.timezone)}</p>
-              <p>Scope: {applied.orgUnitId ? (availableUnits.find((unit) => unit.id === applied.orgUnitId)?.name ?? 'Selected managed unit') : 'All managed units'} ({data.scope.organizationalUnitIds.length})</p>
+              <p>
+                Applied period:{' '}
+                {formatPresentationInstant(
+                  data.period.fromInclusive,
+                  data.timezone
+                )}{' '}
+                to{' '}
+                {formatPresentationInstant(
+                  data.period.toExclusive,
+                  data.timezone
+                )}{' '}
+                (exclusive)
+              </p>
+              <p>
+                Reporting timezone: {data.timezone} · As of{' '}
+                {formatPresentationInstant(data.asOf, data.timezone)}
+              </p>
+              <p>
+                Scope:{' '}
+                {applied.orgUnitId
+                  ? (availableUnits.find(
+                      (unit) => unit.id === applied.orgUnitId
+                    )?.name ?? 'Selected managed unit')
+                  : 'All managed units'}{' '}
+                ({data.scope.organizationalUnitIds.length})
+              </p>
               {report.isFetching && <p role='status'>Refreshing report…</p>}
             </div>
             <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
-              <Metric label='Official actions' value={data.actionItems.totalOfficial} icon={ListChecks} />
-              <Metric label='Pending' value={data.actionItems.open + data.actionItems.inProgress} icon={ListChecks} />
-              <Metric label='Completed' value={data.actionItems.done} icon={CheckCircle2} />
-              <Metric label='Overdue' value={data.actionItems.overdue} icon={TriangleAlert} />
+              <Metric
+                label='Official actions'
+                value={data.actionItems.totalOfficial}
+                icon={ListChecks}
+              />
+              <Metric
+                label='Pending'
+                value={data.actionItems.open + data.actionItems.inProgress}
+                icon={ListChecks}
+              />
+              <Metric
+                label='Completed'
+                value={data.actionItems.done}
+                icon={CheckCircle2}
+              />
+              <Metric
+                label='Overdue'
+                value={data.actionItems.overdue}
+                icon={TriangleAlert}
+              />
             </div>
             {data.actionItems.totalOfficial === 0 && (
-              <p className='text-sm text-muted-foreground'>No official action items were created in the applied period and scope.</p>
+              <p className='text-sm text-muted-foreground'>
+                No official action items were created in the applied period and
+                scope.
+              </p>
             )}
-            <section className='space-y-3' aria-label='Action item status distribution'>
-              <h3 className='text-sm font-semibold'>Action item status distribution</h3>
+            <section
+              className='space-y-3'
+              aria-label='Action item status distribution'
+            >
+              <h3 className='text-sm font-semibold'>
+                Action item status distribution
+              </h3>
               {statuses.map((status) => (
-                <div key={status.label} className='grid grid-cols-[7rem_1fr_auto] items-center gap-3 text-sm'>
+                <div
+                  key={status.label}
+                  className='grid grid-cols-[7rem_1fr_auto] items-center gap-3 text-sm'
+                >
                   <span>{status.label}</span>
-                  <div className='h-3 overflow-hidden rounded bg-muted' aria-hidden='true'>
-                    <div className='h-full rounded bg-primary' style={{ width: (status.count / max) * 100 + '%' }} />
+                  <div
+                    className='h-3 overflow-hidden rounded bg-muted'
+                    aria-hidden='true'
+                  >
+                    <div
+                      className='h-full rounded bg-primary'
+                      style={{ width: (status.count / max) * 100 + '%' }}
+                    />
                   </div>
                   <span className='tabular-nums'>{status.count}</span>
                 </div>
               ))}
-              <p className='text-xs text-muted-foreground'>Overdue is a subset of pending work, not a separate lifecycle state.</p>
+              <p className='text-xs text-muted-foreground'>
+                Overdue is a subset of pending work, not a separate lifecycle
+                state.
+              </p>
             </section>
             {data.unavailableMetrics.length > 0 && (
               <section className='space-y-2 border-t pt-4'>
                 <h3 className='text-sm font-semibold'>Reporting limitations</h3>
                 {data.unavailableMetrics.map(({ metric, reason }) => (
                   <p key={metric} className='text-sm text-muted-foreground'>
-                    {metricLabels[metric] ?? 'Additional metric'}: {reasonLabels[reason] ?? 'Unavailable under the current reporting policy.'}
+                    {metricLabels[metric] ?? 'Additional metric'}:{' '}
+                    {reasonLabels[reason] ??
+                      'Unavailable under the current reporting policy.'}
                   </p>
                 ))}
               </section>
