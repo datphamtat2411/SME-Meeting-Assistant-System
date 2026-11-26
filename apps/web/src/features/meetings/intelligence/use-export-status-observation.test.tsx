@@ -37,7 +37,7 @@ function Observer() {
   })
   return (
     <>
-      <p>{paused ? 'Paused' : status?.status ?? 'Waiting'}</p>
+      <p>{paused ? 'Paused' : (status?.status ?? 'Waiting')}</p>
       <button onClick={refreshStatus}>Resume</button>
     </>
   )
@@ -55,7 +55,9 @@ function renderObserver() {
 afterEach(() => vi.restoreAllMocks())
 
 it('pauses polling while hidden and resumes the same export when visible', async () => {
-  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+  const visibility = vi
+    .spyOn(document, 'visibilityState', 'get')
+    .mockReturnValue('visible')
   const get = vi.spyOn(coreApi, 'get').mockResolvedValue(pending)
   const screen = await renderObserver()
   await expect.element(screen.getByText('PENDING')).toBeVisible()
@@ -68,7 +70,9 @@ it('pauses polling while hidden and resumes the same export when visible', async
   visibility.mockReturnValue('visible')
   document.dispatchEvent(new Event('visibilitychange'))
   await expect.poll(() => get.mock.calls.length).toBeGreaterThan(hiddenCount)
-  expect(get.mock.calls.every(([url]) => url === '/exports/' + exportId)).toBe(true)
+  expect(get.mock.calls.every(([url]) => url === '/exports/' + exportId)).toBe(
+    true
+  )
 })
 
 it('stops at the observation budget and explicitly resumes the same operation', async () => {
@@ -82,5 +86,7 @@ it('stops at the observation budget and explicitly resumes the same operation', 
   await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
   await expect.element(screen.getByText('PENDING')).toBeVisible()
   await expect.poll(() => get.mock.calls.length).toBeGreaterThan(pausedCount)
-  expect(get.mock.calls.every(([url]) => url === '/exports/' + exportId)).toBe(true)
+  expect(get.mock.calls.every(([url]) => url === '/exports/' + exportId)).toBe(
+    true
+  )
 })

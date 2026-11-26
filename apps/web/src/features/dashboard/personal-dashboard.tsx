@@ -272,9 +272,10 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
   )
   // Reconcile a stale overview with the canonical projection once per mismatch.
   // Do not turn membership denial or rescheduling into an unbounded refetch loop.
-  const mismatch = next && (accessChanged || scheduleChanged)
-    ? JSON.stringify([scope, next.id, accessChanged, scheduleChanged])
-    : undefined
+  const mismatch =
+    next && (accessChanged || scheduleChanged)
+      ? JSON.stringify([scope, next.id, accessChanged, scheduleChanged])
+      : undefined
   const reconciledMismatch = useRef<string | undefined>(undefined)
   const refreshPersonal = personal.refetch
   useEffect(() => {

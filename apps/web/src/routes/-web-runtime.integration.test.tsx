@@ -4,6 +4,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
+import { containProtectedState } from '@/protected-state-containment'
 import { routeTree } from '@/routeTree.gen'
 import { clearCookies } from '@/test-utils/cookies'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -15,7 +16,6 @@ import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
 import { resetAuthLifecycleAfterSignIn } from '@/features/auth/session/auth-lifecycle'
 import { configureSessionRevalidation } from '@/features/auth/session/session-revalidation'
-import { containProtectedState } from '@/protected-state-containment'
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -329,7 +329,8 @@ function installCoreFixtures(options: FixtureOptions = {}) {
         } as never
       }
       if (url.endsWith(`/meetings/${meetingId}/participants`)) {
-        if (options.meetingParticipantsError) throw options.meetingParticipantsError
+        if (options.meetingParticipantsError)
+          throw options.meetingParticipantsError
         return { data: [participant], meta: {} } as never
       }
       throw new Error(`Unexpected Core GET with meta ${url}`)
@@ -800,13 +801,25 @@ describe('integrated generated Web runtime', () => {
     }
     const { get } = installCoreFixtures(options)
     const { queryClient, screen } = await renderGeneratedRoute('/')
-    await expect.element(screen.getByText('1 active participants')).toBeVisible()
+    await expect
+      .element(screen.getByText('1 active participants'))
+      .toBeVisible()
     options.meetingParticipantsError = apiError(403)
-    options.dashboard = { ...dashboard, upcomingMeetings: [], meetingCountsByState: {} }
-    await queryClient.invalidateQueries({ queryKey: ['meetings', 'participants', meetingId] })
+    options.dashboard = {
+      ...dashboard,
+      upcomingMeetings: [],
+      meetingCountsByState: {},
+    }
+    await queryClient.invalidateQueries({
+      queryKey: ['meetings', 'participants', meetingId],
+    })
     await expect.element(screen.getByText('No upcoming meetings')).toBeVisible()
-    await expect.element(screen.getByText(scheduled.title, { exact: true })).not.toBeInTheDocument()
-    expect(get.mock.calls.filter(([url]) => url === '/dashboard/me').length).toBe(2)
+    await expect
+      .element(screen.getByText(scheduled.title, { exact: true }))
+      .not.toBeInTheDocument()
+    expect(
+      get.mock.calls.filter(([url]) => url === '/dashboard/me').length
+    ).toBe(2)
   })
 
   it('automatically revalidates a revoked management grant', async () => {
@@ -816,23 +829,45 @@ describe('integrated generated Web runtime', () => {
       globalRole: 'DEPARTMENT_MANAGER',
       directoryManagementScope: { allUnits: false, unitIds: [unitId] },
     }
-    const options: FixtureOptions = { identity: manager, managementUnitIds: [unitId] }
+    const options: FixtureOptions = {
+      identity: manager,
+      managementUnitIds: [unitId],
+    }
     const { get } = installCoreFixtures(options)
     const { queryClient, router, screen } = await renderGeneratedRoute('/')
     const dispose = configureSessionRevalidation({
       queryClient,
       onContainment: () => containProtectedState(queryClient),
-      onChanged: (preserve) => { if (!preserve) void router.invalidate() },
+      onChanged: (preserve) => {
+        if (!preserve) void router.invalidate()
+      },
     })
     try {
       await expect.element(screen.getByText('Official actions')).toBeVisible()
-      const verificationCount = get.mock.calls.filter(([url]) => url === '/auth/me').length
-      options.identity = { ...manager, directoryManagementScope: { allUnits: false, unitIds: [] } }
+      const verificationCount = get.mock.calls.filter(
+        ([url]) => url === '/auth/me'
+      ).length
+      options.identity = {
+        ...manager,
+        directoryManagementScope: { allUnits: false, unitIds: [] },
+      }
       options.managementError = apiError(403)
-      await queryClient.invalidateQueries({ queryKey: ['dashboard', 'management'] })
-      await expect.element(screen.getByText('No active organizational management scope is available.')).toBeVisible()
-      await expect.element(screen.getByText('Official actions')).not.toBeInTheDocument()
-      expect(get.mock.calls.filter(([url]) => url === '/auth/me').length).toBeGreaterThan(verificationCount)
+      await queryClient.invalidateQueries({
+        queryKey: ['dashboard', 'management'],
+      })
+      await expect
+        .element(
+          screen.getByText(
+            'No active organizational management scope is available.'
+          )
+        )
+        .toBeVisible()
+      await expect
+        .element(screen.getByText('Official actions'))
+        .not.toBeInTheDocument()
+      expect(
+        get.mock.calls.filter(([url]) => url === '/auth/me').length
+      ).toBeGreaterThan(verificationCount)
     } finally {
       dispose()
     }
