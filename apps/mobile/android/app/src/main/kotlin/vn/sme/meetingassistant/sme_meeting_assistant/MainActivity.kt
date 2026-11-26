@@ -10,12 +10,14 @@ import android.os.Handler
 import android.os.HandlerThread
 
 class MainActivity : FlutterActivity() {
-    private val accountLinks = AccountLinkBuffer()
+    private val accountLinks get() = pendingAccountLinks
     private var accountLinkChannel: MethodChannel? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val initial = intent
-        captureAccountLink(initial)
+        // A recreated activity must not replay the original VIEW intent.
+        // Undelivered process-local entries remain available to the new engine.
+        if (savedInstanceState == null) captureAccountLink(initial)
         if (initial.action == Intent.ACTION_VIEW) {
             setIntent(Intent(initial).setData(null))
         }
@@ -99,14 +101,18 @@ class MainActivity : FlutterActivity() {
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         accountLinkChannel?.setMethodCallHandler(null)
         accountLinkChannel = null
-        accountLinks.clear()
+        if (!isChangingConfigurations) accountLinks.clear()
         super.cleanUpFlutterEngine(flutterEngine)
     }
 
     override fun onDestroy() {
-        accountLinks.clear()
+        if (!isChangingConfigurations) accountLinks.clear()
         durabilityThread?.quitSafely()
         durabilityThread = null
         super.onDestroy()
+    }
+
+    companion object {
+        private val pendingAccountLinks = AccountLinkBuffer()
     }
 }

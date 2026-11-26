@@ -105,6 +105,11 @@ class _AccountLinkEntryViewState extends State<AccountLinkEntryView> {
   }
 
   void _continue() {
+    if (_closing ||
+        widget.owner.hasInFlight ||
+        widget.retryDeadlines.hasActiveSubmission) {
+      return;
+    }
     setState(() {
       _closing = true;
       _capability = null;
@@ -114,6 +119,11 @@ class _AccountLinkEntryViewState extends State<AccountLinkEntryView> {
   }
 
   void _requestRecovery() {
+    if (_closing ||
+        widget.owner.hasInFlight ||
+        widget.retryDeadlines.hasActiveSubmission) {
+      return;
+    }
     setState(() {
       _recovery = true;
       _capability = null;
@@ -132,8 +142,8 @@ class _AccountLinkEntryViewState extends State<AccountLinkEntryView> {
     listenable: Listenable.merge([widget.owner, widget.retryDeadlines]),
     builder: (context, _) {
       final outcome = widget.owner.outcome;
-      final pending = widget.owner.hasInFlight ||
-          widget.retryDeadlines.hasActiveSubmission;
+      final pending =
+          widget.owner.hasInFlight || widget.retryDeadlines.hasActiveSubmission;
       if (outcome != null) _capability = null;
       final capability = _capability;
       return PopScope(

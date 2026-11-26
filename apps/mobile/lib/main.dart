@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -39,7 +40,7 @@ void main() {
       MeetingAssistantApp(
         dependencies: dependencies,
         accountLinkParser: parser,
-        receiveNativeAccountLinks: true,
+        receiveNativeAccountLinks: Platform.isAndroid,
       ),
     );
   } on AppConfigException catch (error) {
@@ -78,7 +79,7 @@ class ConfigurationErrorApp extends StatelessWidget {
                   Text(error.message, textAlign: TextAlign.center),
                   const SizedBox(height: 16),
                   const Text(
-                    'Hãy kiểm tra API_BASE_URL và khởi động lại ứng dụng.',
+                    'Hãy kiểm tra cấu hình và khởi động lại ứng dụng.',
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -123,7 +124,8 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
   AccountLinkReceiver? _linkReceiver;
   final _retryDeadlines = AccountRetryDeadlines();
   late final _accountLinks = AccountLinkCoordinator(
-    widget.accountLinkParser ?? AccountLinkParser(AccountLinkParser.configuredHost),
+    widget.accountLinkParser ??
+        AccountLinkParser(AccountLinkParser.configuredHost),
   );
   late final ApiClient api = widget.dependencies.api;
   late final bool _ownsCredentialWorkflows =
@@ -297,7 +299,6 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     }
   }
 
-
   bool get _sessionReady => switch (api.sessionState.phase) {
     AuthSessionPhase.authenticated ||
     AuthSessionPhase.unauthenticated ||
@@ -359,12 +360,16 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
           padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
           child: Row(
             children: [
-              Expanded(child: Text(message)),
+              Expanded(
+                child: Text(
+                  pending && _accountLinks.notice != null
+                      ? '${_accountLinks.notice}\n$message'
+                      : message,
+                ),
+              ),
               if (pending)
                 TextButton(
-                  onPressed: _canOpenAccountLink
-                      ? _continueAccountLink
-                      : null,
+                  onPressed: _canOpenAccountLink ? _continueAccountLink : null,
                   child: const Text('Tiếp tục'),
                 ),
               TextButton(
@@ -534,7 +539,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         },
       );
     }
-    return AuthPage(api: api, credentialWorkflows: _credentialWorkflows);
+    return _publicAuthPage();
   }
 }
 

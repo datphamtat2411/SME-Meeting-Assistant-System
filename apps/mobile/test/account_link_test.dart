@@ -17,18 +17,15 @@ void main() {
       expect(result.operation, AccountOperation.reset);
     }
     expect(
-      parser.parse('$origin:443/otp#token=x').sameCapability(
-        parser.parse('$origin/reset-password#token=x'),
-      ),
+      parser
+          .parse('$origin:443/otp#token=x')
+          .sameCapability(parser.parse('$origin/reset-password#token=x')),
       isTrue,
     );
   });
 
   test('paste may trim the URL but must not trim the capability', () {
-    expect(
-      parser.parse(' $origin/otp#token=a ', pasted: true).capability,
-      'a',
-    );
+    expect(parser.parse(' $origin/otp#token=a ', pasted: true).capability, 'a');
     expect(
       () => parser.parse('$origin/otp#token=a%20', pasted: true),
       throwsA(isA<AccountLinkException>()),
@@ -52,6 +49,8 @@ void main() {
       '$origin/otp#token=a&other=b',
       '$origin/otp#token=%ZZ',
       '$origin/otp#token=%FF',
+      '$origin/otp#token=%ED%A0%80',
+      '$origin/otp#token=' + String.fromCharCode(0xd800),
       '$origin/otp#token=',
       '$origin/otp#token=a+b',
       '$origin/otp#token=a%00',
@@ -62,10 +61,7 @@ void main() {
       '$origin/otp#token=' + ('a' * 40001),
     ];
     for (final input in rejected) {
-      expect(
-        () => parser.parse(input),
-        throwsA(isA<AccountLinkException>()),
-      );
+      expect(() => parser.parse(input), throwsA(isA<AccountLinkException>()));
     }
   });
 
@@ -80,7 +76,11 @@ void main() {
         ),
       ),
     );
-    for (final host in ['*.example.invalid', 'https://example.invalid', 'a..b']) {
+    for (final host in [
+      '*.example.invalid',
+      'https://example.invalid',
+      'a..b',
+    ]) {
       expect(() => AccountLinkParser(host), throwsFormatException);
     }
   });

@@ -56,7 +56,7 @@ class AccountLinkParser {
       throw const AccountLinkException(AccountLinkFailure.malformed);
     }
     final value = pasted ? raw.trim() : raw;
-    if (_unsafe.hasMatch(value)) {
+    if (_unsafe.hasMatch(value) || _hasUnpairedSurrogate(value)) {
       throw const AccountLinkException(AccountLinkFailure.malformed);
     }
     // Do not accept encoded authority/path, query strings, or path aliases
@@ -94,10 +94,28 @@ class AccountLinkParser {
     }
     if (capability.isEmpty ||
         capability.length > maxCapabilityLength ||
-        _unsafe.hasMatch(capability)) {
+        _unsafe.hasMatch(capability) ||
+        _hasUnpairedSurrogate(capability)) {
       throw const AccountLinkException(AccountLinkFailure.malformed);
     }
     return AccountLink._(operation, capability);
+  }
+
+  static bool _hasUnpairedSurrogate(String value) {
+    final units = value.codeUnits;
+    for (var index = 0; index < units.length; index++) {
+      final unit = units[index];
+      if (unit >= 0xd800 && unit <= 0xdbff) {
+        if (++index == units.length ||
+            units[index] < 0xdc00 ||
+            units[index] > 0xdfff) {
+          return true;
+        }
+      } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static final _url = RegExp(

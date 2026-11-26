@@ -218,7 +218,6 @@ class CredentialEstablishmentForm extends StatefulWidget {
 class _CredentialEstablishmentFormState
     extends State<CredentialEstablishmentForm> {
   final _form = GlobalKey<FormState>();
-  late final _token = TextEditingController(text: widget.capability);
   late final CredentialAttempt _attempt;
   final _password = TextEditingController();
   final _confirmation = TextEditingController();
@@ -246,7 +245,6 @@ class _CredentialEstablishmentFormState
   }
 
   void _clearSensitiveInput() {
-    _token.clear();
     _password.clear();
     _confirmation.clear();
   }
@@ -261,7 +259,7 @@ class _CredentialEstablishmentFormState
     if (!_submission.canSubmit || !(_form.currentState?.validate() ?? false)) {
       return;
     }
-    final capability = _token.text;
+    final capability = widget.capability;
     final password = _password.text;
     if (AuthValidators.capability(capability) != null) return;
     if (widget.canDispatch?.call() == false) {
@@ -287,7 +285,6 @@ class _CredentialEstablishmentFormState
     widget.owner.abandon(_attempt);
     _submission.dispose();
     _clearSensitiveInput();
-    _token.dispose();
     _password.dispose();
     _confirmation.dispose();
     super.dispose();
@@ -461,12 +458,10 @@ class CredentialOutcomeView extends StatelessWidget {
                         'trị viên để được cấp lời mời mới.',
             CredentialOutcomeKind.unavailable =>
               reset
-                  ? 'Dịch vụ đặt lại mật khẩu hiện không khả dụng. Phiên đăng nhập hiện tại '
-                        'vẫn hoạt động. Bạn có thể tiếp tục phiên này hoặc yêu cầu '
-                        'một liên kết khôi phục mới.'
-                  : 'Dịch vụ thiết lập tài khoản hiện không khả dụng. Phiên đăng nhập hiện tại '
-                        'vẫn hoạt động. Bạn có thể tiếp tục phiên này hoặc yêu cầu '
-                        'quản trị viên cấp lời mời mới.',
+                  ? 'Dịch vụ đặt lại mật khẩu hiện không khả dụng. Phiên đăng nhập '
+                        'hiện tại vẫn hoạt động. Hãy thử lại sau hoặc liên hệ quản trị viên.'
+                  : 'Dịch vụ thiết lập tài khoản hiện không khả dụng. Phiên đăng nhập '
+                        'hiện tại vẫn hoạt động. Hãy thử lại sau hoặc liên hệ quản trị viên.',
           }
         : switch (outcome.kind) {
             CredentialOutcomeKind.completed =>
@@ -486,8 +481,8 @@ class CredentialOutcomeView extends StatelessWidget {
               reset
                   ? 'Dịch vụ đặt lại mật khẩu hiện không khả dụng. Vui lòng thử lại sau '
                         'hoặc liên hệ quản trị viên.'
-                  : 'Dịch vụ thiết lập tài khoản hiện không khả dụng. Hãy yêu cầu lời mời mới '
-                        'từ tổ chức hoặc liên hệ quản trị viên.',
+                  : 'Dịch vụ thiết lập tài khoản hiện không khả dụng. Vui lòng thử lại sau '
+                        'hoặc liên hệ quản trị viên.',
           };
     return ContentCard(
       child: Column(
@@ -501,7 +496,7 @@ class CredentialOutcomeView extends StatelessWidget {
           Text(title, style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 12),
           Semantics(liveRegion: true, child: Text(message)),
-          if (!completed) ...[
+          if (outcome.kind == CredentialOutcomeKind.uncertain) ...[
             const SizedBox(height: 12),
             Text(
               reset
@@ -517,7 +512,9 @@ class CredentialOutcomeView extends StatelessWidget {
               authenticated ? 'Tiếp tục phiên hiện tại' : 'Tiếp tục đăng nhập',
             ),
           ),
-          if (!completed && reset && onRecovery != null)
+          if (outcome.kind == CredentialOutcomeKind.uncertain &&
+              reset &&
+              onRecovery != null)
             TextButton(
               onPressed: onRecovery,
               child: const Text('Yêu cầu liên kết khôi phục mới'),
