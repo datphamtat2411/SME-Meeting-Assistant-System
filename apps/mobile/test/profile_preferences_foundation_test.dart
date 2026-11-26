@@ -1639,42 +1639,45 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  test('workspace identity observation does not repeat failed reloads', () async {
-    var name = 'Test User';
-    var reloads = 0;
-    final api = await _authenticated(
-      (request) => _profileResponse(name, '"v1"'),
-      reloadIdentity: () {
-        if (++reloads == 1) {
-          return jsonResponse(
-            503,
-            errorEnvelope('SERVICE_UNAVAILABLE', 'Unavailable'),
-          );
-        }
-        return jsonResponse(200, successEnvelope(_identity(name: name)));
-      },
-    );
-    final controller = ProfileController(ProfileRepository(api: api));
-    addTearDown(controller.dispose);
-    await controller.refreshWorkspace();
-    expect(reloads, 0);
+  test(
+    'workspace identity observation does not repeat failed reloads',
+    () async {
+      var name = 'Test User';
+      var reloads = 0;
+      final api = await _authenticated(
+        (request) => _profileResponse(name, '"v1"'),
+        reloadIdentity: () {
+          if (++reloads == 1) {
+            return jsonResponse(
+              503,
+              errorEnvelope('SERVICE_UNAVAILABLE', 'Unavailable'),
+            );
+          }
+          return jsonResponse(200, successEnvelope(_identity(name: name)));
+        },
+      );
+      final controller = ProfileController(ProfileRepository(api: api));
+      addTearDown(controller.dispose);
+      await controller.refreshWorkspace();
+      expect(reloads, 0);
 
-    name = 'Changed on Web';
-    await controller.refreshWorkspace();
-    await _waitForIdentity(controller);
-    expect(controller.snapshot!.profile.displayName, name);
-    expect(controller.identityRefreshFailed, isTrue);
-    expect(reloads, 1);
-    await controller.refreshWorkspace();
-    expect(reloads, 1);
+      name = 'Changed on Web';
+      await controller.refreshWorkspace();
+      await _waitForIdentity(controller);
+      expect(controller.snapshot!.profile.displayName, name);
+      expect(controller.identityRefreshFailed, isTrue);
+      expect(reloads, 1);
+      await controller.refreshWorkspace();
+      expect(reloads, 1);
 
-    name = 'Another external change';
-    await controller.refreshWorkspace();
-    await _waitForIdentity(controller);
-    expect(reloads, 2);
-    expect(api.displayName, name);
-    expect(controller.identityStatus, IdentitySyncStatus.synchronized);
-  });
+      name = 'Another external change';
+      await controller.refreshWorkspace();
+      await _waitForIdentity(controller);
+      expect(reloads, 2);
+      expect(api.displayName, name);
+      expect(controller.identityStatus, IdentitySyncStatus.synchronized);
+    },
+  );
 
   testWidgets('workspace refresh follows activation and route visibility', (
     tester,
@@ -1728,7 +1731,8 @@ void main() {
     update(() => active = true);
     await pumpUntil(
       tester,
-      () => find.text('Test User').evaluate().isNotEmpty &&
+      () =>
+          find.text('Test User').evaluate().isNotEmpty &&
           find.text('fr-CA').evaluate().isNotEmpty,
       reason: 'initial account activation',
     );
@@ -1765,7 +1769,7 @@ void main() {
     expect(profileReads, 2);
     expect(preferenceReads, 2);
     navigator.currentState!.pop();
-    await tester.pumpAndSettle();
+    await tester.pump();
     await cover;
     await pumpUntil(
       tester,
@@ -1776,17 +1780,14 @@ void main() {
     expect(profileReads, 3);
     expect(preferenceReads, 3);
 
-    // Manual refresh uses the same independent resource operations.
-    final refresh = tester.widget<RefreshIndicator>(
-      find.byType(RefreshIndicator),
-    );
-    final manual = refresh.onRefresh();
+    // The accessible manual refresh action shares the pull-to-refresh path.
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Tải lại tài khoản'));
     await pumpUntil(
       tester,
       () => profileReads == 4 && preferenceReads == 4 && !owner.loading,
       reason: 'manual account refresh',
     );
-    await manual;
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -1846,7 +1847,8 @@ void main() {
     final panel = find.byType(PreferencesPanel);
     await pumpUntil(
       tester,
-      () => panel.evaluate().isNotEmpty &&
+      () =>
+          panel.evaluate().isNotEmpty &&
           tester.widget<PreferencesPanel>(panel).controller.snapshot != null,
       reason: 'preferences to load',
     );
@@ -1917,7 +1919,7 @@ void main() {
       () => find.text('Test User').evaluate().isNotEmpty,
       reason: 'profile to render',
     );
-    final logout = find.widgetWithText(OutlinedButton, 'Đăng xuất');
+    final logout = find.text('Đăng xuất');
     await tester.scrollUntilVisible(
       logout,
       300,

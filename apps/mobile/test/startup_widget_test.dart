@@ -655,7 +655,6 @@ void main() {
     },
   );
 
-
   for (final scenario in ['confirmed', 'unconfirmed', 'storage']) {
     testWidgets('Account sign-out presents the $scenario outcome', (
       tester,
@@ -677,7 +676,8 @@ void main() {
       );
       await pumpUntil(
         tester,
-        () => harness.api.signedIn &&
+        () =>
+            harness.api.signedIn &&
             find.byType(NavigationBar).evaluate().isNotEmpty,
         reason: 'authenticated Account navigation',
       );
@@ -687,7 +687,7 @@ void main() {
         () => find.text('Test User').evaluate().isNotEmpty,
         reason: 'canonical profile to render',
       );
-      final logout = find.widgetWithText(OutlinedButton, 'Đăng xuất');
+      final logout = find.text('Đăng xuất');
       await tester.scrollUntilVisible(
         logout,
         300,
@@ -699,8 +699,7 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Đăng xuất'));
       final message = switch (scenario) {
         'confirmed' => 'Đã đăng xuất khỏi thiết bị.',
-        'unconfirmed' =>
-          'Thiết bị đã đăng xuất, nhưng máy chủ chưa xác nhận việc thu hồi phiên.',
+        'unconfirmed' => 'Thiết bị đã đăng xuất, nhưng máy chủ chưa xác nhận việc thu hồi phiên.',
         _ => 'Không thể xác nhận xóa phiên bảo mật',
       };
       await pumpUntil(
@@ -913,14 +912,18 @@ RecordingHttpClient _authClient({
       final identity = _identity();
       return streamedResponse(
         200,
-        body: utf8.encode(jsonEncode(successEnvelope({
-          'id': identity['userId'],
-          'email': identity['email'],
-          'displayName': identity['displayName'],
-          'globalRole': identity['globalRole'],
-          'accountStatus': identity['accountStatus'],
-          'primaryOrgUnitId': identity['primaryOrgUnitId'],
-        }))),
+        body: utf8.encode(
+          jsonEncode(
+            successEnvelope({
+              'id': identity['userId'],
+              'email': identity['email'],
+              'displayName': identity['displayName'],
+              'globalRole': identity['globalRole'],
+              'accountStatus': identity['accountStatus'],
+              'primaryOrgUnitId': identity['primaryOrgUnitId'],
+            }),
+          ),
+        ),
         headers: {'content-type': 'application/json', 'etag': '"v1"'},
       );
     }

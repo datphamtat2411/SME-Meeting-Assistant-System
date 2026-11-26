@@ -6,13 +6,13 @@ import '../../core/api_client.dart';
 import '../../core/appearance_controller.dart';
 import '../../core/command_actions.dart';
 import '../../core/widgets.dart';
+import 'account_resource_view.dart';
 import 'appearance_panel.dart';
 import 'preferences_panel.dart';
 import 'profile_controllers.dart';
 import 'profile_edit_dialog.dart';
 import 'profile_models.dart';
 import 'profile_repository.dart';
-import 'account_resource_view.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({
@@ -30,8 +30,7 @@ class ProfilePage extends StatefulWidget {
   State<ProfilePage> createState() => _ProfilePageState();
 }
 
-class _ProfilePageState extends State<ProfilePage>
-    with WidgetsBindingObserver {
+class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
   late final ProfileController controller;
   late final PreferencesController preferences;
   bool _foreground = true;
@@ -161,20 +160,38 @@ class _ProfilePageState extends State<ProfilePage>
   }
 
   @override
-  Widget build(BuildContext context) => RefreshIndicator(
-    onRefresh: _refresh,
-    child: _accountList(),
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) => RefreshIndicator(
+      onRefresh: _refresh,
+      child: _accountList(
+        constraints.maxWidth > 796 ? (constraints.maxWidth - 760) / 2 : 18,
+      ),
+    ),
   );
 
-  Widget _accountList() => ListenableBuilder(
+  Widget _accountList(double horizontalPadding) => ListenableBuilder(
     listenable: controller,
     builder: (context, _) => ListView(
-      padding: const EdgeInsets.all(18),
+      padding: EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: 18),
       physics: const AlwaysScrollableScrollPhysics(),
       children: [
-        const SectionHeading(
+        SectionHeading(
           'Tài khoản & cài đặt',
           subtitle: 'Quản lý hồ sơ, thông báo và giao diện.',
+          trailing: ListenableBuilder(
+            listenable: preferences,
+            builder: (context, _) => IconButton(
+              tooltip: 'Tải lại tài khoản',
+              onPressed: controller.canRefresh || preferences.canRefresh
+                  ? _refresh
+                  : null,
+              icon: const Icon(Icons.refresh),
+            ),
+          ),
+        ),
+        const Semantics(
+          header: true,
+          child: SectionHeading('Hồ sơ cá nhân'),
         ),
         AccountResourceView<ProfileSnapshot>(
           snapshot: controller.snapshot,
@@ -295,10 +312,13 @@ class _ProfilePageState extends State<ProfilePage>
               ],
             ),
           ),
-        const SectionHeading('Thiết lập tài khoản'),
+        const Semantics(
+          header: true,
+          child: SectionHeading('Thiết lập tài khoản'),
+        ),
         PreferencesPanel(controller: preferences),
         const SizedBox(height: 12),
-        const SectionHeading('Giao diện'),
+        const Semantics(header: true, child: SectionHeading('Giao diện')),
         AppearancePanel(controller: widget.appearance),
         const SizedBox(height: 12),
         OutlinedButton.icon(

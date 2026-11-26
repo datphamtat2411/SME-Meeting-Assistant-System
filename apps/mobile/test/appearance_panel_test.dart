@@ -7,6 +7,40 @@ import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/profile/appearance_panel.dart';
 
 void main() {
+  testWidgets('appearance selection remains usable with large text', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 640);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AppearanceController(
+      preferences: InMemoryAppearancePreferences(),
+    );
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            textScaler: TextScaler.linear(1.8),
+          ),
+          child: child!,
+        ),
+        home: Scaffold(body: AppearancePanel(controller: controller)),
+      ),
+    );
+    expect(
+      tester.widget<SegmentedButton<ThemeMode>>(
+        find.byType(SegmentedButton<ThemeMode>),
+      ).direction,
+      Axis.vertical,
+    );
+    await tester.tap(find.text('Tối'));
+    await tester.pumpAndSettle();
+    expect(controller.mode, ThemeMode.dark);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('appearance panel reports write failure and retries', (
     tester,
   ) async {

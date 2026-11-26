@@ -20,14 +20,21 @@ class AppearancePanel extends StatelessWidget {
             style: TextStyle(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 12),
-          SegmentedButton<ThemeMode>(
-            segments: const [
-              ButtonSegment(value: ThemeMode.system, label: Text('Tự động')),
-              ButtonSegment(value: ThemeMode.light, label: Text('Sáng')),
-              ButtonSegment(value: ThemeMode.dark, label: Text('Tối')),
-            ],
-            selected: {controller.mode},
-            onSelectionChanged: (values) => controller.setMode(values.first),
+          LayoutBuilder(
+            builder: (context, constraints) => SegmentedButton<ThemeMode>(
+              direction:
+                  constraints.maxWidth <
+                      MediaQuery.textScalerOf(context).scale(280)
+                  ? Axis.vertical
+                  : Axis.horizontal,
+              segments: const [
+                ButtonSegment(value: ThemeMode.system, label: Text('Tự động')),
+                ButtonSegment(value: ThemeMode.light, label: Text('Sáng')),
+                ButtonSegment(value: ThemeMode.dark, label: Text('Tối')),
+              ],
+              selected: {controller.mode},
+              onSelectionChanged: (values) => controller.setMode(values.first),
+            ),
           ),
           if (controller.persistenceStatus ==
               AppearancePersistenceStatus.restoring)

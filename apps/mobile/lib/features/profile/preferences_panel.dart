@@ -165,9 +165,12 @@ class PreferencesPanel extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text(
-                    'Thông báo',
-                    style: Theme.of(context).textTheme.titleMedium,
+                  Semantics(
+                    header: true,
+                    child: Text(
+                      'Thông báo',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                   ),
                   SwitchListTile.adaptive(
                     contentPadding: EdgeInsets.zero,
@@ -214,9 +217,12 @@ class PreferencesPanel extends StatelessWidget {
                     ),
                   ),
                   const Divider(),
-                  Text(
-                    'Thiết lập khu vực',
-                    style: Theme.of(context).textTheme.titleMedium,
+                  Semantics(
+                    header: true,
+                    child: Text(
+                      'Thiết lập khu vực',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                   ),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
@@ -230,7 +236,11 @@ class PreferencesPanel extends StatelessWidget {
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: controller.canMutate
-                        ? () => _choose(context, PreferenceField.timezone, snapshot)
+                        ? () => _choose(
+                            context,
+                            PreferenceField.timezone,
+                            snapshot,
+                          )
                         : null,
                   ),
                   const Divider(),
@@ -246,7 +256,8 @@ class PreferencesPanel extends StatelessWidget {
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: controller.canMutate
-                        ? () => _choose(context, PreferenceField.locale, snapshot)
+                        ? () =>
+                              _choose(context, PreferenceField.locale, snapshot)
                         : null,
                   ),
                   Padding(
