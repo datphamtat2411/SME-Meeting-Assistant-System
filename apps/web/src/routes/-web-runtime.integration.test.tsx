@@ -203,6 +203,8 @@ function assignedWork(status: 'OPEN' | 'IN_PROGRESS') {
 type FixtureOptions = {
   identity?: unknown
   dashboard?: unknown
+  managementError?: unknown
+  managementUnitIds?: string[]
   actionItemsError?: unknown
   actionItemsFailureStatus?: 'OPEN' | 'IN_PROGRESS'
   actionItemsOpen?: unknown
@@ -230,10 +232,31 @@ function apiError(status: number, message = `Core response ${status}`) {
 }
 
 function installCoreFixtures(options: FixtureOptions = {}) {
-  const get = vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+  const get = vi.spyOn(coreApi, 'get').mockImplementation(async (url, config) => {
     if (url === '/auth/me') return (options.identity ?? identity) as never
     if (url === '/dashboard/me')
       return (options.dashboard ?? dashboard) as never
+    if (url === '/dashboard/management') {
+      if (options.managementError) throw options.managementError
+      return {
+        asOf: dashboardAsOf,
+        timezone: dashboard.timezone,
+        period: {
+          fromInclusive: config?.params?.from,
+          toExclusive: config?.params?.to,
+          cohortTimeField: 'ACTION_ITEM_CREATED_AT',
+          statusTimeSemantics: 'CURRENT_STATE',
+        },
+        scope: {
+          type: 'MANAGED_OFFICIAL_ACTION_ITEMS',
+          organizationalUnitIds: config?.params?.orgUnitId
+            ? [config.params.orgUnitId]
+            : (options.managementUnitIds ?? []),
+        },
+        actionItems: { open: 3, inProgress: 4, done: 5, cancelled: 1, overdue: 2, totalOfficial: 13 },
+        unavailableMetrics: [{ metric: 'COMPLETION_RATE', reason: 'PRODUCT_DENOMINATOR_AND_COHORT_POLICY_NOT_APPROVED' }],
+      } as never
+    }
     if (url === '/me/profile') return profile as never
     if (url === '/me/preferences') return preferences as never
     if (url.endsWith(`/meetings/${meetingId}/media`)) return [] as never
@@ -264,7 +287,16 @@ function installCoreFixtures(options: FixtureOptions = {}) {
       }
       if (url === '/rooms') return emptyList as never
       if (url === '/users') return emptyList as never
-      if (url === '/organizational-units') return emptyList as never
+      if (url === '/organizational-units') {
+        const ids = options.managementUnitIds ?? []
+        return {
+          data: ids.map((id, index) => ({
+            id, name: 'Unit ' + (index + 1), code: 'UNIT-' + (index + 1),
+            parentId: null, status: 'ACTIVE',
+          })),
+          meta: { pagination: { ...pagination, size: 100, totalElements: ids.length, totalPages: ids.length ? 1 : 0 } },
+        } as never
+      }
       if (url.endsWith(`/meetings/${meetingId}/participants`)) {
         return { data: [participant], meta: {} } as never
       }
@@ -664,6 +696,52 @@ describe('integrated generated Web runtime', () => {
         })
       )
     }
+  })
+
+  it.each(['EMPLOYEE', 'ADMINISTRATOR', 'DEPARTMENT_MANAGER'] as const)(
+    'does not request management reports without a managed-unit grant (%s)',
+    async (role) => {
+      const { get } = installCoreFixtures({
+        identity: {
+          ...identity,
+          globalRole: role,
+          directoryManagementScope: { allUnits: role === 'ADMINISTRATOR', unitIds: [] },
+        },
+      })
+      const { screen } = await renderGeneratedRoute('/')
+      await expect.element(screen.getByText('Pending action items')).toBeVisible()
+      if (role === 'DEPARTMENT_MANAGER') {
+        await expect.element(screen.getByText('No active organizational management scope is available.')).toBeVisible()
+      }
+      expect(get.mock.calls.some(([url]) => url === '/dashboard/management')).toBe(false)
+    }
+  )
+
+  it('applies scoped management filters without changing personal metrics', async () => {
+    const unitId = '11111111-2222-4333-8444-555555555555'
+    const { get } = installCoreFixtures({
+      identity: {
+        ...identity,
+        globalRole: 'DEPARTMENT_MANAGER',
+        directoryManagementScope: { allUnits: false, unitIds: [unitId] },
+      },
+      managementUnitIds: [unitId],
+    })
+    const { screen } = await renderGeneratedRoute('/', 390, 844)
+    await expect.element(screen.getByText('Official actions')).toBeVisible()
+    await expect.element(screen.getByText('Reporting limitations')).toBeVisible()
+    await expect.element(screen.getByText('Pending action items')).toBeVisible()
+    const requests = () => get.mock.calls.filter(([url]) => url === '/dashboard/management')
+    expect(requests()).toHaveLength(1)
+    await userEvent.selectOptions(screen.getByLabelText('Reporting period'), '7')
+    await userEvent.selectOptions(screen.getByLabelText('Organizational scope'), unitId)
+    expect(requests()).toHaveLength(1)
+    await userEvent.click(screen.getByRole('button', { name: 'Apply filters' }))
+    await expect.poll(() => requests().length).toBe(2)
+    await expect.element(screen.getByText('Scope: Unit 1 (1)')).toBeVisible()
+    const params = requests()[1][1]?.params
+    expect(params?.orgUnitId).toBe(unitId)
+    expect(Date.parse(params?.to) - Date.parse(params?.from)).toBe(7 * 86400000)
   })
 
   it('navigates through dashboard, meetings, detail, live, and browser history', async () => {

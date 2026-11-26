@@ -12,6 +12,7 @@ const exportMocks = vi.hoisted(() => ({
   recoverMinutesExport: vi.fn(),
   accessMinutesExport: vi.fn(),
   fetchExportStatus: vi.fn(),
+  capabilities: { admission: true, recovery: true, status: true, access: true },
 }))
 
 const authorizationMocks = vi.hoisted(() => ({
@@ -106,10 +107,7 @@ vi.mock('./export-api', () => ({
     queryKey: ['export', 'capabilities', meetingId],
     queryFn: async () => ({
       meetingId,
-      admission: true,
-      recovery: true,
-      status: true,
-      access: true,
+      ...exportMocks.capabilities,
     }),
     retry: false,
   }),
@@ -251,6 +249,7 @@ describe('ExportPanel authorization and download boundary', () => {
     authorizationMocks.value.capabilities.authorizationResolution = 'allowed'
     authorizationMocks.value.capabilities.canReadMeetingContent = true
     vi.stubEnv('VITE_EXPORT_DOWNLOAD_HOSTS', 'localhost')
+    exportMocks.capabilities = { admission: true, recovery: true, status: true, access: true }
     minutesData.value = {
       ...minutesData.value,
       completeness: 'COMPLETE',
@@ -274,6 +273,23 @@ describe('ExportPanel authorization and download boundary', () => {
     exportMocks.createMinutesExport.mockResolvedValue({ exportId })
     exportMocks.recoverMinutesExport.mockResolvedValue({ exportId })
     exportMocks.accessMinutesExport.mockResolvedValue(exportCapability)
+  })
+
+  it('does not create exports when deployment admission is disabled', async () => {
+    exportMocks.capabilities.admission = false
+    const screen = await renderPanel()
+    await expect.element(screen.getByText('New export generation is disabled in this deployment.')).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: 'Generate PDF' })).toBeDisabled()
+    await expect.element(screen.getByRole('button', { name: 'Generate Markdown' })).toBeDisabled()
+    expect(exportMocks.createMinutesExport).not.toHaveBeenCalled()
+  })
+
+  it('does not create exports without a trusted download configuration', async () => {
+    vi.stubEnv('VITE_EXPORT_DOWNLOAD_HOSTS', '*')
+    const screen = await renderPanel()
+    await expect.element(screen.getByText('Secure downloads are not configured. Contact your administrator.')).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: 'Generate PDF' })).toBeDisabled()
+    expect(exportMocks.createMinutesExport).not.toHaveBeenCalled()
   })
 
   it('does not admit a durable export when Core marks proposals as included', async () => {

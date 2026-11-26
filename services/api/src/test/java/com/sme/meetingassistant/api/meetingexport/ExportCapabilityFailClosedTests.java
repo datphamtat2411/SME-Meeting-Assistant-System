@@ -1,10 +1,12 @@
 package com.sme.meetingassistant.api.meetingexport;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
+import com.sme.meetingassistant.api.common.ApiResponseFactory;
 import com.sme.meetingassistant.api.meeting.service.MeetingMediaAccess;
 import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId;
 import java.time.Clock;
@@ -16,6 +18,29 @@ import org.junit.jupiter.api.Test;
 
 /** Issued bearer capabilities must never bypass the audit gate. */
 class ExportCapabilityFailClosedTests {
+    @Test
+    void capabilityDiscoverySeparatesPublicReadsFromWorkerGatedOperations() {
+        UUID meeting=UUID.randomUUID(), actor=UUID.randomUUID();
+        var access=mock(MeetingMediaAccess.class);
+        var identity=mock(AuthenticatedUserId.class);
+        when(identity.requireUserId()).thenReturn(actor);
+        for (boolean publicEnabled : new boolean[]{false,true}) {
+            for (boolean workerEnabled : new boolean[]{false,true}) {
+                var controller=new ExportCapabilityController(access,identity,
+                        new ApiResponseFactory(),publicEnabled,workerEnabled);
+                var response=controller.get(meeting);
+                var value=response.getBody().data();
+                assertThat(value.meetingId()).isEqualTo(meeting);
+                assertThat(value.admission()).isEqualTo(publicEnabled && workerEnabled);
+                assertThat(value.access()).isEqualTo(publicEnabled && workerEnabled);
+                assertThat(value.recovery()).isEqualTo(publicEnabled);
+                assertThat(value.status()).isEqualTo(publicEnabled);
+                assertThat(response.getHeaders().getCacheControl()).contains("no-store");
+            }
+        }
+        verify(access,times(4)).requireReadable(meeting,actor);
+    }
+
     @Test
     void auditWriteFailurePreventsReturningPreviouslyMintedSignedCapability() {
         UUID id=UUID.randomUUID(), meeting=UUID.randomUUID(), actor=UUID.randomUUID();
