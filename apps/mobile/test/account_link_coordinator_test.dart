@@ -7,7 +7,9 @@ import 'package:sme_meeting_assistant/features/auth/account_link.dart';
 import 'package:sme_meeting_assistant/features/auth/account_link_coordinator.dart';
 
 void main() {
-  testWidgets('a native signal during initial drain is not lost', (tester) async {
+  testWidgets('a native signal during initial drain is not lost', (
+    tester,
+  ) async {
     const channel = MethodChannel('test/account_links');
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;

@@ -45,10 +45,7 @@ void main() {
       'https://meeting.example.invalid/reset-password#token=fixture%2B1',
     );
     addTearDown(delivery.dispose);
-    final harness = _Harness.create(
-      _authClient(),
-      InMemoryCredentialStorage(),
-    );
+    final harness = _Harness.create(_authClient(), InMemoryCredentialStorage());
     await tester.pumpWidget(
       MeetingAssistantApp(
         dependencies: harness.dependencies,
@@ -116,8 +113,10 @@ void main() {
     );
     await pumpUntil(
       tester,
-      () => harness.api.signedIn &&
-          find.textContaining('Liên kết có thể thuộc tài khoản khác')
+      () =>
+          harness.api.signedIn &&
+          find
+              .textContaining('Liên kết có thể thuộc tài khoản khác')
               .evaluate()
               .isNotEmpty,
       reason: 'authenticated entry confirmation',
@@ -148,7 +147,8 @@ void main() {
     );
     expect(
       harness.client.requests.where(
-        (request) => request.url.path.endsWith('/auth/logout') ||
+        (request) =>
+            request.url.path.endsWith('/auth/logout') ||
             request.url.path.endsWith('/auth/login'),
       ),
       isEmpty,
@@ -194,7 +194,8 @@ void main() {
     );
     await pumpUntil(
       tester,
-      () => api.signedIn &&
+      () =>
+          api.signedIn &&
           find.textContaining('Hãy hoàn tất ghi âm').evaluate().isNotEmpty,
       reason: 'active recording prevents account entry',
     );
