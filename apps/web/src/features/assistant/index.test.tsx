@@ -2476,9 +2476,7 @@ describe('Assistant presentation regressions', () => {
         '2026-11-22T08:59:00Z'
       )
       olderRead.resolve({ ...baseDetail, messages: [olderMessage] })
-      await expect
-        .element(screen.getByText(olderMessage.content))
-        .toBeVisible()
+      await expect.element(screen.getByText(olderMessage.content)).toBeVisible()
       await expect
         .poll(() => {
           const current = history.element()
@@ -2566,9 +2564,7 @@ describe('Assistant presentation regressions', () => {
       await expect
         .poll(() => {
           const current = history.element()
-          return (
-            current.scrollHeight - current.clientHeight - current.scrollTop
-          )
+          return current.scrollHeight - current.clientHeight - current.scrollTop
         })
         .toBeLessThan(4)
     } finally {
