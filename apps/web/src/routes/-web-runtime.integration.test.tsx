@@ -1,3 +1,4 @@
+import { act } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   createMemoryHistory,
@@ -18,6 +19,7 @@ import { ActionCommands } from '@/features/action-items/action-commands'
 import { resetAuthLifecycleAfterSignIn } from '@/features/auth/session/auth-lifecycle'
 import { configureSessionRevalidation } from '@/features/auth/session/session-revalidation'
 import { MinutesPanel } from '@/features/meetings/intelligence/minutes-panel'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -739,9 +741,18 @@ describe('integrated generated Web runtime', () => {
         },
       },
     })
-    const { screen } = await renderGeneratedRoute('/')
+    const { screen, queryClient } = await renderGeneratedRoute('/')
     await expect.element(screen.getByText(assigned.title)).toBeVisible()
-    await expect.element(screen.getByText('Due 2026-11-24')).toBeVisible()
+    await expect.element(screen.getByText('Due Nov 24, 2026')).toBeVisible()
+    await act(async () => {
+      queryClient.setQueryData(preferencesQueryKey, {
+        ...preferences,
+        timezone: 'Pacific/Honolulu',
+        locale: 'en-GB',
+      })
+    })
+    await expect.element(screen.getByText('Due 24 Nov 2026')).toBeVisible()
+    expect(assigned.dueDate).toBe('2026-11-24')
     await expect
       .element(screen.getByText('Overdue', { exact: true }))
       .toBeVisible()

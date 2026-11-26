@@ -70,6 +70,7 @@ function ManagementReport({
   access: AuthorizedMemberDirectoryAccess
 }) {
   const { locale } = useRegionalPresentation()
+  const numberFormat = new Intl.NumberFormat(locale)
   const queryClient = useQueryClient()
   const contextKey = getSessionContextKey(identity)
   const [preset, setPreset] = useState('30')
@@ -323,11 +324,7 @@ function ManagementReport({
                       (unit) => unit.id === applied.orgUnitId
                     )?.name ?? 'Selected managed unit')
                   : 'All managed units'}{' '}
-                (
-                {new Intl.NumberFormat(locale).format(
-                  data.scope.organizationalUnitIds.length
-                )}
-                )
+                ({numberFormat.format(data.scope.organizationalUnitIds.length)})
               </p>
               {report.isFetching && <p role='status'>Refreshing report…</p>}
             </div>
@@ -382,7 +379,7 @@ function ManagementReport({
                     />
                   </div>
                   <span className='tabular-nums'>
-                    {new Intl.NumberFormat(locale).format(status.count)}
+                    {numberFormat.format(status.count)}
                   </span>
                 </div>
               ))}

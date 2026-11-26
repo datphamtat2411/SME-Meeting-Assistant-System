@@ -66,8 +66,9 @@ const queryClient = new QueryClient({
       if (
         query.meta?.featureErrorBoundary === true ||
         query.meta?.handlesOwnErrors === true
-      )
+      ) {
         return
+      }
       const apiError = normalizeCoreApiError(error)
       if (apiError.recoveryOutcome) return
 
