@@ -213,7 +213,7 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
         ),
       ),
     );
-    if (_current && saved == true) {
+    if (mounted && _current && saved == true) {
       showSuccess(context, 'Đã tạo công việc.');
     }
   }
@@ -287,6 +287,7 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
       widget.dependencies.actionItems,
       known: known.values.toList(),
       allowKnownInactive: true,
+      forFilter: true,
     );
     if (_current && selected != null) {
       setState(() => _assignee = selected);
@@ -324,6 +325,8 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
               : null,
         ),
         if (_checkingEligibility) const LinearProgressIndicator(),
+        if (_eligible == false && _creation.unresolvedIntent == null)
+          const Text('Không có cuộc họp đủ quyền để tạo công việc.'),
         if (_eligibilityError != null)
           TextButton.icon(
             onPressed: _checkEligibility,
@@ -413,6 +416,8 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
                   _meeting == null
                       ? 'Cuộc họp'
                       : actionItemMeetingLabel(_meeting!.id, _meeting!.title),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
                 onPressed: _pickMeeting,
                 onDeleted: _meeting == null
@@ -426,6 +431,8 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
               InputChip(
                 label: Text(
                   _assignee == null ? 'Người phụ trách' : actionItemAssigneeLabel(_assignee),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
                 onPressed: _pickAssignee,
                 onDeleted: _assignee == null

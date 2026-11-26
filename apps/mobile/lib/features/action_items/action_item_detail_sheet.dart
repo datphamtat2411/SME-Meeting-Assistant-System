@@ -164,8 +164,11 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
       );
       if (!accepted || !mounted || !_controller.current) return;
     }
+    if (!mounted || !_controller.current) return;
     if (!identical(reviewed, _controller.snapshot)) {
-      showSuccess(context, 'Công việc đã thay đổi. Vui lòng xem lại.');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Công việc đã thay đổi. Vui lòng xem lại.')),
+      );
       return;
     }
     final saved = await _controller.command(command, reviewed: reviewed);
@@ -350,14 +353,14 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
   ) => switch (field) {
     ActionItemEditField.assignee => _assigneeName(
       value,
-      original: merge.original.item.assignee,
+      original: merge.originalAssignee,
     ),
     ActionItemEditField.dueDate => actionItemDueLabel(value),
     _ => value ?? 'Không có',
   };
 
   Widget _merge(ActionItemReconciliation merge) {
-    final original = ActionItemDraft.fromResource(merge.original.item);
+    final original = merge.originalValues;
     final latest = ActionItemDraft.fromResource(merge.latest.item);
     final changed = {
       ...merge.local.changesFrom(original),

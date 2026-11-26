@@ -44,6 +44,7 @@ class ActionItemDetailController extends ChangeNotifier {
   final AuthenticatedSessionScope _scope;
 
   ActionItemSnapshot? _snapshot;
+  String? _meetingId;
   ActionItemSnapshot? _baseline;
   ActionItemDraft? _draft;
   ActionItemReconciliation? _reconciliation;
@@ -61,7 +62,7 @@ class ActionItemDetailController extends ChangeNotifier {
   Object? get error => _error;
   bool get busy => _busy;
   bool get unresolved => _unresolved;
-  bool get editing => _baseline != null;
+  bool get editing => _baseline != null || _reconciliation != null;
   bool get current =>
       !_disposed &&
       !_expiredSession &&
@@ -69,9 +70,11 @@ class ActionItemDetailController extends ChangeNotifier {
   bool get hasChanges {
     final original = _baseline;
     final draft = _draft;
-    return original != null &&
+    final originalValues = _reconciliation?.originalValues ??
+        (original == null ? null : ActionItemDraft.fromResource(original.item));
+    return originalValues != null &&
         draft != null &&
-        draft.changesFrom(ActionItemDraft.fromResource(original.item)).isNotEmpty;
+        draft.changesFrom(originalValues).isNotEmpty;
   }
 
   Future<void> refresh() async {
@@ -193,7 +196,11 @@ class ActionItemDetailController extends ChangeNotifier {
     required bool contentEdit,
   }) async {
     final lease = admission.acquire(_scope, itemId);
-    if (lease == null) return false;
+    if (lease == null) {
+      _error = StateError('Another mutation is in progress.');
+      notifyListeners();
+      return false;
+    }
     _busy = true;
     _error = null;
     notifyListeners();
@@ -238,28 +245,42 @@ class ActionItemDetailController extends ChangeNotifier {
       if (!current) return;
       final latest = await repository.detail(itemId, sessionScope: _scope);
       if (!current) return;
+      if (_meetingId != null &&
+          !sameActionItemIdentity(_meetingId!, latest.item.meetingId)) {
+        _snapshot = null;
+        _clearEdit();
+        _unresolved = true;
+        throw StateError('The resource meeting identity unexpectedly changed.');
+      }
+      _meetingId ??= latest.item.meetingId;
       final original = _baseline;
       final local = _draft;
+      final previousMerge = _reconciliation;
       _snapshot = latest;
-      if (original != null && local != null) {
+      if (local != null && (original != null || previousMerge != null)) {
         if (!latest.item.capabilities.canEdit &&
             !latest.item.capabilities.canAssign) {
           _clearEdit();
           _unresolved = false;
-        } else if (forceMerge ||
-            _reconciliation != null ||
-            _unresolved ||
-            original.etag != latest.etag ||
-            original.item.capabilities.canEdit !=
-                latest.item.capabilities.canEdit ||
-            original.item.capabilities.canAssign !=
-                latest.item.capabilities.canAssign) {
+        } else if (previousMerge != null) {
+          _reconciliation = previousMerge.withLatest(latest);
+        } else if (original != null &&
+            (forceMerge ||
+                _unresolved ||
+                original.etag != latest.etag ||
+                original.item.capabilities.canReadMeetingContext !=
+                    latest.item.capabilities.canReadMeetingContext ||
+                original.item.capabilities.canEdit !=
+                    latest.item.capabilities.canEdit ||
+                original.item.capabilities.canAssign !=
+                    latest.item.capabilities.canAssign)) {
           if (hasChanges || forceMerge || _unresolved) {
             _reconciliation = ActionItemReconciliation(
               original: original,
               local: local,
               latest: latest,
             );
+            _baseline = null;
           } else {
             _baseline = latest;
             _draft = ActionItemDraft.fromResource(latest.item);
@@ -319,6 +340,7 @@ class ActionItemDetailController extends ChangeNotifier {
     if (_disposed || _expiredSession || current) return;
     _expiredSession = true;
     _snapshot = null;
+    _meetingId = null;
     _clearEdit();
     _error = null;
     _busy = false;

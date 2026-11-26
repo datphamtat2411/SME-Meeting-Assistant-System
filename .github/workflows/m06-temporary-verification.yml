@@ -33,4 +33,4 @@ jobs:
       - name: Analyze
         run: flutter analyze
       - name: Focused tests
-        run: flutter test test/action_item_collection_test.dart test/action_item_management_test.dart
+        run: flutter test test/action_item_collection_test.dart test/action_item_management_test.dart test/action_item_widgets_test.dart

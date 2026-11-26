@@ -32,6 +32,7 @@ class ActionItemCreationController extends ChangeNotifier {
   Object? _error;
   bool _disposed = false;
   bool _expiredSession = false;
+  bool _retryExpired = false;
 
   ActionItemCreationPhase get phase => _phase;
   ActionItemCreateIntent? get unresolvedIntent => _intent;
@@ -53,9 +54,12 @@ class ActionItemCreationController extends ChangeNotifier {
       return false;
     }
     final wallElapsed = _now().difference(first);
-    return !wallElapsed.isNegative &&
-        wallElapsed < retryWindow &&
-        _elapsed.elapsed < retryWindow;
+    if (wallElapsed.isNegative ||
+        wallElapsed >= retryWindow ||
+        _elapsed.elapsed >= retryWindow) {
+      _retryExpired = true;
+    }
+    return !_retryExpired;
   }
 
   Future<ActionItemSnapshot?> submit({
@@ -162,6 +166,7 @@ class ActionItemCreationController extends ChangeNotifier {
   void _clearIntent() {
     _intent = null;
     _firstDispatch = null;
+    _retryExpired = false;
     _elapsed
       ..stop()
       ..reset();

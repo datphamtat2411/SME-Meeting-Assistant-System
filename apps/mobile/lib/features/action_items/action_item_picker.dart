@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/paged_collection.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
@@ -56,6 +57,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
   bool _loaded = false;
   bool _changed = false;
   bool _sessionLost = false;
+  bool _accessDenied = false;
   Object? _error;
   Timer? _timer;
 
@@ -105,6 +107,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
       _busy = false;
       _loaded = false;
       _changed = false;
+      _accessDenied = false;
       _error = null;
     });
     if (!_searchable) return;
@@ -173,6 +176,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
             (error.status == 401 || error.status == 403 || error.status == 404)) {
           _window = PageWindow<T>();
           _loaded = false;
+          _accessDenied = true;
         }
       });
     } finally {
@@ -192,7 +196,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
     }
     final pinnedIds = widget.pinned.map((option) => option.id.toLowerCase()).toSet();
     final options = [
-      ...widget.pinned,
+      if (!_accessDenied) ...widget.pinned,
       ..._window.items.map(widget.describe).where(
         (option) => !pinnedIds.contains(option.id.toLowerCase()),
       ),
@@ -207,6 +211,11 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
               child: TextField(
                 controller: _search,
                 maxLength: 200,
+                inputFormatters: [
+                  TextInputFormatter.withFunction(
+                    (old, next) => next.text.length > 200 ? old : next,
+                  ),
+                ],
                 onChanged: (_) => _reset(debounce: true),
                 onSubmitted: (_) => _reset(debounce: false),
                 decoration: InputDecoration(

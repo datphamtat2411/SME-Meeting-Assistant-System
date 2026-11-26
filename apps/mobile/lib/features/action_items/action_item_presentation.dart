@@ -114,6 +114,7 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
   ActionItemRepository repository, {
   List<ActionItemAssignee> known = const [],
   bool allowKnownInactive = false,
+  bool forFilter = false,
 }) {
   final scope = repository.captureSession();
   final self = repository.selfCandidate(scope);
@@ -121,7 +122,7 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
     ActionItemPickerOption(
       value: self,
       id: self.id,
-      label: 'Giao cho tôi · ${self.displayName}',
+      label: '${forFilter ? 'Tôi' : 'Giao cho tôi'} · ${self.displayName}',
     ),
     for (final item in known)
       if (!sameActionItemIdentity(item.id, self.id) &&
@@ -138,7 +139,7 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
     ActionItemPicker<ActionItemAssignee>(
       api: repository.api,
       scope: scope,
-      title: 'Chọn người phụ trách',
+      title: forFilter ? 'Lọc theo người phụ trách' : 'Chọn người phụ trách',
       minimumSearchLength: 2,
       pinned: pinned,
       load: (search, page) async => mapActionItemPickerPage(

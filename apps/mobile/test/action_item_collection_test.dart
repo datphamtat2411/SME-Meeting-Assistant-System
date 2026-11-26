@@ -188,4 +188,54 @@ void main() {
     expect(controller.state.loaded, isFalse);
     expect(controller.state.failure, ActionItemCollectionFailure.access);
   });
+
+  test('late collection response cannot enter a replacement session', () async {
+    final started = Completer<void>();
+    final pending = Completer<http.StreamedResponse>();
+    var reads = 0;
+    final client = MeetingTestHttpClient((request) async {
+      reads++;
+      started.complete();
+      return pending.future;
+    });
+    final repository = await repositoryFor(client);
+    final controller = ActionItemCollectionController(repository: repository);
+    addTearDown(controller.dispose);
+    final operation = controller.initialize();
+    await started.future;
+    await repository.api.signOut();
+    await repository.api.signIn('user@example.test', 'password');
+    pending.complete(await meetingApiSuccess([_item(1)], meta: _meta(0, 1)));
+    await operation;
+    expect(controller.state.items, isEmpty);
+    expect(controller.state.failure, ActionItemCollectionFailure.access);
+    await controller.retry();
+    expect(reads, 1);
+  });
+
+  test('hidden collection defers invalidation until activated', () async {
+    var reads = 0;
+    final client = MeetingTestHttpClient((request) async {
+      reads++;
+      return meetingApiSuccess([_item(reads)], meta: _meta(0, 1));
+    });
+    final repository = await repositoryFor(client);
+    final controller = ActionItemCollectionController(
+      repository: repository,
+      active: false,
+    );
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    expect(reads, 0);
+    controller.setActive(true);
+    await controller.refresh();
+    expect(reads, 1);
+    controller.setActive(false);
+    repository.invalidation.invalidate(sessionScope: repository.captureSession());
+    expect(reads, 1);
+    controller.setActive(true);
+    await controller.refresh();
+    expect(reads, 2);
+    expect(controller.state.items.single.title, 'Item 2');
+  });
 }

@@ -78,10 +78,10 @@ bool canChangeActionItemField(
 /// Reconciliation does not authorize or dispatch a mutation. The user must
 /// accept the latest reviewed baseline and explicitly submit remaining edits.
 class ActionItemReconciliation {
-  ActionItemReconciliation({
-    required this.original,
-    required this.local,
-    required this.latest,
+  factory ActionItemReconciliation({
+    required ActionItemSnapshot original,
+    required ActionItemDraft local,
+    required ActionItemSnapshot latest,
   }) {
     if (original.sessionScope != latest.sessionScope ||
         !sameActionItemIdentity(original.item.id, latest.item.id) ||
@@ -91,13 +91,43 @@ class ActionItemReconciliation {
         )) {
       throw ArgumentError('Reconciliation requires the same scoped resource.');
     }
+    // Keep only editable values and assignment display information from the
+    // old representation. Its protected meeting metadata is not retained.
+    return ActionItemReconciliation._(
+      originalValues: ActionItemDraft.fromResource(original.item),
+      originalAssignee: original.item.assignee,
+      local: local,
+      latest: latest,
+    );
   }
 
-  final ActionItemSnapshot original;
+  const ActionItemReconciliation._({
+    required this.originalValues,
+    required this.originalAssignee,
+    required this.local,
+    required this.latest,
+  });
+
+  final ActionItemDraft originalValues;
+  final ActionItemAssignee? originalAssignee;
   final ActionItemDraft local;
   final ActionItemSnapshot latest;
 
-  ActionItemDraft get _base => ActionItemDraft.fromResource(original.item);
+  ActionItemReconciliation withLatest(ActionItemSnapshot snapshot) {
+    if (snapshot.sessionScope != latest.sessionScope ||
+        !sameActionItemIdentity(snapshot.item.id, latest.item.id) ||
+        !sameActionItemIdentity(snapshot.item.meetingId, latest.item.meetingId)) {
+      throw ArgumentError('Reconciliation requires the same scoped resource.');
+    }
+    return ActionItemReconciliation._(
+      originalValues: originalValues,
+      originalAssignee: originalAssignee,
+      local: local,
+      latest: snapshot,
+    );
+  }
+
+  ActionItemDraft get _base => originalValues;
   ActionItemDraft get _server => ActionItemDraft.fromResource(latest.item);
 
   Set<ActionItemEditField> get conflicts => {

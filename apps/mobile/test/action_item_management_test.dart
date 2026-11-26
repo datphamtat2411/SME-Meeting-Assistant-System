@@ -178,4 +178,190 @@ void main() {
     expect(payloads[1], payloads[2]);
     expect(creation.unresolvedIntent, isNull);
   });
+
+  test('unknown update requires successful revalidation before another write', () async {
+    var reads = 0;
+    var writes = 0;
+    final client = MeetingTestHttpClient((request) async {
+      if (request.method == 'PATCH') {
+        writes++;
+        return meetingApiFailure(500, 'INTERNAL_ERROR');
+      }
+      reads++;
+      if (reads == 2) return meetingApiFailure(503, 'INTERNAL_ERROR');
+      return meetingApiSuccess(
+        {
+          ...itemJson(version: reads == 1 ? 1 : 2),
+          'title': reads == 1 ? 'Original' : 'Local',
+        },
+        headers: {'etag': reads == 1 ? '"v1"' : '"v2"'},
+      );
+    });
+    final repository = await repositoryFor(client);
+    final detail = ActionItemDetailController(
+      repository: repository,
+      admission: ActionItemMutationAdmission(),
+      itemId: itemId,
+    );
+    addTearDown(detail.dispose);
+    await detail.refresh();
+    detail.beginEdit();
+    final original = detail.draft!;
+    detail.setDraft(
+      ActionItemDraft(
+        title: 'Local',
+        details: original.details,
+        assigneeUserId: original.assigneeUserId,
+        dueDate: original.dueDate,
+      ),
+    );
+    expect(await detail.save(), isFalse);
+    expect(detail.unresolved, isTrue);
+    expect(detail.draft!.title, 'Local');
+    expect(await detail.save(), isFalse);
+    expect(writes, 1);
+    await detail.refresh();
+    expect(detail.reconciliation!.intendedChangesReflected, isTrue);
+    detail.acceptReconciliation({});
+    expect(detail.unresolved, isFalse);
+    expect(detail.hasChanges, isFalse);
+    expect(await detail.save(), isFalse);
+    expect(writes, 1);
+  });
+
+  test('read access revocation clears editing and protected snapshot', () async {
+    var reads = 0;
+    final client = MeetingTestHttpClient((request) async {
+      if (reads++ == 0) {
+        return meetingApiSuccess(itemJson(), headers: {'etag': '"v1"'});
+      }
+      return meetingApiFailure(404, 'RESOURCE_NOT_FOUND');
+    });
+    final repository = await repositoryFor(client);
+    final detail = ActionItemDetailController(
+      repository: repository,
+      admission: ActionItemMutationAdmission(),
+      itemId: itemId,
+    );
+    addTearDown(detail.dispose);
+    await detail.refresh();
+    detail.beginEdit();
+    expect(detail.editing, isTrue);
+    await detail.refresh();
+    expect(detail.snapshot, isNull);
+    expect(detail.draft, isNull);
+    expect(detail.editing, isFalse);
+    expect(await detail.save(), isFalse);
+  });
+
+  test('command cannot use a newer unreviewed snapshot', () async {
+    var reads = 0;
+    var writes = 0;
+    final client = MeetingTestHttpClient((request) async {
+      if (request.method == 'POST') {
+        writes++;
+        return meetingApiFailure(409, 'ACTION_ITEM_INVALID_TRANSITION');
+      }
+      reads++;
+      return meetingApiSuccess(
+        itemJson(version: reads),
+        headers: {'etag': '"v$reads"'},
+      );
+    });
+    final repository = await repositoryFor(client);
+    final detail = ActionItemDetailController(
+      repository: repository,
+      admission: ActionItemMutationAdmission(),
+      itemId: itemId,
+    );
+    addTearDown(detail.dispose);
+    await detail.refresh();
+    final reviewed = detail.snapshot!;
+    await detail.refresh();
+    expect(
+      await detail.command(ActionItemCommand.start, reviewed: reviewed),
+      isFalse,
+    );
+    expect(writes, 0);
+  });
+
+  test('mutation admission is resource and lease scoped', () async {
+    final repository = await repositoryFor(
+      MeetingTestHttpClient((request) async {
+        throw StateError('No business request expected.');
+      }),
+    );
+    final scope = repository.captureSession();
+    final admission = ActionItemMutationAdmission();
+    final first = admission.acquire(scope, itemId)!;
+    expect(admission.acquire(scope, itemId), isNull);
+    expect(admission.acquire(scope, testRoomId), isNotNull);
+    admission.release(scope, itemId, Object());
+    expect(admission.acquire(scope, itemId), isNull);
+    admission.release(scope, itemId, first);
+    final next = admission.acquire(scope, itemId)!;
+    admission.release(scope, itemId, first);
+    expect(admission.acquire(scope, itemId), isNull);
+    admission.release(scope, itemId, next);
+    expect(admission.acquire(scope, itemId), isNotNull);
+  });
+
+  test('creation replay deadline cannot be extended by a wall clock rewind', () async {
+    var now = DateTime.utc(2026, 11, 26);
+    var writes = 0;
+    final client = MeetingTestHttpClient((request) async {
+      if (request.method == 'POST') {
+        writes++;
+        return meetingApiFailure(500, 'INTERNAL_ERROR');
+      }
+      return meetingApiSuccess(
+        [
+          {'id': testMeetingId, 'title': null, 'canReadMeetingContext': false},
+        ],
+        meta: {
+          ...meetingTestMeta,
+          'pagination': {
+            'page': 0,
+            'size': 20,
+            'totalElements': 1,
+            'totalPages': 1,
+            'hasNext': false,
+            'hasPrevious': false,
+          },
+        },
+      );
+    });
+    final repository = await repositoryFor(client);
+    final scope = repository.captureSession();
+    final meetings = await repository.creationMeetings(
+      ActionItemCreationMeetingQuery(search: testMeetingId),
+      sessionScope: scope,
+    );
+    final creation = ActionItemCreationController(
+      repository: repository,
+      now: () => now,
+    );
+    addTearDown(creation.dispose);
+    final first = now;
+    await creation.submit(
+      input: ActionItemCreateInput(
+        meetingId: testMeetingId,
+        title: 'New item',
+        assigneeUserId: testUserId,
+      ),
+      meeting: meetings.items.single,
+      assignee: repository.selfCandidate(scope),
+    );
+    expect(creation.canRetry, isTrue);
+    now = now.add(const Duration(hours: 24));
+    expect(creation.canRetry, isFalse);
+    now = first;
+    expect(await creation.retry(), isNull);
+    expect(writes, 1);
+    await repository.api.signOut();
+    await repository.api.signIn('user@example.test', 'password');
+    expect(creation.unresolvedIntent, isNull);
+    expect(await creation.retry(), isNull);
+    expect(writes, 1);
+  });
 }
