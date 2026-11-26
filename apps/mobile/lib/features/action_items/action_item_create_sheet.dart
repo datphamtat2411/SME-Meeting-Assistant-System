@@ -43,9 +43,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
 
   ActionItemCreationController get _controller => widget.controller;
   bool get _current =>
-      mounted &&
-      _controller.current &&
-      (widget.hostIsCurrent?.call() ?? true);
+      mounted && _controller.current && (widget.hostIsCurrent?.call() ?? true);
   bool get _unresolved =>
       _controller.phase == ActionItemCreationPhase.unresolved;
   bool get _dirty =>
@@ -361,8 +359,8 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
                               label: Text(
                                 _meeting == null
                                     ? widget.initialMeetingId == null
-                                        ? 'Chọn cuộc họp *'
-                                        : 'Kiểm tra lại cuộc họp'
+                                          ? 'Chọn cuộc họp *'
+                                          : 'Kiểm tra lại cuộc họp'
                                     : actionItemMeetingLabel(
                                         _meeting!.id,
                                         _meeting!.title,

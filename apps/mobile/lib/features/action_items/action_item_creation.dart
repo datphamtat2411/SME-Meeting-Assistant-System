@@ -83,7 +83,10 @@ class ActionItemCreationController extends ChangeNotifier {
     required ActionItemAssignee assignee,
     bool Function()? stillAllowed,
   }) async {
-    if (!current || busy || _intent != null || !(stillAllowed?.call() ?? true)) {
+    if (!current ||
+        busy ||
+        _intent != null ||
+        !(stillAllowed?.call() ?? true)) {
       return null;
     }
     if (!sameActionItemIdentity(input.meetingId, meeting.id) ||

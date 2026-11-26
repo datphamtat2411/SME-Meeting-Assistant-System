@@ -419,13 +419,16 @@ void main() {
     final client = MeetingTestHttpClient((request) async {
       expect(request.method, 'GET');
       if (request.url.path.endsWith('/action-items/creation-meetings')) {
-        return meetingApiSuccess([], meta: {
-          ...pageMeta(total: 0),
-          'pagination': {
-            ...(pageMeta(total: 0)['pagination'] as Map<String, dynamic>),
-            'size': 1,
+        return meetingApiSuccess(
+          [],
+          meta: {
+            ...pageMeta(total: 0),
+            'pagination': {
+              ...(pageMeta(total: 0)['pagination'] as Map<String, dynamic>),
+              'size': 1,
+            },
           },
-        });
+        );
       }
       if (request.url.path.endsWith('/action-items/$itemId')) {
         detailReads++;
@@ -491,7 +494,6 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
-
 
   test('decision command validates response identity and status', () async {
     var returnedId = 'wrong-decision';

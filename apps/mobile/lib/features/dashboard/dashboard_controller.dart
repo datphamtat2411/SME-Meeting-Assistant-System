@@ -12,8 +12,8 @@ class DashboardController extends ChangeNotifier {
     required this.api,
     required this.invalidation,
     bool active = true,
-  }) : _scope = api.requireAuthenticatedSessionScope(),
-       _active = active {
+  }) : _scope = api.requireAuthenticatedSessionScope() {
+    if (!active) _active = false;
     invalidation.addListener(_invalidated);
     api.sessionCoordinator.addListener(_sessionChanged);
   }
@@ -21,7 +21,7 @@ class DashboardController extends ChangeNotifier {
   final ApiClient api;
   final ActionItemInvalidationSignal invalidation;
   final AuthenticatedSessionScope _scope;
-  bool _active;
+  bool _active = true;
   bool _dirty = true;
   bool _disposed = false;
   Future<void>? _operation;

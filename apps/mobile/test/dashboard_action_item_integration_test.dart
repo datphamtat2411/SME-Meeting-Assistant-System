@@ -20,8 +20,7 @@ Map<String, dynamic> _dashboard(int open) => {
 void main() {
   test('Dashboard destinations preserve official My Work semantics', () {
     for (final destination in MyWorkDestination.values) {
-      final query = ActionItemNavigationIntent(destination)
-          .criteria
+      final query = ActionItemNavigationIntent(destination).criteria
           .query()
           .toQueryParameters();
       expect(query['assignee'], 'me');

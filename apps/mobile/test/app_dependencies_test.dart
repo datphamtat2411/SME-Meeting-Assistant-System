@@ -84,7 +84,6 @@ void main() {
     expect(actions.revision, revision);
   });
 
-
   test('the dependency holder closes owned resources exactly once', () {
     final client = NoNetworkHttpClient();
     final api = TrackingApiClient(client);

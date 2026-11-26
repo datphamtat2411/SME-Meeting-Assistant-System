@@ -285,7 +285,8 @@ class MinutesPanel extends StatelessWidget {
                     _label('Thời điểm xác nhận', dateLabel(action.confirmedAt)),
                     if (openActionItem != null)
                       TextButton.icon(
-                        onPressed: () => unawaited(openActionItem!(context, action.id)),
+                        onPressed: () =>
+                            unawaited(openActionItem!(context, action.id)),
                         icon: const Icon(Icons.chevron_right),
                         label: const Text('Xem chi tiết công việc'),
                       ),

@@ -138,7 +138,8 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
   Future<ActionItemAssignee?> Function(
     BuildContext,
     ActionItemPicker<ActionItemAssignee>,
-  )? openPicker,
+  )?
+  openPicker,
 }) {
   final scope = repository.captureSession();
   final self = repository.selfCandidate(scope);

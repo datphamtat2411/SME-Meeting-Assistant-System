@@ -41,7 +41,8 @@ class ActionItemsPage extends StatefulWidget {
     BuildContext,
     List<ActionItemAssignee> Function(),
     Listenable,
-  )? openAssigneeFilter;
+  )?
+  openAssigneeFilter;
   final Future<void> Function(BuildContext, String)? openMeeting;
 
   @override
@@ -648,7 +649,10 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
               },
               icon: const Icon(Icons.video_camera_front_outlined, size: 16),
               label: Text(
-                actionItemMeetingLabel(item.meetingId, item.meetingContext.title),
+                actionItemMeetingLabel(
+                  item.meetingId,
+                  item.meetingContext.title,
+                ),
                 textAlign: TextAlign.start,
               ),
             ),
