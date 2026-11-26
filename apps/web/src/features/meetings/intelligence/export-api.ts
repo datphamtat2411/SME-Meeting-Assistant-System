@@ -196,6 +196,22 @@ export function parseExportStatus(
   return parsed.data
 }
 
+export async function fetchExportStatus(
+  exportId: string,
+  expected?: {
+    meetingId?: string
+    format?: ExportStatus['format']
+  },
+  signal?: AbortSignal
+) {
+  return parseExportStatus(
+    await coreApi.get<unknown>('/exports/' + encodeURIComponent(exportId), {
+      signal,
+    }),
+    { exportId, ...expected }
+  )
+}
+
 export function exportStatusQuery(
   exportId: string,
   expected?: {
@@ -204,27 +220,9 @@ export function exportStatusQuery(
     scope?: string
   }
 ) {
-  const expectedMeetingId = expected?.meetingId
-  const expectedFormat = expected?.format
   return queryOptions({
-    queryKey: [
-      'export',
-      exportId,
-      expectedMeetingId,
-      expectedFormat,
-      expected?.scope,
-    ],
-    queryFn: async ({ signal }) =>
-      parseExportStatus(
-        await coreApi.get<unknown>('/exports/' + encodeURIComponent(exportId), {
-          signal,
-        }),
-        {
-          exportId,
-          meetingId: expectedMeetingId,
-          format: expectedFormat,
-        }
-      ),
+    queryKey: ['export', exportId, expected?.meetingId, expected?.format, expected?.scope],
+    queryFn: ({ signal }) => fetchExportStatus(exportId, expected, signal),
     meta: { featureErrorBoundary: true },
     retry: false,
   })

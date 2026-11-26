@@ -9,6 +9,7 @@ on:
       - 'web/module-meeting-intelligence'
       - 'web/module-assistant-search'
       - 'web/module-authentication-account-flows'
+      - 'web/module-dashboard-export'
   pull_request:
     branches:
       - develop

@@ -5,7 +5,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Download, FileDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
@@ -23,6 +23,7 @@ import {
   accessMinutesExport,
   exportCapabilitiesQuery,
   exportStatusQuery,
+  fetchExportStatus,
   type ExportStatus,
 } from './export-api'
 import {
@@ -46,6 +47,7 @@ function trustedDownloadHosts() {
         const url = new URL('https://' + host)
         return (
           Boolean(host) &&
+          !host.includes('*') &&
           url.host === host &&
           !url.username &&
           !url.password &&
@@ -162,7 +164,6 @@ function FormatExportCard({
   canDownload: boolean
 }) {
   const label = format === 'PDF' ? 'PDF' : 'Markdown'
-  const queryClient = useQueryClient()
   const visible = useSyncExternalStore(subscribeVisibility, pageVisible)
   const [paused, setPaused] = useState(false)
   const remaining = useRef(observationBudgetMs)
@@ -284,12 +285,9 @@ function FormatExportCard({
         owner.isCurrent(format, operation.intentId)
       try {
         if (!isCurrent()) return
-        const target = exportStatusQuery(exportId, { meetingId, format, scope })
-        // Do not treat cached READY status as a fresh authorization decision.
-        const observed = await queryClient.fetchQuery({
-          ...target,
-          staleTime: 0,
-        })
+        // A download must begin its own authorization/freshness read rather
+        // than joining an older in-flight polling request.
+        const observed = await fetchExportStatus(exportId, { meetingId, format })
         if (!isCurrent()) return
         if (
           observed.exportId !== exportId ||

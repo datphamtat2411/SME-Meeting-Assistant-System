@@ -879,6 +879,12 @@ Purely client-local appearance preferences do not require a backend API unless p
 | API-EP-EXP-002 | POST | /api/v1/meetings/{meetingId}/exports | Create/generate an authorized export in a supported format such as Markdown or PDF. |
 | API-EP-EXP-003 | GET | /api/v1/exports/{exportId} | Retrieve export generation status/metadata. |
 | API-EP-EXP-004 | POST | /api/v1/exports/{exportId}/access-url | Create a short-lived authorized access capability for a persisted export artifact. |
+| API-EP-EXP-005 | GET | /api/v1/meetings/{meetingId}/exports/capabilities | Read the configured availability of export admission, recovery, status, and access for an authorized meeting. |
+| API-EP-EXP-006 | POST | /api/v1/meetings/{meetingId}/exports/recover | Recover an existing admission receipt without creating an export. |
+
+Export capability discovery requires current meeting-content read authorization and returns `meetingId` and four booleans: `admission`, `recovery`, `status`, `access`. Availability describes configured endpoints, not worker health, storage health, or permission to generate a particular Minutes revision. Public admission and worker gates remain unchanged. Recovery and status require the public export gate; new admission and access require both public and worker gates.
+
+Replay-only recovery requires current content authorization, the original `Idempotency-Key` header, and the original `format`. It matches the same actor, meeting and request digest, and returns HTTP 200 with `outcome: RECOVERED` and the original `admission` receipt, or `outcome: UNAVAILABLE` with no admission. Expiration is evaluated on the server clock. The operation MUST NOT create a receipt, intake, or export job; an unavailable receipt MUST NOT trigger automatic submission to the creation endpoint. A distinct route avoids treating recovery as ordinary creation on older deployments. Responses to both discovery and recovery are non-cacheable.
 
 # 23. Endpoint Areas Intentionally Not Duplicated
 
