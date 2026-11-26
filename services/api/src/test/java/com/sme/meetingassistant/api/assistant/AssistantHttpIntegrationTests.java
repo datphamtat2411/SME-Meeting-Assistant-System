@@ -37,11 +37,14 @@ class AssistantHttpIntegrationTests {
     @MockitoBean AssistantSourceVerifier sourceVerifier;
 
     private UUID user() {
+        return user("EMPLOYEE");
+    }
+    private UUID user(String role) {
         UUID id=UUID.randomUUID();
         jdbc.update("""
             INSERT INTO users(id,email,email_normalized,display_name,password_hash,global_role,account_status)
-            VALUES (?,?,?,'Assistant actor','test-only','EMPLOYEE','ACTIVE')
-            """,id,id+"@test.invalid",id+"@test.invalid");
+            VALUES (?,?,?,'Assistant actor','test-only',?,'ACTIVE')
+            """,id,id+"@test.invalid",id+"@test.invalid",role);
         return id;
     }
     private UUID meeting(UUID owner, UUID... members) {
@@ -233,6 +236,83 @@ class AssistantHttpIntegrationTests {
             .principal(principal(member))).andExpect(status().isOk()).andReturn());
         assertThat(list.size()).isZero();
     }
+    @Test void managerAndAdministratorFollowUpsRemainBoundToOwnedMeeting() throws Exception {
+        UUID owner=user(),manager=user("DEPARTMENT_MANAGER"),admin=user("ADMINISTRATOR");
+        UUID selected=meeting(owner,manager,admin),other=meeting(owner,manager,admin);
+        UUID restricted=meeting(owner);
+        var requests=new java.util.ArrayList<JsonNode>();
+        when(gateway.answer(anyString())).thenAnswer(inv->{
+            String payload=inv.getArgument(0);
+            requests.add(json.readTree(payload));
+            return insufficient(payload);
+        });
+
+        UUID previousConversation=null;
+        for(UUID actor:List.of(manager,admin)){
+            // Global roles and knowledge of a meeting identifier are not content grants.
+            mvc.perform(post("/api/v1/assistant/conversations").principal(principal(actor))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("meetingId",restricted))))
+                .andExpect(status().isNotFound());
+
+            UUID own=conversation(actor,selected);
+            UUID separate=conversation(actor,other);
+            if(previousConversation!=null){
+                mvc.perform(get("/api/v1/assistant/conversations/"+previousConversation)
+                    .principal(principal(actor))).andExpect(status().isNotFound());
+            }
+            previousConversation=own;
+
+            // Give the same principal unrelated conversation context to catch
+            // accidentally user-wide rather than conversation-wide history.
+            String otherQuestion="Nội dung riêng của cuộc họp B";
+            String firstQuestion="Quyết định của cuộc họp A là gì?";
+            String followUp="Còn cuộc họp khác thì sao?";
+            int first=requests.size();
+            for(var entry:List.of(Map.entry(separate,otherQuestion),
+                                  Map.entry(own,firstQuestion),
+                                  Map.entry(own,followUp))){
+                mvc.perform(post(target(entry.getKey())).principal(principal(actor))
+                    .header("Idempotency-Key","scope-"+UUID.randomUUID())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(json.writeValueAsString(Map.of("question",entry.getValue()))))
+                    .andExpect(status().isOk());
+            }
+            assertThat(requests).hasSize(first+3);
+            for(int i=0;i<3;i++){
+                JsonNode sent=requests.get(first+i);
+                JsonNode scope=sent.path("authorizedScope");
+                assertThat(scope.path("principalId").asText()).isEqualTo(actor.toString());
+                assertThat(scope.path("scopeId").asText())
+                    .isEqualTo((i==0?separate:own).toString());
+                assertThat(scope.path("allowedMeetingIds")).hasSize(1);
+                assertThat(scope.path("allowedMeetingIds").get(0).asText())
+                    .isEqualTo((i==0?other:selected).toString());
+            }
+            assertThat(requests.get(first+1).path("conversationContext")).isEmpty();
+            JsonNode followUpContext=requests.get(first+2).path("conversationContext");
+            assertThat(followUpContext).hasSize(2);
+            assertThat(followUpContext.toString()).contains(firstQuestion).doesNotContain(otherQuestion);
+
+            jdbc.update("UPDATE meeting_participants SET removed_at=CURRENT_TIMESTAMP WHERE meeting_id=? AND user_id=?",
+                selected,actor);
+            mvc.perform(post(target(own)).principal(principal(actor))
+                .header("Idempotency-Key","revoked-"+UUID.randomUUID())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"question\":\"Hỏi tiếp sau thu hồi quyền\"}"))
+                .andExpect(status().isNotFound());
+            mvc.perform(get("/api/v1/assistant/conversations/"+own)
+                .principal(principal(actor))).andExpect(status().isNotFound());
+            mvc.perform(get("/api/v1/assistant/conversations/"+separate)
+                .principal(principal(actor))).andExpect(status().isOk());
+            assertThat(requests).hasSize(first+3);
+        }
+        verify(gateway,times(6)).answer(anyString());
+        jdbc.update("UPDATE users SET account_status='INACTIVE',deactivated_at=CURRENT_TIMESTAMP WHERE id=?",admin);
+        mvc.perform(get("/api/v1/assistant/conversations").principal(principal(admin)))
+            .andExpect(status().isUnauthorized());
+    }
+
     @Test void successfulSubmissionIsDurableIdempotentAndScopeBound() throws Exception {
         UUID owner=user(), meeting=meeting(owner),id=conversation(owner,meeting);
         when(gateway.answer(anyString())).thenAnswer(inv->insufficient(inv.getArgument(0)));
