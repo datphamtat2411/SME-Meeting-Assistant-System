@@ -1,3 +1,4 @@
+import { act } from 'react'
 import {
   AxiosError,
   AxiosHeaders,
@@ -34,6 +35,10 @@ import {
   configureSessionRevalidation,
   revalidateBrowserSession,
 } from '@/features/auth/session/session-revalidation'
+import {
+  preferencesQueryKey,
+  type Preferences,
+} from '@/features/settings/preferences-api'
 import { profileQueryKey } from '@/features/settings/profile/profile-api'
 
 vi.mock('react-top-loading-bar', () => ({
@@ -429,6 +434,192 @@ describe('session restoration and protected routing', () => {
       .not.toBeInTheDocument()
     expect(protectedRead.mock.calls.length).toBe(readsBeforeReplacement)
   })
+
+  it('isolates an in-flight regional preferences read after session replacement', async () => {
+    const previousPreferences: Preferences = {
+      timezone: 'America/New_York',
+      locale: 'en-US',
+      meetingEmailEnabled: false,
+      actionItemEmailEnabled: true,
+    }
+    const nextPreferences: Preferences = {
+      timezone: 'Asia/Tokyo',
+      locale: 'ja-JP',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: false,
+    }
+    const nextIdentity = {
+      ...identity,
+      userId: '66666666-6666-4666-8666-666666666666',
+      session: {
+        ...identity.session,
+        id: '77777777-7777-4777-8777-777777777777',
+      },
+    }
+    let replaced = false
+    let resolvePrevious!: (value: Preferences) => void
+    const pending = new Promise<Preferences>((resolve) => {
+      resolvePrevious = resolve
+    })
+    let previousSignal: AbortSignal | undefined
+    getCurrentUser.mockImplementation(
+      async (url: string, config?: { signal?: AbortSignal }) => {
+        if (url !== '/me/preferences') {
+          return (replaced ? nextIdentity : identity) as never
+        }
+        if (replaced) return nextPreferences as never
+        previousSignal = config?.signal
+        return pending as never
+      }
+    )
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (_url, config) =>
+      emptyPage(
+        Number(config?.params?.page ?? 0),
+        Number(config?.params?.size ?? 100)
+      )
+    )
+    const { queryClient, screen } = await renderRoute('/calendar?month=2026-11')
+    const dispose = configureSessionRevalidation({
+      queryClient,
+      onContainment: () => {
+        void queryClient.cancelQueries()
+        queryClient.removeQueries()
+        queryClient.getMutationCache().clear()
+      },
+      onChanged: () => undefined,
+    })
+    try {
+      await expect
+        .element(screen.getByText('Loading regional preferences…'))
+        .toBeVisible()
+      await vi.waitFor(() => expect(previousSignal).toBeDefined())
+
+      replaced = true
+      await revalidateBrowserSession()
+      const timezone = screen.getByLabelText('Calendar time zone')
+      await expect.element(timezone).toHaveTextContent('Asia/Tokyo')
+      expect(previousSignal?.aborted).toBe(true)
+
+      await act(async () => {
+        resolvePrevious(previousPreferences)
+        await pending
+      })
+      await expect.element(timezone).toHaveTextContent('Asia/Tokyo')
+      expect(queryClient.getQueryData(preferencesQueryKey)).toEqual(
+        nextPreferences
+      )
+    } finally {
+      dispose()
+      resetAuthLifecycleAfterSignIn()
+      await screen.unmount()
+      resolvePrevious(previousPreferences)
+    }
+  })
+
+  it.each(['success', 'error'] as const)(
+    'isolates a pending notification preference update after session replacement (%s)',
+    async (outcome) => {
+      const previousPreferences: Preferences = {
+        timezone: 'America/New_York',
+        locale: 'en-US',
+        meetingEmailEnabled: true,
+        actionItemEmailEnabled: true,
+      }
+      const nextPreferences: Preferences = {
+        timezone: 'Asia/Tokyo',
+        locale: 'ja-JP',
+        meetingEmailEnabled: true,
+        actionItemEmailEnabled: false,
+      }
+      const nextIdentity = {
+        ...identity,
+        userId: '66666666-6666-4666-8666-666666666666',
+        session: {
+          ...identity.session,
+          id: '77777777-7777-4777-8777-777777777777',
+        },
+      }
+      let replaced = false
+      getCurrentUser.mockImplementation(async (url: string) =>
+        (url === '/me/preferences'
+          ? replaced
+            ? nextPreferences
+            : previousPreferences
+          : replaced
+            ? nextIdentity
+            : identity) as never
+      )
+      let resolve!: (value: Preferences) => void
+      let reject!: (error: Error) => void
+      const pending = new Promise<Preferences>((done, fail) => {
+        resolve = done
+        reject = fail
+      })
+      const patch = vi
+        .spyOn(coreApi, 'patch')
+        .mockImplementationOnce(() => pending as never)
+      const { queryClient, screen } = await renderRoute('/settings/notifications')
+      const dispose = configureSessionRevalidation({
+        queryClient,
+        onContainment: () => {
+          void queryClient.cancelQueries()
+          queryClient.removeQueries()
+          queryClient.getMutationCache().clear()
+        },
+        onChanged: () => undefined,
+      })
+      try {
+        const meetingEmails = screen.getByRole('switch', {
+          name: 'Meeting emails',
+        })
+        await expect.element(meetingEmails).toBeChecked()
+        const previousControl = meetingEmails.element()
+        await userEvent.click(meetingEmails)
+        await userEvent.click(
+          screen.getByRole('button', { name: 'Save notifications' })
+        )
+        await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+        const oldMutation = queryClient.getMutationCache().getAll()[0]
+        if (!oldMutation) throw new Error('Expected a pending preference update')
+        expect(oldMutation.state.status).toBe('pending')
+
+        replaced = true
+        await revalidateBrowserSession()
+        await expect.element(meetingEmails).toBeChecked()
+        await expect
+          .element(screen.getByRole('switch', { name: 'Action item emails' }))
+          .not.toBeChecked()
+        expect(previousControl.isConnected).toBe(false)
+        expect(queryClient.getQueryData(preferencesQueryKey)).toEqual(
+          nextPreferences
+        )
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+        if (outcome === 'success') {
+          resolve({ ...previousPreferences, meetingEmailEnabled: false })
+        } else {
+          reject(apiError(503, 'server'))
+        }
+        await vi.waitFor(() => expect(oldMutation.state.status).toBe(outcome))
+        await expect.element(meetingEmails).toBeChecked()
+        await expect
+          .element(screen.getByRole('button', { name: 'Save notifications' }))
+          .toBeDisabled()
+        expect(queryClient.getQueryData(preferencesQueryKey)).toEqual(
+          nextPreferences
+        )
+        expect(invalidate).not.toHaveBeenCalledWith({
+          queryKey: preferencesQueryKey,
+        })
+        expect(patch).toHaveBeenCalledTimes(1)
+      } finally {
+        dispose()
+        resetAuthLifecycleAfterSignIn()
+        await screen.unmount()
+        resolve(previousPreferences)
+      }
+    }
+  )
 
   it.each(['success', 'error'] as const)(
     'isolates a pending profile update after session replacement (%s)',
