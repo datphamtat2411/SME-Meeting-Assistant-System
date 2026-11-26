@@ -1722,10 +1722,7 @@ void main() {
             }
             if (request.method == 'POST') {
               writes++;
-              return meetingApiSuccess(
-                _turn(processing: true),
-                status: 202,
-              );
+              return meetingApiSuccess(_turn(processing: true), status: 202);
             }
             return meetingApiSuccess(_detail(messages: [_userMessage()]));
           });
@@ -1739,12 +1736,7 @@ void main() {
           );
           addTearDown(controller.dispose);
           Future<void> settle(bool Function() condition, String reason) =>
-              pumpUntil(
-                tester,
-                condition,
-                reason: reason,
-                step: Duration.zero,
-              );
+              pumpUntil(tester, condition, reason: reason, step: Duration.zero);
 
           controller.setActive(true);
           unawaited(controller.open(_typedConversation()));
