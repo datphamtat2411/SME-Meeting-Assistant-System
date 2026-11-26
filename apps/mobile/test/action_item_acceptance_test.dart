@@ -43,9 +43,8 @@ void main() {
     expect(authorized.completedByUserId, testUserId);
     expect(authorized.completedAt, DateTime.parse(timestamp));
     expect(
-      ActionItemResource.fromJson(
-        itemJson(restricted: true),
-      ).capabilities.allows(ActionItemCommand.complete),
+      ActionItemResource.fromJson(itemJson(restricted: true)).capabilities
+          .allows(ActionItemCommand.complete),
       isTrue,
     );
   });
@@ -75,10 +74,7 @@ void main() {
     signal.invalidate(sessionScope: scope, meetingId: testRoomId);
     expect(reads, 1);
     expect(detail.snapshot, same(reviewed));
-    expect(
-      detail.canExecuteCommand(ActionItemCommand.start, reviewed),
-      isTrue,
-    );
+    expect(detail.canExecuteCommand(ActionItemCommand.start, reviewed), isTrue);
 
     Future<void> invalidateAndWait({String? meetingId}) async {
       final settled = Completer<void>();
@@ -387,7 +383,10 @@ void main() {
         ActionItemCommand.reopen,
         ActionItemCommand.cancel,
       ]) {
-        expect(await detail.command(command, reviewed: detail.snapshot!), isTrue);
+        expect(
+          await detail.command(command, reviewed: detail.snapshot!),
+          isTrue,
+        );
         final item = detail.snapshot!.item;
         expect(item.id, itemId);
         expect(item.meetingId, testMeetingId);

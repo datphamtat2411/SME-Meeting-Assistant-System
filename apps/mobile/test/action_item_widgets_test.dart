@@ -315,14 +315,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(submit.hitTestable(), findsOneWidget);
     expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
-    expect(
-      tester.widget<TextFormField>(title).controller!.text,
-      longTitle,
-    );
-    expect(
-      tester.widget<TextFormField>(details).controller!.text,
-      longDetails,
-    );
+    expect(tester.widget<TextFormField>(title).controller!.text, longTitle);
+    expect(tester.widget<TextFormField>(details).controller!.text, longDetails);
     expect(tester.takeException(), isNull);
     expect(
       client.requests.where(

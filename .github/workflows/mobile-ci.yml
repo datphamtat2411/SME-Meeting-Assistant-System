@@ -121,12 +121,7 @@ jobs:
             apps/mobile/android/gradle.properties
 
       - name: Check Dart formatting
-        run: |
-          if ! dart format --output=none --set-exit-if-changed lib test; then
-            dart format lib test
-            git diff -- lib test
-            exit 1
-          fi
+        run: dart format --output=none --set-exit-if-changed lib test
 
       - name: Analyze Mobile
         run: flutter analyze
