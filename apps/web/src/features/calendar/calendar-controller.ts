@@ -10,7 +10,6 @@ import {
   calendarMeetingsInfiniteQueryOptions,
 } from './calendar-query'
 import {
-  calendarMonthKey,
   currentCalendarMonth,
   hasCalendarFilters,
   resolveCalendarState,
@@ -25,7 +24,7 @@ import {
 const calendarRoute = getRouteApi('/_authenticated/calendar/')
 
 export interface CalendarMeetingDataOptions {
-  month: Date | string
+  month: string
   filters: CalendarFilters
   timezone?: string
   enabled?: boolean
@@ -155,16 +154,14 @@ export function useCalendarController() {
   const navigateMonth = useCallback(
     (offset: number) => {
       updateSearch({
-        month: calendarMonthKey(shiftCalendarMonth(state.month, offset)),
+        month: shiftCalendarMonth(state.monthKey, offset),
       })
     },
-    [state.month, updateSearch]
+    [state.monthKey, updateSearch]
   )
   const goToToday = useCallback(() => {
     updateSearch({
-      month: calendarMonthKey(
-        currentCalendarMonth(new Date(), regional.timezone)
-      ),
+      month: currentCalendarMonth(new Date(), regional.timezone),
     })
   }, [regional.timezone, updateSearch])
   const setView = useCallback(
@@ -214,7 +211,6 @@ export function useCalendarController() {
 
   return {
     search: search as CalendarSearch,
-    month: state.month,
     monthKey: state.monthKey,
     view: state.view,
     filters: state.filters,

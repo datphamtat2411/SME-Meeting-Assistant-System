@@ -57,7 +57,7 @@ afterEach(() => {
 describe('Calendar meeting query', () => {
   it('uses the shared meeting-list cache hierarchy and an isolated infinite-query shape', () => {
     const options = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 10, 1),
+      month: '2026-11',
       filters: { relationship: 'all' },
     })
 
@@ -70,15 +70,15 @@ describe('Calendar meeting query', () => {
 
   it('includes the month and every server-affecting filter in the query identity', () => {
     const base = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 10, 1),
+      month: '2026-11',
       filters: { relationship: 'all' },
     })
     const keyword = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 10, 1),
+      month: '2026-11',
       filters: { relationship: 'all', q: 'roadmap' },
     })
     const nextMonth = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 11, 1),
+      month: '2026-12',
       filters: { relationship: 'all' },
     })
 
@@ -129,7 +129,7 @@ describe('Calendar meeting query', () => {
         }
       })
     const options = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 10, 1),
+      month: '2026-11',
       filters: {
         relationship: 'participant',
         status: 'CANCELLED',
@@ -246,7 +246,7 @@ describe('Calendar meeting query', () => {
     const aggregate = aggregateCalendarPages(pages)
     const queryClient = new QueryClient()
     const options = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 10, 1),
+      month: '2026-11',
       filters: { relationship: 'all' },
     })
 

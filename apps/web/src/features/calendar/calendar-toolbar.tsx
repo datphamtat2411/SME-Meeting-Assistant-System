@@ -18,7 +18,6 @@ import {
 } from '@/features/meetings/data/list-api'
 import { CalendarRoomFilter } from './calendar-room-filter'
 import {
-  calendarMonthKey,
   type CalendarFilters,
   type CalendarRelationship,
   type CalendarView,
@@ -33,7 +32,7 @@ const statusLabels: Record<MeetingLifecycleStatus, string> = {
 }
 
 export interface CalendarToolbarProps {
-  month: Date
+  month: string
   view: CalendarView
   filters: CalendarFilters
   onNavigateMonth: (offset: number) => void
@@ -75,7 +74,7 @@ export function CalendarToolbar({
     return () => window.clearTimeout(timer)
   }, [filters.q, keyword, onFiltersChange])
 
-  const monthLabel = formatCivilDate(calendarMonthKey(month) + '-01', locale, {
+  const monthLabel = formatCivilDate(month + '-01', locale, {
     month: 'long',
     year: 'numeric',
   })

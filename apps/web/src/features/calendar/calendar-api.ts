@@ -8,7 +8,6 @@ import {
   isValidOffsetDateTime,
   type MeetingListItem,
 } from '@/features/meetings/data/list-api'
-import { calendarMonthKey } from './calendar-state'
 
 export type CalendarMonthRange = Readonly<{
   from: string
@@ -48,10 +47,6 @@ export type CalendarDayGroup = readonly [
   segments: readonly CalendarDaySegment[],
 ]
 
-function monthKey(month: Date | string) {
-  return typeof month === 'string' ? month : calendarMonthKey(month)
-}
-
 // Preserve microsecond/nanosecond precision while retaining the existing
 // millisecond serialization for exactly representable instants.
 function instantString(value: Temporal.Instant) {
@@ -63,10 +58,10 @@ function instantString(value: Temporal.Instant) {
 }
 
 export function calendarMonthRange(
-  month: Date | string,
+  month: string,
   timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 ): CalendarMonthRange {
-  const { from, to } = civilMonthInterval(monthKey(month), timezone)
+  const { from, to } = civilMonthInterval(month, timezone)
   return Object.freeze({
     from: instantString(Temporal.Instant.from(from)),
     to: instantString(Temporal.Instant.from(to)),
@@ -79,10 +74,10 @@ export function calendarMonthRange(
  */
 export function projectCalendarMonth(
   meetings: readonly MeetingListItem[],
-  month: Date | string,
+  month: string,
   timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 ): CalendarMonthProjection {
-  const first = Temporal.PlainDate.from(monthKey(month) + '-01')
+  const first = Temporal.PlainDate.from(month + '-01')
   const nextMonth = first.add({ months: 1 })
   const days: {
     dayKey: string

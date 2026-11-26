@@ -1,3 +1,4 @@
+import { Temporal } from '@js-temporal/polyfill'
 import { instantCivilFields } from '@/lib/regional-time'
 import {
   meetingLifecycleStatuses,
@@ -24,7 +25,6 @@ export interface CalendarFilters {
 }
 
 export interface CalendarState {
-  month: Date
   monthKey: string
   view: CalendarView
   filters: CalendarFilters
@@ -39,13 +39,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function localMonthStart(year: number, monthIndex: number) {
-  const date = new Date(0)
-  date.setFullYear(year, monthIndex, 1)
-  date.setHours(0, 0, 0, 0)
-  return date
-}
-
 export function isCalendarMonthKey(value: unknown): value is string {
   if (typeof value !== 'string') return false
   const match = monthPattern.exec(value)
@@ -55,34 +48,26 @@ export function isCalendarMonthKey(value: unknown): value is string {
   return year >= 1 && year <= 9999 && month >= 1 && month <= 12
 }
 
-export function calendarMonthKey(date: Date): string {
-  return `${String(date.getFullYear()).padStart(4, '0')}-${String(
-    date.getMonth() + 1
-  ).padStart(2, '0')}`
-}
-
-export function calendarMonthFromKey(value: string): Date {
-  if (!isCalendarMonthKey(value)) {
-    throw new RangeError(`Invalid calendar month: ${value}`)
+export function shiftCalendarMonth(monthKey: string, offset: number): string {
+  if (!isCalendarMonthKey(monthKey)) {
+    throw new RangeError(`Invalid calendar month: ${monthKey}`)
   }
-  const [year, month] = value.split('-').map(Number)
-  return localMonthStart(year!, month! - 1)
-}
-
-export function shiftCalendarMonth(date: Date, offset: number): Date {
   if (!Number.isInteger(offset)) {
     throw new RangeError('Calendar month offset must be an integer.')
   }
-  return localMonthStart(date.getFullYear(), date.getMonth() + offset)
+  const shifted = Temporal.PlainYearMonth.from(monthKey)
+    .add({ months: offset })
+    .toString()
+  return isCalendarMonthKey(shifted) ? shifted : monthKey
 }
 
 export function currentCalendarMonth(
   now = new Date(),
   timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
-): Date {
+): string {
   const civil = instantCivilFields(now.toISOString(), timezone)
   if (!civil) throw new RangeError('Invalid Calendar reference time.')
-  return calendarMonthFromKey(civil.date.slice(0, 7))
+  return civil.date.slice(0, 7)
 }
 
 function normalizedOptionalText(value: unknown): string | undefined {
@@ -161,9 +146,8 @@ export function resolveCalendarState(
 ): CalendarState {
   const normalized = normalizeCalendarSearch(search, now)
   const monthKey =
-    normalized.month ?? calendarMonthKey(currentCalendarMonth(now, timezone))
+    normalized.month ?? currentCalendarMonth(now, timezone)
   return {
-    month: calendarMonthFromKey(monthKey),
     monthKey,
     view: normalized.view ?? 'month',
     filters: {

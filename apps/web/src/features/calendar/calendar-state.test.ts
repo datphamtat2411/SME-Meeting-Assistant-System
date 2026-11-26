@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  calendarMonthKey,
   isCalendarSearchCanonical,
   normalizeCalendarSearch,
   resolveCalendarState,
@@ -100,10 +99,11 @@ describe('calendar URL state', () => {
     ).toBe('2026-12')
   })
 
-  it('navigates across year boundaries using local civil months', () => {
-    const december = new Date(2026, 11, 1)
-
-    expect(calendarMonthKey(shiftCalendarMonth(december, 1))).toBe('2027-01')
-    expect(calendarMonthKey(shiftCalendarMonth(december, -1))).toBe('2026-11')
+  it('navigates across year boundaries using civil month keys', () => {
+    expect(shiftCalendarMonth('2026-12', 1)).toBe('2027-01')
+    expect(shiftCalendarMonth('2026-12', -1)).toBe('2026-11')
+    expect(shiftCalendarMonth('0001-01', -1)).toBe('0001-01')
+    expect(shiftCalendarMonth('9999-12', 1)).toBe('9999-12')
+    expect(() => shiftCalendarMonth('2026-13', 1)).toThrow(RangeError)
   })
 })

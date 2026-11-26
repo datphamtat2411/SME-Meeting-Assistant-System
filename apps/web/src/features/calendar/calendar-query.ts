@@ -21,7 +21,7 @@ export interface CalendarPageAggregate {
 }
 
 function calendarMeetingSearch(
-  month: Date | string,
+  month: string,
   filters: CalendarFilters,
   timezone?: string
 ): Omit<MeetingListSearch, 'page'> {
@@ -50,7 +50,7 @@ export function calendarMeetingsInfiniteQueryOptions({
   timezone,
   enabled = true,
 }: {
-  month: Date | string
+  month: string
   filters: CalendarFilters
   timezone?: string
   enabled?: boolean

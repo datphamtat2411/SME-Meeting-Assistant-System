@@ -15,7 +15,6 @@ import {
   type CalendarDaySegment,
 } from './calendar-api'
 import type { CalendarDataPresentation } from './calendar-presentation'
-import { calendarMonthKey } from './calendar-state'
 
 const fullDateOptions: Intl.DateTimeFormatOptions = {
   weekday: 'long',
@@ -35,8 +34,8 @@ function weekdayLabels(locale: string) {
   })
 }
 
-function monthCells(month: Date) {
-  const first = Temporal.PlainDate.from(calendarMonthKey(month) + '-01')
+function monthCells(month: string) {
+  const first = Temporal.PlainDate.from(month + '-01')
   const leadingDays = first.dayOfWeek - 1
   const cellCount = Math.ceil((leadingDays + first.daysInMonth) / 7) * 7
 
@@ -557,7 +556,7 @@ export function CalendarMeetingEntry({
 }
 
 export interface CalendarViewProps {
-  month: Date
+  month: string
   segments: readonly CalendarDaySegment[]
   state: CalendarDataPresentation
   omissionCount?: number
@@ -579,7 +578,7 @@ export function CalendarMonthView({
 }: CalendarViewProps) {
   const { locale, timezone } = useRegionalPresentation()
   const weekDays = weekdayLabels(locale)
-  const monthKey = calendarMonthKey(month)
+  const monthKey = month
   const todayKey = instantCivilFields(today.toISOString(), timezone)?.date ?? ''
   const monthLabel = formatCivilDate(monthKey + '-01', locale, {
     month: 'long',
@@ -864,7 +863,7 @@ export function CalendarAgendaView({
 }: CalendarViewProps) {
   const { locale } = useRegionalPresentation()
   const groups = useMemo(() => groupCalendarDaySegments(segments), [segments])
-  const monthKey = calendarMonthKey(month)
+  const monthKey = month
   const projectedGroups = groups.filter(([dayKey]) =>
     dayKey.startsWith(`${monthKey}-`)
   )

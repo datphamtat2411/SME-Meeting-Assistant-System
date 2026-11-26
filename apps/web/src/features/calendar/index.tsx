@@ -113,7 +113,7 @@ function CalendarPageContent({
   }
 
   const viewProps = {
-    month: calendar.month,
+    month: calendar.monthKey,
     segments: calendar.projection.segments,
     state: presentation,
     omissionCount: calendar.projection.omissions.length,
@@ -208,7 +208,7 @@ function CalendarPageContent({
         )}
 
         <CalendarToolbar
-          month={calendar.month}
+          month={calendar.monthKey}
           view={calendar.view}
           filters={calendar.filters}
           onNavigateMonth={navigateMonth}
