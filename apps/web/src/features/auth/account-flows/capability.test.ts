@@ -8,8 +8,11 @@ describe('account capability parsing', () => {
 
   it.each([
     '',
+    'token=missing-fragment-marker',
     '#token=',
     '#token=a&token=b',
+    '#token=a&source=email',
+    '#source=email&token=a',
     '#token=%ZZ',
     '#token=%FF',
     '#token=%20',

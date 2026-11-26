@@ -97,12 +97,17 @@ reintroducing fake behavior. Code changes in this branch are restricted to
 
 **Frontend routes already implemented:**
 
-| Purpose                                | Frontend callback path                       | Core API                              |
-| -------------------------------------- | -------------------------------------------- | ------------------------------------- |
-| Organization-issued account invitation | `/account-setup#token=<one-time-capability>` | `POST /api/v1/auth/account-setup`     |
-| Request reset instructions             | `/forgot-password`                           | `POST /api/v1/auth/password-recovery` |
-| One-time password reset                | `/otp#token=<one-time-capability>`           | `POST /api/v1/auth/password-reset`    |
-| Sign in after account activation/reset | `/sign-in`                                   | `POST /api/v1/auth/login`             |
+| Purpose                                | Frontend callback path                        | Core API                              |
+| -------------------------------------- | --------------------------------------------- | ------------------------------------- |
+| Organization-issued account invitation | `/account-setup#token=<one-time-capability>`  | `POST /api/v1/auth/account-setup`     |
+| Request reset instructions             | `/forgot-password`                            | `POST /api/v1/auth/password-recovery` |
+| One-time password reset                | `/reset-password#token=<one-time-capability>` | `POST /api/v1/auth/password-reset`    |
+| Sign in after account activation/reset | `/sign-in`                                    | `POST /api/v1/auth/login`             |
+
+`/sign-up` remains a thin compatibility entry point for previously issued
+account-setup links, and `/otp` remains a thin compatibility entry point for
+previously issued password-reset links. New backend-generated links must use
+`/account-setup` and `/reset-password`.
 
 The backend **constructs and sends** invitation/reset links using its own
 configuration. For a deployed Web origin such as `https://meet.example.com`,
@@ -111,19 +116,23 @@ the deployment operator must configure the **backend**, not Web secrets:
 ```ini
 APP_ACCOUNT_SETUP_URL=https://meet.example.com/account-setup
 APP_AUTH_RECOVERY_ENABLED=true
-APP_AUTH_RECOVERY_RESET_URL=https://meet.example.com/otp
+APP_AUTH_RECOVERY_RESET_URL=https://meet.example.com/reset-password
 ```
 
-The backend also requires purpose-specific signing keys, email delivery and
-other security settings; consult Core API deployment instructions. Do **not**
-embed signing keys, bearer capabilities, session tokens or email service
-credentials into any `VITE_*` variable. Both callback URLs must be HTTPS on
-the public Web origin. Backend emails append `#token=...`. Frontend removes
-that fragment from browser history and keeps the capability only in local React
-memory until use. Do not copy tokens into query parameters or analytics.
-`/sign-up` remains a backward-compatible activation entry point for previously
-issued links and uses the same Core account-setup operation; it is not public
-self-registration.
+The backend also requires separate purpose-specific signing keys
+(`APP_ACCOUNT_SETUP_SIGNING_KEY` and `APP_AUTH_RECOVERY_SIGNING_KEY`), a
+configured sender, the shared transactional email worker
+(`APP_EMAIL_DELIVERY_WORKER_ENABLED`), and approved SMTP settings. Account
+setup additionally requires `APP_ACCOUNT_SETUP_WORKER_ENABLED`; recovery is
+disabled unless `APP_AUTH_RECOVERY_ENABLED=true`. Consult the Core API
+deployment instructions for the complete SMTP and authentication-transport
+prerequisites. Do **not** embed signing keys, bearer capabilities, session
+tokens or email service credentials into any `VITE_*` variable. Both callback
+URLs must be HTTPS on the public Web origin. Backend emails append
+`#token=...`. Frontend removes that fragment from browser history and keeps the
+capability only in local React memory until use. Do not copy tokens into query
+parameters, storage, analytics, or diagnostic output. Account setup is not
+public self-registration.
 
 Password reset can be disabled by default (`APP_AUTH_RECOVERY_ENABLED=false`);
 the Web UI reports an unavailable endpoint instead of promising an email was
