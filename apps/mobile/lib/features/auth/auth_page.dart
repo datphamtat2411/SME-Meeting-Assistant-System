@@ -8,7 +8,7 @@ import 'login_form.dart';
 
 enum _AuthDestination { login, recovery, reset, setup }
 
-/// Public workflow navigation only; no shared credentials or submission state.
+/// Public workflow navigation and non-sensitive retry deadlines.
 class AuthPage extends StatefulWidget {
   const AuthPage({super.key, required this.api});
 
@@ -21,6 +21,13 @@ class AuthPage extends StatefulWidget {
 class _AuthPageState extends State<AuthPage> {
   _AuthDestination _destination = _AuthDestination.login;
   String? _notice;
+  final _retryDeadlines = AccountRetryDeadlines();
+
+  @override
+  void dispose() {
+    _retryDeadlines.dispose();
+    super.dispose();
+  }
 
   void _select(_AuthDestination next, {String? notice}) {
     setState(() {
@@ -41,12 +48,14 @@ class _AuthPageState extends State<AuthPage> {
       ),
       _AuthDestination.recovery => RecoveryRequestForm(
         api: widget.api,
+        retryDeadlines: _retryDeadlines,
         onBack: () => _select(_AuthDestination.login),
       ),
       _AuthDestination.reset ||
       _AuthDestination.setup => CredentialEstablishmentForm(
         key: ValueKey(_destination),
         api: widget.api,
+        retryDeadlines: _retryDeadlines,
         operation: _destination == _AuthDestination.reset
             ? AccountOperation.reset
             : AccountOperation.setup,

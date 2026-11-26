@@ -12,10 +12,12 @@ class RecoveryRequestForm extends StatefulWidget {
     super.key,
     required this.api,
     required this.onBack,
-  });
+    required this.retryDeadlines,
+  );
 
   final ApiClient api;
   final VoidCallback onBack;
+  final AccountRetryDeadlines retryDeadlines;
 
   @override
   State<RecoveryRequestForm> createState() => _RecoveryRequestFormState();
@@ -24,7 +26,10 @@ class RecoveryRequestForm extends StatefulWidget {
 class _RecoveryRequestFormState extends State<RecoveryRequestForm> {
   final _form = GlobalKey<FormState>();
   final _email = TextEditingController();
-  final _submission = AccountSubmissionController(AccountOperation.recovery);
+  late final _submission = AccountSubmissionController(
+    AccountOperation.recovery,
+    retryDeadlines: widget.retryDeadlines,
+  );
 
   Future<void> _submit() async {
     if (!_submission.canSubmit || !(_form.currentState?.validate() ?? false)) {
@@ -74,6 +79,11 @@ class _RecoveryRequestFormState extends State<RecoveryRequestForm> {
                 ),
               ),
               const SizedBox(height: 14),
+              if (failure == null && _submission.retryRemaining > Duration.zero)
+                const AuthFeedback(
+                  message:
+                      'Vui lòng chờ hết thời hạn giới hạn trước khi thử lại.',
+                ),
               if (failure != null && failure.field == null)
                 AuthFeedback(message: failure.message, isError: true),
               if (_submission.isCompleted)
@@ -114,12 +124,14 @@ class CredentialEstablishmentForm extends StatefulWidget {
     required this.operation,
     required this.onBack,
     required this.onCompleted,
+    required this.retryDeadlines,
   }) : assert(operation != AccountOperation.recovery);
 
   final ApiClient api;
   final AccountOperation operation;
   final VoidCallback onBack;
   final ValueChanged<String> onCompleted;
+  final AccountRetryDeadlines retryDeadlines;
 
   @override
   State<CredentialEstablishmentForm> createState() =>
@@ -132,7 +144,10 @@ class _CredentialEstablishmentFormState
   final _token = TextEditingController();
   final _password = TextEditingController();
   final _confirmation = TextEditingController();
-  late final _submission = AccountSubmissionController(widget.operation);
+  late final _submission = AccountSubmissionController(
+    widget.operation,
+    retryDeadlines: widget.retryDeadlines,
+  );
 
   bool get _isReset => widget.operation == AccountOperation.reset;
 
@@ -178,6 +193,7 @@ class _CredentialEstablishmentFormState
   @override
   void dispose() {
     _submission.dispose();
+    _clearSensitiveInput();
     _token.dispose();
     _password.dispose();
     _confirmation.dispose();
@@ -243,6 +259,12 @@ class _CredentialEstablishmentFormState
                   autofillHint: AutofillHints.newPassword,
                 ),
                 const SizedBox(height: 18),
+                if (failure == null &&
+                    _submission.retryRemaining > Duration.zero)
+                  const AuthFeedback(
+                    message:
+                        'Vui lòng chờ hết thời hạn giới hạn trước khi thử lại.',
+                  ),
                 if (failure != null && failure.field == null)
                   AuthFeedback(message: failure.message, isError: true),
                 AuthSubmitButton(

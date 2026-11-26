@@ -22,6 +22,93 @@ void main() {
     },
   );
 
+  test('organizational email syntax and length limits', () {
+    for (final email in [
+      'user@company',
+      'user@.',
+      'user@-',
+      '.user@example.test',
+      'user..name@example.test',
+      'user.@example.test',
+      'user@-example.test',
+      'user@example-.test',
+      'user@example..test',
+      'user name@example.test',
+    ]) {
+      expect(AuthValidators.email(email), isNotNull, reason: email);
+    }
+    expect(AuthValidators.email("o'neil+work@dept.example.test"), isNull);
+    expect(AuthValidators.email('${'a' * 307}@example.test'), isNull);
+    expect(AuthValidators.email('${'a' * 308}@example.test'), isNotNull);
+  });
+
+  test('retry deadline survives form replacement', () async {
+    var now = DateTime.utc(2026, 11, 26);
+    final deadlines = AccountRetryDeadlines();
+    addTearDown(deadlines.dispose);
+    AccountSubmissionController controller(AccountOperation operation) =>
+        AccountSubmissionController(
+          operation,
+          now: () => now,
+          retryDeadlines: deadlines,
+        );
+    final first = controller(AccountOperation.recovery);
+    await first.submit(() async {
+      throw const ApiFailure(
+        429,
+        'RATE_LIMIT_EXCEEDED',
+        'wait',
+        retryAfter: '45',
+      );
+    });
+    first.dispose();
+
+    final replacement = controller(AccountOperation.recovery);
+    addTearDown(replacement.dispose);
+    final setup = controller(AccountOperation.setup);
+    addTearDown(setup.dispose);
+    expect(replacement.retryRemaining, const Duration(seconds: 45));
+    expect(replacement.canSubmit, isFalse);
+    expect(setup.canSubmit, isTrue);
+    var calls = 0;
+    await replacement.submit(() async => calls++);
+    expect(calls, 0);
+    now = now.add(const Duration(seconds: 45));
+    expect(replacement.canSubmit, isTrue);
+    expect(calls, 0);
+    await replacement.submit(() async => calls++);
+    expect(calls, 1);
+  });
+
+  test('late throttle is retained by the live flow', () async {
+    final deadlines = AccountRetryDeadlines();
+    addTearDown(deadlines.dispose);
+    final now = DateTime.utc(2026, 11, 26);
+    final pending = Completer<void>();
+    final first = AccountSubmissionController(
+      AccountOperation.reset,
+      now: () => now,
+      retryDeadlines: deadlines,
+    );
+    final submitted = first.submit(() => pending.future);
+    first.dispose();
+    final replacement = AccountSubmissionController(
+      AccountOperation.reset,
+      now: () => now,
+      retryDeadlines: deadlines,
+    );
+    addTearDown(replacement.dispose);
+    var notifications = 0;
+    replacement.addListener(() => notifications++);
+    pending.completeError(
+      const ApiFailure(429, 'RATE_LIMIT_EXCEEDED', 'wait', retryAfter: '30'),
+    );
+    await submitted;
+    expect(replacement.canSubmit, isFalse);
+    expect(replacement.retryRemaining, const Duration(seconds: 30));
+    expect(notifications, 1);
+  });
+
   test('classifies safe feedback without exposing the server message', () {
     final now = DateTime.utc(2026, 11, 26);
     final failure = AccountFlowFailure.classify(

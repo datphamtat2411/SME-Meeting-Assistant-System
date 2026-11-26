@@ -4,8 +4,10 @@
 
 - AuthPage coordinates public workflow navigation; login, recovery and
   credential establishment own separate transient form state.
-- The shared submission controller tracks single flight, typed failure,
-  retry deadline and completion, never the password or capability.
+- The shared submission controller tracks single flight, typed failure and
+  completion, never the password or capability. The public flow host owns
+  operation-specific retry deadlines in memory so navigation cannot bypass
+  a server-provided cooldown. No automatic retry or persistent cooldown.
 - Authentication and current identity remain owned by AuthSessionCoordinator.
   No new session store, state management package, or endpoint was added.
 - The login form stays mounted during interactive login and identity checking.
@@ -17,7 +19,10 @@ Recovery and reset succeed only with a valid common envelope and nonblank
 data.message; account setup succeeds only with null data. The repository
 returns Future<void> rather than exposing generic response payloads.
 Password and capability values are not trimmed or normalized. Only the
-email is trimmed. New password validation counts Unicode code points (15–128)
+email is trimmed. Organizational email validation rejects malformed local
+parts and domains, with the existing 320-character limit. Sensitive form
+controllers explicitly clear their contents when ownership ends. New
+password validation counts Unicode code points (15–128)
 and confirmation compares the exact input. Backend policy is authoritative.
 
 These three operations use the dedicated anonymous transport path and do
@@ -51,6 +56,10 @@ as part of this foundation. The existing manual entry points remain usable.
 Use the existing Mobile CI workflow with the committed SDK and dependency
 pins. Its gates include formatting, analysis, complete Flutter tests,
 Android native checks, credential durability and debug APK build.
+Regression coverage includes mandatory reconciliation revocation, denial,
+session-identifier mismatch, changed authorization context, protected route
+and modal containment, recovery cooldown across form replacement, and
+sensitive-input disposal for login, reset and setup.
 CI is automated test evidence, not a live deployment or device test.
 Do not mark this wave accepted until the final implementation revision
 passes its applicable verification gates.

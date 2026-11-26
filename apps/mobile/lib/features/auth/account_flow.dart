@@ -111,13 +111,48 @@ class AccountFlowFailure {
   }
 }
 
+/// Non-sensitive throttling state owned by the authentication flow host.
+/// Separate operations have separate deadlines; replacing a form does not
+/// reset a server-provided retry restriction.
+class AccountRetryDeadlines extends ChangeNotifier {
+  final _deadlines = <AccountOperation, DateTime>{};
+  bool _disposed = false;
+
+  DateTime? deadlineFor(AccountOperation operation) => _deadlines[operation];
+
+  void retain(AccountOperation operation, DateTime? deadline, DateTime now) {
+    if (_disposed || deadline == null || !deadline.isAfter(now)) return;
+    final previous = _deadlines[operation];
+    if (previous != null && !deadline.isAfter(previous)) return;
+    _deadlines[operation] = deadline;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _deadlines.clear();
+    super.dispose();
+  }
+}
+
 /// One submission owner per workflow. Never stores passwords or capabilities.
 class AccountSubmissionController extends ChangeNotifier {
-  AccountSubmissionController(this.operation, {DateTime Function()? now})
-    : _now = now ?? DateTime.now;
+  AccountSubmissionController(
+    this.operation, {
+    DateTime Function()? now,
+    AccountRetryDeadlines? retryDeadlines,
+  }) : _now = now ?? DateTime.now,
+       _retryDeadlines = retryDeadlines ?? AccountRetryDeadlines(),
+       _ownsRetryDeadlines = retryDeadlines == null {
+    _retryDeadlines.addListener(_retryDeadlineChanged);
+    _scheduleRetry();
+  }
 
   final AccountOperation operation;
   final DateTime Function() _now;
+  final AccountRetryDeadlines _retryDeadlines;
+  final bool _ownsRetryDeadlines;
   AccountSubmissionPhase _phase = AccountSubmissionPhase.ready;
   AccountFlowFailure? _failure;
   Timer? _retryTimer;
@@ -129,7 +164,8 @@ class AccountSubmissionController extends ChangeNotifier {
   bool get isCompleted => _phase == AccountSubmissionPhase.completed;
 
   Duration get retryRemaining {
-    final remaining = _failure?.retryAt?.difference(_now());
+    final deadline = _retryDeadlines.deadlineFor(operation);
+    final remaining = deadline?.difference(_now());
     return remaining != null && remaining > Duration.zero
         ? remaining
         : Duration.zero;
@@ -157,17 +193,35 @@ class AccountSubmissionController extends ChangeNotifier {
       if (_disposed) return;
       _phase = AccountSubmissionPhase.completed;
     } catch (error) {
-      if (_disposed) return;
-      _failure = AccountFlowFailure.classify(error, operation, now: _now());
-      _phase = AccountSubmissionPhase.failed;
-      final remaining = retryRemaining;
-      if (remaining > Duration.zero) {
-        _retryTimer = Timer(remaining, () {
-          if (!_disposed) notifyListeners();
-        });
+      final now = _now();
+      final failure = AccountFlowFailure.classify(error, operation, now: now);
+      if (!_disposed) {
+        _failure = failure;
+        _phase = AccountSubmissionPhase.failed;
       }
+      // A late response still carries a real throttle restriction for this
+      // flow, even if its original presentation has been replaced.
+      _retryDeadlines.retain(operation, failure.retryAt, now);
     }
     if (!_disposed) notifyListeners();
+  }
+
+  void _scheduleRetry() {
+    _retryTimer?.cancel();
+    final remaining = retryRemaining;
+    if (remaining > Duration.zero) {
+      _retryTimer = Timer(remaining, () {
+        if (_disposed) return;
+        _scheduleRetry();
+        notifyListeners();
+      });
+    }
+  }
+
+  void _retryDeadlineChanged() {
+    if (_disposed) return;
+    _scheduleRetry();
+    notifyListeners();
   }
 
   void clearRejectedFeedback() {
@@ -187,6 +241,8 @@ class AccountSubmissionController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _retryTimer?.cancel();
+    _retryDeadlines.removeListener(_retryDeadlineChanged);
+    if (_ownsRetryDeadlines) _retryDeadlines.dispose();
     super.dispose();
   }
 }
@@ -194,9 +250,22 @@ class AccountSubmissionController extends ChangeNotifier {
 class AuthValidators {
   const AuthValidators._();
 
+  // Match the practical organizational-address policy, not the full RFC
+  // mailbox grammar (quoted local parts and domain literals are unsupported).
+  static final _emailLocal = RegExp(
+    r"^(?!\.)(?!.*\.\.)[A-Za-z0-9_'+.-]*[A-Za-z0-9_+-]$",
+  );
+  static final _emailDomain = RegExp(
+    r'^(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$',
+  );
+
   static String? email(String? value) {
     final email = value?.trim() ?? '';
-    if (email.length > 320 || !RegExp(r'^[^\s@]+@[^\s@]+$').hasMatch(email)) {
+    if (email.length > 320) return 'Email không hợp lệ.';
+    final parts = email.split('@');
+    if (parts.length != 2 ||
+        !_emailLocal.hasMatch(parts.first) ||
+        !_emailDomain.hasMatch(parts.last)) {
       return 'Email không hợp lệ.';
     }
     return null;

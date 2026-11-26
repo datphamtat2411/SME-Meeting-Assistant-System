@@ -162,6 +162,101 @@ void main() {
     expect(api.sessionCoordinator.authenticatedSessionScope, isNull);
   });
 
+  test('revoked session during reconciliation clears credentials', () async {
+    final client = _SessionRaceClient()..delaySecondIdentity = true;
+    final storage = InMemoryCredentialStorage();
+    final api = ApiClient(
+      baseUri: Uri.parse(_baseUri),
+      httpClient: client,
+      credentialStorage: storage,
+    );
+    addTearDown(api.dispose);
+    await _signIn(api);
+    final result = api.reconcileSession();
+    await client.delayedIdentityStarted.future;
+    client.delayedIdentityResponse.complete(
+      jsonResponse(401, errorEnvelope('AUTH_REQUIRED', 'Revoked.')),
+    );
+    expect(await result, AuthReconciliationOutcome.invalidated);
+    expect(api.sessionState.phase, AuthSessionPhase.reauthenticationRequired);
+    expect(api.authenticatedSessionScope, isNull);
+    expect(client.refreshCount, 1);
+    expect(client.loginCount, 1);
+    final stored = await TokenStore(
+      storage: storage,
+      baseUri: Uri.parse(_baseUri),
+    ).read();
+    expect(stored.refreshToken, isNull);
+  });
+
+  test('denied reconciliation never reopens protected access', () async {
+    final client = _SessionRaceClient()..delaySecondIdentity = true;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await _signIn(api);
+    final result = api.reconcileSession();
+    await client.delayedIdentityStarted.future;
+    client.delayedIdentityResponse.complete(
+      jsonResponse(403, errorEnvelope('AUTHZ_FORBIDDEN', 'Denied.')),
+    );
+    expect(await result, AuthReconciliationOutcome.denied);
+    expect(api.sessionState.phase, AuthSessionPhase.reauthenticationRequired);
+    expect(api.authenticatedSessionScope, isNull);
+    expect(client.refreshCount, 0);
+    await expectLater(api.get('/blocked'), throwsA(isA<ApiFailure>()));
+  });
+
+  test('same user with a different server session is rejected', () async {
+    final client = _SessionRaceClient()..delaySecondIdentity = true;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await _signIn(api);
+    final result = api.reconcileSession();
+    await client.delayedIdentityStarted.future;
+    final identity = _identity(_userA);
+    (identity['session'] as Map<String, dynamic>)['id'] =
+        'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    client.delayedIdentityResponse.complete(
+      jsonResponse(200, successEnvelope(identity)),
+    );
+    expect(await result, AuthReconciliationOutcome.invalidated);
+    expect(api.authenticatedSessionScope, isNull);
+    expect(api.sessionState.phase, AuthSessionPhase.reauthenticationRequired);
+  });
+
+  test('changed authorization context uses a fresh protected scope', () async {
+    final client = _SessionRaceClient()..delaySecondIdentity = true;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await _signIn(api);
+    final previous = api.authenticatedSessionScope!;
+    final result = api.reconcileSession();
+    await client.delayedIdentityStarted.future;
+    final identity = _identity(_userA)
+      ..['globalRole'] = 'DEPARTMENT_MANAGER'
+      ..['primaryOrgUnitId'] = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+      ..['directoryManagementScope'] = <String, dynamic>{
+        'allUnits': false,
+        'unitIds': ['eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'],
+      };
+    client.delayedIdentityResponse.complete(
+      jsonResponse(200, successEnvelope(identity)),
+    );
+    expect(await result, AuthReconciliationOutcome.verified);
+    expect(api.isCurrentAuthenticatedSession(previous), isFalse);
+    expect(api.authenticatedSessionScope, isNot(previous));
+    expect(
+      api.sessionState.identity!.globalRole,
+      AuthGlobalRole.departmentManager,
+    );
+    expect(
+      api.sessionState.identity!.primaryOrgUnitId!.value,
+      'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    );
+    expect(client.loginCount, 1);
+    expect(client.refreshCount, 0);
+  });
+
   test('logout supersedes an in-flight reconciliation', () async {
     final client = _SessionRaceClient()..delaySecondIdentity = true;
     final api = _api(client);
@@ -235,6 +330,7 @@ class _SessionRaceClient extends http.BaseClient {
   final thirdIdentityStarted = Completer<void>();
   final thirdIdentityResponse = Completer<http.StreamedResponse>();
   int loginCount = 0;
+  int refreshCount = 0;
   int identityCount = 0;
 
   @override
@@ -262,6 +358,10 @@ class _SessionRaceClient extends http.BaseClient {
         200,
         successEnvelope(_identity(loginCount == 1 ? _userA : _userB)),
       );
+    }
+    if (path.endsWith('/auth/refresh')) {
+      refreshCount++;
+      return jsonResponse(401, errorEnvelope('AUTH_REQUIRED', 'Revoked.'));
     }
     if (path.endsWith('/auth/logout')) {
       return jsonResponse(200, successEnvelope(null));

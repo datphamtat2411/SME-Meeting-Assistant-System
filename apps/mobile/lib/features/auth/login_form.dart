@@ -112,6 +112,7 @@ class _LoginFormState extends State<LoginForm> {
     widget.api.removeListener(_sessionChanged);
     _retryTimer?.cancel();
     _email.dispose();
+    _password.clear();
     _password.dispose();
     super.dispose();
   }

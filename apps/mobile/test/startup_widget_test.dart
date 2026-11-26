@@ -557,6 +557,214 @@ void main() {
     );
   });
 
+  testWidgets('reconciliation removes protected routes and modal overlays', (
+    tester,
+  ) async {
+    final credentials = InMemoryCredentialStorage();
+    await _writeRefreshCredential(credentials, 'refresh-0');
+    final requested = Completer<void>();
+    final response = Completer<http.StreamedResponse>();
+    final harness = _Harness.create(
+      _authClient(
+        reconciliationRequested: requested,
+        reconciliationResponse: response,
+      ),
+      credentials,
+    );
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.isAuthenticated &&
+          find.text('Tổng quan').evaluate().isNotEmpty,
+      reason: 'verified startup',
+    );
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+    unawaited(
+      navigator.push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('Protected meeting')),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    unawaited(
+      showDialog<void>(
+        context: tester.element(find.text('Protected meeting')),
+        builder: (_) => const AlertDialog(content: Text('Protected dialog')),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('Protected dialog'), findsOneWidget);
+
+    late Future<AuthReconciliationOutcome> reconciliation;
+    await tester.runAsync(() async {
+      reconciliation = harness.api.reconcileSession();
+    });
+    await pumpUntil(
+      tester,
+      () => requested.isCompleted,
+      reason: 'fresh verification to begin',
+    );
+    await tester.pump();
+    expect(find.text('Protected meeting', skipOffstage: false), findsNothing);
+    expect(find.text('Protected dialog', skipOffstage: false), findsNothing);
+    expect(find.text('Tổng quan'), findsNothing);
+    expect(
+      tester.state<NavigatorState>(find.byType(Navigator)).canPop(),
+      isFalse,
+    );
+
+    response.complete(
+      await jsonResponse(
+        503,
+        errorEnvelope('SERVICE_UNAVAILABLE', 'Unavailable.'),
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Thử xác minh lại').evaluate().isNotEmpty,
+      reason: 'unavailable verification remains gated',
+    );
+    expect(
+      await tester.runAsync(() => reconciliation),
+      AuthReconciliationOutcome.unavailable,
+    );
+    expect(find.text('Protected meeting', skipOffstage: false), findsNothing);
+    expect(find.text('Protected dialog', skipOffstage: false), findsNothing);
+    expect(find.text('Tổng quan'), findsNothing);
+
+    await tester.tap(find.text('Thử xác minh lại'));
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.isAuthenticated &&
+          find.text('Tổng quan').evaluate().isNotEmpty,
+      reason: 'fresh protected context after verification retry',
+    );
+    expect(find.text('Protected meeting', skipOffstage: false), findsNothing);
+    expect(find.text('Protected dialog', skipOffstage: false), findsNothing);
+    expect(
+      tester.state<NavigatorState>(find.byType(Navigator)).canPop(),
+      isFalse,
+    );
+    expect(
+      harness.client.requests.where(
+        (request) => request.url.path.endsWith('/auth/login'),
+      ),
+      isEmpty,
+    );
+  });
+
+  testWidgets('reopening recovery preserves its server retry deadline', (
+    tester,
+  ) async {
+    final client = _authClient(recoveryThrottle: true);
+    final harness = _Harness.create(client, InMemoryCredentialStorage());
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'login ready',
+    );
+    await tester.ensureVisible(find.text('Quên mật khẩu?'));
+    await tester.tap(find.text('Quên mật khẩu?'));
+    await tester.pump();
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'user@example.test',
+    );
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Gửi yêu cầu'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Gửi yêu cầu'));
+    await pumpUntil(
+      tester,
+      () => find.textContaining('Máy chủ đang giới hạn').evaluate().isNotEmpty,
+      reason: 'server throttle to be displayed',
+    );
+    await tester.ensureVisible(find.text('Quay lại đăng nhập'));
+    await tester.tap(find.text('Quay lại đăng nhập'));
+    await tester.pump();
+    await tester.ensureVisible(find.text('Quên mật khẩu?'));
+    await tester.tap(find.text('Quên mật khẩu?'));
+    await tester.pump();
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'other@example.test',
+    );
+    expect(
+      tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Gửi yêu cầu'),
+      ).onPressed,
+      isNull,
+    );
+    expect(
+      client.requests.where(
+        (request) => request.url.path.endsWith('/auth/password-recovery'),
+      ),
+      hasLength(1),
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final destination in ['login', 'reset', 'setup']) {
+    testWidgets('disposal clears sensitive inputs in $destination', (
+      tester,
+    ) async {
+      final harness = _Harness.create(
+        _authClient(),
+        InMemoryCredentialStorage(),
+      );
+      await tester.pumpWidget(
+        MeetingAssistantApp(dependencies: harness.dependencies),
+      );
+      await pumpUntil(
+        tester,
+        () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+        reason: 'login ready',
+      );
+      if (destination != 'login') {
+        final link = find.text(
+          destination == 'reset'
+              ? 'Đã có mã khôi phục?'
+              : 'Đã nhận lời mời? Kích hoạt tài khoản',
+        );
+        await tester.ensureVisible(link);
+        await tester.tap(link);
+        await tester.pump();
+      }
+      final fields = find.byType(TextFormField);
+      final controllers = <TextEditingController>[];
+      final cleared = <bool>[];
+      final first = destination == 'login' ? 1 : 0;
+      final count = destination == 'login' ? 2 : 3;
+      for (var i = first; i < count; i++) {
+        final field = fields.at(i);
+        await tester.ensureVisible(field);
+        await tester.enterText(field, 'sensitive-$i');
+        final controller = tester.widget<TextFormField>(field).controller!;
+        final index = cleared.length;
+        cleared.add(false);
+        controllers.add(controller);
+        controller.addListener(() {
+          if (controller.text.isEmpty) cleared[index] = true;
+        });
+      }
+      expect(
+        controllers.every((controller) => controller.text.isNotEmpty),
+        isTrue,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(cleared, everyElement(isTrue));
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets('failed credential deletion blocks login until safe retry', (
     tester,
   ) async {
@@ -816,13 +1024,31 @@ RecordingHttpClient _authClient({
   int identityFailures = 0,
   int? loginStatus,
   int? logoutStatus,
+  bool recoveryThrottle = false,
+  Completer<void>? reconciliationRequested,
+  Completer<http.StreamedResponse>? reconciliationResponse,
   Completer<void>? identityRequested,
   Completer<http.StreamedResponse>? identityResponse,
   Completer<void>? logoutRequested,
   Completer<http.StreamedResponse>? logoutResponse,
 }) {
+  var identityCount = 0;
   return RecordingHttpClient((request) async {
     final path = request.url.path;
+    if (path.endsWith('/auth/password-recovery') && recoveryThrottle) {
+      expect(request.headers['X-Auth-Transport'], isNull);
+      expect(request.headers['Authorization'], isNull);
+      return streamedResponse(
+        429,
+        body: utf8.encode(
+          jsonEncode(errorEnvelope('RATE_LIMIT_EXCEEDED', 'Wait.')),
+        ),
+        headers: const {
+          'content-type': 'application/json',
+          'retry-after': '45',
+        },
+      );
+    }
     expect(request.headers['X-Auth-Transport'], 'mobile');
     if (path.endsWith('/auth/refresh')) {
       if (refreshStatus != null) {
@@ -852,6 +1078,11 @@ RecordingHttpClient _authClient({
       );
     }
     if (path.endsWith('/auth/me')) {
+      identityCount++;
+      if (identityCount == 2 && reconciliationResponse != null) {
+        reconciliationRequested?.complete();
+        return reconciliationResponse.future;
+      }
       expect(
         request.headers['Authorization'],
         'Bearer ${_accessToken('access-1')}',
