@@ -138,6 +138,9 @@ class ApiClient extends ChangeNotifier {
 
   Future<void> loadIdentity() => sessionCoordinator.loadIdentity();
 
+  Future<AuthReconciliationOutcome> reconcileSession() =>
+      sessionCoordinator.reconcileSession();
+
   Future<AuthLogoutOutcome> signOut() => sessionCoordinator.signOut();
 
   /// Requests password recovery without acquiring or changing session state.
@@ -216,14 +219,15 @@ class ApiClient extends ChangeNotifier {
     AuthenticatedSessionScope? sessionScope,
   }) async {
     final coordinator = sessionCoordinator;
-    final epoch = sessionScope?.lifecycleEpoch ?? coordinator._lifecycleEpoch;
+    final requestScope = sessionScope ?? coordinator.authenticatedSessionScope;
+    final epoch = requestScope?.lifecycleEpoch ?? coordinator._lifecycleEpoch;
     final credential = coordinator._credentialForDispatch(
       await coordinator._credentialForProtectedRequest(
         expectedEpoch: epoch,
-        expectedScope: sessionScope,
+        expectedScope: requestScope,
       ),
       requireVerifiedSession: true,
-      expectedScope: sessionScope,
+      expectedScope: requestScope,
     );
     final requestEpoch = credential.epoch;
     try {
@@ -236,13 +240,13 @@ class ApiClient extends ChangeNotifier {
         body: body,
         headers: headers,
         timeoutPolicy: timeoutPolicy,
-        expectedScope: sessionScope,
+        expectedScope: requestScope,
       );
     } on ApiFailure catch (failure) {
       if (!_coordinatorStillOwnsRequest(
         coordinator,
         credential,
-        sessionScope,
+        requestScope,
       )) {
         throw coordinator._sessionChanged();
       }
@@ -263,7 +267,7 @@ class ApiClient extends ChangeNotifier {
         if (!_coordinatorStillOwnsRequest(
           coordinator,
           credential,
-          sessionScope,
+          requestScope,
         )) {
           throw coordinator._sessionChanged();
         }
@@ -273,7 +277,7 @@ class ApiClient extends ChangeNotifier {
       final replayCredential = coordinator._credentialForDispatch(
         recovered,
         requireVerifiedSession: true,
-        expectedScope: sessionScope,
+        expectedScope: requestScope,
       );
       try {
         return await _sendForSession(
@@ -285,7 +289,7 @@ class ApiClient extends ChangeNotifier {
           body: body,
           headers: headers,
           timeoutPolicy: timeoutPolicy,
-          expectedScope: sessionScope,
+          expectedScope: requestScope,
         );
       } on ApiFailure catch (retryFailure) {
         if (_isAuthentication401(retryFailure)) {
@@ -297,7 +301,7 @@ class ApiClient extends ChangeNotifier {
           if (!_coordinatorStillOwnsRequest(
             coordinator,
             credential,
-            sessionScope,
+            requestScope,
           )) {
             throw coordinator._sessionChanged();
           }

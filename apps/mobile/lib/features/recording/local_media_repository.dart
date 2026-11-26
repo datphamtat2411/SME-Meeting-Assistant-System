@@ -763,7 +763,8 @@ class LocalMediaRepository {
     _releaseObsoleteRecoveryMemoization(scope, meetingId);
     final key =
         '${scope.deploymentScope}\u0000${scope.userId}\u0000'
-        '${scope.lifecycleEpoch}\u0000${meetingId ?? ''}';
+        '${scope.lifecycleEpoch}:${scope.protectedAccessGeneration}\u0000'
+        '${meetingId ?? ''}';
     final inFlight = _recoveryInFlight[key];
     if (inFlight != null) return inFlight;
     final completed = _completedRecoveries[key];
@@ -822,7 +823,8 @@ class LocalMediaRepository {
       (key, _) =>
           key.startsWith(prefix) &&
           key.endsWith(suffix) &&
-          key != '$prefix${scope.lifecycleEpoch}$suffix',
+          key != '$prefix${scope.lifecycleEpoch}:'
+              '${scope.protectedAccessGeneration}$suffix',
     );
   }
 
