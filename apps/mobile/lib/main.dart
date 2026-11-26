@@ -118,7 +118,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
   AuthenticatedSessionScope? _navigationScope;
   bool _openingRecording = false;
   bool _pasteOpen = false;
-  bool _autoOpenInitial = false;
+  int? _initialLinkRevision;
   bool _entryScheduled = false;
   int _publicAuthRevision = 0;
   AccountLinkTicket? _activeLink;
@@ -166,7 +166,9 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         onLink: (raw, initial) {
           final result = _accountLinks.receive(raw);
           if (result == AccountLinkReception.accepted) {
-            _autoOpenInitial = initial && !api.signedIn;
+            _initialLinkRevision = initial && !api.signedIn
+                ? _accountLinks.pendingRevision
+                : null;
             _scheduleInitialEntry();
           }
         },
@@ -202,6 +204,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         // Replacing only the home widget leaves pushed routes and dialogs alive.
         final previousScope = _navigationScope;
         final previousLink = _activeLink;
+        final previousPendingRevision = _accountLinks.pendingRevision;
         _activeLink = null;
         _pasteOpen = false;
         _navigationScope = scope;
@@ -210,8 +213,9 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             if (previousLink != null) _accountLinks.finish(previousLink);
-            if (_accountLinks.hasPending) {
+            if (previousPendingRevision != null) {
               _accountLinks.discardPending(
+                expectedRevision: previousPendingRevision,
                 notice: 'Phiên đăng nhập đã thay đổi. Hãy mở lại email.',
               );
             }
@@ -328,20 +332,22 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
   }
 
   void _scheduleInitialEntry() {
-    if (!_autoOpenInitial || _entryScheduled || !_sessionReady) return;
+    final revision = _initialLinkRevision;
+    if (revision == null || _entryScheduled || !_sessionReady) return;
     _entryScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _entryScheduled = false;
-      if (!mounted || !_autoOpenInitial) return;
-      _autoOpenInitial = false;
+      if (!mounted || _initialLinkRevision != revision) return;
+      _initialLinkRevision = null;
       if (!api.signedIn && _canOpenAccountLink) {
-        unawaited(_continueAccountLink());
+        unawaited(_continueAccountLink(expectedRevision: revision));
       }
     });
   }
 
   Widget _accountLinkBanner() {
-    final pending = _accountLinks.hasPending;
+    final revision = _accountLinks.pendingRevision;
+    final pending = revision != null;
     final message = !pending
         ? _accountLinks.notice!
         : _meetingWorkActive
@@ -368,16 +374,20 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
                       : message,
                 ),
               ),
-              if (pending)
+              if (revision != null)
                 TextButton(
-                  onPressed: _canOpenAccountLink ? _continueAccountLink : null,
+                  onPressed: _canOpenAccountLink
+                      ? () => _continueAccountLink(expectedRevision: revision)
+                      : null,
                   child: const Text('Tiếp tục'),
                 ),
               TextButton(
-                onPressed: pending
+                onPressed: revision != null
                     ? () {
-                        _autoOpenInitial = false;
-                        _accountLinks.discardPending();
+                        if (_initialLinkRevision == revision) {
+                          _initialLinkRevision = null;
+                        }
+                        _accountLinks.discardPending(expectedRevision: revision);
                       }
                     : _accountLinks.clearNotice,
                 child: Text(pending ? 'Bỏ qua' : 'Đóng'),
@@ -399,6 +409,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     if (navigator == null) return;
     setState(() => _pasteOpen = true);
     bool? accepted;
+    int? pastedRevision;
     try {
       accepted = await navigator.push<bool>(
         MaterialPageRoute<bool>(
@@ -410,6 +421,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
                 _accountLinks.clearNotice();
                 return message ?? 'Liên kết không hợp lệ.';
               }
+              pastedRevision = _accountLinks.pendingRevision;
               return null;
             },
           ),
@@ -420,22 +432,24 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         setState(() => _pasteOpen = false);
       }
     }
+    final revision = pastedRevision;
     if (mounted &&
         identical(key, _navigatorKey) &&
         accepted == true &&
+        revision != null &&
         !api.signedIn &&
         _canOpenAccountLink) {
-      await _continueAccountLink();
+      await _continueAccountLink(expectedRevision: revision);
     }
   }
 
-  Future<void> _continueAccountLink() async {
+  Future<void> _continueAccountLink({required int expectedRevision}) async {
     if (!_canOpenAccountLink) return;
     final key = _navigatorKey;
     final navigator = key.currentState;
     if (navigator == null) return;
     final scope = api.authenticatedSessionScope;
-    final ticket = _accountLinks.claim();
+    final ticket = _accountLinks.claim(expectedRevision: expectedRevision);
     if (ticket == null) return;
     setState(() => _activeLink = ticket);
     AccountLinkExit? exit;

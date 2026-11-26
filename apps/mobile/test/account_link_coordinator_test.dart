@@ -142,6 +142,29 @@ void main() {
     expect(owner.hasPending, isFalse);
   });
 
+  test('stale candidate actions cannot claim or discard a replacement', () {
+    final owner = AccountLinkCoordinator(AccountLinkParser(host));
+    addTearDown(owner.dispose);
+    owner.receive('$origin/reset-password#token=first');
+    final first = owner.pendingRevision!;
+    owner.receive('$origin/otp#token=first');
+    expect(owner.pendingRevision, first);
+
+    owner.receive('$origin/account-setup#token=second');
+    final second = owner.pendingRevision!;
+    expect(second, isNot(first));
+    expect(owner.claim(expectedRevision: first), isNull);
+    owner.discardPending(expectedRevision: first, notice: 'stale');
+    expect(owner.pendingRevision, second);
+    expect(owner.notice, isNull);
+
+    final ticket = owner.claim(expectedRevision: second)!;
+    expect(ticket.operation, AccountOperation.setup);
+    expect(ticket.takeCapability(), 'second');
+    owner.finish(ticket);
+    expect(owner.pendingRevision, isNull);
+  });
+
   test('rejected input does not destroy a legitimate deferred link', () {
     final owner = AccountLinkCoordinator(AccountLinkParser(host));
     addTearDown(owner.dispose);

@@ -40,6 +40,11 @@ class AccountLinkCoordinator extends ChangeNotifier {
   String? _lastTerminal;
   String? _notice;
   bool _disposed = false;
+  int _revision = 0;
+
+  // Non-sensitive identity for the current candidate. A stale UI action must
+  // not claim or discard a different link received in the meantime.
+  int? get pendingRevision => _pending == null ? null : _revision;
 
   bool get hasPending => _pending != null;
   AccountOperation? get pendingOperation => _pending?.operation;
@@ -79,13 +84,17 @@ class AccountLinkCoordinator extends ChangeNotifier {
     }
     _pending?.release();
     _pending = AccountLinkTicket._(link, fingerprint);
+    _revision++;
     _notice = null;
     notifyListeners();
     return AccountLinkReception.accepted;
   }
 
-  AccountLinkTicket? claim() {
+  AccountLinkTicket? claim({int? expectedRevision}) {
     if (_disposed || _active != null) return null;
+    if (expectedRevision != null && pendingRevision != expectedRevision) {
+      return null;
+    }
     final ticket = _pending;
     if (ticket == null) return null;
     _pending = null;
@@ -107,7 +116,10 @@ class AccountLinkCoordinator extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  void discardPending({String? notice}) {
+  void discardPending({String? notice, int? expectedRevision}) {
+    if (expectedRevision != null && pendingRevision != expectedRevision) {
+      return;
+    }
     _pending?.release();
     _pending = null;
     _notice = notice;
