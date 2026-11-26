@@ -226,9 +226,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
   Widget _recovery() {
     final input = _controller.unresolvedIntent?.input;
     final meeting = _showRecoveryContext ? _controller.recoveryMeeting : null;
-    final assignee = _showRecoveryContext
-        ? _controller.recoveryAssignee
-        : null;
+    final assignee = _showRecoveryContext ? _controller.recoveryAssignee : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [

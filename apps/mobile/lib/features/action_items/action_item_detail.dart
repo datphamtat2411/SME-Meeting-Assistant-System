@@ -118,10 +118,7 @@ class ActionItemDetailController extends ChangeNotifier {
   }
 
   void setDraft(ActionItemDraft value) {
-    if (!canUseSnapshot ||
-        !editing ||
-        _reconciliation != null ||
-        _unresolved) {
+    if (!canUseSnapshot || !editing || _reconciliation != null || _unresolved) {
       return;
     }
     _draft = value;

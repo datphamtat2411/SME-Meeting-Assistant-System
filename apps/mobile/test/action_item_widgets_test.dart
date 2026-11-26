@@ -39,10 +39,9 @@ void main() {
         return meetingApiSuccess([], meta: _pageMeta(1, 0));
       }
       if (deny) return meetingApiFailure(403, 'AUTHZ_FORBIDDEN');
-      return meetingApiSuccess(
-        [itemJson(restricted: restricted)],
-        meta: _pageMeta(20, 1),
-      );
+      return meetingApiSuccess([
+        itemJson(restricted: restricted),
+      ], meta: _pageMeta(20, 1));
     });
     final api = createMeetingTestApi(client);
     await tester.runAsync(() => signInMeetingTestApi(api));
@@ -66,7 +65,8 @@ void main() {
     await tester.tap(find.text('Weekly review'));
     await pumpUntil(
       tester,
-      () => find.widgetWithText(InputChip, 'Weekly review').evaluate().isNotEmpty,
+      () =>
+          find.widgetWithText(InputChip, 'Weekly review').evaluate().isNotEmpty,
       reason: 'selected meeting filter',
     );
     restricted = true;
@@ -135,11 +135,8 @@ void main() {
             denied = true;
             throw const ApiFailure(403, 'AUTHZ_FORBIDDEN', 'Denied');
           },
-          describe: (value) => ActionItemPickerOption(
-            value: value,
-            id: value,
-            label: value,
-          ),
+          describe: (value) =>
+              ActionItemPickerOption(value: value, id: value, label: value),
         ),
       ),
     );

@@ -215,8 +215,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
     final freshIds = fresh.map((option) => option.id.toLowerCase()).toSet();
     final pins = <ActionItemPickerOption<T>>[
       if (!_accessDenied) ...widget.pinned,
-      if (!_accessDenied && !_knownPinsRevoked)
-        ...?widget.readPinned?.call(),
+      if (!_accessDenied && !_knownPinsRevoked) ...?widget.readPinned?.call(),
     ];
     final options = [
       ...pins.where((option) => !freshIds.contains(option.id.toLowerCase())),
