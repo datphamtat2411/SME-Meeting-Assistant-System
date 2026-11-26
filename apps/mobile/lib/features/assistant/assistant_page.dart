@@ -83,9 +83,8 @@ class _AssistantPageState extends State<AssistantPage>
       final meeting = await Navigator.push<Meeting>(
         context,
         MaterialPageRoute<Meeting>(
-          builder: (_) => AssistantMeetingPicker(
-            dependencies: widget.dependencies,
-          ),
+          builder: (_) =>
+              AssistantMeetingPicker(dependencies: widget.dependencies),
         ),
       );
       if (!mounted ||
@@ -209,14 +208,18 @@ class _AssistantPageState extends State<AssistantPage>
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Icon(Icons.auto_awesome, color: colors.onPrimaryContainer),
+                          Icon(
+                            Icons.auto_awesome,
+                            color: colors.onPrimaryContainer,
+                          ),
                           const SizedBox(height: 12),
                           Text(
                             'Hỏi đáp có nguồn tham chiếu',
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              color: colors.onPrimaryContainer,
-                              fontWeight: FontWeight.w700,
-                            ),
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(
+                                  color: colors.onPrimaryContainer,
+                                  fontWeight: FontWeight.w700,
+                                ),
                           ),
                           const SizedBox(height: 6),
                           Text(
@@ -263,7 +266,9 @@ class _AssistantPageState extends State<AssistantPage>
                             spacing: 8,
                             children: [
                               TextButton(
-                                onPressed: state.creating ? null : _retryCreation,
+                                onPressed: state.creating
+                                    ? null
+                                    : _retryCreation,
                                 child: const Text('Thử lại cùng yêu cầu'),
                               ),
                               if (state.canDiscardCreation)
@@ -314,9 +319,8 @@ class _AssistantPageState extends State<AssistantPage>
                         overflow: TextOverflow.ellipsis,
                       ),
                       subtitle: Text(
-                        DateFormat('dd/MM/yyyy · HH:mm').format(
-                          item.updatedAt.toLocal(),
-                        ),
+                        DateFormat('dd/MM/yyyy · HH:mm')
+                            .format(item.updatedAt.toLocal()),
                       ),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () => _open(item),
@@ -620,8 +624,7 @@ String assistantFailureLabel(Object error) {
         'Tạm thời bị giới hạn lượt hỏi. Hãy chờ và thử lại.',
       AssistantFailureCategory.serviceUnavailable =>
         'Trợ lý tạm thời không khả dụng.',
-      AssistantFailureCategory.timeout ||
-      AssistantFailureCategory.transport =>
+      AssistantFailureCategory.timeout || AssistantFailureCategory.transport =>
         'Kết nối gián đoạn. Kết quả có thể chưa được xác nhận.',
       AssistantFailureCategory.invalidResponse =>
         'Không thể xác nhận dữ liệu trả về.',

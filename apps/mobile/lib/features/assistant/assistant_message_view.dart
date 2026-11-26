@@ -13,8 +13,10 @@ class AssistantMessageView extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     final mine = message.role == AssistantMessageRole.user;
     final assistant = message.role == AssistantMessageRole.assistant;
-    final hidden = message.visibility == AssistantMessageVisibility.sourceUnavailable;
-    final time = DateFormat('HH:mm · dd/MM').format(message.createdAt.toLocal());
+    final hidden =
+        message.visibility == AssistantMessageVisibility.sourceUnavailable;
+    final time = DateFormat('HH:mm · dd/MM')
+        .format(message.createdAt.toLocal());
     return Align(
       alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
@@ -41,7 +43,11 @@ class AssistantMessageView extends StatelessWidget {
                     ],
                     Flexible(
                       child: Text(
-                        mine ? 'Bạn' : assistant ? 'Trợ lý AI' : 'Hệ thống',
+                        mine
+                            ? 'Bạn'
+                            : assistant
+                            ? 'Trợ lý AI'
+                            : 'Hệ thống',
                         style: Theme.of(context).textTheme.titleSmall,
                       ),
                     ),
@@ -62,7 +68,8 @@ class AssistantMessageView extends StatelessWidget {
                       child: Text(
                         _answerLabel(message.answerStatus!),
                         style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          color: message.answerStatus ==
+                          color:
+                              message.answerStatus ==
                                   AssistantAnswerStatus.grounded
                               ? colors.primary
                               : colors.onSurfaceVariant,
@@ -72,7 +79,9 @@ class AssistantMessageView extends StatelessWidget {
                   SelectableText(
                     message.content ?? '',
                     style: TextStyle(
-                      color: mine ? colors.onPrimaryContainer : colors.onSurface,
+                      color: mine
+                          ? colors.onPrimaryContainer
+                          : colors.onSurface,
                     ),
                   ),
                   if (message.claims.isNotEmpty || message.citations.isNotEmpty)
@@ -91,7 +100,9 @@ class AssistantMessageView extends StatelessWidget {
                               children: [
                                 Text(
                                   _supportLabel(claim.support),
-                                  style: Theme.of(context).textTheme.labelMedium,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelMedium,
                                 ),
                                 SelectableText(claim.text),
                                 if (claim.citationIds.isNotEmpty)
@@ -115,7 +126,9 @@ class AssistantMessageView extends StatelessWidget {
                               '${citation.citationId} · '
                               '${_sourceLabel(citation.sourceType)}',
                             ),
-                            subtitle: Text('Phiên bản ${citation.sourceRevision}'),
+                            subtitle: Text(
+                              'Phiên bản ${citation.sourceRevision}',
+                            ),
                           ),
                       ],
                     ),
@@ -131,7 +144,8 @@ class AssistantMessageView extends StatelessWidget {
 
 String _answerLabel(AssistantAnswerStatus status) => switch (status) {
   AssistantAnswerStatus.grounded => 'Có bằng chứng hỗ trợ',
-  AssistantAnswerStatus.partial => 'Bằng chứng chỉ hỗ trợ một phần hoặc xung đột',
+  AssistantAnswerStatus.partial =>
+    'Bằng chứng chỉ hỗ trợ một phần hoặc xung đột',
   AssistantAnswerStatus.insufficientEvidence => 'Không đủ bằng chứng',
   AssistantAnswerStatus.failed => 'Không thể tạo câu trả lời',
 };

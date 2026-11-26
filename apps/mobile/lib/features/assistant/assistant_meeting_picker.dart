@@ -32,10 +32,8 @@ class _AssistantMeetingPickerState extends State<AssistantMeetingPicker> {
     unawaited(_searchMeetings());
   }
 
-  Future<void> _searchMeetings() => _controller.applyQuery(
-    search: _search.text,
-    relationship: _relationship,
-  );
+  Future<void> _searchMeetings() =>
+      _controller.applyQuery(search: _search.text, relationship: _relationship);
 
   @override
   void dispose() {
@@ -135,7 +133,8 @@ class _AssistantMeetingPickerState extends State<AssistantMeetingPicker> {
                                     ),
                             ),
                             trailing: const Icon(Icons.chevron_right),
-                            onTap: state.collectionChanged ||
+                            onTap:
+                                state.collectionChanged ||
                                     state.refreshing ||
                                     state.refreshFailure != null
                                 ? null

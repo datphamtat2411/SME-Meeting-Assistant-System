@@ -394,86 +394,92 @@ void main() {
       expect(submissions, 2);
     });
 
-    test('uses creation keys, anchored history and read-only turn status', () async {
-      final repository = await _repository(
-        MeetingTestHttpClient((request) async {
-          final path = request.url.path;
-          if (path.endsWith('/turns/by-key')) {
-            expect(request.method, 'GET');
-            expect(request.headers['idempotency-key'], 'intent-01:retry');
-            expect(request.url.queryParameters, isEmpty);
-            return meetingApiSuccess({
-              'turn': _turn(processing: true),
-              'recoveryEligible': true,
+    test(
+      'uses creation keys, anchored history and read-only turn status',
+      () async {
+        final repository = await _repository(
+          MeetingTestHttpClient((request) async {
+            final path = request.url.path;
+            if (path.endsWith('/turns/by-key')) {
+              expect(request.method, 'GET');
+              expect(request.headers['idempotency-key'], 'intent-01:retry');
+              expect(request.url.queryParameters, isEmpty);
+              return meetingApiSuccess({
+                'turn': _turn(processing: true),
+                'recoveryEligible': true,
+              });
+            }
+            if (request.method == 'POST') {
+              expect(request.headers['idempotency-key'], 'create-01');
+              return meetingApiSuccess(_conversation(), status: 201);
+            }
+            expect(request.url.queryParameters, {
+              'page': '0',
+              'size': '50',
+              'beforeMessageId': _userMessageId,
             });
-          }
-          if (request.method == 'POST') {
-            expect(request.headers['idempotency-key'], 'create-01');
-            return meetingApiSuccess(_conversation(), status: 201);
-          }
-          expect(request.url.queryParameters, {
-            'page': '0',
-            'size': '50',
-            'beforeMessageId': _userMessageId,
-          });
-          return meetingApiSuccess(_detail());
-        }),
-      );
-      final scope = repository.captureSession();
-      await repository.createConversation(
-        const AssistantCreateConversationRequest(
-          meetingId: testMeetingId,
-          idempotencyKey: 'create-01',
-        ),
-        sessionScope: scope,
-      );
-      final older = await repository.getConversation(
-        _conversationId,
-        sessionScope: scope,
-        beforeMessageId: _userMessageId,
-      );
-      expect(older.messages.single.id, _assistantMessageId);
-      final result = await repository.getTurnStatus(
-        _question(),
-        sessionScope: scope,
-      );
-      expect(result.turn.state, AssistantTurnState.processing);
-      expect(result.recoveryEligible, isTrue);
-    });
+            return meetingApiSuccess(_detail());
+          }),
+        );
+        final scope = repository.captureSession();
+        await repository.createConversation(
+          const AssistantCreateConversationRequest(
+            meetingId: testMeetingId,
+            idempotencyKey: 'create-01',
+          ),
+          sessionScope: scope,
+        );
+        final older = await repository.getConversation(
+          _conversationId,
+          sessionScope: scope,
+          beforeMessageId: _userMessageId,
+        );
+        expect(older.messages.single.id, _assistantMessageId);
+        final result = await repository.getTurnStatus(
+          _question(),
+          sessionScope: scope,
+        );
+        expect(result.turn.state, AssistantTurnState.processing);
+        expect(result.recoveryEligible, isTrue);
+      },
+    );
 
-    test('status lookup preserves terminal failures without exposing evidence', () {
-      for (final state in ['FAILED', 'STALE_SOURCE']) {
-        final raw = {
-          'turn': _turn()
-            ..['state'] = state
-            ..['answerStatus'] = state == 'FAILED' ? 'FAILED' : 'GROUNDED'
-            ..['answer'] = null
-            ..['claims'] = []
-            ..['citations'] = [],
-          'recoveryEligible': false,
-        };
-        final result = AssistantTurnStatus.fromResult(
-          _result(raw),
-          meetingId: testMeetingId,
-        );
-        expect(
-          result.turn.state,
-          state == 'FAILED'
-              ? AssistantTurnState.failed
-              : AssistantTurnState.staleSource,
-        );
-        expect(result.turn.answer, isNull);
-        expect(result.turn.citations, isEmpty);
-        raw['recoveryEligible'] = true;
-        expect(
-          () => AssistantTurnStatus.fromResult(
+    test(
+      'status lookup preserves terminal failures without exposing evidence',
+      () {
+        for (final state in ['FAILED', 'STALE_SOURCE']) {
+          final raw = {
+            'turn': _turn()
+              ..['state'] = state
+              ..['answerStatus'] = state == 'FAILED' ? 'FAILED' : 'GROUNDED'
+              ..['answer'] = null
+              ..['claims'] = []
+              ..['citations'] = [],
+            'recoveryEligible': false,
+          };
+          final result = AssistantTurnStatus.fromResult(
             _result(raw),
             meetingId: testMeetingId,
-          ),
-          throwsA(_invalidResponse()),
-        );
-      }
-    });
+          );
+          expect(
+            result.turn.state,
+            state == 'FAILED'
+                ? AssistantTurnState.failed
+                : AssistantTurnState.staleSource,
+          );
+          expect(result.turn.answer, isNull);
+          expect(result.turn.citations, isEmpty);
+          raw['recoveryEligible'] = true;
+          expect(
+            () => AssistantTurnStatus.fromResult(
+              _result(raw),
+              meetingId: testMeetingId,
+            ),
+            throwsA(_invalidResponse()),
+          );
+        }
+      },
+    );
 
     test('rejects invalid input without dispatch', () async {
       var requests = 0;
@@ -742,108 +748,117 @@ void main() {
   });
 
   group('Assistant workspace recovery', () {
-    test('late history cannot replace the newly selected conversation', () async {
-      const otherId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
-      final entered = Completer<void>();
-      final held = Completer<http.StreamedResponse>();
-      final other = _conversation()..['id'] = otherId;
-      final repository = await _repository(
-        MeetingTestHttpClient((request) async {
-          final path = request.url.path;
-          if (path.endsWith('/conversations')) {
-            return meetingApiSuccess([]);
-          }
-          if (path.endsWith(otherId)) {
-            return meetingApiSuccess(
-              _detail(messages: [])..['conversation'] = other,
-            );
-          }
-          entered.complete();
-          return held.future;
-        }),
-      );
-      final controller = AssistantWorkspaceController(repository);
-      addTearDown(controller.dispose);
-      controller.setActive(true);
-      final first = controller.open(_typedConversation());
-      await entered.future;
-      await controller.open(
-        AssistantConversation.fromJson(other, response: _result(other)),
-      );
-      held.complete(await meetingApiSuccess(_detail()));
-      await first;
-      expect(controller.conversation?.id, otherId);
-      expect(controller.messages, isEmpty);
-      expect(controller.historyVerified, isTrue);
-    });
+    test(
+      'late history cannot replace the newly selected conversation',
+      () async {
+        const otherId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+        final entered = Completer<void>();
+        final held = Completer<http.StreamedResponse>();
+        final other = _conversation()..['id'] = otherId;
+        final repository = await _repository(
+          MeetingTestHttpClient((request) async {
+            final path = request.url.path;
+            if (path.endsWith('/conversations')) {
+              return meetingApiSuccess([]);
+            }
+            if (path.endsWith(otherId)) {
+              return meetingApiSuccess(
+                _detail(messages: [])..['conversation'] = other,
+              );
+            }
+            entered.complete();
+            return held.future;
+          }),
+        );
+        final controller = AssistantWorkspaceController(repository);
+        addTearDown(controller.dispose);
+        controller.setActive(true);
+        final first = controller.open(_typedConversation());
+        await entered.future;
+        await controller.open(
+          AssistantConversation.fromJson(other, response: _result(other)),
+        );
+        held.complete(await meetingApiSuccess(_detail()));
+        await first;
+        expect(controller.conversation?.id, otherId);
+        expect(controller.messages, isEmpty);
+        expect(controller.historyVerified, isTrue);
+      },
+    );
 
-    test('creation retries preserve the intent after an ambiguous failure', () async {
-      final keys = <String?>[];
-      final repository = await _repository(
-        MeetingTestHttpClient((request) async {
-          if (request.method == 'GET') return meetingApiSuccess([]);
-          keys.add(request.headers['idempotency-key']);
-          if (keys.length == 1) throw TimeoutException('lost response');
-          return meetingApiSuccess(_conversation(), status: 201);
-        }),
-      );
-      final controller = AssistantWorkspaceController(repository);
-      addTearDown(controller.dispose);
-      controller.setActive(true);
-      expect(await controller.create(testMeetingId, 'Weekly review'), isNull);
-      expect(controller.creation, isNotNull);
-      expect(controller.canDiscardCreation, isFalse);
-      expect(await controller.retryCreation(), isNotNull);
-      expect(keys.length, 2);
-      expect(keys.first, isNotNull);
-      expect(keys.last, keys.first);
-      expect(controller.creation, isNull);
-    });
-
-    test('turn status is read-only and explicit reclaim keeps the same key', () async {
-      final keys = <String?>[];
-      var statusReads = 0;
-      final repository = await _repository(
-        MeetingTestHttpClient((request) async {
-          final path = request.url.path;
-          if (path.endsWith('/conversations')) {
-            return meetingApiSuccess([]);
-          }
-          if (path.endsWith('/turns/by-key')) {
-            statusReads++;
-            expect(request.method, 'GET');
-            expect(request.headers['idempotency-key'], keys.first);
-            return meetingApiSuccess({
-              'turn': _turn(processing: true),
-              'recoveryEligible': true,
-            });
-          }
-          if (path.endsWith('/messages')) {
+    test(
+      'creation retries preserve the intent after an ambiguous failure',
+      () async {
+        final keys = <String?>[];
+        final repository = await _repository(
+          MeetingTestHttpClient((request) async {
+            if (request.method == 'GET') return meetingApiSuccess([]);
             keys.add(request.headers['idempotency-key']);
-            expect(decodeRequestBody(request), {'question': 'Câu hỏi'});
-            return keys.length == 1
-                ? meetingApiSuccess(_turn(processing: true), status: 202)
-                : meetingApiSuccess(_turn());
-          }
-          return meetingApiSuccess(
-            _detail(messages: keys.length > 1 ? [_message()] : []),
-          );
-        }),
-      );
-      final controller = AssistantWorkspaceController(repository);
-      addTearDown(controller.dispose);
-      controller.setActive(true);
-      await controller.open(_typedConversation());
-      await controller.submit('Câu hỏi');
-      expect(statusReads, 1);
-      expect(keys.length, 1);
-      expect(controller.pending?.retryAllowed, isTrue);
-      await controller.retryPending();
-      expect(keys.length, 2);
-      expect(keys.first, isNotNull);
-      expect(keys.last, keys.first);
-      expect(controller.pending, isNull);
-      expect(controller.messages.single.id, _assistantMessageId);
-    });
+            if (keys.length == 1) throw TimeoutException('lost response');
+            return meetingApiSuccess(_conversation(), status: 201);
+          }),
+        );
+        final controller = AssistantWorkspaceController(repository);
+        addTearDown(controller.dispose);
+        controller.setActive(true);
+        expect(await controller.create(testMeetingId, 'Weekly review'), isNull);
+        expect(controller.creation, isNotNull);
+        expect(controller.canDiscardCreation, isFalse);
+        expect(await controller.retryCreation(), isNotNull);
+        expect(keys.length, 2);
+        expect(keys.first, isNotNull);
+        expect(keys.last, keys.first);
+        expect(controller.creation, isNull);
+      },
+    );
+
+    test(
+      'turn status is read-only and explicit reclaim keeps the same key',
+      () async {
+        final keys = <String?>[];
+        var statusReads = 0;
+        final repository = await _repository(
+          MeetingTestHttpClient((request) async {
+            final path = request.url.path;
+            if (path.endsWith('/conversations')) {
+              return meetingApiSuccess([]);
+            }
+            if (path.endsWith('/turns/by-key')) {
+              statusReads++;
+              expect(request.method, 'GET');
+              expect(request.headers['idempotency-key'], keys.first);
+              return meetingApiSuccess({
+                'turn': _turn(processing: true),
+                'recoveryEligible': true,
+              });
+            }
+            if (path.endsWith('/messages')) {
+              keys.add(request.headers['idempotency-key']);
+              expect(decodeRequestBody(request), {'question': 'Câu hỏi'});
+              return keys.length == 1
+                  ? meetingApiSuccess(_turn(processing: true), status: 202)
+                  : meetingApiSuccess(_turn());
+            }
+            return meetingApiSuccess(
+              _detail(messages: keys.length > 1 ? [_message()] : []),
+            );
+          }),
+        );
+        final controller = AssistantWorkspaceController(repository);
+        addTearDown(controller.dispose);
+        controller.setActive(true);
+        await controller.open(_typedConversation());
+        await controller.submit('Câu hỏi');
+        expect(statusReads, 1);
+        expect(keys.length, 1);
+        expect(controller.pending?.retryAllowed, isTrue);
+        await controller.retryPending();
+        expect(keys.length, 2);
+        expect(keys.first, isNotNull);
+        expect(keys.last, keys.first);
+        expect(controller.pending, isNull);
+        expect(controller.messages.single.id, _assistantMessageId);
+      },
+    );
   });
 }

@@ -90,9 +90,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
   }
 
   bool _ownsHistory(int generation, String id) =>
-      current &&
-      generation == _historyGeneration &&
-      conversation?.id == id;
+      current && generation == _historyGeneration && conversation?.id == id;
 
   void setActive(bool active) {
     if (!current || _active == active) return;
@@ -357,8 +355,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
   }
 
   bool _ownsCommand(AssistantPendingTurn command) =>
-      current &&
-      identical(_pending[command.request.conversation.id], command);
+      current && identical(_pending[command.request.conversation.id], command);
 
   Future<void> retryPending() async {
     final command = pending;
@@ -393,7 +390,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
       if (!_ownsCommand(command)) return;
       command.failure = error;
       command.uncertain =
-          command.uncertain || error.outcome == AssistantMutationOutcome.unknown;
+          command.uncertain ||
+          error.outcome == AssistantMutationOutcome.unknown;
       command.retryAllowed =
           error.category == AssistantFailureCategory.rateLimited;
       command.retryAt = _retryDeadline(error);
