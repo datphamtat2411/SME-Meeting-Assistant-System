@@ -236,6 +236,7 @@ class ProfileController extends _AccountResource<ProfileSnapshot> {
   bool get canRetryIdentity =>
       identityRefreshFailed &&
       snapshot != null &&
+      !saving &&
       _identitySync == null &&
       identityRetryNotBefore == null;
 

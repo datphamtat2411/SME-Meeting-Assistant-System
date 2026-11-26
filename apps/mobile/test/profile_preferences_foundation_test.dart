@@ -1336,6 +1336,52 @@ void main() {
     expect(profile.identityStatus, IdentitySyncStatus.synchronized);
   });
 
+  test(
+    'pending identity reload cannot publish into a replacement session',
+    () async {
+      final identity = Completer<http.StreamedResponse>();
+      final started = Completer<void>();
+      var reloads = 0;
+      final api = await _authenticated(
+        (request) async {
+          if (request.method == 'GET') {
+            return _profileResponse('Original', '"v1"');
+          }
+          return _profileResponse('New name', '"v2"');
+        },
+        reloadIdentity: () {
+          if (++reloads == 1) {
+            started.complete();
+            return identity.future;
+          }
+          return jsonResponse(
+            200,
+            successEnvelope(_identity(name: 'Replacement')),
+          );
+        },
+      );
+      final controller = ProfileController(ProfileRepository(api: api));
+      addTearDown(controller.dispose);
+      await controller.refresh();
+      expect(
+        await controller.updateName(controller.snapshot!, 'New name'),
+        isTrue,
+      );
+      await started.future;
+      final pending = controller.retryIdentity();
+      await api.signOut();
+      await api.signIn('user@example.test', 'password');
+      identity.complete(
+        await jsonResponse(200, successEnvelope(_identity(name: 'Old result'))),
+      );
+      await pending;
+      expect(controller.current, isFalse);
+      expect(controller.snapshot, isNull);
+      expect(controller.identityStatus, IdentitySyncStatus.idle);
+      expect(api.displayName, 'Replacement');
+    },
+  );
+
   testWidgets('regional save cooldown expires without replay', (tester) async {
     var patches = 0;
     final api = (await tester.runAsync(
