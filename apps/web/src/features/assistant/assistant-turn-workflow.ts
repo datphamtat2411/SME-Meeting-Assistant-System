@@ -519,9 +519,9 @@ export function useAssistantTurnWorkflow(
     workflow: active,
     busy: Boolean(
       (active && active.phase !== 'settled') ||
-        (pending &&
-          (!active ||
-            (active.phase === 'settled' && active.turnId !== pending.turnId)))
+      (pending &&
+        (!active ||
+          (active.phase === 'settled' && active.turnId !== pending.turnId)))
     ),
     historyRefreshError: id ? refreshErrors.get(id) : undefined,
     submit,
