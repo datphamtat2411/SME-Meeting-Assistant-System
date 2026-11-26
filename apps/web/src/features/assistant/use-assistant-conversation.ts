@@ -282,7 +282,10 @@ export function useAssistantConversation() {
     const currentScope = scopeRef.current
     if (!currentScope.meetingId || assistantAccessError(queryClient)) return
     const operation: CreateOperation = {
-      access: captureAssistantCreationAccess(queryClient, currentScope.meetingId),
+      access: captureAssistantCreationAccess(
+        queryClient,
+        currentScope.meetingId
+      ),
       operationId: ++createSequenceRef.current,
       scope: { ...currentScope },
       meetingId: currentScope.meetingId,

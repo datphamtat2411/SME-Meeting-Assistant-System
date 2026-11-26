@@ -172,10 +172,16 @@ export function useAssistantHistoryPolling({
     let timer: number | undefined
     let attempts = 0
     const observedPages = new Map<number, AssistantConversationDetail>()
-    let observedEpoch = assistantHistoryEpoch(queryClient, accepted.conversationId)
+    let observedEpoch = assistantHistoryEpoch(
+      queryClient,
+      accepted.conversationId
+    )
 
     const reconcileObservationEpoch = () => {
-      const current = assistantHistoryEpoch(queryClient, accepted.conversationId)
+      const current = assistantHistoryEpoch(
+        queryClient,
+        accepted.conversationId
+      )
       if (current !== observedEpoch) {
         observedPages.clear()
         observedEpoch = current

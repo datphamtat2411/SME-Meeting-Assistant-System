@@ -141,9 +141,7 @@ describe('Assistant protected operation ownership', () => {
     expect(() =>
       assertAssistantHistoryResultCurrent(client, 'a', earlierResult)
     ).toThrow()
-    expect(() =>
-      guardAssistantHistoryCache(undefined, earlierResult)
-    ).toThrow()
+    expect(() => guardAssistantHistoryCache(undefined, earlierResult)).toThrow()
     const laterResult = await readAssistantHistoryProtected(
       client,
       'a',
@@ -175,7 +173,10 @@ describe('Assistant protected operation ownership', () => {
     const unrelated = { id: 'a', meetingId: 'meeting-b' }
     const listKey = ['assistant', 'conversations', 0, 20]
     client.setQueryData(listKey, [related, unrelated])
-    client.setQueryData(['assistant', 'conversation', 'related', 'summary'], related)
+    client.setQueryData(
+      ['assistant', 'conversation', 'related', 'summary'],
+      related
+    )
     client.setQueryData(['assistant', 'conversation', 'a', 'history'], {
       content: 'authorized',
     })

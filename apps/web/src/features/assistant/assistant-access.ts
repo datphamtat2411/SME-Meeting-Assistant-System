@@ -431,17 +431,18 @@ function redactKnownMessages(
 ): AssistantConversationDetail {
   return {
     ...detail,
-    messages: detail.messages.map((message) =>
-      redactions.get(message.id) ??
-      (redactedIds.has(message.id)
-        ? {
-            ...message,
-            visibility: 'SOURCE_UNAVAILABLE',
-            content: null,
-            claims: [],
-            citations: [],
-          }
-        : message)
+    messages: detail.messages.map(
+      (message) =>
+        redactions.get(message.id) ??
+        (redactedIds.has(message.id)
+          ? {
+              ...message,
+              visibility: 'SOURCE_UNAVAILABLE',
+              content: null,
+              claims: [],
+              citations: [],
+            }
+          : message)
     ),
   }
 }
