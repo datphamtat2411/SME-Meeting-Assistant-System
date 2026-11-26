@@ -94,20 +94,22 @@ const meetingList = {
   },
 }
 
+const dashboardAsOf = '2026-11-23T09:00:00Z'
 const dashboard = {
-  asOf: '2026-11-23T09:00:00Z',
+  asOf: dashboardAsOf,
   timezone: 'Asia/Ho_Chi_Minh',
-  meetingCountsByState: { SCHEDULED: 1, IN_PROGRESS: 1 },
-  upcomingMeetings: [
-    {
-      id: meetingId,
-      title: meeting.title,
-      status: meeting.status,
-      scheduledStartAt: meeting.scheduledStartAt,
-      scheduledEndAt: meeting.scheduledEndAt,
-      endedAt: null,
-    },
-  ],
+  upcomingWindow: {
+    fromInclusive: dashboardAsOf,
+    toExclusive: '2026-12-07T09:00:00Z',
+    limit: 10,
+  },
+  recentWindow: {
+    fromInclusive: '2026-10-24T09:00:00Z',
+    toExclusive: dashboardAsOf,
+    limit: 10,
+  },
+  meetingCountsByState: { SCHEDULED: 0, IN_PROGRESS: 1 },
+  upcomingMeetings: [],
   recentMeetings: [],
   assignedActionItems: { open: 1, inProgress: 0, done: 2, overdue: 0 },
 }
@@ -375,6 +377,14 @@ describe('integrated generated Web runtime', () => {
           screen.getByRole('heading', { name: expectedHeading, exact: true })
         )
         .toBeInTheDocument()
+      if (path === '/') {
+        await expect
+          .element(screen.getByText('Scheduled meetings'))
+          .toBeInTheDocument()
+        await expect
+          .element(screen.getByText('No upcoming meeting'))
+          .toBeInTheDocument()
+      }
       expect(router.state.location.pathname).toBe(path)
     }
   )

@@ -316,11 +316,9 @@ function PersonalDashboard({ identity }: { identity: AuthContext }) {
               timeZone: zone,
             }).format(new Date())}
           </p>
-          <h1 className='mt-1 text-3xl font-bold break-words'>
-            Welcome back, {identity.displayName}
-          </h1>
+          <h1 className='mt-1 text-3xl font-bold break-words'>Dashboard</h1>
           <p className='mt-1 text-muted-foreground'>
-            Stay on top of your meetings and follow-up work.
+            Your personal overview of meetings and follow-up work.
           </p>
         </div>
         <Button asChild>

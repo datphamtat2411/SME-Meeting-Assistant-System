@@ -55,6 +55,31 @@ const identity = {
     absoluteExpiresAt: '2027-01-01T00:00:00Z',
   },
 }
+const dashboardAsOf = '2026-11-26T08:00:00Z'
+const dashboard = {
+  asOf: dashboardAsOf,
+  timezone: 'Asia/Ho_Chi_Minh',
+  upcomingWindow: {
+    fromInclusive: dashboardAsOf,
+    toExclusive: '2026-12-10T08:00:00Z',
+    limit: 10,
+  },
+  recentWindow: {
+    fromInclusive: '2026-10-27T08:00:00Z',
+    toExclusive: dashboardAsOf,
+    limit: 10,
+  },
+  meetingCountsByState: {},
+  upcomingMeetings: [],
+  recentMeetings: [],
+  assignedActionItems: { open: 0, inProgress: 0, done: 0, overdue: 0 },
+}
+const preferences = {
+  timezone: 'Asia/Ho_Chi_Minh',
+  locale: 'en-US',
+  meetingEmailEnabled: true,
+  actionItemEmailEnabled: true,
+}
 const organizationUnitId = '11111111-1111-4111-8111-111111111111'
 const organizationUnit = {
   id: organizationUnitId,
@@ -150,7 +175,15 @@ describe('session restoration and protected routing', () => {
     resetCsrfToken()
     resetAuthLifecycleAfterSignIn()
     getCurrentUser = vi.spyOn(coreApi, 'get')
-    getCurrentUser.mockResolvedValue(identity as never)
+    getCurrentUser.mockImplementation(async (url) => {
+      if (url === '/dashboard/me') return dashboard as never
+      if (url === '/me/preferences') return preferences as never
+      return identity as never
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/action-items') return emptyPage(0, 5) as never
+      throw new Error('Unexpected Core GET with meta: ' + url)
+    })
   })
 
   it('renders the canonical shell identity after restoring a deep link', async () => {
@@ -639,6 +672,12 @@ describe('session restoration and protected routing', () => {
 
   it('revalidates identity when navigating between protected routes', async () => {
     const { router, screen } = await renderRoute('/')
+    await expect
+      .element(screen.getByRole('heading', { name: 'Dashboard', exact: true }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Scheduled meetings'))
+      .toBeInTheDocument()
     await expect.element(screen.getByText('Canonical User')).toBeInTheDocument()
     const initialChecks = getCurrentUser.mock.calls.length
 
