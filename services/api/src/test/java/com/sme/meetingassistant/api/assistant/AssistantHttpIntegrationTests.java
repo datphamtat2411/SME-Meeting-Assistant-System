@@ -336,6 +336,62 @@ class AssistantHttpIntegrationTests {
         verifyNoInteractions(gateway);
     }
 
+    @Test void explicitRecoveryUsesPersistedIdentityAndNeverCreatesAnotherTurn() throws Exception {
+        UUID owner=user(),member=user(),meeting=meeting(owner,member),id=conversation(member,meeting);
+        String question="Kết luận?";
+        var original=new TransactionTemplate(transactionManager).execute(s->
+            store.insertTurn(id,"recover-original",WorkerJson.sha256(question.getBytes(StandardCharsets.UTF_8)),
+                question,"test-scope"));
+        String recovery="/api/v1/assistant/conversations/"+id+"/turns/"+original.id()+"/recover";
+        mvc.perform(post(recovery).principal(principal(owner))).andExpect(status().isNotFound());
+        UUID other=conversation(member,meeting);
+        mvc.perform(post("/api/v1/assistant/conversations/"+other+"/turns/"+original.id()+"/recover")
+            .principal(principal(member))).andExpect(status().isNotFound());
+        mvc.perform(post(recovery).principal(principal(member))).andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.data.turnId").value(original.id().toString()));
+        verifyNoInteractions(gateway);
+        assertThat(store.findById(original.id())).isEqualTo(original);
+        jdbc.update("UPDATE assistant_turns SET claim_expires_at=clock_timestamp()-interval '1 second' WHERE id=?",
+            original.id());
+        when(gateway.answer(anyString())).thenAnswer(inv->{
+            JsonNode request=json.readTree((String)inv.getArgument(0));
+            assertThat(request.path("question").asText()).isEqualTo(question);
+            assertThat(request.path("requestId").asText()).isEqualTo(original.id().toString());
+            return insufficient(inv.getArgument(0));
+        });
+        for(int i=0;i<2;i++)
+            mvc.perform(post(recovery).principal(principal(member))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.turnId").value(original.id().toString()))
+                .andExpect(jsonPath("$.data.userMessageId").value(original.userMessageId().toString()));
+        verify(gateway,times(1)).answer(anyString());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_turns WHERE conversation_id=?",
+            Integer.class,id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_messages WHERE conversation_id=?",
+            Integer.class,id)).isEqualTo(2);
+        jdbc.update("UPDATE meeting_participants SET removed_at=CURRENT_TIMESTAMP WHERE meeting_id=? AND user_id=?",
+            meeting,member);
+        mvc.perform(post(recovery).principal(principal(member))).andExpect(status().isNotFound());
+        verify(gateway,times(1)).answer(anyString());
+    }
+
+    @Test void failedRecoveryIsTerminalAndDoesNotRestartInference() throws Exception {
+        UUID owner=user(),meeting=meeting(owner),id=conversation(owner,meeting);
+        String question="Kết luận?";
+        var original=new TransactionTemplate(transactionManager).execute(s->
+            store.insertTurn(id,"recover-failure",WorkerJson.sha256(question.getBytes(StandardCharsets.UTF_8)),
+                question,"test-scope"));
+        jdbc.update("UPDATE assistant_turns SET claim_expires_at=clock_timestamp()-interval '1 second' WHERE id=?",
+            original.id());
+        when(gateway.answer(anyString())).thenThrow(new IllegalStateException("private provider failure"));
+        String recovery="/api/v1/assistant/conversations/"+id+"/turns/"+original.id()+"/recover";
+        for(int i=0;i<2;i++)
+            mvc.perform(post(recovery).principal(principal(owner))).andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("ASSISTANT_TURN_FAILED"));
+        verify(gateway,times(1)).answer(anyString());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_messages WHERE conversation_id=?",
+            Integer.class,id)).isEqualTo(2);
+    }
+
     @Test void staleSourceIsRedactedAcrossHistoryObservationAndReplay() throws Exception {
         UUID owner=user(),meeting=meeting(owner),id=conversation(owner,meeting),source=UUID.randomUUID();
         when(sourceVerifier.current("TRANSCRIPT",source,meeting,0L)).thenReturn(true);

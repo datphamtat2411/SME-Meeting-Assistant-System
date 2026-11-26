@@ -149,8 +149,7 @@ public final class AssistantService {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         var turn=turnId==null?store.observeByKey(conversationId,key):store.findById(turnId);
         if(turn==null||!conversationId.equals(turn.conversationId()))
-            throw new AssistantDomainException(HttpStatus.NOT_FOUND,"ASSISTANT_TURN_NOT_FOUND",
-                "Assistant turn was not found.");
+            throw turnNotFound();
         TurnStatusView result=statusView(conversation,turn);
         access.requireReadable(conversation.meetingId(),user);
         return result;
@@ -170,7 +169,38 @@ public final class AssistantService {
             message.id(),message.answerStatus());
     }
 
+    /**
+     * Explicit recovery uses the persisted question and key, never browser state.
+     * The reservation transaction must still find this exact durable turn.
+     */
+    TurnOutcome recover(UUID conversationId,UUID turnId){
+        requireEnabled();
+        return readWithAvailability(()->{
+            UUID user=actor();
+            var conversation=store.require(conversationId,user,false);
+            access.requireReadable(conversation.meetingId(),user);
+            var turn=store.findById(turnId);
+            if(turn==null||!conversationId.equals(turn.conversationId()))
+                throw turnNotFound();
+            var question=store.answer(turn.userMessageId());
+            if(question==null||!conversationId.equals(question.conversationId())
+                ||!"USER".equals(question.role())||question.content()==null
+                ||!turn.fingerprint().equals(WorkerJson.sha256(question.content().getBytes(StandardCharsets.UTF_8))))
+                throw unavailable();
+            return submit(conversationId,turn.key(),new Ask(question.content()),turnId);
+        });
+    }
+
+    private static AssistantDomainException turnNotFound(){
+        return new AssistantDomainException(HttpStatus.NOT_FOUND,"ASSISTANT_TURN_NOT_FOUND",
+            "Assistant turn was not found.");
+    }
+
     TurnOutcome submit(UUID conversationId,String idempotencyKey,Ask input){
+        return submit(conversationId,idempotencyKey,input,null);
+    }
+
+    private TurnOutcome submit(UUID conversationId,String idempotencyKey,Ask input,UUID expectedTurnId){
         requireEnabled();
         UUID user;
         try {
@@ -196,7 +226,7 @@ public final class AssistantService {
         long admissionStarted=System.nanoTime();
         try {
             admitted=tx.execute(s->reserve(conversationId,user,idempotencyKey,question,fingerprint,
-                conversation.meetingId()));
+                conversation.meetingId(),expectedTurnId));
         } catch (DataAccessException|TransactionException unavailable) {
             throw admission.databaseUnavailable();
         } finally {
@@ -278,7 +308,7 @@ public final class AssistantService {
     }
 
     private Admission reserve(UUID conversationId,UUID user,String key,String question,
-            String fingerprint,UUID expectedMeeting){
+            String fingerprint,UUID expectedMeeting,UUID expectedTurnId){
         // The transaction-local timeout covers the conversation row and every
         // later advisory lock without changing the pooled session.
         admission.configureLockWaitTimeout();
@@ -290,6 +320,8 @@ public final class AssistantService {
         if(!"ACTIVE".equals(conversation.status()))throw new AssistantDomainException(HttpStatus.CONFLICT,
             "ASSISTANT_CONVERSATION_INACTIVE","Assistant conversation is inactive.");
         AssistantStore.Turn prior=store.findTurn(conversationId,key);
+        if(expectedTurnId!=null&&(prior==null||!expectedTurnId.equals(prior.id())))
+            throw turnNotFound(); // recovery can never insert a replacement turn
         if(prior!=null){
             if(!prior.fingerprint().equals(fingerprint))
                 throw new AssistantDomainException(HttpStatus.CONFLICT,"ASSISTANT_IDEMPOTENCY_CONFLICT",

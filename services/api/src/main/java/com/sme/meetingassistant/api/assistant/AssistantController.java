@@ -60,7 +60,13 @@ final class AssistantController {
     @PostMapping("/{conversationId}/messages")
     ResponseEntity<ApiResponse<TurnView>> submit(@PathVariable UUID conversationId,
            @RequestHeader("Idempotency-Key") String key,@Valid @RequestBody Ask input){
-        TurnOutcome outcome=service.submit(conversationId,key,input);
+        return turnResponse(service.submit(conversationId,key,input));
+    }
+    @PostMapping("/{conversationId}/turns/{turnId}/recover")
+    ResponseEntity<ApiResponse<TurnView>> recover(@PathVariable UUID conversationId,@PathVariable UUID turnId){
+        return turnResponse(service.recover(conversationId,turnId));
+    }
+    private ResponseEntity<ApiResponse<TurnView>> turnResponse(TurnOutcome outcome){
         if(outcome.httpStatus()==503){
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
@@ -68,7 +74,7 @@ final class AssistantController {
         }
         if(outcome.httpStatus()==409){
             return ResponseEntity.status(HttpStatus.CONFLICT).cacheControl(CacheControl.noStore())
-                .body(responses.error("ASSISTANT_SOURCE_STALE",
+                .header("Referrer-Policy","no-referrer").body(responses.error("ASSISTANT_SOURCE_STALE",
                     "Assistant evidence is no longer current.",null));
         }
         return ResponseEntity.status(outcome.httpStatus())
