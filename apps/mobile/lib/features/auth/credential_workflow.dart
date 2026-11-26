@@ -104,7 +104,7 @@ class CredentialWorkflowOwner extends ChangeNotifier {
     // this exact attempt even if its form/controller has since been replaced.
     if (kind != null) attempt._terminal = true;
     final publish = kind != null && identical(_active, attempt);
-    if (publish) {
+    if (kind != null && publish) {
       _outcome = CredentialOutcome(attempt.operation, kind);
     }
     if (attempt.operation == AccountOperation.reset &&
