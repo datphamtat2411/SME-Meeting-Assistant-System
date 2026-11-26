@@ -163,9 +163,9 @@ function workspaceMinutes(
     schemaVersion: 1,
     assembledAt: '2026-11-25T12:00:00Z',
     sourceFingerprint: 'a'.repeat(64),
-    completeness: 'COMPLETE',
+    completeness: 'PARTIAL',
     proposalsIncluded: false,
-    warnings: [],
+    warnings: ['SUMMARY_NOT_AVAILABLE', 'TRANSCRIPT_NOT_AVAILABLE'],
     meeting: {
       id: workspaceMinutesMeetingId,
       title: 'Workspace result fixture',
@@ -1057,7 +1057,7 @@ describe('MeetingWorkspacePage', () => {
             id: workspaceSummaryId,
             content: 'A confirmed decision',
             status: 'CONFIRMED',
-            sourceType: 'HUMAN_CONFIRMED',
+            sourceType: 'MANUAL',
             version: 1,
             transcriptId: null,
             contentRevision: null,
@@ -1085,7 +1085,7 @@ describe('MeetingWorkspacePage', () => {
       .not.toBeInTheDocument()
   })
 
-  it('keeps failed and unknown availability distinct from confirmed absence', async () => {
+  it('rejects an unknown canonical availability instead of claiming verified results', async () => {
     const { screen } = await renderWorkspaceResults(
       workspaceMinutes({
         summary: { availability: 'FUTURE_BACKEND_STATE' },
@@ -1099,13 +1099,10 @@ describe('MeetingWorkspacePage', () => {
     )
 
     await expect
-      .element(screen.getByText('Failed', { exact: true }))
+      .element(screen.getByText('Unable to verify', { exact: true }).last())
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('Summary unknown status', { exact: true }))
-      .toBeInTheDocument()
-    await expect
-      .element(screen.getByText('Transcript not available', { exact: true }))
+      .element(screen.getByText('No summary available', { exact: true }))
       .not.toBeInTheDocument()
   })
 

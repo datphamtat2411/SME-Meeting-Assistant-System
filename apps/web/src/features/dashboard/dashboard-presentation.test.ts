@@ -7,13 +7,15 @@ const actor = '11111111-1111-4111-8111-111111111111'
 function item(
   id: string,
   status: 'OPEN' | 'IN_PROGRESS',
-  dueDate: string | null
+  dueDate: string | null,
+  version = 1
 ): ActionItem {
   // The existing Action Items adapter validates the rest of the read model.
   return {
     id,
     status,
     dueDate,
+    version,
     isOfficial: true,
     assigneeUserId: actor,
   } as ActionItem
@@ -38,8 +40,18 @@ describe('Dashboard assigned-work preview', () => {
 
   it('does not duplicate a task that moved status between bounded reads', () => {
     const open = item('a', 'OPEN', '2026-11-25')
-    const progress = item('a', 'IN_PROGRESS', '2026-11-25')
+    const progress = item('a', 'IN_PROGRESS', '2026-11-25', 2)
     expect(mergeAssignedWork([open], [progress], actor)).toEqual([progress])
+    const reopened = item('a', 'OPEN', '2026-11-26', 3)
+    expect(mergeAssignedWork([reopened], [progress], actor)).toEqual([reopened])
+  })
+
+  it('rejects contradictory states for the same canonical version', () => {
+    const open = item('a', 'OPEN', null)
+    const progress = item('a', 'IN_PROGRESS', null)
+    expect(() => mergeAssignedWork([open], [progress], actor)).toThrow(
+      /conflicting assigned-work versions/i
+    )
   })
 
   it('rejects proposed, wrong-owner, or malformed work', () => {

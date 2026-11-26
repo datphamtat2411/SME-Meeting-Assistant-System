@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RequestError, RequestLoading } from '@/components/request-state'
+import { preferencesQuery } from '@/features/settings/preferences-api'
 import { minutesQuery } from './minutes-api'
 import {
   formatMinutesDuration,
@@ -72,6 +73,7 @@ export function MinutesPanel({
   onOpenTranscript?: () => void
 }) {
   const query = useQuery(minutesQuery(meetingId))
+  const preferences = useQuery(preferencesQuery())
   if (query.isPending || query.isError) {
     return (
       <Card>
@@ -99,8 +101,10 @@ export function MinutesPanel({
     id
       ? (assigneeDisplayNames[id] ?? names[id] ?? 'Name unavailable')
       : 'Unassigned'
-  const zone = presentationTimeZone(undefined)
-  const time = (value: string | null) => formatPresentationInstant(value, zone)
+  const zone = presentationTimeZone(preferences.data?.timezone)
+  const locale = preferences.data?.locale
+  const time = (value: string | null) =>
+    formatPresentationInstant(value, zone, locale)
   const ready =
     minutes.completeness === 'COMPLETE' && !minutes.proposalsIncluded
   const transcript = minutes.transcript

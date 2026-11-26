@@ -51,10 +51,22 @@ export function mergeAssignedWork(
   validate(open, 'OPEN')
   validate(inProgress, 'IN_PROGRESS')
   // Core sorts ascending due dates with nulls last and id as the tie breaker.
-  // An item can move between states between the two reads; deduplicate it.
-  const unique = new Map(
-    [...open, ...inProgress].map((item) => [item.id, item])
-  )
+  // An item can move between states between the two reads. Reconcile by
+  // canonical entity version, not by the order in which results are merged.
+  const unique = new Map<string, ActionItem>()
+  for (const item of [...open, ...inProgress]) {
+    const existing = unique.get(item.id)
+    if (existing?.version === item.version && existing.status !== item.status) {
+      throw new CoreApiError({
+        message: 'Core API returned conflicting assigned-work versions.',
+        code: 'MALFORMED_RESPONSE',
+        kind: 'malformed',
+      })
+    }
+    if (!existing || item.version > existing.version) {
+      unique.set(item.id, item)
+    }
+  }
   return [...unique.values()]
     .sort((a, b) => {
       if (a.dueDate === null && b.dueDate !== null) return 1

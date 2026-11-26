@@ -11,12 +11,12 @@ const revision = z.number().int().nonnegative()
 const count = revision.max(Number.MAX_SAFE_INTEGER)
 
 const summarySchema = z.object({
-  availability: z.string(),
+  availability: z.enum(['AVAILABLE', 'NOT_AVAILABLE', 'NEEDS_REVIEW']),
   id: z.string().uuid().nullable(),
   versionNumber: revision.nullable(),
   content: z.string().nullable(),
-  sourceType: z.string().nullable(),
-  qualityStatus: z.string().nullable(),
+  sourceType: z.enum(['AI_GENERATED', 'HUMAN_EDIT']).nullable(),
+  qualityStatus: z.enum(['READY', 'READY_WITH_WARNINGS']).nullable(),
   transcriptId: z.string().uuid().nullable(),
   contentRevision: z.number().int().nonnegative().nullable(),
   selectionEpoch: z.number().int().nonnegative(),
@@ -30,7 +30,7 @@ const actionSchema = z
     title: z.string(),
     details: z.string().nullable(),
     status: z.enum(['PROPOSED', 'OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED']),
-    sourceType: z.string(),
+    sourceType: z.enum(['AI_EXTRACTED', 'MANUAL']),
     assigneeUserId: z.string().uuid().nullable(),
     dueDate: z.iso.date().nullable(),
     version: revision,
@@ -44,8 +44,8 @@ const decisionSchema = z
   .object({
     id: z.string().uuid(),
     content: z.string(),
-    status: z.string(),
-    sourceType: z.string(),
+    status: z.literal('CONFIRMED'),
+    sourceType: z.enum(['AI_EXTRACTED', 'MANUAL']),
     version: z.number().int().nonnegative(),
     transcriptId: z.string().uuid().nullable(),
     contentRevision: revision.nullable(),
@@ -82,12 +82,20 @@ export const minutesSchema = z
     officialActionItems: z.array(actionSchema),
     transcript: z
       .object({
-        availability: z.string(),
+        availability: z.enum([
+          'AVAILABLE',
+          'NOT_AVAILABLE',
+          'PROCESSING',
+          'FAILED',
+          'NEEDS_REVIEW',
+        ]),
         id: z.string().uuid().nullable(),
         processingJobId: z.string().uuid().nullable(),
         versionNumber: revision.nullable(),
         languageCode: z.string().nullable(),
-        status: z.string().nullable(),
+        status: z
+          .enum(['PROCESSING', 'READY', 'READY_WITH_WARNINGS', 'FAILED'])
+          .nullable(),
         contentRevision: revision.nullable(),
         durationMs: count.nullable(),
         suspiciousSegments: count,
@@ -106,14 +114,50 @@ export const minutesSchema = z
   })
   .passthrough()
   .superRefine((minutes, context) => {
-    for (const decision of minutes.confirmedDecisions) {
-      if (decision.status !== 'CONFIRMED') {
-        context.addIssue({
-          code: 'custom',
-          path: ['confirmedDecisions'],
-          message: 'Canonical Minutes contain an unconfirmed Decision.',
-        })
-      }
+    // Validate structural guarantees of the server projection. Do not
+    // recompute completeness or replace the server's review classification.
+    if (
+      minutes.completeness === 'COMPLETE' &&
+      (minutes.summary.availability !== 'AVAILABLE' ||
+        minutes.transcript.availability !== 'AVAILABLE' ||
+        minutes.warnings.length > 0)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['completeness'],
+        message:
+          'Complete Minutes cannot contain unavailable or warned sources.',
+      })
+    }
+    if (
+      minutes.summary.availability === 'AVAILABLE' &&
+      (minutes.summary.id === null ||
+        minutes.summary.content === null ||
+        minutes.summary.sourceType === null ||
+        minutes.summary.qualityStatus !== 'READY' ||
+        minutes.summary.isStale ||
+        minutes.summary.aiWarnings.length > 0)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['summary'],
+        message: 'Available Summary has inconsistent source or review state.',
+      })
+    }
+    if (
+      minutes.transcript.availability === 'AVAILABLE' &&
+      (minutes.transcript.id === null ||
+        minutes.transcript.status !== 'READY' ||
+        minutes.transcript.suspiciousSegments > 0 ||
+        minutes.transcript.unresolvedSegments > 0 ||
+        minutes.transcript.unresolvedCoverageRegions > 0)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['transcript'],
+        message:
+          'Available transcript has inconsistent source or quality state.',
+      })
     }
     for (const item of minutes.officialActionItems) {
       if (

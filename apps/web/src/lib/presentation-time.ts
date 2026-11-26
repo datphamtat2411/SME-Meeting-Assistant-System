@@ -35,3 +35,17 @@ export function formatPresentationInstant(
     return new Intl.DateTimeFormat(undefined, options).format(date)
   }
 }
+
+export function formatPresentationDate(
+  value: Date,
+  timeZone: string,
+  locale?: string | null
+) {
+  const options: Intl.DateTimeFormatOptions = { dateStyle: 'full', timeZone }
+  try {
+    return new Intl.DateTimeFormat(locale || undefined, options).format(value)
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error
+    return new Intl.DateTimeFormat(undefined, options).format(value)
+  }
+}
