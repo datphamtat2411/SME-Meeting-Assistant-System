@@ -160,9 +160,7 @@ describe('canonical Minutes adapter', () => {
     expect(() =>
       parseMinutes({
         ...valid,
-        confirmedDecisions: [
-          { ...valid.confirmedDecisions[0], isStale: true },
-        ],
+        confirmedDecisions: [{ ...valid.confirmedDecisions[0], isStale: true }],
       })
     ).toThrow(CoreApiError)
   })

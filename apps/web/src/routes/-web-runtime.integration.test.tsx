@@ -180,7 +180,8 @@ function apiError(status: number, message = `Core response ${status}`) {
 function installCoreFixtures(options: FixtureOptions = {}) {
   const get = vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
     if (url === '/auth/me') return (options.identity ?? identity) as never
-    if (url === '/dashboard/me') return (options.dashboard ?? dashboard) as never
+    if (url === '/dashboard/me')
+      return (options.dashboard ?? dashboard) as never
     if (url === '/me/profile') return profile as never
     if (url === '/me/preferences') return preferences as never
     if (url.endsWith(`/meetings/${meetingId}/media`)) return [] as never
@@ -540,9 +541,7 @@ describe('integrated generated Web runtime', () => {
     installCoreFixtures({ actionItemsError: apiError(503, 'Work unavailable') })
     const { screen } = await renderGeneratedRoute('/')
     await expect.element(screen.getByText('Work unavailable')).toBeVisible()
-    await expect
-      .element(screen.getByText('Pending action items'))
-      .toBeVisible()
+    await expect.element(screen.getByText('Pending action items')).toBeVisible()
     await expect
       .element(screen.getByText('No pending assigned work'))
       .not.toBeInTheDocument()

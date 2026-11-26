@@ -32,6 +32,7 @@ import {
 import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import {
   configureSessionRevalidation,
+  getSessionContextKey,
   revalidateBrowserSession,
 } from '@/features/auth/session/session-revalidation'
 
@@ -416,6 +417,89 @@ describe('session restoration and protected routing', () => {
       }
     }
   )
+
+  it('discards a pending dashboard response when the verified actor changes', async () => {
+    let verifiedIdentity = identity
+    let oldSignal: { aborted: boolean } | undefined
+    let releaseOld!: (value: typeof dashboard) => void
+    const oldResponse = new Promise<typeof dashboard>((resolve) => {
+      releaseOld = resolve
+    })
+    const replacement = {
+      ...identity,
+      userId: '66666666-6666-4666-8666-666666666666',
+      displayName: 'Replacement Operator',
+      session: {
+        ...identity.session,
+        id: '77777777-7777-4777-8777-777777777777',
+      },
+    }
+    const oldDashboard = {
+      ...dashboard,
+      assignedActionItems: { ...dashboard.assignedActionItems, done: 99 },
+    }
+    const replacementDashboard = {
+      ...dashboard,
+      assignedActionItems: { ...dashboard.assignedActionItems, done: 42 },
+    }
+    getCurrentUser.mockImplementation(async (url, config) => {
+      if (url === '/dashboard/me') {
+        if (verifiedIdentity.userId === identity.userId) {
+          oldSignal = config?.signal
+          return oldResponse
+        }
+        return replacementDashboard
+      }
+      if (url === '/me/preferences') return preferences
+      if (url === '/auth/me') return verifiedIdentity
+      throw new Error('Unexpected Core GET ' + url)
+    })
+    const { queryClient, screen } = await renderRoute('/')
+    const dispose = configureSessionRevalidation({
+      queryClient,
+      onContainment: () => queryClient.clear(),
+      onChanged: () => undefined,
+    })
+    try {
+      await expect
+        .element(
+          screen.getByRole('heading', {
+            name: 'Welcome back, ' + identity.displayName,
+          })
+        )
+        .toBeVisible()
+      await expect.poll(() => Boolean(oldSignal)).toBe(true)
+
+      verifiedIdentity = replacement
+      await revalidateBrowserSession()
+      await expect
+        .element(
+          screen.getByRole('heading', {
+            name: 'Welcome back, ' + replacement.displayName,
+          })
+        )
+        .toBeVisible()
+      await expect.element(screen.getByText('42', { exact: true })).toBeVisible()
+
+      releaseOld(oldDashboard)
+      await oldResponse
+      await expect.poll(() => oldSignal?.aborted).toBe(true)
+      expect(
+        queryClient.getQueryData([
+          'dashboard',
+          'me',
+          getSessionContextKey(identity),
+        ])
+      ).toBeUndefined()
+      await expect
+        .element(screen.getByText('99', { exact: true }))
+        .not.toBeInTheDocument()
+      await expect.element(screen.getByText('42', { exact: true })).toBeVisible()
+    } finally {
+      releaseOld(oldDashboard)
+      dispose()
+    }
+  })
 
   it('reacts to actor and role replacement and removes obsolete Member access', async () => {
     const administrator = {

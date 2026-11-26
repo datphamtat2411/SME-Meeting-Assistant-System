@@ -9,52 +9,52 @@ const meetingId = '11111111-1111-4111-8111-111111111111'
 
 function validMinutes() {
   return {
-  schemaVersion: 1,
-  assembledAt: '2026-11-23T00:00:00Z',
-  sourceFingerprint: 'a'.repeat(64),
-  completeness: 'COMPLETE',
-  proposalsIncluded: false,
-  warnings: [],
-  meeting: {
-    id: '11111111-1111-4111-8111-111111111111',
-    title: 'Reviewed planning meeting',
-    description: null,
-    organizerUserId: '22222222-2222-4222-8222-222222222222',
-    status: 'ENDED',
-    scheduledStartAt: null,
-    scheduledEndAt: null,
-    startedAt: null,
-    endedAt: '2026-11-23T00:00:00Z',
-  },
-  summary: {
-    availability: 'AVAILABLE',
-    id: '33333333-3333-4333-8333-333333333333',
-    versionNumber: 1,
-    content: 'AI-derived summary',
-    sourceType: 'AI_GENERATED',
-    qualityStatus: 'READY',
-    transcriptId: '44444444-4444-4444-8444-444444444444',
-    contentRevision: 1,
-    selectionEpoch: 1,
-    isStale: false,
-    aiWarnings: [],
-  },
-  confirmedDecisions: [],
-  officialActionItems: [],
-  transcript: {
-    availability: 'AVAILABLE',
-    id: '44444444-4444-4444-8444-444444444444',
-    versionNumber: 1,
-    status: 'READY',
-    processingJobId: null,
-    languageCode: 'vi',
-    contentRevision: 1,
-    durationMs: 1000,
-    suspiciousSegments: 0,
-    unresolvedSegments: 0,
-    unresolvedCoverageRegions: 0,
-  },
-}
+    schemaVersion: 1,
+    assembledAt: '2026-11-23T00:00:00Z',
+    sourceFingerprint: 'a'.repeat(64),
+    completeness: 'COMPLETE',
+    proposalsIncluded: false,
+    warnings: [],
+    meeting: {
+      id: '11111111-1111-4111-8111-111111111111',
+      title: 'Reviewed planning meeting',
+      description: null,
+      organizerUserId: '22222222-2222-4222-8222-222222222222',
+      status: 'ENDED',
+      scheduledStartAt: null,
+      scheduledEndAt: null,
+      startedAt: null,
+      endedAt: '2026-11-23T00:00:00Z',
+    },
+    summary: {
+      availability: 'AVAILABLE',
+      id: '33333333-3333-4333-8333-333333333333',
+      versionNumber: 1,
+      content: 'AI-derived summary',
+      sourceType: 'AI_GENERATED',
+      qualityStatus: 'READY',
+      transcriptId: '44444444-4444-4444-8444-444444444444',
+      contentRevision: 1,
+      selectionEpoch: 1,
+      isStale: false,
+      aiWarnings: [],
+    },
+    confirmedDecisions: [],
+    officialActionItems: [],
+    transcript: {
+      availability: 'AVAILABLE',
+      id: '44444444-4444-4444-8444-444444444444',
+      versionNumber: 1,
+      status: 'READY',
+      processingJobId: null,
+      languageCode: 'vi',
+      contentRevision: 1,
+      durationMs: 1000,
+      suspiciousSegments: 0,
+      unresolvedSegments: 0,
+      unresolvedCoverageRegions: 0,
+    },
+  }
 }
 
 vi.mock('@tanstack/react-router', () => ({
@@ -130,9 +130,7 @@ describe('MinutesPanel canonical document experience', () => {
     await expect
       .element(screen.getByText('Not recorded – ' + expectedEnd))
       .toBeVisible()
-    await expect
-      .element(screen.getByText('Minutes are complete'))
-      .toBeVisible()
+    await expect.element(screen.getByText('Minutes are complete')).toBeVisible()
     const fingerprint = screen.getByText(
       'Source fingerprint: ' + 'a'.repeat(64)
     )
