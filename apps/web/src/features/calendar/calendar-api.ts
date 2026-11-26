@@ -1,7 +1,10 @@
+import { Temporal } from '@js-temporal/polyfill'
+import { civilDayInterval, civilMonthInterval, compareInstants } from '@/lib/regional-time'
 import {
   isValidOffsetDateTime,
   type MeetingListItem,
 } from '@/features/meetings/data/list-api'
+import { calendarMonthKey } from './calendar-state'
 
 export type CalendarMonthRange = Readonly<{
   from: string
@@ -41,28 +44,49 @@ export type CalendarDayGroup = readonly [
   segments: readonly CalendarDaySegment[],
 ]
 
-export function calendarMonthRange(date: Date): CalendarMonthRange {
-  const year = date.getFullYear()
-  const month = date.getMonth()
-  const from = createLocalDate(year, month, 1)
-  const to = createLocalDate(year, month + 1, 1)
+function monthKey(month: Date | string) {
+  return typeof month === 'string' ? month : calendarMonthKey(month)
+}
 
-  return Object.freeze({ from: from.toISOString(), to: to.toISOString() })
+// Preserve microsecond/nanosecond precision while retaining the existing
+// millisecond serialization for exactly representable instants.
+function instantString(value: Temporal.Instant) {
+  return value.equals(Temporal.Instant.fromEpochMilliseconds(value.epochMilliseconds))
+    ? value.toString({ fractionalSecondDigits: 3 })
+    : value.toString()
+}
+
+export function calendarMonthRange(
+  month: Date | string,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+): CalendarMonthRange {
+  const { from, to } = civilMonthInterval(monthKey(month), timezone)
+  return Object.freeze({
+    from: instantString(Temporal.Instant.from(from)),
+    to: instantString(Temporal.Instant.from(to)),
+  })
 }
 
 /**
- * Projects canonical meeting-list records into clipped, browser-local civil
- * days. The source meeting stays attached to every segment as the canonical
- * identity, status, and schedule record.
+ * Project canonical records into clipped civil days in the effective timezone.
+ * Iteration is over Gregorian dates, not elapsed hours or browser-local Date.
  */
 export function projectCalendarMonth(
   meetings: readonly MeetingListItem[],
-  month: Date
+  month: Date | string,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 ): CalendarMonthProjection {
-  const year = month.getFullYear()
-  const monthIndex = month.getMonth()
-  const rangeStart = createLocalDate(year, monthIndex, 1).getTime()
-  const rangeEnd = createLocalDate(year, monthIndex + 1, 1).getTime()
+  const first = Temporal.PlainDate.from(monthKey(month) + '-01')
+  const nextMonth = first.add({ months: 1 })
+  const days: { dayKey: string; from: Temporal.Instant; to: Temporal.Instant }[] = []
+  for (let day = first; Temporal.PlainDate.compare(day, nextMonth) < 0; day = day.add({ days: 1 })) {
+    const interval = civilDayInterval(day, timezone)
+    const from = Temporal.Instant.from(interval.from)
+    const to = Temporal.Instant.from(interval.to)
+    if (Temporal.Instant.compare(from, to) < 0) {
+      days.push({ dayKey: day.toString(), from, to })
+    }
+  }
   const segments: CalendarDaySegment[] = []
   const omissions: CalendarProjectionOmission[] = []
 
@@ -95,9 +119,9 @@ export function projectCalendarMonth(
       continue
     }
 
-    const start = Date.parse(startValue)
-    const end = Date.parse(endValue)
-    if (end <= start) {
+    const start = Temporal.Instant.from(startValue)
+    const end = Temporal.Instant.from(endValue)
+    if (Temporal.Instant.compare(end, start) <= 0) {
       omissions.push(
         Object.freeze({
           meetingId: meeting.id,
@@ -106,33 +130,29 @@ export function projectCalendarMonth(
       )
       continue
     }
-    if (start >= rangeEnd || end <= rangeStart) continue
 
-    let dayStart = new Date(rangeStart)
-    while (dayStart.getTime() < rangeEnd) {
-      const dayStartTime = dayStart.getTime()
-      const nextDayStart = new Date(dayStart)
-      nextDayStart.setDate(nextDayStart.getDate() + 1)
-      nextDayStart.setHours(0, 0, 0, 0)
-      const nextDayStartTime = Math.min(nextDayStart.getTime(), rangeEnd)
-      const segmentStart = Math.max(start, rangeStart, dayStartTime)
-      const segmentEnd = Math.min(end, rangeEnd, nextDayStartTime)
+    for (const day of days) {
+      const segmentStart = Temporal.Instant.compare(start, day.from) > 0
+        ? start
+        : day.from
+      const segmentEnd = Temporal.Instant.compare(end, day.to) < 0
+        ? end
+        : day.to
 
-      if (segmentStart < segmentEnd) {
+      if (Temporal.Instant.compare(segmentStart, segmentEnd) < 0) {
         segments.push(
           Object.freeze({
-            dayKey: localDayKey(dayStart),
+            dayKey: day.dayKey,
             meeting,
             originalStartAt: startValue,
             originalEndAt: endValue,
-            segmentStartAt: new Date(segmentStart).toISOString(),
-            segmentEndAt: new Date(segmentEnd).toISOString(),
-            continuesFromPreviousDay: start < dayStartTime,
-            continuesIntoNextDay: end > nextDayStartTime,
+            segmentStartAt: instantString(segmentStart),
+            segmentEndAt: instantString(segmentEnd),
+            continuesFromPreviousDay: Temporal.Instant.compare(start, day.from) < 0,
+            continuesIntoNextDay: Temporal.Instant.compare(end, day.to) > 0,
           })
         )
       }
-      dayStart = nextDayStart
     }
   }
 
@@ -161,19 +181,6 @@ export function groupCalendarDaySegments(
   )
 }
 
-function createLocalDate(year: number, month: number, day: number) {
-  const date = new Date(0)
-  date.setFullYear(year, month, day)
-  date.setHours(0, 0, 0, 0)
-  return date
-}
-
-function localDayKey(date: Date) {
-  return `${String(date.getFullYear()).padStart(4, '0')}-${String(
-    date.getMonth() + 1
-  ).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-}
-
 function compareCalendarSegments(
   first: CalendarDaySegment,
   second: CalendarDaySegment
@@ -181,8 +188,7 @@ function compareCalendarSegments(
   if (first.dayKey !== second.dayKey) {
     return first.dayKey < second.dayKey ? -1 : 1
   }
-  const startDifference =
-    Date.parse(first.segmentStartAt) - Date.parse(second.segmentStartAt)
+  const startDifference = compareInstants(first.segmentStartAt, second.segmentStartAt)
   if (startDifference !== 0) return startDifference
   if (first.meeting.id === second.meeting.id) return 0
   return first.meeting.id < second.meeting.id ? -1 : 1

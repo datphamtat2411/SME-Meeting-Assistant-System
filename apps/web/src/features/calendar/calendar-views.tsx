@@ -1,6 +1,9 @@
 import { useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { CalendarDays, Clock3, MapPin, Users } from 'lucide-react'
+import { Temporal } from '@js-temporal/polyfill'
+import { useRegionalPresentation } from '@/context/regional-presentation'
+import { formatCivilDate, instantCivilFields } from '@/lib/regional-time'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -14,68 +17,35 @@ import {
 import type { CalendarDataPresentation } from './calendar-presentation'
 import { calendarMonthKey } from './calendar-state'
 
-const compactTimeFormat = new Intl.DateTimeFormat(undefined, {
-  hour: 'numeric',
-  minute: '2-digit',
-})
-const originalScheduleFormat = new Intl.DateTimeFormat(undefined, {
-  month: 'short',
-  day: 'numeric',
-  hour: 'numeric',
-  minute: '2-digit',
-})
-const fullDateFormat = new Intl.DateTimeFormat(undefined, {
+const fullDateOptions: Intl.DateTimeFormatOptions = {
   weekday: 'long',
   month: 'long',
   day: 'numeric',
   year: 'numeric',
-})
-const shortDateFormat = new Intl.DateTimeFormat(undefined, {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-})
-
-const weekDays = [
-  { short: 'Mon', full: 'Monday' },
-  { short: 'Tue', full: 'Tuesday' },
-  { short: 'Wed', full: 'Wednesday' },
-  { short: 'Thu', full: 'Thursday' },
-  { short: 'Fri', full: 'Friday' },
-  { short: 'Sat', full: 'Saturday' },
-  { short: 'Sun', full: 'Sunday' },
-] as const
-
-function localDayKey(date: Date) {
-  return `${String(date.getFullYear()).padStart(4, '0')}-${String(
-    date.getMonth() + 1
-  ).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
-function parseLocalDayKey(dayKey: string) {
-  const [year, month, day] = dayKey.split('-').map(Number)
-  const date = new Date(0)
-  date.setFullYear(year!, month! - 1, day!)
-  date.setHours(12, 0, 0, 0)
-  return date
+function weekdayLabels(locale: string) {
+  const monday = Temporal.PlainDate.from('2024-01-01')
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = monday.add({ days: index }).toString()
+    return {
+      short: formatCivilDate(date, locale, { weekday: 'short' }),
+      full: formatCivilDate(date, locale, { weekday: 'long' }),
+    }
+  })
 }
 
 function monthCells(month: Date) {
-  const year = month.getFullYear()
-  const monthIndex = month.getMonth()
-  const first = new Date(year, monthIndex, 1)
-  const leadingDays = (first.getDay() + 6) % 7
-  const last = new Date(year, monthIndex + 1, 0)
-  const trailingDays = (7 - ((last.getDay() + 6) % 7) - 1 + 7) % 7
-  const dayCount = leadingDays + last.getDate() + trailingDays
-  const rowCount = Math.ceil(dayCount / 7)
+  const first = Temporal.PlainDate.from(calendarMonthKey(month) + '-01')
+  const leadingDays = first.dayOfWeek - 1
+  const cellCount = Math.ceil((leadingDays + first.daysInMonth) / 7) * 7
 
-  return Array.from({ length: rowCount * 7 }, (_, index) => {
-    const date = new Date(year, monthIndex, index - leadingDays + 1)
+  return Array.from({ length: cellCount }, (_, index) => {
+    const date = first.add({ days: index - leadingDays })
     return {
       date,
-      dayKey: localDayKey(date),
-      inMonth: date.getMonth() === monthIndex,
+      dayKey: date.toString(),
+      inMonth: date.month === first.month && date.year === first.year,
     }
   })
 }
@@ -85,6 +55,8 @@ function CalendarMonthSkeleton({
 }: {
   cells: ReturnType<typeof monthCells>
 }) {
+  const { locale } = useRegionalPresentation()
+  const weekDays = weekdayLabels(locale)
   return (
     <Card className='overflow-hidden'>
       <CardContent className='p-2 sm:p-4'>
@@ -413,29 +385,23 @@ function participantLabel(meeting: MeetingListItem) {
   return names.length ? `${countLabel} · ${names.join(', ')}` : countLabel
 }
 
-function timeLabel(value: string) {
-  return compactTimeFormat.format(new Date(value))
-}
-
-function segmentOccupancyLabel(segment: CalendarDaySegment) {
+function segmentOccupancyLabel(
+  segment: CalendarDaySegment,
+  timeLabel: (value: string) => string,
+  timezone: string
+) {
   if (segment.continuesFromPreviousDay && segment.continuesIntoNextDay) {
     return 'Occupies this full day'
   }
   if (segment.continuesFromPreviousDay) {
-    const end = new Date(segment.segmentEndAt)
-    const isMidnight = end.getHours() === 0 && end.getMinutes() === 0
+    const end = instantCivilFields(segment.segmentEndAt, timezone)
+    const isMidnight = end?.time === '00:00' && end.date !== segment.dayKey
     return `This day: until ${isMidnight ? 'midnight' : timeLabel(segment.segmentEndAt)}`
   }
   if (segment.continuesIntoNextDay) {
     return `This day: from ${timeLabel(segment.segmentStartAt)}`
   }
   return `${timeLabel(segment.segmentStartAt)} – ${timeLabel(segment.segmentEndAt)}`
-}
-
-function originalScheduleLabel(segment: CalendarDaySegment) {
-  return `${originalScheduleFormat.format(
-    new Date(segment.originalStartAt)
-  )} – ${originalScheduleFormat.format(new Date(segment.originalEndAt))}`
 }
 
 export function CalendarMeetingEntry({
@@ -447,14 +413,32 @@ export function CalendarMeetingEntry({
   variant: 'compact' | 'agenda'
   onMeetingSelect?: (meeting: MeetingListItem) => void
 }) {
+  const { locale, timezone } = useRegionalPresentation()
+  const timeFormat = new Intl.DateTimeFormat(locale, {
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: timezone,
+    calendar: 'gregory',
+  })
+  const scheduleFormat = new Intl.DateTimeFormat(locale, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: timezone,
+    calendar: 'gregory',
+  })
+  const timeLabel = (value: string) => timeFormat.format(new Date(value))
+  const occupancy = segmentOccupancyLabel(segment, timeLabel, timezone)
+  const originalSchedule = `${scheduleFormat.format(new Date(segment.originalStartAt))} – ${scheduleFormat.format(new Date(segment.originalEndAt))}`
   const { meeting } = segment
   const description = meeting.description?.trim()
   const isMultiDay =
     segment.continuesFromPreviousDay || segment.continuesIntoNextDay
-  const dayLabel = shortDateFormat.format(parseLocalDayKey(segment.dayKey))
+  const dayLabel = formatCivilDate(segment.dayKey, locale)
   const accessibleDescription = isMultiDay
-    ? `Scheduled ${originalScheduleLabel(segment)}. ${segmentOccupancyLabel(segment)}.`
-    : `Scheduled ${segmentOccupancyLabel(segment)}.`
+    ? `Scheduled ${originalSchedule}. ${occupancy}.`
+    : `Scheduled ${occupancy}.`
 
   if (variant === 'compact') {
     return (
@@ -526,7 +510,7 @@ export function CalendarMeetingEntry({
             <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
               <span className='inline-flex items-center gap-1.5'>
                 <Clock3 aria-hidden='true' className='size-4 shrink-0' />
-                {segmentOccupancyLabel(segment)}
+                {occupancy}
               </span>
               {isMultiDay && (
                 <span className='inline-flex items-center gap-1.5'>
@@ -554,7 +538,7 @@ export function CalendarMeetingEntry({
             </div>
             {isMultiDay && (
               <p className='text-sm text-muted-foreground'>
-                Full meeting schedule: {originalScheduleLabel(segment)}
+                Full meeting schedule: {originalSchedule}
               </p>
             )}
             {meeting.status === 'DRAFT' && (
@@ -593,8 +577,14 @@ export function CalendarMonthView({
   onDaySelect,
   onMeetingSelect,
 }: CalendarViewProps) {
+  const { locale, timezone } = useRegionalPresentation()
+  const weekDays = weekdayLabels(locale)
   const monthKey = calendarMonthKey(month)
-  const todayKey = localDayKey(today)
+  const todayKey = instantCivilFields(today.toISOString(), timezone)?.date ?? ''
+  const monthLabel = formatCivilDate(monthKey + '-01', locale, {
+    month: 'long',
+    year: 'numeric',
+  })
   const cells = useMemo(() => monthCells(month), [month])
   const currentMonthSegments = useMemo(
     () =>
@@ -677,18 +667,12 @@ export function CalendarMonthView({
         <Card className='overflow-hidden'>
           <CardContent className='p-2 sm:p-4'>
             <table
-              aria-label={`${month.toLocaleDateString(undefined, {
-                month: 'long',
-                year: 'numeric',
-              })} calendar`}
+              aria-label={`${monthLabel} calendar`}
               className='w-full table-fixed border-collapse'
             >
               <caption className='sr-only'>
                 Monday-first calendar for{' '}
-                {month.toLocaleDateString(undefined, {
-                  month: 'long',
-                  year: 'numeric',
-                })}
+                {monthLabel}
               </caption>
               <thead>
                 <tr>
@@ -709,7 +693,7 @@ export function CalendarMonthView({
                 {Array.from({ length: cells.length / 7 }, (_, rowIndex) => (
                   <tr key={`${monthKey}-week-${rowIndex}`}>
                     {cells.slice(rowIndex * 7, rowIndex * 7 + 7).map((cell) => {
-                      const dateLabel = fullDateFormat.format(cell.date)
+                      const dateLabel = formatCivilDate(cell.dayKey, locale, fullDateOptions)
                       const daySegments = cell.inMonth
                         ? (segmentsByDay.get(cell.dayKey) ?? [])
                         : []
@@ -751,7 +735,7 @@ export function CalendarMonthView({
                                   : 'text-muted-foreground'
                             } ${isSelected && !isToday ? 'ring-2 ring-primary/50' : ''}`}
                           >
-                            {cell.date.getDate()}
+                            {cell.date.day}
                           </button>
                           {cell.inMonth ? (
                             <>
@@ -833,7 +817,7 @@ export function CalendarMonthView({
       >
         <h3 className='font-semibold'>
           {selectedDay
-            ? fullDateFormat.format(selectedDay.date)
+            ? formatCivilDate(selectedDay.dayKey, locale, fullDateOptions)
             : 'Selected day'}
         </h3>
         {state.kind === 'loading' ? (
@@ -875,6 +859,7 @@ export function CalendarAgendaView({
   onDaySelect,
   onMeetingSelect,
 }: CalendarViewProps) {
+  const { locale } = useRegionalPresentation()
   const groups = useMemo(() => groupCalendarDaySegments(segments), [segments])
   const monthKey = calendarMonthKey(month)
   const projectedGroups = groups.filter(([dayKey]) =>
@@ -896,13 +881,13 @@ export function CalendarAgendaView({
                     <CalendarDays aria-hidden='true' className='size-4' />
                   </div>
                   <h2 className='font-semibold'>
-                    {fullDateFormat.format(parseLocalDayKey(dayKey))}
+                    {formatCivilDate(dayKey, locale, fullDateOptions)}
                   </h2>
                   {onDaySelect && (
                     <Button
                       variant='ghost'
                       size='sm'
-                      aria-label={`Select ${fullDateFormat.format(parseLocalDayKey(dayKey))}`}
+                      aria-label={`Select ${formatCivilDate(dayKey, locale, fullDateOptions)}`}
                       onClick={() => onDaySelect(dayKey)}
                     >
                       Select day

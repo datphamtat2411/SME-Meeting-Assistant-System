@@ -1,3 +1,4 @@
+import { instantCivilFields } from '@/lib/regional-time'
 import {
   meetingLifecycleStatuses,
   type MeetingLifecycleStatus,
@@ -75,8 +76,13 @@ export function shiftCalendarMonth(date: Date, offset: number): Date {
   return localMonthStart(date.getFullYear(), date.getMonth() + offset)
 }
 
-export function currentCalendarMonth(now = new Date()): Date {
-  return localMonthStart(now.getFullYear(), now.getMonth())
+export function currentCalendarMonth(
+  now = new Date(),
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+): Date {
+  const civil = instantCivilFields(now.toISOString(), timezone)
+  if (!civil) throw new RangeError('Invalid Calendar reference time.')
+  return calendarMonthFromKey(civil.date.slice(0, 7))
 }
 
 function normalizedOptionalText(value: unknown): string | undefined {
@@ -94,18 +100,17 @@ function normalizedOptionalText(value: unknown): string | undefined {
 
 /**
  * Validates route search input and removes defaults so clean Calendar URLs stay
- * short. Defaults are resolved separately against the browser's local date.
+ * short. Explicit civil month keys are retained regardless of the active timezone.
  */
 export function normalizeCalendarSearch(
   value: unknown,
-  now = new Date()
+  _now = new Date()
 ): CalendarSearch {
   if (!isRecord(value)) return {}
   const normalized: CalendarSearch = {}
-  const currentMonthKey = calendarMonthKey(currentCalendarMonth(now))
   const month = value.month
 
-  if (isCalendarMonthKey(month) && month !== currentMonthKey) {
+  if (isCalendarMonthKey(month)) {
     normalized.month = month
   }
 
@@ -151,11 +156,12 @@ export function isCalendarSearchCanonical(
 
 export function resolveCalendarState(
   search: unknown,
-  now = new Date()
+  now = new Date(),
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 ): CalendarState {
   const normalized = normalizeCalendarSearch(search, now)
   const monthKey =
-    normalized.month ?? calendarMonthKey(currentCalendarMonth(now))
+    normalized.month ?? calendarMonthKey(currentCalendarMonth(now, timezone))
   return {
     month: calendarMonthFromKey(monthKey),
     monthKey,

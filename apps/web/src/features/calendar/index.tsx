@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
 import { toast } from 'sonner'
+import { useRegionalPresentation } from '@/context/regional-presentation'
+import { formatCivilDate, instantCivilFields, parseCivilDate } from '@/lib/regional-time'
 import { Button } from '@/components/ui/button'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
@@ -14,42 +16,6 @@ import {
 import { calendarDataPresentationFromController } from './calendar-presentation'
 import { CalendarToolbar } from './calendar-toolbar'
 import { CalendarAgendaView, CalendarMonthView } from './calendar-views'
-
-const selectedDateFormat = new Intl.DateTimeFormat(undefined, {
-  weekday: 'long',
-  month: 'long',
-  day: 'numeric',
-  year: 'numeric',
-})
-
-function localUtcOffset(date: Date) {
-  const offsetMinutes = -date.getTimezoneOffset()
-  const sign = offsetMinutes < 0 ? '-' : '+'
-  const absoluteMinutes = Math.abs(offsetMinutes)
-  const hours = String(Math.floor(absoluteMinutes / 60)).padStart(2, '0')
-  const minutes = String(absoluteMinutes % 60).padStart(2, '0')
-  return `UTC${sign}${hours}:${minutes}`
-}
-
-function parseLocalCalendarDay(dayKey: string) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayKey)
-  if (!match) return undefined
-
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
-  const date = new Date(0)
-  date.setFullYear(year, month - 1, day)
-  date.setHours(0, 0, 0, 0)
-  if (
-    date.getFullYear() !== year ||
-    date.getMonth() !== month - 1 ||
-    date.getDate() !== day
-  ) {
-    return undefined
-  }
-  return date
-}
 
 export function CalendarPage() {
   const calendar = useCalendarController()
@@ -111,17 +77,17 @@ function CalendarPageContent({
   calendar: CalendarController
   onNewMeeting: (date?: string) => void
 }) {
+  const regional = useRegionalPresentation()
   const [selectedDayKey, setSelectedDayKey] = useState<string>()
   const selectedDayDate = selectedDayKey
-    ? parseLocalCalendarDay(selectedDayKey)
+    ? parseCivilDate(selectedDayKey)
     : undefined
   const presentation = calendarDataPresentationFromController(calendar)
-  const timeZone =
-    Intl.DateTimeFormat().resolvedOptions().timeZone || 'browser local time'
-  const currentOffset = localUtcOffset(new Date())
+  const timeZone = regional.timezone
+  const currentOffset = instantCivilFields(new Date().toISOString(), timeZone)?.offset
 
   function selectDay(dayKey: string) {
-    const date = parseLocalCalendarDay(dayKey)
+    const date = parseCivilDate(dayKey)
     if (!date || !dayKey.startsWith(`${calendar.monthKey}-`)) {
       setSelectedDayKey(undefined)
       return
@@ -170,9 +136,24 @@ function CalendarPageContent({
               aria-label='Calendar time zone'
               className='mt-2 text-xs text-muted-foreground'
             >
-              Times shown in {timeZone} ({currentOffset} today; daylight-saving
+              Times shown in {timeZone} (UTC{currentOffset} today; daylight-saving
               offsets follow each meeting date).
             </p>
+            {regional.status === 'loading' && (
+              <p role='status' className='text-sm text-muted-foreground'>
+                Loading regional preferences…
+              </p>
+            )}
+            {(regional.status === 'unavailable' || regional.timezoneFallback) && (
+              <p role='status' className='text-sm text-muted-foreground'>
+                Using fallback timezone {timeZone}.
+                {regional.retry && (
+                  <Button type='button' variant='link' onClick={regional.retry}>
+                    Retry preferences
+                  </Button>
+                )}
+              </p>
+            )}
           </div>
           <div className='flex flex-wrap gap-2'>
             <Button asChild variant='outline'>
@@ -183,6 +164,7 @@ function CalendarPageContent({
               aria-describedby={
                 selectedDayKey ? 'calendar-new-meeting-date' : undefined
               }
+              disabled={regional.status === 'loading'}
               onClick={() => onNewMeeting(selectedDayKey)}
             >
               <Plus aria-hidden='true' />
@@ -197,7 +179,12 @@ function CalendarPageContent({
             role='status'
             className='flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground'
           >
-            New meetings will use {selectedDateFormat.format(selectedDayDate)}{' '}
+            New meetings will use {formatCivilDate(selectedDayDate.toString(), regional.locale, {
+              weekday: 'long',
+              month: 'long',
+              day: 'numeric',
+              year: 'numeric',
+            })}{' '}
             as their start and end dates; no times are prefilled.
             <Button
               type='button'

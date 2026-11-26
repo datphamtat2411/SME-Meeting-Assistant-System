@@ -44,6 +44,22 @@ afterEach(async () => {
 })
 
 describe('calendar domain projection', () => {
+  it('uses the selected timezone independently of the browser', async () => {
+    await setBrowserTimeZone('Asia/Ho_Chi_Minh')
+    expect(calendarMonthRange('2026-11', 'America/New_York')).toEqual({
+      from: '2026-11-01T04:00:00.000Z',
+      to: '2026-12-01T05:00:00.000Z',
+    })
+    const source = meeting('near-midnight', '2026-12-01T02:00:00Z', '2026-12-01T03:00:00Z')
+    expect(projectCalendarMonth([source], '2026-11', 'America/New_York').segments[0]?.dayKey).toBe('2026-11-30')
+    expect(projectCalendarMonth([source], '2026-12', 'America/New_York').segments).toEqual([])
+  })
+
+  it('skips nonexistent civil days without producing zero-length segments', () => {
+    const source = meeting('skipped-day', '2011-12-30T09:00:00Z', '2011-12-30T11:00:00Z')
+    expect(projectCalendarMonth([source], '2011-12', 'Pacific/Apia').segments.map((segment) => segment.dayKey)).toEqual(['2011-12-29', '2011-12-31'])
+  })
+
   it('uses local civil month boundaries as absolute request instants', async () => {
     await setBrowserTimeZone('Asia/Ho_Chi_Minh')
 

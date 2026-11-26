@@ -27,7 +27,9 @@ function Probe() {
 }
 
 describe('regional presentation', () => {
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
 
   it('uses confirmed preferences and reacts to shared cache updates', async () => {
     vi.spyOn(coreApi, 'get').mockResolvedValue(preferences)

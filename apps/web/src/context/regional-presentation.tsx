@@ -8,7 +8,7 @@ type RegionalStatus = 'loading' | 'confirmed' | 'unavailable'
 type RegionalPresentation = ReturnType<typeof resolveRegionalPreferences> & {
   status: RegionalStatus
   refreshFailed: boolean
-  retry: () => void
+  retry?: () => void
 }
 
 const RegionalContext = createContext<RegionalPresentation | undefined>(
@@ -52,9 +52,8 @@ export function useRegionalPresentation(): RegionalPresentation {
   return (
     context ?? {
       ...resolveRegionalPreferences({ timezone: null, locale: null }),
-      status: 'loading',
+      status: 'unavailable',
       refreshFailed: false,
-      retry: () => {},
     }
   )
 }
