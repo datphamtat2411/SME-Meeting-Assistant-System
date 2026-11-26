@@ -97,8 +97,8 @@ class ActionItemCollectionController extends ChangeNotifier {
     this.searchDebounce = const Duration(milliseconds: 300),
     bool active = true,
   }) : _criteria = criteria,
-       _scope = repository.captureSession(),
-       _active = active {
+       _scope = repository.captureSession() {
+    if (!active) _active = false;
     criteria.query(fixedMeetingId: fixedMeetingId);
     _revision = repository.invalidation.revision;
     repository.invalidation.addListener(_onInvalidation);
@@ -117,7 +117,7 @@ class ActionItemCollectionController extends ChangeNotifier {
   Object? _error;
   int? _total;
   bool _loaded = false;
-  bool _active;
+  bool _active = true;
   bool _dirty = false;
   bool _disposed = false;
   bool _invalidSession = false;

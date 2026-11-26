@@ -1,288 +1,593 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
-import '../../core/api_client.dart';
-import '../../core/app_theme.dart';
-import '../../core/command_actions.dart';
-import '../../core/models.dart';
-import '../../core/widgets.dart';
-import 'action_item_feed.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:sme_meeting_assistant/core/api_client.dart';
+import 'package:sme_meeting_assistant/core/app_dependencies.dart';
+import 'package:sme_meeting_assistant/core/widgets.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
+
+import 'action_item_collection.dart';
 import 'action_item_create_sheet.dart';
+import 'action_item_creation.dart';
+import 'action_item_detail.dart';
 import 'action_item_detail_sheet.dart';
+import 'action_item_models.dart';
+import 'action_item_picker.dart';
+import 'action_item_presentation.dart';
 
 class ActionItemsPage extends StatefulWidget {
-  const ActionItemsPage({super.key, required this.api});
-  final ApiClient api;
+  const ActionItemsPage({
+    super.key,
+    required this.dependencies,
+    this.active = true,
+    this.meetingId,
+  });
+
+  final AppDependencies dependencies;
+  final bool active;
+  final String? meetingId;
+
   @override
   State<ActionItemsPage> createState() => _ActionItemsPageState();
 }
 
 class _ActionItemsPageState extends State<ActionItemsPage> {
-  late final ActionItemFeed feed;
-  late Future<List<ActionItem>> future;
-  final search = TextEditingController();
-  bool changing = false;
+  final _search = TextEditingController();
+  final _admission = ActionItemMutationAdmission();
+  late final ActionItemCollectionController _collection;
+  late final ActionItemCreationController _creation;
+  late final AuthenticatedSessionScope _scope;
+  ActionItemCollectionMode _mode = ActionItemCollectionMode.myWork;
+  ActionItemStatus? _status;
+  ActionItemMeetingContext? _meeting;
+  ActionItemAssignee? _assignee;
+  bool? _overdue;
+  ActionItemSortField _sort = ActionItemSortField.createdAt;
+  ActionItemSortDirection _direction = ActionItemSortDirection.desc;
+  bool? _eligible;
+  bool _checkingEligibility = false;
+  Object? _eligibilityError;
+  int _eligibilityGeneration = 0;
+
+  bool get _current =>
+      mounted && widget.dependencies.api.isCurrentAuthenticatedSession(_scope);
 
   @override
   void initState() {
     super.initState();
-    feed = ActionItemFeed(widget.api);
-    reload();
+    final repository = widget.dependencies.actionItems;
+    _scope = repository.captureSession();
+    if (widget.meetingId != null) {
+      _mode = ActionItemCollectionMode.allAccessible;
+    }
+    _collection = ActionItemCollectionController(
+      repository: repository,
+      criteria: _criteria(),
+      fixedMeetingId: widget.meetingId,
+      active: widget.active,
+    );
+    _creation = ActionItemCreationController(repository: repository);
+    _collection.addListener(_changed);
+    _creation.addListener(_changed);
+    if (widget.active) {
+      unawaited(_collection.initialize());
+      unawaited(_checkEligibility());
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ActionItemsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active != oldWidget.active) {
+      _collection.setActive(widget.active);
+      if (widget.active) unawaited(_checkEligibility());
+    }
   }
 
   @override
   void dispose() {
-    search.dispose();
+    _eligibilityGeneration++;
+    _collection.removeListener(_changed);
+    _creation.removeListener(_changed);
+    _collection.dispose();
+    _creation.dispose();
+    _search.dispose();
     super.dispose();
   }
 
-  void reload() => setState(() {
-    feed.reset();
-    future = feed.fetchNext();
-  });
-
-  void more() => setState(() => future = feed.fetchNext());
-
-  Future<void> create() async {
-    final saved = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => ActionItemCreateSheet(api: widget.api),
-    );
-    if (saved == true && mounted) reload();
-  }
-
-  Future<void> edit(ActionItem item) async {
-    final saved = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => ActionItemDetailSheet(api: widget.api, item: item),
-    );
-    if (saved == true && mounted) reload();
-  }
-
-  Future<void> command(ActionItem item, String action) async {
-    if (changing) return;
-    if (action == 'cancel' || action == 'reject') {
-      final agree = await confirmCommand(
-        context,
-        title: action == 'cancel' ? 'Hủy công việc?' : 'Từ chối đề xuất AI?',
-        description: 'Máy chủ sẽ lưu lịch sử thay đổi trạng thái.',
-        destructive: true,
-      );
-      if (!agree || !mounted) return;
+  void _changed() {
+    if (!mounted) return;
+    if (!_current) {
+      _search.clear();
+      _meeting = null;
+      _assignee = null;
+      _eligible = null;
+      _eligibilityError = null;
+      _eligibilityGeneration++;
     }
-    setState(() => changing = true);
+    setState(() {});
+  }
+
+  ActionItemCollectionCriteria _criteria() => ActionItemCollectionCriteria(
+    mode: _mode,
+    search: _search.text,
+    status: _status,
+    meetingId: _meeting?.id,
+    assignee: _assignee == null
+        ? null
+        : ActionItemAssigneeFilter.user(_assignee!.id),
+    overdue: _overdue,
+    sortField: _sort,
+    sortDirection: _direction,
+  );
+
+  void _apply({bool debounce = false}) {
+    if (_current) {
+      unawaited(_collection.applyCriteria(_criteria(), debounce: debounce));
+    }
+  }
+
+  Future<void> _checkEligibility() async {
+    if (!_current || !widget.active || _checkingEligibility) return;
+    final generation = ++_eligibilityGeneration;
+    setState(() {
+      _checkingEligibility = true;
+      _eligible = null;
+      _eligibilityError = null;
+    });
     try {
-      final path = '/action-items/' + item.id;
-      final current = await widget.api.get(path);
-      await widget.api.post(
-        path + '/' + action,
-        {},
-        headers: {'If-Match': requireEtag(current)},
+      final result = await widget.dependencies.actionItems.creationMeetings(
+        ActionItemCreationMeetingQuery(
+          search: widget.meetingId,
+          size: 1,
+        ),
+        sessionScope: _scope,
       );
-      if (mounted) {
-        showSuccess(context, 'Đã cập nhật trạng thái.');
-        reload();
+      if (!_current || generation != _eligibilityGeneration) return;
+      if (result.totalElements > 0 && result.items.isEmpty) {
+        throw StateError('Creation eligibility changed during discovery.');
       }
+      setState(() {
+        _eligible = widget.meetingId == null
+            ? result.items.isNotEmpty
+            : result.items.any(
+                (meeting) => sameActionItemIdentity(meeting.id, widget.meetingId!),
+              );
+      });
     } catch (error) {
-      if (mounted) showFailure(context, error);
+      if (_current && generation == _eligibilityGeneration) {
+        setState(() => _eligibilityError = error);
+      }
     } finally {
-      if (mounted) setState(() => changing = false);
+      if (_current && generation == _eligibilityGeneration) {
+        setState(() => _checkingEligibility = false);
+      }
     }
   }
 
-  Widget controls(ActionItem item) {
-    final actions = switch (item.status) {
-      'PROPOSED' => const [('confirm', 'Duyệt'), ('reject', 'Từ chối')],
-      'OPEN' => const [('start', 'Bắt đầu'), ('cancel', 'Hủy')],
-      'IN_PROGRESS' => const [('complete', 'Hoàn thành'), ('cancel', 'Hủy')],
-      'DONE' => const [('reopen', 'Mở lại')],
-      _ => const <(String, String)>[],
-    };
-    return Wrap(
-      spacing: 4,
-      children: actions
-          .map(
-            (pair) => TextButton(
-              onPressed: changing ? null : () => command(item, pair.$1),
-              child: Text(pair.$2),
-            ),
-          )
-          .toList(),
-    );
+  Future<void> _refresh() async {
+    await Future.wait([_collection.refresh(), _checkEligibility()]);
   }
 
-  @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(18, 16, 18, 6),
-        child: Column(
-          children: [
-            SectionHeading(
-              'Công việc sau họp',
-              subtitle: 'Công việc chính thức và đề xuất chờ xác nhận',
-              trailing: IconButton(
-                onPressed: create,
-                icon: const Icon(Icons.add_circle_outline),
-              ),
-            ),
-            TextField(
-              controller: search,
-              onSubmitted: (_) {
-                feed.query = search.text;
-                reload();
-              },
-              decoration: InputDecoration(
-                hintText: 'Tìm công việc',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: IconButton(
-                  onPressed: () {
-                    search.clear();
-                    feed.query = '';
-                    reload();
-                  },
-                  icon: const Icon(Icons.close),
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey(feed.status),
-                    initialValue: feed.status ?? '',
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      labelText: 'Trạng thái',
-                    ),
-                    items: [
-                      const DropdownMenuItem(value: '', child: Text('Tất cả')),
-                      ...actionStates.entries
-                          .where((e) => e.key != 'REJECTED')
-                          .map(
-                            (e) => DropdownMenuItem(
-                              value: e.key,
-                              child: Text(e.value),
-                            ),
-                          ),
-                    ],
-                    onChanged: (v) {
-                      feed.status = v == '' ? null : v;
-                      reload();
-                    },
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilterChip(
-                  label: const Text('Của tôi'),
-                  selected: feed.mine,
-                  onSelected: (v) {
-                    feed.mine = v;
-                    reload();
-                  },
-                ),
-                const SizedBox(width: 4),
-                IconButton(
-                  tooltip: 'Chỉ quá hạn',
-                  icon: Icon(
-                    feed.overdueOnly
-                        ? Icons.warning
-                        : Icons.warning_amber_outlined,
-                    color: feed.overdueOnly ? Palette.red : null,
-                  ),
-                  onPressed: () {
-                    feed.overdueOnly = !feed.overdueOnly;
-                    reload();
-                  },
-                ),
-              ],
-            ),
-          ],
+  void _changeMode(ActionItemCollectionMode mode) {
+    if (_mode == mode) return;
+    setState(() {
+      _mode = mode;
+      if (mode == ActionItemCollectionMode.myWork) {
+        _assignee = null;
+        if (_status == ActionItemStatus.proposed) _status = null;
+      }
+      if (mode == ActionItemCollectionMode.needsReview) {
+        _status = null;
+        if (_overdue == true) _overdue = null;
+      }
+    });
+    _apply();
+  }
+
+  void _clearFilters() {
+    setState(() {
+      _search.clear();
+      _status = null;
+      _meeting = null;
+      _assignee = null;
+      _overdue = null;
+      _sort = ActionItemSortField.createdAt;
+      _direction = ActionItemSortDirection.desc;
+    });
+    _apply();
+  }
+
+  Future<void> _openCreate() async {
+    if (!_current ||
+        (_eligible != true && _creation.unresolvedIntent == null)) {
+      return;
+    }
+    final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute<bool>(
+        builder: (_) => ActionItemCreatePage(
+          controller: _creation,
+          initialMeetingId: widget.meetingId,
         ),
       ),
-      Expanded(
-        child: AsyncContent<List<ActionItem>>(
-          future: future,
-          retry: reload,
-          builder: (items) => RefreshIndicator(
-            onRefresh: () async {
-              reload();
-              await future;
-            },
-            child: ListView(
-              padding: const EdgeInsets.all(18),
-              children: [
-                if (items.isEmpty)
-                  const MessagePanel(
-                    title: 'Không có đầu việc phù hợp',
-                    description:
-                        'Đổi bộ lọc hoặc tạo công việc từ một cuộc họp.',
+    );
+    if (_current && saved == true) {
+      showSuccess(context, 'Đã tạo công việc.');
+    }
+  }
+
+  Future<void> _openDetail(ActionItemResource item) async {
+    if (!_current) return;
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => ActionItemDetailPage(
+          repository: widget.dependencies.actionItems,
+          admission: _admission,
+          itemId: item.id,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickMeeting() async {
+    if (!_current) return;
+    final known = <String, ActionItemMeetingContext>{
+      for (final item in _collection.state.items)
+        item.meetingId.toLowerCase(): item.meetingContext,
+    };
+    final selected = await openActionItemPicker(
+      context,
+      ActionItemPicker<ActionItemMeetingContext>(
+        api: widget.dependencies.api,
+        scope: _scope,
+        title: 'Lọc theo cuộc họp',
+        pinned: [
+          for (final meeting in known.values)
+            ActionItemPickerOption(
+              value: meeting,
+              id: meeting.id,
+              label: actionItemMeetingLabel(meeting.id, meeting.title),
+              subtitle: 'Từ danh sách công việc hiện tại',
+            ),
+        ],
+        load: (search, page) async => mapActionItemPickerPage(
+          await widget.dependencies.meetings.list(
+            query: MeetingQuery(search: search, page: page),
+          ),
+          (projection) => ActionItemMeetingContext(
+            id: projection.meeting.id,
+            title: projection.meeting.title,
+          ),
+        ),
+        describe: (meeting) => ActionItemPickerOption(
+          value: meeting,
+          id: meeting.id,
+          label: actionItemMeetingLabel(meeting.id, meeting.title),
+        ),
+      ),
+    );
+    if (_current && selected != null) {
+      setState(() => _meeting = selected);
+      _apply();
+    }
+  }
+
+  Future<void> _pickAssignee() async {
+    if (!_current) return;
+    final known = <String, ActionItemAssignee>{
+      for (final item in _collection.state.items)
+        if (item.assignee != null)
+          item.assignee!.id.toLowerCase(): item.assignee!,
+    };
+    final selected = await pickActionItemAssignee(
+      context,
+      widget.dependencies.actionItems,
+      known: known.values.toList(),
+      allowKnownInactive: true,
+    );
+    if (_current && selected != null) {
+      setState(() => _assignee = selected);
+      _apply();
+    }
+  }
+
+  String _sortLabel(ActionItemSortField field) => switch (field) {
+    ActionItemSortField.createdAt => 'Ngày tạo',
+    ActionItemSortField.dueDate => 'Hạn hoàn thành',
+    ActionItemSortField.status => 'Trạng thái',
+    ActionItemSortField.title => 'Tên công việc',
+  };
+
+  Widget _header(ActionItemCollectionState state) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SectionHeading(
+          'Công việc sau họp',
+          subtitle: 'Theo dõi công việc chính thức và đề xuất AI',
+          trailing: _eligible == true || _creation.unresolvedIntent != null
+              ? IconButton(
+                  tooltip: _creation.unresolvedIntent != null
+                      ? 'Yêu cầu tạo chưa xác định'
+                      : 'Tạo công việc',
+                  onPressed: _openCreate,
+                  icon: Icon(
+                    _creation.unresolvedIntent != null
+                        ? Icons.pending_actions
+                        : Icons.add_circle_outline,
                   ),
-                ...items.map(
-                  (item) => ContentCard(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        InkWell(
-                          onTap: () => edit(item),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  item.title,
-                                  style: const TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                              StatePill(item.status),
-                              const Icon(Icons.chevron_right, size: 20),
-                            ],
-                          ),
-                        ),
-                        if (item.details?.isNotEmpty == true)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 7),
-                            child: Text(
-                              item.details!,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: Palette.muted),
-                            ),
-                          ),
-                        const SizedBox(height: 10),
-                        Text(
-                          item.dueDate == null
-                              ? 'Chưa có hạn'
-                              : 'Hạn: ' + item.dueDate!,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: item.overdue ? Palette.red : Palette.muted,
-                          ),
-                        ),
-                        if (item.overdue)
-                          const StatePill('FAILED', label: 'Quá hạn'),
-                        controls(item),
-                      ],
-                    ),
-                  ),
-                ),
-                if (feed.window.hasMore)
-                  OutlinedButton.icon(
-                    onPressed: more,
-                    icon: const Icon(Icons.expand_more),
-                    label: const Text('Tải thêm công việc'),
-                  ),
-              ],
+                )
+              : null,
+        ),
+        if (_checkingEligibility) const LinearProgressIndicator(),
+        if (_eligibilityError != null)
+          TextButton.icon(
+            onPressed: _checkEligibility,
+            icon: const Icon(Icons.refresh),
+            label: const Text('Kiểm tra lại quyền tạo công việc'),
+          ),
+        if (_creation.unresolvedIntent != null)
+          OutlinedButton(
+            onPressed: _openCreate,
+            child: const Text('Tiếp tục yêu cầu tạo chưa xác định'),
+          ),
+        Wrap(
+          spacing: 8,
+          children: [
+            for (final entry in const {
+              ActionItemCollectionMode.myWork: 'Của tôi',
+              ActionItemCollectionMode.allAccessible: 'Tất cả',
+              ActionItemCollectionMode.needsReview: 'Chờ duyệt',
+            }.entries)
+              ChoiceChip(
+                label: Text(entry.value),
+                selected: _mode == entry.key,
+                onSelected: (_) => _changeMode(entry.key),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _search,
+          maxLength: 200,
+          inputFormatters: [
+            TextInputFormatter.withFunction(
+              (old, next) => next.text.length > 200 ? old : next,
+            ),
+          ],
+          onChanged: (_) => _apply(debounce: true),
+          onSubmitted: (_) => _apply(),
+          decoration: InputDecoration(
+            hintText: 'Tìm công việc',
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: IconButton(
+              tooltip: 'Xóa tìm kiếm',
+              onPressed: () {
+                _search.clear();
+                _apply();
+              },
+              icon: const Icon(Icons.close),
             ),
           ),
         ),
-      ),
-    ],
+        Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            if (_mode != ActionItemCollectionMode.needsReview)
+              PopupMenuButton<String>(
+                tooltip: 'Lọc trạng thái',
+                onSelected: (value) {
+                  setState(() {
+                    _status = value == 'all'
+                        ? null
+                        : ActionItemStatus.values.byName(value);
+                  });
+                  _apply();
+                },
+                itemBuilder: (_) => [
+                  const PopupMenuItem(value: 'all', child: Text('Mọi trạng thái')),
+                  for (final status in ActionItemStatus.values)
+                    if (_mode != ActionItemCollectionMode.myWork ||
+                        status != ActionItemStatus.proposed)
+                      PopupMenuItem(
+                        value: status.name,
+                        child: Text(actionItemStatusLabel(status)),
+                      ),
+                ],
+                child: Chip(
+                  label: Text(
+                    _status == null ? 'Trạng thái' : actionItemStatusLabel(_status!),
+                  ),
+                  avatar: const Icon(Icons.expand_more, size: 16),
+                ),
+              ),
+            if (widget.meetingId == null)
+              InputChip(
+                label: Text(
+                  _meeting == null
+                      ? 'Cuộc họp'
+                      : actionItemMeetingLabel(_meeting!.id, _meeting!.title),
+                ),
+                onPressed: _pickMeeting,
+                onDeleted: _meeting == null
+                    ? null
+                    : () {
+                        setState(() => _meeting = null);
+                        _apply();
+                      },
+              ),
+            if (_mode != ActionItemCollectionMode.myWork)
+              InputChip(
+                label: Text(
+                  _assignee == null ? 'Người phụ trách' : actionItemAssigneeLabel(_assignee),
+                ),
+                onPressed: _pickAssignee,
+                onDeleted: _assignee == null
+                    ? null
+                    : () {
+                        setState(() => _assignee = null);
+                        _apply();
+                      },
+              ),
+            if (_mode != ActionItemCollectionMode.needsReview)
+              FilterChip(
+                label: const Text('Quá hạn'),
+                selected: _overdue == true,
+                onSelected: (selected) {
+                  setState(() => _overdue = selected ? true : null);
+                  _apply();
+                },
+              ),
+            PopupMenuButton<ActionItemSortField>(
+              tooltip: 'Sắp xếp',
+              onSelected: (sort) {
+                setState(() => _sort = sort);
+                _apply();
+              },
+              itemBuilder: (_) => [
+                for (final sort in ActionItemSortField.values)
+                  PopupMenuItem(value: sort, child: Text(_sortLabel(sort))),
+              ],
+              child: Chip(
+                label: Text(_sortLabel(_sort)),
+                avatar: const Icon(Icons.sort, size: 16),
+              ),
+            ),
+            IconButton(
+              tooltip: _direction == ActionItemSortDirection.desc
+                  ? 'Thứ tự giảm dần'
+                  : 'Thứ tự tăng dần',
+              onPressed: () {
+                setState(() {
+                  _direction = _direction == ActionItemSortDirection.desc
+                      ? ActionItemSortDirection.asc
+                      : ActionItemSortDirection.desc;
+                });
+                _apply();
+              },
+              icon: Icon(
+                _direction == ActionItemSortDirection.desc
+                    ? Icons.arrow_downward
+                    : Icons.arrow_upward,
+              ),
+            ),
+            TextButton(
+              onPressed: _clearFilters,
+              child: const Text('Xóa bộ lọc'),
+            ),
+          ],
+        ),
+        if (state.totalElements != null)
+          Text('${state.totalElements} kết quả'),
+        if (state.phase != ActionItemCollectionPhase.idle)
+          const LinearProgressIndicator(),
+      ],
+    ),
   );
+
+  Widget _card(ActionItemResource item) => ContentCard(
+    child: InkWell(
+      onTap: () => _openDetail(item),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  item.title,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+          if (item.details != null)
+            Text(item.details!, maxLines: 2, overflow: TextOverflow.ellipsis),
+          const SizedBox(height: 8),
+          ActionItemStatusIndicators(item: item),
+          const SizedBox(height: 8),
+          Text('Phụ trách: ${actionItemAssigneeLabel(item.assignee)}'),
+          Text('Hạn: ${actionItemDueLabel(item.dueDate)}'),
+          TextButton.icon(
+            onPressed: widget.meetingId != null
+                ? null
+                : () {
+                    setState(() => _meeting = item.meetingContext);
+                    _apply();
+                  },
+            icon: const Icon(Icons.video_camera_front_outlined, size: 16),
+            label: Text(
+              actionItemMeetingLabel(item.meetingId, item.meetingContext.title),
+              textAlign: TextAlign.start,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _footer(ActionItemCollectionState state) {
+    if (state.failure != null) {
+      return MessagePanel(
+        title: switch (state.failure!) {
+          ActionItemCollectionFailure.changed => 'Danh sách đã thay đổi',
+          ActionItemCollectionFailure.append => 'Không thể tải thêm',
+          ActionItemCollectionFailure.refresh => 'Không thể cập nhật danh sách',
+          ActionItemCollectionFailure.access => 'Không thể truy cập danh sách',
+          ActionItemCollectionFailure.initial => 'Không thể tải công việc',
+        },
+        description: state.failure == ActionItemCollectionFailure.changed
+            ? 'Tải lại để đồng bộ với máy chủ.'
+            : actionItemFailureLabel(state.error),
+        onRetry: _collection.retry,
+      );
+    }
+    if (state.isConfirmedEmpty) {
+      return MessagePanel(
+        title: _mode == ActionItemCollectionMode.needsReview
+            ? 'Không có đề xuất cần xem xét'
+            : 'Không có công việc phù hợp',
+        description: 'Thay đổi bộ lọc hoặc tìm kiếm để xem kết quả khác.',
+      );
+    }
+    if (state.loaded && state.hasMore) {
+      return OutlinedButton.icon(
+        onPressed: state.phase == ActionItemCollectionPhase.idle
+            ? _collection.loadMore
+            : null,
+        icon: const Icon(Icons.expand_more),
+        label: const Text('Tải thêm công việc'),
+      );
+    }
+    return const SizedBox(height: 12);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_current) {
+      return const MessagePanel(title: 'Phiên đăng nhập đã thay đổi');
+    }
+    final state = _collection.state;
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(18),
+        physics: const AlwaysScrollableScrollPhysics(),
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        itemCount: state.items.length + 2,
+        itemBuilder: (context, index) {
+          if (index == 0) return _header(state);
+          if (index == state.items.length + 1) return _footer(state);
+          return _card(state.items[index - 1]);
+        },
+      ),
+    );
+  }
 }

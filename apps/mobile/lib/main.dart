@@ -489,7 +489,10 @@ class _AppShellState extends State<AppShell> {
         openActions: () => setState(() => index = 2),
       ),
       MeetingsPage(dependencies: widget.dependencies),
-      ActionItemsPage(api: widget.api),
+      ActionItemsPage(
+        dependencies: widget.dependencies,
+        active: index == 2,
+      ),
       AssistantPage(api: widget.api),
       ProfilePage(
         api: widget.api,

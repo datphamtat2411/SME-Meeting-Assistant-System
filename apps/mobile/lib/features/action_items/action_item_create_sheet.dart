@@ -1,245 +1,363 @@
 import 'package:flutter/material.dart';
+import 'package:sme_meeting_assistant/core/command_actions.dart';
+import 'package:sme_meeting_assistant/core/widgets.dart';
 
-import '../../core/api_client.dart';
-import '../../core/date_labels.dart';
-import '../../core/models.dart';
-import '../../core/paged_collection.dart';
-import '../../core/widgets.dart';
+import 'action_item_creation.dart';
+import 'action_item_models.dart';
+import 'action_item_presentation.dart';
 
-class ActionItemCreateSheet extends StatefulWidget {
-  const ActionItemCreateSheet({super.key, required this.api});
-  final ApiClient api;
+class ActionItemCreatePage extends StatefulWidget {
+  const ActionItemCreatePage({
+    super.key,
+    required this.controller,
+    this.initialMeetingId,
+  });
+
+  final ActionItemCreationController controller;
+  final String? initialMeetingId;
+
   @override
-  State<ActionItemCreateSheet> createState() => _ActionItemCreateSheetState();
+  State<ActionItemCreatePage> createState() => _ActionItemCreatePageState();
 }
 
-class _ActionItemCreateSheetState extends State<ActionItemCreateSheet> {
-  final form = GlobalKey<FormState>();
-  final title = TextEditingController();
-  final details = TextEditingController();
-  late Future<List<Meeting>> meetings;
-  String? meetingId;
-  late String assigneeId;
-  String assigneeName = 'Tôi';
-  DateTime? due;
-  bool saving = false;
+class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
+  final _form = GlobalKey<FormState>();
+  final _title = TextEditingController();
+  final _details = TextEditingController();
+  ActionItemCreationMeeting? _meeting;
+  ActionItemAssignee? _assignee;
+  String? _dueDate;
+  Object? _localError;
+  bool _checkingInitialMeeting = false;
+  bool _leaving = false;
+  bool _allowExit = false;
+
+  ActionItemCreationController get _controller => widget.controller;
+  bool get _unresolved =>
+      _controller.phase == ActionItemCreationPhase.unresolved;
+  bool get _dirty =>
+      _title.text.isNotEmpty ||
+      _details.text.isNotEmpty ||
+      _meeting != null ||
+      _assignee != null ||
+      _dueDate != null;
 
   @override
   void initState() {
     super.initState();
-    assigneeId = widget.api.userId;
-    meetings = widget.api
-        .get('/meetings', query: {'page': '0', 'size': '100'})
-        .then(
-          (response) => PagedCollection<Meeting>.fromResult(
-            response,
-            (raw) => Meeting.fromListJson(raw, response: response),
-            requestedPage: 0,
-            requestedSize: 100,
-          ).items,
-        );
-  }
-
-  @override
-  void dispose() {
-    title.dispose();
-    details.dispose();
-    super.dispose();
-  }
-
-  Future<void> pickAssignee() async {
-    final search = TextEditingController();
-    List<Map<String, dynamic>> found = [];
-    final chosen = await showDialog<Map<String, dynamic>>(
-      context: context,
-      builder: (dialog) => StatefulBuilder(
-        builder: (dialog, update) => AlertDialog(
-          title: const Text('Giao cho thành viên'),
-          content: SizedBox(
-            width: 440,
-            height: 320,
-            child: Column(
-              children: [
-                TextField(
-                  controller: search,
-                  decoration: InputDecoration(
-                    labelText: 'Tìm tên/email',
-                    suffixIcon: IconButton(
-                      onPressed: () async {
-                        if (search.text.trim().length < 2) return;
-                        try {
-                          final data = await widget.api.get(
-                            '/users/meeting-candidates',
-                            query: {'q': search.text.trim(), 'size': '20'},
-                          );
-                          if (dialog.mounted) {
-                            final page =
-                                PagedCollection<
-                                  Map<String, dynamic>
-                                >.fromResult(
-                                  data,
-                                  (raw) => raw,
-                                  requestedPage: 0,
-                                  requestedSize: 20,
-                                );
-                            update(() => found = page.items);
-                          }
-                        } catch (e) {
-                          if (dialog.mounted) showFailure(dialog, e);
-                        }
-                      },
-                      icon: const Icon(Icons.search),
-                    ),
-                  ),
-                ),
-                Expanded(
-                  child: ListView(
-                    children: found
-                        .map(
-                          (member) => ListTile(
-                            title: Text(textValue(member['displayName'])),
-                            subtitle: Text(textValue(member['email'])),
-                            onTap: () => Navigator.pop(dialog, member),
-                          ),
-                        )
-                        .toList(),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialog),
-              child: const Text('Đóng'),
-            ),
-          ],
-        ),
-      ),
-    );
-    search.dispose();
-    if (chosen != null && mounted)
-      setState(() {
-        assigneeId = textValue(chosen['id']);
-        assigneeName = textValue(chosen['displayName'], 'Thành viên');
-      });
-  }
-
-  Future<void> submit() async {
-    if (!(form.currentState?.validate() ?? false) || saving) return;
-    setState(() => saving = true);
-    try {
-      await widget.api.post('/action-items', {
-        'meetingId': meetingId,
-        'title': title.text.trim(),
-        'details': details.text.trim(),
-        'assigneeUserId': assigneeId,
-        'dueDate': due == null ? null : dateOnly(due!),
-      });
-      if (mounted) Navigator.pop(context, true);
-    } catch (error) {
-      if (mounted) showFailure(context, error);
-    } finally {
-      if (mounted) setState(() => saving = false);
+    _controller.addListener(_controllerChanged);
+    if (widget.initialMeetingId != null && !_unresolved) {
+      _verifyInitialMeeting();
     }
   }
 
   @override
-  Widget build(BuildContext context) => SafeArea(
-    child: Padding(
-      padding: EdgeInsets.fromLTRB(
-        18,
-        8,
-        18,
-        MediaQuery.viewInsetsOf(context).bottom + 18,
-      ),
-      child: SingleChildScrollView(
-        child: Form(
-          key: form,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SectionHeading(
-                'Tạo công việc',
-                subtitle:
-                    'Một công việc thuộc đúng cuộc họp và người phụ trách.',
-              ),
-              FutureBuilder<List<Meeting>>(
-                future: meetings,
-                builder: (context, snap) {
-                  if (snap.hasError)
-                    return MessagePanel(
-                      title: 'Không tải được cuộc họp',
-                      description: snap.error.toString(),
-                    );
-                  if (!snap.hasData) return const LinearProgressIndicator();
-                  return DropdownButtonFormField<String>(
-                    isExpanded: true,
-                    initialValue: meetingId,
-                    decoration: const InputDecoration(labelText: 'Cuộc họp *'),
-                    items: snap.data!
-                        .map(
-                          (m) => DropdownMenuItem(
-                            value: m.id,
-                            child: Text(
-                              m.title,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (v) => setState(() => meetingId = v),
-                    validator: (v) => v == null ? 'Hãy chọn cuộc họp.' : null,
-                  );
-                },
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: title,
-                maxLength: 500,
-                decoration: const InputDecoration(labelText: 'Tên công việc *'),
-                validator: (v) => v == null || v.trim().isEmpty
-                    ? 'Nhập tên công việc.'
-                    : null,
-              ),
-              TextField(
-                controller: details,
-                maxLines: 3,
-                decoration: const InputDecoration(labelText: 'Mô tả'),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: pickAssignee,
-                icon: const Icon(Icons.person_search_outlined),
-                label: Text('Phụ trách: ' + assigneeName),
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  final selected = await showDatePicker(
-                    context: context,
-                    firstDate: DateTime(2020),
-                    lastDate: DateTime(2100),
-                    initialDate: due ?? DateTime.now(),
-                  );
-                  if (selected != null && mounted)
-                    setState(() => due = selected);
-                },
-                icon: const Icon(Icons.event),
-                label: Text(
-                  due == null ? 'Chọn hạn hoàn thành' : dateOnly(due!),
-                ),
-              ),
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: saving ? null : submit,
-                icon: const Icon(Icons.add_task),
-                label: Text(saving ? 'Đang tạo...' : 'Tạo công việc'),
-              ),
-            ],
+  void dispose() {
+    _controller.removeListener(_controllerChanged);
+    _title.dispose();
+    _details.dispose();
+    super.dispose();
+  }
+
+  void _controllerChanged() {
+    if (!mounted) return;
+    if (!_controller.current) {
+      _title.clear();
+      _details.clear();
+      _meeting = null;
+      _assignee = null;
+      _dueDate = null;
+      _localError = null;
+    }
+    setState(() {});
+  }
+
+  Future<void> _verifyInitialMeeting() async {
+    final id = widget.initialMeetingId;
+    if (id == null || !_controller.current) return;
+    final repository = _controller.repository;
+    final scope = repository.captureSession();
+    setState(() {
+      _checkingInitialMeeting = true;
+      _localError = null;
+    });
+    try {
+      final result = await repository.creationMeetings(
+        ActionItemCreationMeetingQuery(search: id),
+        sessionScope: scope,
+      );
+      if (!mounted || !_controller.current) return;
+      final eligible = result.items.where(
+        (meeting) => sameActionItemIdentity(meeting.id, id),
+      );
+      setState(() {
+        _meeting = eligible.firstOrNull;
+        if (_meeting == null) {
+          _localError = StateError('The selected meeting is not eligible.');
+        }
+      });
+    } catch (error) {
+      if (mounted && _controller.current) setState(() => _localError = error);
+    } finally {
+      if (mounted) setState(() => _checkingInitialMeeting = false);
+    }
+  }
+
+  Future<void> _pickMeeting() async {
+    final selected = await pickActionItemCreationMeeting(
+      context,
+      _controller.repository,
+    );
+    if (mounted && _controller.current && selected != null) {
+      setState(() {
+        _meeting = selected;
+        _localError = null;
+      });
+    }
+  }
+
+  Future<void> _pickAssignee() async {
+    final selected = await pickActionItemAssignee(
+      context,
+      _controller.repository,
+    );
+    if (mounted && _controller.current && selected != null) {
+      setState(() => _assignee = selected);
+    }
+  }
+
+  Future<void> _pickDate() async {
+    final value = await chooseActionItemDueDate(context, _dueDate);
+    if (mounted && _controller.current && value != null) {
+      setState(() => _dueDate = value);
+    }
+  }
+
+  Future<void> _submit() async {
+    final meeting = _meeting;
+    final assignee = _assignee;
+    if (!_controller.current ||
+        _controller.busy ||
+        meeting == null ||
+        assignee == null ||
+        !(_form.currentState?.validate() ?? false)) {
+      return;
+    }
+    setState(() => _localError = null);
+    try {
+      final input = ActionItemCreateInput(
+        meetingId: meeting.id,
+        title: _title.text,
+        details: _details.text,
+        assigneeUserId: assignee.id,
+        dueDate: _dueDate,
+      );
+      final result = await _controller.submit(
+        input: input,
+        meeting: meeting,
+        assignee: assignee,
+      );
+      if (!mounted || !_controller.current) return;
+      if (result != null) _exit(true);
+    } catch (error) {
+      if (mounted && _controller.current) setState(() => _localError = error);
+    }
+  }
+
+  Future<void> _retry() async {
+    if (!_controller.canRetry) {
+      setState(() {});
+      return;
+    }
+    final result = await _controller.retry();
+    if (mounted && _controller.current && result != null) _exit(true);
+  }
+
+  Future<void> _abandon() async {
+    final confirmed = await confirmCommand(
+      context,
+      title: 'Bỏ yêu cầu chưa xác định?',
+      description:
+          'Công việc có thể đã được tạo. Tạo yêu cầu mới có thể dẫn đến trùng công việc. Hãy kiểm tra danh sách trước.',
+      confirmLabel: 'Tôi hiểu, bỏ yêu cầu',
+      destructive: true,
+    );
+    if (!mounted || !_controller.current || !confirmed) return;
+    _controller.abandon(acknowledged: true);
+    _exit(false);
+  }
+
+  void _exit(bool saved) {
+    if (!mounted || _allowExit) return;
+    setState(() => _allowExit = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.pop(context, saved);
+    });
+  }
+
+  Future<void> _requestExit() async {
+    if (_controller.busy || _leaving) return;
+    if (!_controller.current || (!_dirty && !_unresolved)) {
+      _exit(false);
+      return;
+    }
+    _leaving = true;
+    final confirmed = await confirmCommand(
+      context,
+      title: _unresolved ? 'Đóng biểu mẫu?' : 'Bỏ nội dung chưa lưu?',
+      description: _unresolved
+          ? 'Yêu cầu chưa xác định vẫn được giữ trong phiên đăng nhập này. Bạn có thể mở lại để kiểm tra hoặc thử lại.'
+          : 'Những thay đổi chưa gửi sẽ không được lưu.',
+      confirmLabel: 'Đóng',
+    );
+    _leaving = false;
+    if (mounted && confirmed) _exit(false);
+  }
+
+  Widget _recovery() {
+    final input = _controller.unresolvedIntent?.input;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const MessagePanel(
+          title: 'Chưa xác định kết quả tạo công việc',
+          description:
+              'Máy chủ có thể đã lưu công việc. Chỉ thử lại cùng yêu cầu để tránh tạo trùng trong thời hạn cho phép.',
+          icon: Icons.info_outline,
+        ),
+        if (input != null)
+          ContentCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(input.title, style: Theme.of(context).textTheme.titleMedium),
+                if (input.details != null) Text(input.details!),
+                Text('Hạn: ${actionItemDueLabel(input.dueDate)}'),
+              ],
+            ),
+          ),
+        if (_controller.error != null)
+          Text(actionItemFailureLabel(_controller.error)),
+        if (!_controller.canRetry)
+          const MessagePanel(
+            title: 'Không còn bảo đảm thử lại an toàn',
+            description:
+                'Hãy kiểm tra danh sách công việc. Không gửi lại bằng một khóa mới khi chưa biết kết quả.',
+          ),
+        FilledButton(
+          onPressed: _controller.canRetry ? _retry : null,
+          child: const Text('Thử lại cùng yêu cầu'),
+        ),
+        TextButton(
+          onPressed: _abandon,
+          child: const Text('Bỏ yêu cầu sau khi kiểm tra'),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final current = _controller.current;
+    final busy = _controller.busy;
+    final recovering = _unresolved ||
+        (_controller.unresolvedIntent != null && busy);
+    return PopScope<bool>(
+      canPop: _allowExit || (!busy && !current),
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _requestExit();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Tạo công việc'),
+          leading: IconButton(
+            tooltip: 'Đóng',
+            onPressed: busy ? null : _requestExit,
+            icon: const Icon(Icons.close),
           ),
         ),
+        body: SafeArea(
+          child: !current
+              ? const MessagePanel(title: 'Phiên đăng nhập đã thay đổi')
+              : ListView(
+                  padding: const EdgeInsets.all(20),
+                  children: [
+                    if (busy) const LinearProgressIndicator(),
+                    if (recovering)
+                      if (busy)
+                        const MessagePanel(
+                          title: 'Đang kiểm tra kết quả yêu cầu tạo',
+                        )
+                      else
+                        _recovery()
+                    else
+                      Form(
+                        key: _form,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Text(
+                              'Chọn cuộc họp hợp lệ và một người phụ trách.',
+                            ),
+                            const SizedBox(height: 16),
+                            OutlinedButton.icon(
+                              onPressed: busy || _checkingInitialMeeting
+                                  ? null
+                                  : _pickMeeting,
+                              icon: const Icon(Icons.video_camera_front_outlined),
+                              label: Text(
+                                _meeting == null
+                                    ? 'Chọn cuộc họp *'
+                                    : actionItemMeetingLabel(
+                                        _meeting!.id,
+                                        _meeting!.title,
+                                      ),
+                              ),
+                            ),
+                            if (_checkingInitialMeeting)
+                              const LinearProgressIndicator(),
+                            const SizedBox(height: 12),
+                            ActionItemFields(
+                              title: _title,
+                              details: _details,
+                              assigneeLabel: _assignee == null
+                                  ? 'Chọn người phụ trách *'
+                                  : actionItemAssigneeLabel(_assignee),
+                              dueDate: _dueDate,
+                              canEdit: !busy,
+                              canAssign: !busy,
+                              onChanged: () => setState(() {}),
+                              onAssignee: _pickAssignee,
+                              onDueDate: _pickDate,
+                              onClearDueDate: () {
+                                setState(() => _dueDate = null);
+                              },
+                            ),
+                            if (_localError != null || _controller.error != null)
+                              MessagePanel(
+                                title: actionItemFailureLabel(
+                                  _localError ?? _controller.error,
+                                ),
+                              ),
+                            const SizedBox(height: 16),
+                            FilledButton.icon(
+                              onPressed: busy ||
+                                      _checkingInitialMeeting ||
+                                      _meeting == null ||
+                                      _assignee == null ||
+                                      _title.text.trim().isEmpty
+                                  ? null
+                                  : _submit,
+                              icon: const Icon(Icons.add_task),
+                              label: const Text('Tạo công việc'),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
