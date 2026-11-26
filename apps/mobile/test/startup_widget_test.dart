@@ -102,103 +102,104 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('pending reset and reconciliation protect outcome from new links', (
-    tester,
-  ) async {
-    final credentials = InMemoryCredentialStorage();
-    await _writeRefreshCredential(credentials, 'refresh-0');
-    final mutation = Completer<http.StreamedResponse>();
-    final verification = Completer<http.StreamedResponse>();
-    final requested = Completer<void>();
-    final harness = _Harness.create(
-      _authClient(
-        credentialResponse: mutation,
-        reconciliationRequested: requested,
-        reconciliationResponse: verification,
-      ),
-      credentials,
-    );
-    final delivery = _NativeAccountLinkFixture(
-      'https://meeting.example.invalid/otp#token=fixture',
-    );
-    addTearDown(delivery.dispose);
-    await tester.pumpWidget(
-      MeetingAssistantApp(
-        dependencies: harness.dependencies,
-        accountLinkParser: AccountLinkParser('meeting.example.invalid'),
-        receiveNativeAccountLinks: true,
-      ),
-    );
-    await pumpUntil(
-      tester,
-      () =>
-          harness.api.signedIn &&
-          find.widgetWithText(TextButton, 'Tiếp tục').evaluate().isNotEmpty,
-      reason: 'authenticated entry',
-    );
-    await tester.tap(find.widgetWithText(TextButton, 'Tiếp tục'));
-    await tester.pumpAndSettle();
-    await _submitLinkPassword(tester);
-    await pumpUntil(
-      tester,
-      () => _credentialRequests(harness.client).length == 1,
-      reason: 'reset dispatched but pending',
-    );
-    await delivery.send(
-      'https://meeting.example.invalid/account-setup#token=deferred',
-    );
-    await tester.pump();
-    final proceed = find.widgetWithText(TextButton, 'Tiếp tục');
-    expect(tester.widget<TextButton>(proceed).onPressed, isNull);
-    expect(find.text('Đặt lại mật khẩu'), findsOneWidget);
-    expect(find.text('Kích hoạt tài khoản'), findsNothing);
+  testWidgets(
+    'pending reset and reconciliation protect outcome from new links',
+    (tester) async {
+      final credentials = InMemoryCredentialStorage();
+      await _writeRefreshCredential(credentials, 'refresh-0');
+      final mutation = Completer<http.StreamedResponse>();
+      final verification = Completer<http.StreamedResponse>();
+      final requested = Completer<void>();
+      final harness = _Harness.create(
+        _authClient(
+          credentialResponse: mutation,
+          reconciliationRequested: requested,
+          reconciliationResponse: verification,
+        ),
+        credentials,
+      );
+      final delivery = _NativeAccountLinkFixture(
+        'https://meeting.example.invalid/otp#token=fixture',
+      );
+      addTearDown(delivery.dispose);
+      await tester.pumpWidget(
+        MeetingAssistantApp(
+          dependencies: harness.dependencies,
+          accountLinkParser: AccountLinkParser('meeting.example.invalid'),
+          receiveNativeAccountLinks: true,
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () =>
+            harness.api.signedIn &&
+            find.widgetWithText(TextButton, 'Tiếp tục').evaluate().isNotEmpty,
+        reason: 'authenticated entry',
+      );
+      await tester.tap(find.widgetWithText(TextButton, 'Tiếp tục'));
+      await tester.pumpAndSettle();
+      await _submitLinkPassword(tester);
+      await pumpUntil(
+        tester,
+        () => _credentialRequests(harness.client).length == 1,
+        reason: 'reset dispatched but pending',
+      );
+      await delivery.send(
+        'https://meeting.example.invalid/account-setup#token=deferred',
+      );
+      await tester.pump();
+      final proceed = find.widgetWithText(TextButton, 'Tiếp tục');
+      expect(tester.widget<TextButton>(proceed).onPressed, isNull);
+      expect(find.text('Đặt lại mật khẩu'), findsOneWidget);
+      expect(find.text('Kích hoạt tài khoản'), findsNothing);
 
-    mutation.complete(
-      await jsonResponse(200, successEnvelope({'message': 'Acknowledged.'})),
-    );
-    await pumpUntil(
-      tester,
-      () => requested.isCompleted,
-      reason: 'mandatory verification begins',
-    );
-    await tester.pump();
-    verification.complete(
-      await jsonResponse(
-        503,
-        errorEnvelope('SERVICE_UNAVAILABLE', 'Unavailable.'),
-      ),
-    );
-    await pumpUntil(
-      tester,
-      () => find.text('Thử xác minh lại').evaluate().isNotEmpty,
-      reason: 'verification remains fail-closed',
-    );
-    await delivery.send(
-      'https://meeting.example.invalid/account-setup#token=during-gate',
-    );
-    await tester.pump();
-    expect(tester.widget<TextButton>(proceed).onPressed, isNull);
-    expect(find.text('Tổng quan'), findsNothing);
-    expect(find.text('Kích hoạt tài khoản'), findsNothing);
-    await tester.tap(find.text('Thử xác minh lại'));
-    await pumpUntil(
-      tester,
-      () => find.text('Đặt lại mật khẩu thành công').evaluate().isNotEmpty,
-      reason: 'original mutation outcome restored',
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('Đặt lại mật khẩu thành công'), findsOneWidget);
-    expect(find.text('Kích hoạt tài khoản'), findsNothing);
-    expect(find.textContaining('Hãy mở lại email'), findsOneWidget);
-    expect(_credentialRequests(harness.client), hasLength(1));
-    await tester.ensureVisible(find.text('Tiếp tục phiên hiện tại'));
-    await tester.tap(find.text('Tiếp tục phiên hiện tại'));
-    await tester.pumpAndSettle();
-    expect(harness.api.signedIn, isTrue);
-    expect(await _readRefreshCredential(credentials), 'refresh-1');
-    expect(_credentialRequests(harness.client), hasLength(1));
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      mutation.complete(
+        await jsonResponse(200, successEnvelope({'message': 'Acknowledged.'})),
+      );
+      await pumpUntil(
+        tester,
+        () => requested.isCompleted,
+        reason: 'mandatory verification begins',
+      );
+      await tester.pump();
+      verification.complete(
+        await jsonResponse(
+          503,
+          errorEnvelope('SERVICE_UNAVAILABLE', 'Unavailable.'),
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () => find.text('Thử xác minh lại').evaluate().isNotEmpty,
+        reason: 'verification remains fail-closed',
+      );
+      await delivery.send(
+        'https://meeting.example.invalid/account-setup#token=during-gate',
+      );
+      await tester.pump();
+      expect(tester.widget<TextButton>(proceed).onPressed, isNull);
+      expect(find.text('Tổng quan'), findsNothing);
+      expect(find.text('Kích hoạt tài khoản'), findsNothing);
+      await tester.tap(find.text('Thử xác minh lại'));
+      await pumpUntil(
+        tester,
+        () => find.text('Đặt lại mật khẩu thành công').evaluate().isNotEmpty,
+        reason: 'original mutation outcome restored',
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Đặt lại mật khẩu thành công'), findsOneWidget);
+      expect(find.text('Kích hoạt tài khoản'), findsNothing);
+      expect(find.textContaining('Hãy mở lại email'), findsOneWidget);
+      expect(_credentialRequests(harness.client), hasLength(1));
+      await tester.ensureVisible(find.text('Tiếp tục phiên hiện tại'));
+      await tester.tap(find.text('Tiếp tục phiên hiện tại'));
+      await tester.pumpAndSettle();
+      expect(harness.api.signedIn, isTrue);
+      expect(await _readRefreshCredential(credentials), 'refresh-1');
+      expect(_credentialRequests(harness.client), hasLength(1));
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('authenticated setup continues to the existing pushed route', (
     tester,
@@ -218,8 +219,7 @@ void main() {
     await pumpUntil(
       tester,
       () =>
-          harness.api.signedIn &&
-          find.text('Tổng quan').evaluate().isNotEmpty,
+          harness.api.signedIn && find.text('Tổng quan').evaluate().isNotEmpty,
       reason: 'verified startup',
     );
     final navigator = tester.state<NavigatorState>(find.byType(Navigator));

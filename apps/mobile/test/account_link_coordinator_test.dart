@@ -95,10 +95,10 @@ void main() {
     );
     expect(calls, 1);
     response.complete({'url': 'warm', 'initial': false});
-    expect(
-      await delivered.future.timeout(const Duration(seconds: 5)),
-      ('warm', false),
-    );
+    expect(await delivered.future.timeout(const Duration(seconds: 5)), (
+      'warm',
+      false,
+    ));
     await Future<void>.delayed(Duration.zero);
     expect(calls, 2);
     expect(failures, 0);
