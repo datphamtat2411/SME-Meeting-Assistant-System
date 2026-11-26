@@ -54,7 +54,7 @@ describe('workspace visibility boundary', () => {
     )
 
     try {
-      const input = screen.getByLabelText('Portal draft')
+      const input = screen.getByRole('textbox', { name: 'Portal draft' })
       const toggle = screen.getByRole('button', { name: 'Toggle workspace' })
       await expect.element(input).toBeVisible()
       await userEvent.fill(input, 'Unsaved draft')
