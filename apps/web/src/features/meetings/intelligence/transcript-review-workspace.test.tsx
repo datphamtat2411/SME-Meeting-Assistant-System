@@ -1,8 +1,11 @@
+import { act } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { TranscriptReviewWorkspace } from './transcript-review-workspace'
 
 const meetingId = '11111111-1111-4111-8111-111111111111'
@@ -150,6 +153,74 @@ describe('TranscriptReviewWorkspace', () => {
     sessionMocks.session.playback.sourceMediaId = null
     sessionMocks.session.playback.status = 'idle'
     sessionMocks.session.playback.currentTimeMs = 0
+  })
+
+  it('formats transcript finalization in the regional timezone without changing media offsets', async () => {
+    const client = createQueryClient()
+    const preferences = {
+      timezone: 'Asia/Tokyo',
+      locale: 'ja-JP',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    }
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url === '/me/preferences') return preferences
+      if (url.endsWith('/transcript')) return initialTranscript
+      if (url.endsWith('/transcript/coverage')) return coverage
+      if (url.endsWith('/speaker-clusters')) return speakers
+      throw new Error(`Unexpected GET ${url}`)
+    })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: initialTranscript,
+      meta: {},
+      etag: '"t-transcript-8"',
+    })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <RegionalPresentationProvider>
+          <TranscriptReviewWorkspace
+            meetingId={meetingId}
+            canReadMeetingContent
+            canCorrectTranscript
+            canMapSpeakers
+            canReadMedia
+          />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+    const expected = (timezone: string, locale: string) =>
+      new Intl.DateTimeFormat(locale, {
+        calendar: 'gregory',
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: timezone,
+      }).format(new Date(initialTranscript.finalizedAt))
+
+    await expect
+      .element(
+        screen.getByText(expected('Asia/Tokyo', 'ja-JP'), { exact: true })
+      )
+      .toBeInTheDocument()
+    await act(async () => {
+      client.setQueryData(preferencesQueryKey, {
+        ...preferences,
+        timezone: 'America/New_York',
+        locale: 'en-GB',
+      })
+    })
+    await expect
+      .element(
+        screen.getByText(expected('America/New_York', 'en-GB'), { exact: true })
+      )
+      .toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Play source from 00:00:02' })
+    )
+    expect(sessionMocks.session.seekToSource).toHaveBeenCalledWith(
+      sourceMediaId,
+      2000,
+      expect.any(String)
+    )
   })
 
   it('renders chronological Vietnamese evidence, filters it, and seeks the shared source', async () => {

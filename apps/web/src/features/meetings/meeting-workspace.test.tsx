@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { act, useState } from 'react'
 import {
   QueryClient,
   QueryClientProvider,
@@ -13,7 +13,11 @@ import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
-import { preferencesQueryKey } from '@/features/settings/preferences-api'
+import {
+  preferencesQueryKey,
+  type Preferences,
+} from '@/features/settings/preferences-api'
+import { resolveRegionalPreferences } from '@/features/settings/regional-preferences'
 import type { MeetingView } from './data/detail-api'
 import type { MeetingListResponse } from './data/list-api'
 import { LiveMeetingPage } from './live-meeting'
@@ -207,7 +211,10 @@ function workspaceMinutes(
   }
 }
 
-async function renderWorkspaceResults(minutes: unknown) {
+async function renderWorkspaceResults(
+  minutes: unknown,
+  regionalPreferences?: Preferences | Error
+) {
   const workspaceMeeting = {
     ...detail,
     id: workspaceMinutesMeetingId,
@@ -236,6 +243,10 @@ async function renderWorkspaceResults(minutes: unknown) {
     throw new Error(`Unexpected metadata GET ${url}`)
   })
   vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+    if (url === '/me/preferences' && regionalPreferences) {
+      if (regionalPreferences instanceof Error) throw regionalPreferences
+      return regionalPreferences
+    }
     if (url.endsWith('/media') || url.endsWith('/processing-jobs')) return []
     if (url.endsWith('/minutes')) {
       if (minutes instanceof Error) throw minutes
@@ -253,7 +264,13 @@ async function renderWorkspaceResults(minutes: unknown) {
   })
   const screen = await render(
     <QueryClientProvider client={queryClient}>
-      <MeetingWorkspacePage meetingId={workspaceMinutesMeetingId} />
+      {regionalPreferences ? (
+        <RegionalPresentationProvider>
+          <MeetingWorkspacePage meetingId={workspaceMinutesMeetingId} />
+        </RegionalPresentationProvider>
+      ) : (
+        <MeetingWorkspacePage meetingId={workspaceMinutesMeetingId} />
+      )}
     </QueryClientProvider>
   )
   return { screen, queryClient }
@@ -1009,6 +1026,98 @@ describe('MeetingWorkspacePage', () => {
     await expect
       .element(screen.getByText('Intelligence ready'))
       .not.toBeInTheDocument()
+  })
+
+  it('presents lifecycle and results timestamps using reactive regional preferences', async () => {
+    // Select a zone with a different wall-clock hour from the browser.
+    const timezone =
+      new Date(detail.createdAt).getHours() === 9
+        ? 'America/New_York'
+        : 'Asia/Tokyo'
+    const preferences = {
+      timezone,
+      locale: 'ja-JP',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    }
+    const { screen, queryClient } = await renderWorkspaceResults(
+      workspaceMinutes(),
+      preferences
+    )
+
+    async function expectTimestamps(timezone: string, locale: string) {
+      const formatter = new Intl.DateTimeFormat(locale, {
+        calendar: 'gregory',
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: timezone,
+      })
+      for (const value of [
+        detail.createdAt,
+        detail.updatedAt,
+        detail.startedAt,
+        detail.endedAt,
+      ]) {
+        const expected = formatter.format(new Date(value))
+        await expect
+          .element(screen.getByText(expected, { exact: true }))
+          .toBeInTheDocument()
+      }
+      await expect
+        .element(
+          screen.getByText(
+            `Meeting ended at ${formatter.format(new Date(detail.endedAt))}; no recording or processing result is inferred.`
+          )
+        )
+        .toBeInTheDocument()
+    }
+
+    await expectTimestamps(timezone, preferences.locale)
+    await act(async () => {
+      queryClient.setQueryData(preferencesQueryKey, {
+        ...preferences,
+        timezone: 'Pacific/Honolulu',
+        locale: 'en-GB',
+      })
+    })
+    await expectTimestamps('Pacific/Honolulu', 'en-GB')
+
+    // Unsupported stored values remain stored; presentation falls back.
+    const unsupported = {
+      ...preferences,
+      timezone: 'Mars/Olympus_Mons',
+      locale: 'zz-ZZ',
+    }
+    await act(async () => {
+      queryClient.setQueryData(preferencesQueryKey, unsupported)
+    })
+    const fallback = resolveRegionalPreferences(unsupported)
+    await expectTimestamps(fallback.timezone, fallback.locale)
+    expect(queryClient.getQueryData(preferencesQueryKey)).toEqual(unsupported)
+  })
+
+  it('keeps workspace timestamps available when preferences cannot be retrieved', async () => {
+    const { screen, queryClient } = await renderWorkspaceResults(
+      workspaceMinutes(),
+      new Error('Preferences unavailable')
+    )
+    await expect
+      .poll(() => queryClient.getQueryState(preferencesQueryKey)?.status)
+      .toBe('error')
+    const { timezone, locale } = resolveRegionalPreferences({
+      timezone: null,
+      locale: null,
+    })
+    const expected = new Intl.DateTimeFormat(locale, {
+      calendar: 'gregory',
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: timezone,
+    }).format(new Date(detail.createdAt))
+    await expect
+      .element(screen.getByText(expected, { exact: true }))
+      .toBeInTheDocument()
+    expect(queryClient.getQueryData(preferencesQueryKey)).toBeUndefined()
   })
 
   it('renders processing and review-required result states without treating them as available', async () => {
