@@ -11,13 +11,19 @@ export const myProfileSchema = z.object({
   primaryOrgUnitId: z.string().uuid().nullable(),
 })
 
-export const displayNameSchema = z.string().trim().min(1, 'Enter your name.').max(200)
+export const displayNameSchema = z
+  .string()
+  .trim()
+  .min(1, 'Enter your name.')
+  .max(200)
 export type MyProfile = z.infer<typeof myProfileSchema>
 export type ProfileSnapshot = { profile: MyProfile; etag: string }
 export const profileQueryKey = ['me', 'profile'] as const
 
 function validEtag(value: unknown): value is string {
-  return typeof value === 'string' && /^"[\x21\x23-\x7e\x80-\xff]*"$/.test(value)
+  return (
+    typeof value === 'string' && /^"[\x21\x23-\x7e\x80-\xff]*"$/.test(value)
+  )
 }
 
 function parseSnapshot(

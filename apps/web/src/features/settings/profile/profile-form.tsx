@@ -85,7 +85,7 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
   } = form
   const name = useWatch({ control: form.control, name: 'displayName' })
   const etag = useWatch({ control: form.control, name: 'etag' })
-  const [recovery, setRecovery] = useState(false)
+  const [recovery, setRecovery] = useState<'refresh' | 'review' | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const conflict = isDirty && etag !== snapshot.etag
 
@@ -100,10 +100,11 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
       await qc.cancelQueries({ queryKey: profileQueryKey })
       const latest = await qc.fetchQuery(myProfileQuery())
       requireSettingsSession(generation)
-      setRecovery(false)
+      setRecovery('review')
       return latest
     } catch (error) {
       if (isSettingsSessionCurrent(generation)) {
+        setRecovery('refresh')
         setError('root', { message: normalizeCoreApiError(error).message })
       }
       return undefined
@@ -134,7 +135,7 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
       if (!isSettingsSessionCurrent(generation)) return
       qc.setQueryData(profileQueryKey, updated)
       reset(draftOf(updated))
-      setRecovery(false)
+      setRecovery(null)
       toast.success('Profile updated')
       await qc.invalidateQueries({ queryKey: currentUserQueryKey })
     },
@@ -150,19 +151,14 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
         failure.kind === 'malformed' ||
         failure.isServerError
       ) {
-        setRecovery(true)
+        setRecovery('refresh')
         setError('root', {
           message:
             failure.status === 412 || failure.status === 428
               ? 'The profile version needs to be reviewed before saving.'
               : 'The save outcome could not be confirmed. Review the server value before retrying.',
         })
-        const latest = await reviewLatest(generation)
-        if (latest && isSettingsSessionCurrent(generation)) {
-          // Even when the ETag is unchanged, the user must explicitly review
-          // the authoritative response after an uncertain write.
-          setRecovery(true)
-        }
+        await reviewLatest(generation)
       } else {
         setError('root', { message: failure.message })
       }
@@ -179,19 +175,18 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
     .join('')
     .toUpperCase()
 
-  async function acceptLatest(keepDraft: boolean) {
-    const generation = settingsSessionGeneration()
-    const latest = await reviewLatest(generation)
-    if (!latest || !isSettingsSessionCurrent(generation)) return
+  function acceptLatest(keepDraft: boolean) {
+    // Accept the exact snapshot displayed to the user, never an unseen
+    // replacement fetched after the user has made their decision.
     const retained = form.getValues('displayName')
-    reset(draftOf(latest))
-    if (keepDraft && retained !== latest.profile.displayName) {
+    reset(draftOf(snapshot))
+    if (keepDraft && retained !== snapshot.profile.displayName) {
       setValue('displayName', retained, {
         shouldDirty: true,
         shouldValidate: true,
       })
     }
-    setRecovery(false)
+    setRecovery(null)
   }
 
   return (
@@ -199,7 +194,12 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
       <form
         className='max-w-xl space-y-6'
         onSubmit={form.handleSubmit((draft) => {
-          if (busy || recovery || conflict || draft.displayName === profile.displayName)
+          if (
+            busy ||
+            recovery ||
+            conflict ||
+            draft.displayName === profile.displayName
+          )
             return
           clearErrors()
           mutation.mutate({
@@ -215,11 +215,12 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
           </Avatar>
           <div className='min-w-0'>
             <p className='font-semibold break-words'>{profile.displayName}</p>
-            <p className='text-sm text-muted-foreground break-all'>
+            <p className='text-sm break-all text-muted-foreground'>
               {profile.email}
             </p>
             <p className='text-sm text-muted-foreground'>
-              {roleLabels[profile.globalRole]} · {statusLabels[profile.accountStatus]}
+              {roleLabels[profile.globalRole]} ·{' '}
+              {statusLabels[profile.accountStatus]}
             </p>
           </div>
         </div>
@@ -240,11 +241,17 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
           )}
         />
         <section className='space-y-4'>
-          <h3 className='text-sm font-medium'>Organization-managed information</h3>
+          <h3 className='text-sm font-medium'>
+            Organization-managed information
+          </h3>
           {[
             ['profile-email', 'Organization email', profile.email],
             ['profile-role', 'System role', roleLabels[profile.globalRole]],
-            ['profile-status', 'Account status', statusLabels[profile.accountStatus]],
+            [
+              'profile-status',
+              'Account status',
+              statusLabels[profile.accountStatus],
+            ],
           ].map(([id, label, value]) => (
             <div key={id} className='space-y-2'>
               <Label htmlFor={id}>{label}</Label>
@@ -252,7 +259,8 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
             </div>
           ))}
           <p className='text-sm text-muted-foreground'>
-            These values are managed by your organization and cannot be edited here.
+            These values are managed by your organization and cannot be edited
+            here.
           </p>
         </section>
         {form.formState.errors.root?.message && (
@@ -263,26 +271,43 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
         {(conflict || recovery) && (
           <section className='space-y-3 rounded-lg border p-4'>
             <h3 className='font-medium'>Review the latest profile</h3>
-            <p className='text-sm'>Latest retrieved name: {profile.displayName}</p>
+            <p className='text-sm'>
+              Latest retrieved name: {profile.displayName}
+            </p>
             <p className='text-sm'>Your draft: {name}</p>
             <p className='text-sm text-muted-foreground'>
               Refresh and review the saved value before another update.
             </p>
-            <Button
-              type='button'
-              variant='outline'
-              disabled={busy}
-              onClick={() => void acceptLatest(true)}
-            >
-              Review latest and keep my draft
-            </Button>
+            {recovery === 'refresh' ? (
+              <Button
+                type='button'
+                variant='outline'
+                disabled={busy}
+                onClick={() => void reviewLatest(settingsSessionGeneration())}
+              >
+                Refresh latest profile
+              </Button>
+            ) : (
+              <Button
+                type='button'
+                variant='outline'
+                disabled={busy}
+                onClick={() => acceptLatest(true)}
+              >
+                Keep my draft against this version
+              </Button>
+            )}
           </section>
         )}
         <div className='flex flex-wrap gap-2'>
           <Button
             type='submit'
             disabled={
-              busy || recovery || conflict || !isDirty || !isValid ||
+              busy ||
+              recovery ||
+              conflict ||
+              !isDirty ||
+              !isValid ||
               name.trim() === profile.displayName
             }
           >
@@ -291,9 +316,9 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
           <Button
             type='button'
             variant='outline'
-            disabled={busy || (!isDirty && !recovery)}
+            disabled={busy || recovery === 'refresh' || (!isDirty && !recovery)}
             onClick={() => {
-              if (recovery || conflict) void acceptLatest(false)
+              if (recovery || conflict) acceptLatest(false)
               else reset(draftOf(snapshot))
             }}
           >

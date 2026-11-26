@@ -77,7 +77,7 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
   const mutation = usePreferencesMutation()
   const timezone = useWatch({ control: form.control, name: 'timezone' })
   const locale = useWatch({ control: form.control, name: 'locale' })
-  const zones = useMemo(timezoneOptions, [])
+  const zones = useMemo(() => timezoneOptions(), [])
   const preview = resolveRegionalPreferences({ timezone, locale })
   const reference = new Date('2026-01-15T09:30:00Z')
   const changed =

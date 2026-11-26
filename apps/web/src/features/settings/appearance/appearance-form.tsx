@@ -106,7 +106,7 @@ export function AppearanceForm() {
                 className='grid max-w-2xl grid-cols-1 gap-4 pt-2 sm:grid-cols-3'
               >
                 <FormItem>
-                  <FormLabel className='flex-col [&:has([data-state=checked])>div]:border-primary [&:has(:focus-visible)>div]:ring-2 [&:has(:focus-visible)>div]:ring-ring'>
+                  <FormLabel className='flex-col [&:has(:focus-visible)>div]:ring-2 [&:has(:focus-visible)>div]:ring-ring [&:has([data-state=checked])>div]:border-primary'>
                     <FormControl>
                       <RadioGroupItem value='light' className='sr-only' />
                     </FormControl>
@@ -132,7 +132,7 @@ export function AppearanceForm() {
                   </FormLabel>
                 </FormItem>
                 <FormItem>
-                  <FormLabel className='flex-col [&:has([data-state=checked])>div]:border-primary [&:has(:focus-visible)>div]:ring-2 [&:has(:focus-visible)>div]:ring-ring'>
+                  <FormLabel className='flex-col [&:has(:focus-visible)>div]:ring-2 [&:has(:focus-visible)>div]:ring-ring [&:has([data-state=checked])>div]:border-primary'>
                     <FormControl>
                       <RadioGroupItem value='dark' className='sr-only' />
                     </FormControl>
@@ -158,7 +158,7 @@ export function AppearanceForm() {
                   </FormLabel>
                 </FormItem>
                 <FormItem>
-                  <FormLabel className='flex-col [&:has([data-state=checked])>div]:border-primary [&:has(:focus-visible)>div]:ring-2 [&:has(:focus-visible)>div]:ring-ring'>
+                  <FormLabel className='flex-col [&:has(:focus-visible)>div]:ring-2 [&:has(:focus-visible)>div]:ring-ring [&:has([data-state=checked])>div]:border-primary'>
                     <FormControl>
                       <RadioGroupItem value='system' className='sr-only' />
                     </FormControl>

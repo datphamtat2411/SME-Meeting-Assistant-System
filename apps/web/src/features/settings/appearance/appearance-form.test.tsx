@@ -1,7 +1,7 @@
+import { clearCookies } from '@/test-utils/cookies'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
-import { clearCookies } from '@/test-utils/cookies'
 import { getCookie } from '@/lib/cookies'
 import { FontProvider, useFont } from '@/context/font-provider'
 import { ThemeProvider, useTheme } from '@/context/theme-provider'
@@ -53,7 +53,9 @@ describe('Appearance draft and applied state', () => {
       .element(screen.getByRole('button', { name: 'Update preferences' }))
       .toBeDisabled()
     await userEvent.click(screen.getByRole('radio', { name: 'Dark' }))
-    await userEvent.click(screen.getByRole('button', { name: 'External light' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'External light' })
+    )
     await userEvent.click(screen.getByRole('button', { name: 'Discard' }))
     await expect
       .element(screen.getByRole('radio', { name: 'Light' }))

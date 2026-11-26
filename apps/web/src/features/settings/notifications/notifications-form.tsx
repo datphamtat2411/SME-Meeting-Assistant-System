@@ -8,17 +8,29 @@ import {
   preferencesQuery,
   usePreferencesMutation,
 } from '../preferences-api'
+import { isSettingsSessionCurrent } from '../settings-session'
 
 export function NotificationsForm() {
   const query = useQuery(preferencesQuery())
   const mutation = usePreferencesMutation()
-  function save(patch: { meetingEmailEnabled?: boolean; actionItemEmailEnabled?: boolean }) {
-    mutation.mutate(preferencesMutationInput(patch), {
-      onSuccess: () => toast.success('Notification preferences saved'),
-      onError: (error) =>
-        toast.error('Unable to save preferences', {
-          description: error instanceof Error ? error.message : undefined,
-        }),
+  function save(patch: {
+    meetingEmailEnabled?: boolean
+    actionItemEmailEnabled?: boolean
+  }) {
+    const input = preferencesMutationInput(patch)
+    mutation.mutate(input, {
+      onSuccess: () => {
+        if (isSettingsSessionCurrent(input.generation)) {
+          toast.success('Notification preferences saved')
+        }
+      },
+      onError: (error) => {
+        if (isSettingsSessionCurrent(input.generation)) {
+          toast.error('Unable to save preferences', {
+            description: error instanceof Error ? error.message : undefined,
+          })
+        }
+      },
     })
   }
   if (query.isPending) return <RequestLoading />
@@ -39,9 +51,7 @@ export function NotificationsForm() {
           id='meeting-email'
           checked={query.data.meetingEmailEnabled}
           disabled={mutation.isPending}
-          onCheckedChange={(value) =>
-            save({ meetingEmailEnabled: value })
-          }
+          onCheckedChange={(value) => save({ meetingEmailEnabled: value })}
         />
       </div>
       <div className='flex items-center justify-between gap-4 rounded-lg border p-4'>
@@ -55,9 +65,7 @@ export function NotificationsForm() {
           id='action-email'
           checked={query.data.actionItemEmailEnabled}
           disabled={mutation.isPending}
-          onCheckedChange={(value) =>
-            save({ actionItemEmailEnabled: value })
-          }
+          onCheckedChange={(value) => save({ actionItemEmailEnabled: value })}
         />
       </div>
     </div>

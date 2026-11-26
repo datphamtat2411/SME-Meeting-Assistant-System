@@ -263,6 +263,60 @@ describe('settings navigation and cleanup', () => {
     expect(showSubmittedData).not.toHaveBeenCalled()
   })
 
+  it('preserves a dirty profile and requires review after a stale update', async () => {
+    const read = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValue({
+        data: profile,
+        etag: '"profile-v1"',
+        meta: {},
+      })
+    const latest = { ...profile, displayName: 'Changed elsewhere' }
+    const patch = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockImplementationOnce(async () => {
+        read.mockResolvedValue({
+          data: latest,
+          etag: '"profile-v2"',
+          meta: {},
+        })
+        throw new CoreApiError({
+          message: 'Stale profile',
+          status: 412,
+          kind: 'http',
+        })
+      })
+      .mockResolvedValueOnce({
+        data: { ...profile, displayName: 'My draft' },
+        etag: '"profile-v3"',
+        meta: {},
+      })
+    const { screen } = await renderApiSettings(<ProfileForm />)
+    const name = screen.getByRole('textbox', { name: 'Display name' })
+    const save = screen.getByRole('button', { name: 'Save profile' })
+    await expect.element(name).toHaveValue(profile.displayName)
+    await userEvent.fill(name, 'My draft')
+    await userEvent.click(save)
+    await expect.element(name).toHaveValue('My draft')
+    await expect
+      .element(screen.getByText('Latest retrieved name: Changed elsewhere'))
+      .toBeVisible()
+    await expect.element(save).toBeDisabled()
+    expect(patch).toHaveBeenCalledTimes(1)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Keep my draft against this version' })
+    )
+    await expect.element(save).toBeEnabled()
+    await userEvent.click(save)
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenLastCalledWith(
+        '/me/profile',
+        { displayName: 'My draft' },
+        { headers: { 'If-Match': '"profile-v2"' } }
+      )
+    )
+  })
+
   it('persists account preferences and notification switches through the API', async () => {
     const get = mockSettingsReads()
     let saved = { ...preferences }
