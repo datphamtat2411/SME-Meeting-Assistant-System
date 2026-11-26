@@ -1,28 +1,26 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { RequestError, RequestLoading } from '@/components/request-state'
 import {
-  patchPreferences,
+  preferencesMutationInput,
   preferencesQuery,
-  type Preferences,
+  usePreferencesMutation,
 } from '../preferences-api'
 
 export function NotificationsForm() {
-  const qc = useQueryClient()
   const query = useQuery(preferencesQuery())
-  const mutation = useMutation({
-    mutationFn: (data: Partial<Preferences>) => patchPreferences(data),
-    onSuccess: (data) => {
-      qc.setQueryData(['me', 'preferences'], data)
-      toast.success('Notification preferences saved')
-    },
-    onError: (error) =>
-      toast.error('Unable to save preferences', {
-        description: error instanceof Error ? error.message : undefined,
-      }),
-  })
+  const mutation = usePreferencesMutation()
+  function save(patch: { meetingEmailEnabled?: boolean; actionItemEmailEnabled?: boolean }) {
+    mutation.mutate(preferencesMutationInput(patch), {
+      onSuccess: () => toast.success('Notification preferences saved'),
+      onError: (error) =>
+        toast.error('Unable to save preferences', {
+          description: error instanceof Error ? error.message : undefined,
+        }),
+    })
+  }
   if (query.isPending) return <RequestLoading />
   if (query.isError)
     return (
@@ -42,7 +40,7 @@ export function NotificationsForm() {
           checked={query.data.meetingEmailEnabled}
           disabled={mutation.isPending}
           onCheckedChange={(value) =>
-            mutation.mutate({ meetingEmailEnabled: value })
+            save({ meetingEmailEnabled: value })
           }
         />
       </div>
@@ -58,7 +56,7 @@ export function NotificationsForm() {
           checked={query.data.actionItemEmailEnabled}
           disabled={mutation.isPending}
           onCheckedChange={(value) =>
-            mutation.mutate({ actionItemEmailEnabled: value })
+            save({ actionItemEmailEnabled: value })
           }
         />
       </div>

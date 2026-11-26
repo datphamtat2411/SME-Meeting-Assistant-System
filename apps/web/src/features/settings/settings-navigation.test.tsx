@@ -196,11 +196,11 @@ describe('settings navigation and cleanup', () => {
       .element(screen.getByRole('textbox', { name: 'Organization email' }))
       .toHaveValue('employee@example.com')
     await expect
-      .element(screen.getByRole('textbox', { name: 'IANA timezone' }))
-      .toHaveValue('Asia/Ho_Chi_Minh')
+      .element(screen.getByRole('combobox', { name: 'Time zone' }))
+      .toHaveTextContent('Asia/Ho Chi Minh')
     await expect
-      .element(screen.getByRole('textbox', { name: 'Language / locale' }))
-      .toHaveValue('vi-VN')
+      .element(screen.getByRole('combobox', { name: 'Regional format' }))
+      .toHaveTextContent('vi-VN')
     await expect
       .element(screen.getByRole('switch', { name: 'Meeting emails' }))
       .toHaveAttribute('aria-checked', 'true')
@@ -264,14 +264,14 @@ describe('settings navigation and cleanup', () => {
   })
 
   it('persists account preferences and notification switches through the API', async () => {
-    mockSettingsReads()
+    const get = mockSettingsReads()
+    let saved = { ...preferences }
+    get.mockImplementation(() => Promise.resolve(saved) as never)
     const patch = vi.spyOn(coreApi, 'patch')
     patch.mockImplementation((url, value) => {
       if (url === '/me/preferences') {
-        return Promise.resolve({
-          ...preferences,
-          ...(value as object),
-        }) as never
+        saved = { ...saved, ...(value as object) }
+        return Promise.resolve(saved) as never
       }
       return Promise.reject(new Error('Unexpected PATCH: ' + url)) as never
     })
@@ -281,16 +281,16 @@ describe('settings navigation and cleanup', () => {
         <NotificationsForm />
       </>
     )
-    const locale = screen.getByRole('textbox', { name: 'Language / locale' })
+    const locale = screen.getByRole('combobox', { name: 'Regional format' })
 
-    await expect.element(locale).toHaveValue('vi-VN')
-    await userEvent.fill(locale, 'en-US')
+    await expect.element(locale).toHaveTextContent('vi-VN')
+    await userEvent.click(locale)
+    await userEvent.click(screen.getByRole('option', { name: /en-US/ }))
     await userEvent.click(
       screen.getByRole('button', { name: 'Save preferences' })
     )
     await vi.waitFor(() =>
       expect(patch).toHaveBeenCalledWith('/me/preferences', {
-        timezone: 'Asia/Ho_Chi_Minh',
         locale: 'en-US',
       })
     )
