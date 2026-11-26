@@ -293,8 +293,8 @@ export function MinutesPanel({
                   <p className='mt-2 text-xs text-muted-foreground'>
                     {item.sourceType} · Assignee: {person(item.assigneeUserId)}{' '}
                     · due{' '}
-                    <RegionalCivilDate value={item.dueDate} fallback='none' />{' '}
-                    · version {item.version}
+                    <RegionalCivilDate value={item.dueDate} fallback='none' /> ·
+                    version {item.version}
                   </p>
                 </article>
               ))}
