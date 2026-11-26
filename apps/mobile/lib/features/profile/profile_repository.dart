@@ -20,23 +20,21 @@ enum ProfileFailureCategory {
 enum ProfileMutationOutcome { notDispatched, rejected, unknown, confirmed }
 
 class ProfileFailure extends ApiFailure {
-  ProfileFailure(
-    ApiFailure source, {
-    required this.outcome,
-  }) : category = _category(source),
-       super(
-         source.status,
-         source.code,
-         source.message,
-         requestId: source.requestId,
-         responseRequestId: source.responseRequestId,
-         timestamp: source.timestamp,
-         errors: source.errors,
-         retryAfter: source.retryAfter,
-         headers: source.headers,
-         isTransportFailure: source.isTransportFailure,
-         remoteOutcomeAmbiguous: source.remoteOutcomeAmbiguous,
-       );
+  ProfileFailure(ApiFailure source, {required this.outcome})
+    : category = _category(source),
+      super(
+        source.status,
+        source.code,
+        source.message,
+        requestId: source.requestId,
+        responseRequestId: source.responseRequestId,
+        timestamp: source.timestamp,
+        errors: source.errors,
+        retryAfter: source.retryAfter,
+        headers: source.headers,
+        isTransportFailure: source.isTransportFailure,
+        remoteOutcomeAmbiguous: source.remoteOutcomeAmbiguous,
+      );
 
   final ProfileFailureCategory category;
   final ProfileMutationOutcome outcome;
@@ -88,12 +86,11 @@ class ProfileRepository {
 
   final ApiClient api;
 
-  Future<ProfileSnapshot> profile(AuthenticatedSessionScope scope) =>
-      _request(
-        scope,
-        () => api.get('/me/profile', sessionScope: scope),
-        (response) => ProfileSnapshot.fromResult(response, scope),
-      );
+  Future<ProfileSnapshot> profile(AuthenticatedSessionScope scope) => _request(
+    scope,
+    () => api.get('/me/profile', sessionScope: scope),
+    (response) => ProfileSnapshot.fromResult(response, scope),
+  );
 
   Future<ProfileSnapshot> updateName(
     ProfileSnapshot original,

@@ -208,10 +208,7 @@ void main() {
       expect(jsonDecode((request as http.Request).body), {
         'meetingEmailEnabled': false,
       });
-      return jsonResponse(
-        200,
-        successEnvelope(_preferences(meeting: false)),
-      );
+      return jsonResponse(200, successEnvelope(_preferences(meeting: false)));
     });
     final controller = PreferencesController(ProfileRepository(api: api));
     addTearDown(controller.dispose);
@@ -221,9 +218,7 @@ void main() {
     expect(identical(first, second), isTrue);
     await started.future;
     expect(await controller.updateMeetingEmail(false), isTrue);
-    delayed.complete(
-      await jsonResponse(200, successEnvelope(_preferences())),
-    );
+    delayed.complete(await jsonResponse(200, successEnvelope(_preferences())));
     await first;
     expect(controller.snapshot!.preferences.meetingEmailEnabled, isFalse);
     expect(reads, 2);
@@ -263,9 +258,7 @@ void main() {
     await started.future;
     await api.signOut();
     await api.signIn('user@example.test', 'password');
-    delayed.complete(
-      await jsonResponse(200, successEnvelope(_preferences())),
-    );
+    delayed.complete(await jsonResponse(200, successEnvelope(_preferences())));
     await pending;
     expect(controller.current, isFalse);
     expect(controller.snapshot, isNull);

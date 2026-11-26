@@ -106,7 +106,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     appearance.initialize();
   }
 
-   @override
+  @override
   void dispose() {
     appearance.dispose();
     widget.dependencies.dispose();

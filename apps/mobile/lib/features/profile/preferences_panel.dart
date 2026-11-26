@@ -114,7 +114,9 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
               SwitchListTile.adaptive(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('Email công việc'),
-                subtitle: const Text('Thông báo phân công và thay đổi đầu việc'),
+                subtitle: const Text(
+                  'Thông báo phân công và thay đổi đầu việc',
+                ),
                 value: prefs.actionItemEmailEnabled,
                 onChanged: !controller.canMutate
                     ? null
@@ -123,7 +125,10 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
               const Divider(),
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.public_outlined, color: Palette.muted),
+                leading: const Icon(
+                  Icons.public_outlined,
+                  color: Palette.muted,
+                ),
                 title: const Text('Múi giờ'),
                 subtitle: Text(prefs.timezone ?? 'Theo hệ thống'),
                 trailing: const Icon(Icons.chevron_right),
@@ -144,7 +149,10 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
               const Divider(),
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.language_outlined, color: Palette.muted),
+                leading: const Icon(
+                  Icons.language_outlined,
+                  color: Palette.muted,
+                ),
                 title: const Text('Ngôn ngữ ưu tiên'),
                 subtitle: Text(prefs.locale ?? 'Theo hệ thống'),
                 trailing: const Icon(Icons.chevron_right),
@@ -153,7 +161,10 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
                     : () => choose(
                         update: controller.updateLocale,
                         title: 'Ngôn ngữ ưu tiên',
-                        options: const {'vi-VN': 'Tiếng Việt', 'en-US': 'English'},
+                        options: const {
+                          'vi-VN': 'Tiếng Việt',
+                          'en-US': 'English',
+                        },
                       ),
               ),
               const Padding(

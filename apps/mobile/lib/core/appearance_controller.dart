@@ -2,7 +2,14 @@ import 'package:flutter/material.dart';
 
 import 'appearance_preferences.dart';
 
-enum AppearancePersistenceStatus { idle, restoring, restoreFailed, saving, saved, failed }
+enum AppearancePersistenceStatus {
+  idle,
+  restoring,
+  restoreFailed,
+  saving,
+  saved,
+  failed,
+}
 
 class AppearanceController extends ChangeNotifier {
   final AppearancePreferences preferences;

@@ -71,7 +71,11 @@ class _ProfilePageState extends State<ProfilePage> {
     if (value.isEmpty || value.length > 200) {
       showFailure(
         context,
-        const ApiFailure(422, 'PROFILE_INVALID_NAME', 'Tên hiển thị không hợp lệ.'),
+        const ApiFailure(
+          422,
+          'PROFILE_INVALID_NAME',
+          'Tên hiển thị không hợp lệ.',
+        ),
       );
       return;
     }
@@ -101,7 +105,11 @@ class _ProfilePageState extends State<ProfilePage> {
     } else {
       showFailure(
         context,
-        const ApiFailure(412, 'PROFILE_CHANGED', 'Hồ sơ đã thay đổi. Vui lòng mở lại.'),
+        const ApiFailure(
+          412,
+          'PROFILE_CHANGED',
+          'Hồ sơ đã thay đổi. Vui lòng mở lại.',
+        ),
       );
     }
   }
@@ -179,7 +187,9 @@ class _ProfilePageState extends State<ProfilePage> {
                         ),
                       ),
                       IconButton(
-                        onPressed: controller.canMutate ? () => editName(response) : null,
+                        onPressed: controller.canMutate
+                            ? () => editName(response)
+                            : null,
                         icon: const Icon(Icons.edit_outlined),
                       ),
                     ],
@@ -187,9 +197,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   const Divider(height: 26),
                   Text('Vai trò: ${account.globalRole.name}'),
                   const SizedBox(height: 6),
-                  Text(
-                    'Trạng thái: ${account.accountStatus.name}',
-                  ),
+                  Text('Trạng thái: ${account.accountStatus.name}'),
                 ],
               ),
             );

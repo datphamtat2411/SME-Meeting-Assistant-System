@@ -31,7 +31,10 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(controller.mode, ThemeMode.system);
-    expect(controller.persistenceStatus, AppearancePersistenceStatus.restoreFailed);
+    expect(
+      controller.persistenceStatus,
+      AppearancePersistenceStatus.restoreFailed,
+    );
     controller.dispose();
   });
 
