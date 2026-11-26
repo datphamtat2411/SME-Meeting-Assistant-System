@@ -28,6 +28,130 @@ Future<String?> _readRefreshCredential(CredentialStorage storage) async =>
     ).read()).refreshToken;
 
 void main() {
+  testWidgets('recovery acknowledges neutrally and preserves resend cooldown', (
+    tester,
+  ) async {
+    final client = _authClient();
+    final harness = _Harness.create(client, InMemoryCredentialStorage());
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'login ready',
+    );
+    await tester.ensureVisible(find.text('Quên mật khẩu?'));
+    await tester.tap(find.text('Quên mật khẩu?'));
+    await tester.pump();
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'unknown@example.test',
+    );
+    final submit = find.widgetWithText(FilledButton, 'Gửi yêu cầu');
+    await tester.ensureVisible(submit);
+    await tester.tap(submit);
+    await pumpUntil(
+      tester,
+      () => find.text('Kiểm tra email').evaluate().isNotEmpty,
+      reason: 'neutral acknowledgement',
+    );
+    expect(find.textContaining('Nếu tài khoản đủ điều kiện'), findsOneWidget);
+    expect(find.byType(TextFormField), findsNothing);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Gửi lại yêu cầu'),
+          )
+          .onPressed,
+      isNull,
+    );
+    await tester.ensureVisible(find.text('Sử dụng email khác'));
+    await tester.tap(find.text('Sử dụng email khác'));
+    await tester.pump();
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'other@example.test',
+    );
+    expect(tester.widget<FilledButton>(submit).onPressed, isNull);
+    expect(
+      client.requests.where(
+        (request) => request.url.path.endsWith('/auth/password-recovery'),
+      ),
+      hasLength(1),
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final reset in [true, false]) {
+    for (final status in [200, 503, 404]) {
+      testWidgets('credential terminal outcome: reset=$reset HTTP $status', (
+        tester,
+      ) async {
+        final client = _authClient(credentialStatus: status);
+        final harness = _Harness.create(client, InMemoryCredentialStorage());
+        await tester.pumpWidget(
+          MeetingAssistantApp(dependencies: harness.dependencies),
+        );
+        await pumpUntil(
+          tester,
+          () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+          reason: 'login ready',
+        );
+        final entry = find.text(
+          reset
+              ? 'Đã có mã khôi phục?'
+              : 'Đã nhận lời mời? Kích hoạt tài khoản',
+        );
+        await tester.ensureVisible(entry);
+        await tester.tap(entry);
+        await tester.pump();
+        final fields = find.byType(TextFormField);
+        const password = '  Mật khẩu mới 🔐  ';
+        await tester.enterText(fields.at(0), 'opaque+/=');
+        await tester.enterText(fields.at(1), password);
+        await tester.enterText(fields.at(2), password);
+        final submit = find.widgetWithText(FilledButton, 'Xác nhận');
+        await tester.ensureVisible(submit);
+        await tester.tap(submit);
+        final title = status == 503
+            ? 'Chưa xác nhận được kết quả'
+            : status == 404
+            ? 'Tính năng hiện không khả dụng'
+            : reset
+            ? 'Đặt lại mật khẩu thành công'
+            : 'Kích hoạt tài khoản thành công';
+        await pumpUntil(
+          tester,
+          () => find.text(title).evaluate().isNotEmpty,
+          reason: 'terminal credential outcome',
+        );
+        expect(fields, findsNothing);
+        expect(submit, findsNothing);
+        final requests = client.requests
+            .where(
+              (request) => request.url.path.endsWith(
+                reset ? '/auth/password-reset' : '/auth/account-setup',
+              ),
+            )
+            .toList();
+        expect(requests, hasLength(1));
+        expect(jsonDecode((requests.single as http.Request).body), {
+          'token': 'opaque+/=',
+          'password': password,
+        });
+        expect(harness.api.sessionState.phase, AuthSessionPhase.unauthenticated);
+        final continuation = find.text('Tiếp tục đăng nhập');
+        await tester.ensureVisible(continuation);
+        await tester.tap(continuation);
+        await tester.pump();
+        expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
+        expect(client.requests.where((r) => r.url.path.endsWith('/auth/login')), isEmpty);
+        await tester.pumpWidget(const SizedBox.shrink());
+      });
+    }
+  }
+
   testWidgets('shows a safe configuration failure', (tester) async {
     await tester.pumpWidget(
       const ConfigurationErrorApp(
@@ -1029,6 +1153,7 @@ RecordingHttpClient _authClient({
   int? loginStatus,
   int? logoutStatus,
   bool recoveryThrottle = false,
+  int credentialStatus = 200,
   Completer<void>? reconciliationRequested,
   Completer<http.StreamedResponse>? reconciliationResponse,
   Completer<void>? identityRequested,
@@ -1051,6 +1176,30 @@ RecordingHttpClient _authClient({
           'content-type': 'application/json',
           'retry-after': '45',
         },
+      );
+    }
+    if (path.endsWith('/auth/password-recovery') ||
+        path.endsWith('/auth/password-reset') ||
+        path.endsWith('/auth/account-setup')) {
+      expect(request.headers['X-Auth-Transport'], isNull);
+      expect(request.headers['Authorization'], isNull);
+      expect(request.headers['Cookie'], isNull);
+      if (credentialStatus != 200) {
+        return jsonResponse(
+          credentialStatus,
+          errorEnvelope(
+            credentialStatus == 404 ? 'RESOURCE_NOT_FOUND' : 'SERVICE_UNAVAILABLE',
+            'Private server feedback.',
+          ),
+        );
+      }
+      return jsonResponse(
+        200,
+        successEnvelope(
+          path.endsWith('/auth/account-setup')
+              ? null
+              : {'message': 'Acknowledged.'},
+        ),
       );
     }
     expect(request.headers['X-Auth-Transport'], 'mobile');

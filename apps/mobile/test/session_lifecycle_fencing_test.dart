@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
+import 'package:sme_meeting_assistant/features/auth/account_flow.dart';
+import 'package:sme_meeting_assistant/features/auth/credential_workflow.dart';
 
 import 'support/http_test_support.dart';
 
@@ -11,6 +13,135 @@ const _userA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const _userB = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 void main() {
+  for (final resetStatus in [200, 503]) {
+    for (final identityStatus in [200, 401, 403, 503]) {
+      test(
+        'reset $resetStatus and verification $identityStatus stay independent',
+        () async {
+          final client = _SessionRaceClient()
+            ..delaySecondIdentity = true
+            ..resetStatus = resetStatus;
+          final api = _api(client);
+          addTearDown(api.dispose);
+          await _signIn(api);
+          final oldScope = api.authenticatedSessionScope!;
+          final owner = CredentialWorkflowOwner(api);
+          addTearDown(owner.dispose);
+          final attempt = owner.begin(AccountOperation.reset);
+          final submission = AccountSubmissionController(AccountOperation.reset);
+          addTearDown(submission.dispose);
+          await owner.submit(attempt, submission, 'opaque', 'new password 123');
+          await client.delayedIdentityStarted.future;
+          expect(api.authenticatedSessionScope, isNull);
+          expect(api.isCurrentAuthenticatedSession(oldScope), isFalse);
+          final kind = resetStatus == 200
+              ? CredentialOutcomeKind.completed
+              : CredentialOutcomeKind.uncertain;
+          expect(owner.outcome?.kind, kind);
+          final verificationFinished = Completer<void>();
+          void observe() {
+            if (api.sessionState.phase != AuthSessionPhase.verifyingIdentity &&
+                !verificationFinished.isCompleted) {
+              verificationFinished.complete();
+            }
+          }
+
+          api.addListener(observe);
+          client.delayedIdentityResponse.complete(
+            identityStatus == 200
+                ? jsonResponse(200, successEnvelope(_identity(_userA)))
+                : jsonResponse(
+                    identityStatus,
+                    errorEnvelope(
+                      identityStatus == 401
+                          ? 'AUTH_REQUIRED'
+                          : identityStatus == 403
+                          ? 'AUTHZ_FORBIDDEN'
+                          : 'SERVICE_UNAVAILABLE',
+                      'Unavailable.',
+                    ),
+                  ),
+          );
+          await verificationFinished.future;
+          api.removeListener(observe);
+          expect(owner.outcome?.kind, kind);
+          expect(api.sessionState.isAuthenticated, identityStatus == 200);
+          if (identityStatus == 503) {
+            expect(api.sessionState.canRetryIdentityVerification, isTrue);
+            await api.retryIdentityVerification();
+            expect(api.sessionState.isAuthenticated, isTrue);
+            expect(owner.outcome?.kind, kind);
+          }
+          expect(client.loginCount, 1);
+          expect(client.resetCount, 1);
+        },
+      );
+    }
+  }
+
+  test('abandoned reset still gates the current session', () async {
+    final client = _SessionRaceClient()
+      ..delayReset = true
+      ..delaySecondIdentity = true;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await _signIn(api);
+    final owner = CredentialWorkflowOwner(api);
+    addTearDown(owner.dispose);
+    final attempt = owner.begin(AccountOperation.reset);
+    final submission = AccountSubmissionController(AccountOperation.reset);
+    final pending = owner.submit(attempt, submission, 'opaque', 'password');
+    await client.resetStarted.future;
+    owner.abandon(attempt);
+    submission.dispose();
+    client.resetResponse.complete(
+      jsonResponse(200, successEnvelope({'message': 'acknowledged'})),
+    );
+    await pending;
+    await client.delayedIdentityStarted.future;
+    expect(api.authenticatedSessionScope, isNull);
+    expect(owner.outcome, isNull);
+    client.completeDelayedIdentity();
+    final finished = Completer<void>();
+    void observe() {
+      if (api.sessionState.isAuthenticated && !finished.isCompleted) {
+        finished.complete();
+      }
+    }
+
+    api.addListener(observe);
+    observe();
+    await finished.future;
+    api.removeListener(observe);
+    expect(owner.outcome, isNull);
+    expect(client.resetCount, 1);
+  });
+
+  test('setup and rejected reset do not reconcile an unrelated session', () async {
+    final client = _SessionRaceClient()..resetStatus = 422;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await _signIn(api);
+    final scope = api.authenticatedSessionScope;
+    final owner = CredentialWorkflowOwner(api);
+    addTearDown(owner.dispose);
+    final reset = owner.begin(AccountOperation.reset);
+    final resetSubmission = AccountSubmissionController(AccountOperation.reset);
+    addTearDown(resetSubmission.dispose);
+    await owner.submit(reset, resetSubmission, 'opaque', 'password');
+    expect(resetSubmission.failure?.kind, AccountFailureKind.rejected);
+    expect(owner.outcome, isNull);
+    owner.abandon(reset);
+    final setup = owner.begin(AccountOperation.setup);
+    final setupSubmission = AccountSubmissionController(AccountOperation.setup);
+    addTearDown(setupSubmission.dispose);
+    await owner.submit(setup, setupSubmission, 'opaque', 'password');
+    expect(owner.outcome?.kind, CredentialOutcomeKind.completed);
+    expect(api.authenticatedSessionScope, scope);
+    expect(client.identityCount, 1);
+    expect(client.loginCount, 1);
+  });
+
   for (final status in <int>[200, 503]) {
     test(
       'a response from session A cannot reach session B (HTTP $status)',
@@ -332,11 +463,39 @@ class _SessionRaceClient extends http.BaseClient {
   int loginCount = 0;
   int refreshCount = 0;
   int identityCount = 0;
+  int resetStatus = 200;
+  int resetCount = 0;
+  bool delayReset = false;
+  final resetStarted = Completer<void>();
+  final resetResponse = Completer<http.StreamedResponse>();
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     requests.add(request);
     final path = request.url.path;
+    if (path.endsWith('/auth/password-reset')) {
+      resetCount++;
+      expect(request.headers['Authorization'], isNull);
+      if (delayReset) {
+        resetStarted.complete();
+        return resetResponse.future;
+      }
+      return resetStatus == 200
+          ? jsonResponse(200, successEnvelope({'message': 'acknowledged'}))
+          : jsonResponse(
+              resetStatus,
+              errorEnvelope(
+                resetStatus == 422
+                    ? 'VALIDATION_FAILED'
+                    : 'SERVICE_UNAVAILABLE',
+                'Rejected.',
+              ),
+            );
+    }
+    if (path.endsWith('/auth/account-setup')) {
+      expect(request.headers['Authorization'], isNull);
+      return jsonResponse(200, successEnvelope(null));
+    }
     if (path.endsWith('/auth/login')) {
       loginCount++;
       return jsonResponse(

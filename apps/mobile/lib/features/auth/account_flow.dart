@@ -81,7 +81,7 @@ class AccountFlowFailure {
         : null;
     final message = switch (kind) {
       AccountFailureKind.throttled =>
-        'Máy chủ đang giới hạn yêu cầu. Vui lòng chờ trước khi thử lại.',
+        'Máy chủ đang giới hạn yêu cầu. Vui lòng thử lại khi phù hợp.',
       AccountFailureKind.unavailable => 'Tính năng hiện không khả dụng. Vui lòng thử lại sau hoặc liên hệ quản trị viên.',
       AccountFailureKind.uncertain =>
         operation == AccountOperation.recovery
@@ -118,7 +118,28 @@ class AccountRetryDeadlines extends ChangeNotifier {
   final _deadlines = <AccountOperation, DateTime>{};
   bool _disposed = false;
 
-  DateTime? deadlineFor(AccountOperation operation) => _deadlines[operation];
+  DateTime? _recoveryAcknowledgedUntil;
+
+  DateTime? serverDeadlineFor(AccountOperation operation) =>
+      _deadlines[operation];
+
+  DateTime? deadlineFor(AccountOperation operation) {
+    final server = serverDeadlineFor(operation);
+    final local = operation == AccountOperation.recovery
+        ? _recoveryAcknowledgedUntil
+        : null;
+    if (local == null) return server;
+    return server == null || local.isAfter(server) ? local : server;
+  }
+
+  void acknowledgeRecovery(DateTime now) {
+    if (_disposed) return;
+    final deadline = now.add(const Duration(seconds: 60));
+    final previous = _recoveryAcknowledgedUntil;
+    if (previous != null && !deadline.isAfter(previous)) return;
+    _recoveryAcknowledgedUntil = deadline;
+    notifyListeners();
+  }
 
   void retain(AccountOperation operation, DateTime? deadline, DateTime now) {
     if (_disposed || deadline == null || !deadline.isAfter(now)) return;
@@ -132,6 +153,7 @@ class AccountRetryDeadlines extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _deadlines.clear();
+    _recoveryAcknowledgedUntil = null;
     super.dispose();
   }
 }
@@ -171,6 +193,24 @@ class AccountSubmissionController extends ChangeNotifier {
         : Duration.zero;
   }
 
+  String? get retryFeedback {
+    final remaining = retryRemaining;
+    if (remaining > Duration.zero) {
+      final seconds = (remaining.inMilliseconds / 1000).ceil();
+      final server = _retryDeadlines.serverDeadlineFor(operation);
+      final message = server != null && server.isAfter(_now())
+          ? 'Máy chủ đang giới hạn yêu cầu.'
+          : 'Vui lòng chờ trước khi gửi lại yêu cầu.';
+      return '$message Còn $seconds giây.';
+    }
+    if (_failure?.kind == AccountFailureKind.throttled) {
+      return _failure?.retryAt != null
+          ? 'Bạn có thể thử gửi lại yêu cầu.'
+          : _failure?.message;
+    }
+    return null;
+  }
+
   bool get canSubmit {
     if (_disposed || isSubmitting || isCompleted) return false;
     if (retryRemaining > Duration.zero) return false;
@@ -182,27 +222,40 @@ class AccountSubmissionController extends ChangeNotifier {
     return true;
   }
 
-  Future<void> submit(Future<void> Function() dispatch) async {
+  Future<void> submit(
+    Future<void> Function() dispatch, {
+    void Function(AccountFlowFailure? failure)? onSettled,
+  }) async {
     if (!canSubmit) return;
     _retryTimer?.cancel();
     _failure = null;
     _phase = AccountSubmissionPhase.submitting;
     notifyListeners();
+    AccountFlowFailure? settledFailure;
     try {
       await dispatch();
-      if (_disposed) return;
-      _phase = AccountSubmissionPhase.completed;
     } catch (error) {
-      final now = _now();
-      final failure = AccountFlowFailure.classify(error, operation, now: now);
-      if (!_disposed) {
-        _failure = failure;
-        _phase = AccountSubmissionPhase.failed;
-      }
-      // A late response still carries a real throttle restriction for this
-      // flow, even if its original presentation has been replaced.
-      _retryDeadlines.retain(operation, failure.retryAt, now);
+      settledFailure = AccountFlowFailure.classify(
+        error,
+        operation,
+        now: _now(),
+      );
     }
+    if (!_disposed) {
+      _failure = settledFailure;
+      _phase = settledFailure == null
+          ? AccountSubmissionPhase.completed
+          : AccountSubmissionPhase.failed;
+    }
+    if (settledFailure == null && operation == AccountOperation.recovery) {
+      _retryDeadlines.acknowledgeRecovery(_now());
+    } else if (settledFailure != null) {
+      // A late response can still carry a real retry restriction.
+      _retryDeadlines.retain(operation, settledFailure.retryAt, _now());
+    }
+    // Security side effects belong to the dispatched operation, not the form.
+    // Never classify their results as the outcome of the original mutation.
+    onSettled?.call(settledFailure);
     if (!_disposed) notifyListeners();
   }
 
@@ -210,7 +263,10 @@ class AccountSubmissionController extends ChangeNotifier {
     _retryTimer?.cancel();
     final remaining = retryRemaining;
     if (remaining > Duration.zero) {
-      _retryTimer = Timer(remaining, () {
+      final tick = remaining > const Duration(seconds: 1)
+          ? const Duration(seconds: 1)
+          : remaining;
+      _retryTimer = Timer(tick, () {
         if (_disposed) return;
         _scheduleRetry();
         notifyListeners();

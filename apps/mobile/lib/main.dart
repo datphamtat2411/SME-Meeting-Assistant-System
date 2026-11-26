@@ -7,7 +7,10 @@ import 'core/app_config.dart';
 import 'core/app_dependencies.dart';
 import 'core/app_theme.dart';
 import 'core/appearance_controller.dart';
+import 'features/auth/account_forms.dart';
+import 'features/auth/auth_form_widgets.dart';
 import 'features/auth/auth_page.dart';
+import 'features/auth/credential_workflow.dart';
 import 'features/dashboard/dashboard_page.dart';
 import 'features/meetings/meetings_page.dart';
 import 'features/meetings/meeting_detail_page.dart';
@@ -86,6 +89,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
   AuthenticatedSessionScope? _navigationScope;
   bool _openingRecording = false;
   late final ApiClient api = widget.dependencies.api;
+  late final _credentialWorkflows = CredentialWorkflowOwner(api);
   late final AppearanceController appearance = AppearanceController(
     preferences: widget.dependencies.appearancePreferences,
   );
@@ -97,6 +101,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     api,
     appearance,
     widget.dependencies.recording,
+    _credentialWorkflows,
   ]);
 
   @override
@@ -110,6 +115,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
 
   @override
   void dispose() {
+    _credentialWorkflows.dispose();
     appearance.dispose();
     widget.dependencies.dispose();
     super.dispose();
@@ -208,17 +214,27 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
 
   Widget _sessionHome() {
     final session = api.sessionState;
+    final outcome = _credentialWorkflows.outcome;
+    if (session.isAuthenticated && outcome != null) {
+      return AuthLayout(
+        child: CredentialOutcomeView(
+          outcome: outcome,
+          authenticated: true,
+          onContinue: _credentialWorkflows.dismiss,
+        ),
+      );
+    }
     return switch (session.phase) {
       AuthSessionPhase.initializing => const StartupProgressView(),
       AuthSessionPhase.verifyingIdentity || AuthSessionPhase.signingIn =>
         api.sessionCoordinator.isInteractiveSignIn
-            ? AuthPage(api: api)
+            ? AuthPage(api: api, credentialWorkflows: _credentialWorkflows)
             : const StartupProgressView(message: 'Đang xác minh danh tính...'),
       AuthSessionPhase.signingOut => const StartupProgressView(
         message: 'Đang đăng xuất...',
       ),
       AuthSessionPhase.unauthenticated ||
-      AuthSessionPhase.reauthenticationRequired => AuthPage(api: api),
+      AuthSessionPhase.reauthenticationRequired => AuthPage(api: api, credentialWorkflows: _credentialWorkflows),
       AuthSessionPhase.recoverableFailure => _recoverableSessionView(session),
       AuthSessionPhase.authenticated => AppShell(
         key: ValueKey(api.authenticatedSessionScope),
@@ -251,9 +267,19 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     }
     if (session.canRetrySessionRestore ||
         session.canRetryIdentityVerification) {
-      return SessionRestoreFailureView(api: api);
+      final outcome = _credentialWorkflows.outcome;
+      return SessionRestoreFailureView(
+        api: api,
+        mutationNotice: switch (outcome?.kind) {
+          CredentialOutcomeKind.completed =>
+            'Thao tác tài khoản đã hoàn tất. Cần xác minh lại phiên đăng nhập.',
+          CredentialOutcomeKind.uncertain =>
+            'Thao tác tài khoản có thể đã hoàn tất. Cần xác minh lại phiên đăng nhập.',
+          _ => null,
+        },
+      );
     }
-    return AuthPage(api: api);
+    return AuthPage(api: api, credentialWorkflows: _credentialWorkflows);
   }
 }
 
@@ -330,8 +356,13 @@ class StartupFailureView extends StatelessWidget {
 
 class SessionRestoreFailureView extends StatelessWidget {
   final ApiClient api;
+  final String? mutationNotice;
 
-  const SessionRestoreFailureView({super.key, required this.api});
+  const SessionRestoreFailureView({
+    super.key,
+    required this.api,
+    this.mutationNotice,
+  });
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -356,6 +387,10 @@ class SessionRestoreFailureView extends StatelessWidget {
                   _recoveryMessage(api.sessionState),
                   textAlign: TextAlign.center,
                 ),
+                if (mutationNotice != null) ...[
+                  const SizedBox(height: 12),
+                  Text(mutationNotice!, textAlign: TextAlign.center),
+                ],
                 const SizedBox(height: 16),
                 FilledButton.icon(
                   onPressed: () => _retry(context),

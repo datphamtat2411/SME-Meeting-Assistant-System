@@ -5,8 +5,9 @@ import '../../core/api_client.dart';
 import '../../core/widgets.dart';
 import 'account_flow.dart';
 import 'auth_form_widgets.dart';
+import 'credential_workflow.dart';
 
-/// Maintains the existing recovery entry point until Wave 02 completes the UX.
+/// Recovery owns the email and acknowledgement for one public workflow.
 class RecoveryRequestForm extends StatefulWidget {
   const RecoveryRequestForm({
     super.key,
@@ -31,12 +32,40 @@ class _RecoveryRequestFormState extends State<RecoveryRequestForm> {
     retryDeadlines: widget.retryDeadlines,
   );
 
+  String? _acknowledgedEmail;
+  bool _editingEmail = true;
+
+  Future<void> _resend() async {
+    final email = _acknowledgedEmail;
+    if (email == null || _submission.isSubmitting) return;
+    _submission.startNewRecoveryRequest();
+    if (!_submission.canSubmit) return;
+    await _request(email);
+  }
+
+  void _changeEmail() {
+    _submission.startNewRecoveryRequest();
+    _submission.clearRejectedFeedback();
+    setState(() => _editingEmail = true);
+  }
+
+  Future<void> _request(String email) async {
+    await _submission.submit(() => widget.api.requestPasswordRecovery(email));
+    if (!mounted) return;
+    if (_submission.isCompleted) {
+      setState(() {
+        _acknowledgedEmail = email;
+        _editingEmail = false;
+      });
+    }
+  }
+
   Future<void> _submit() async {
     if (!_submission.canSubmit || !(_form.currentState?.validate() ?? false)) {
       return;
     }
     final email = _email.text.trim();
-    await _submission.submit(() => widget.api.requestPasswordRecovery(email));
+    await _request(email);
   }
 
   @override
@@ -51,6 +80,49 @@ class _RecoveryRequestFormState extends State<RecoveryRequestForm> {
     listenable: _submission,
     builder: (context, _) {
       final failure = _submission.failure;
+      if (!_editingEmail) {
+        return ContentCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Icon(Icons.mark_email_read_outlined, size: 48),
+              const SizedBox(height: 16),
+              Text(
+                'Kiểm tra email',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Nếu tài khoản đủ điều kiện, hướng dẫn khôi phục '
+                'sẽ được gửi qua email. Hãy kiểm tra hộp thư đến '
+                'và thư rác, sau đó làm theo hướng dẫn trong email.',
+              ),
+              const SizedBox(height: 12),
+              AccountRetryFeedback(submission: _submission),
+              if (failure != null &&
+                  failure.kind != AccountFailureKind.throttled)
+                AuthFeedback(message: failure.message, isError: true),
+              AuthSubmitButton(
+                label: 'Gửi lại yêu cầu',
+                busy: _submission.isSubmitting,
+                onPressed:
+                    !_submission.isSubmitting &&
+                        _submission.retryRemaining == Duration.zero
+                    ? _resend
+                    : null,
+              ),
+              TextButton(
+                onPressed: _submission.isSubmitting ? null : _changeEmail,
+                child: const Text('Sử dụng email khác'),
+              ),
+              TextButton(
+                onPressed: _submission.isSubmitting ? null : widget.onBack,
+                child: const Text('Quay lại đăng nhập'),
+              ),
+            ],
+          ),
+        );
+      }
       return ContentCard(
         child: Form(
           key: _form,
@@ -61,6 +133,11 @@ class _RecoveryRequestFormState extends State<RecoveryRequestForm> {
                 'Quên mật khẩu',
                 style: Theme.of(context).textTheme.titleLarge
                     ?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Nhập email doanh nghiệp để yêu cầu hướng dẫn '
+                'đặt lại mật khẩu.',
               ),
               const SizedBox(height: 18),
               TextFormField(
@@ -79,30 +156,16 @@ class _RecoveryRequestFormState extends State<RecoveryRequestForm> {
                 ),
               ),
               const SizedBox(height: 14),
-              if (failure == null && _submission.retryRemaining > Duration.zero)
-                const AuthFeedback(
-                  message:
-                      'Vui lòng chờ hết thời hạn giới hạn trước khi thử lại.',
-                ),
-              if (failure != null && failure.field == null)
+              AccountRetryFeedback(submission: _submission),
+              if (failure != null &&
+                  failure.field == null &&
+                  failure.kind != AccountFailureKind.throttled)
                 AuthFeedback(message: failure.message, isError: true),
-              if (_submission.isCompleted)
-                const AuthFeedback(
-                  message:
-                      'Nếu tài khoản đủ điều kiện, hướng dẫn khôi phục '
-                      'sẽ được gửi qua email.',
-                ),
-              if (_submission.isCompleted)
-                TextButton(
-                  onPressed: _submission.startNewRecoveryRequest,
-                  child: const Text('Gửi yêu cầu mới'),
-                )
-              else
-                AuthSubmitButton(
-                  label: 'Gửi yêu cầu',
-                  busy: _submission.isSubmitting,
-                  onPressed: _submission.canSubmit ? _submit : null,
-                ),
+              AuthSubmitButton(
+                label: 'Gửi yêu cầu',
+                busy: _submission.isSubmitting,
+                onPressed: _submission.canSubmit ? _submit : null,
+              ),
               TextButton(
                 onPressed: _submission.isSubmitting ? null : widget.onBack,
                 child: const Text('Quay lại đăng nhập'),
@@ -123,14 +186,18 @@ class CredentialEstablishmentForm extends StatefulWidget {
     required this.api,
     required this.operation,
     required this.onBack,
-    required this.onCompleted,
+    required this.owner,
+    required this.onRecovery,
     required this.retryDeadlines,
+    this.capability,
   }) : assert(operation != AccountOperation.recovery);
 
   final ApiClient api;
   final AccountOperation operation;
   final VoidCallback onBack;
-  final ValueChanged<String> onCompleted;
+  final CredentialWorkflowOwner owner;
+  final VoidCallback onRecovery;
+  final String? capability;
   final AccountRetryDeadlines retryDeadlines;
 
   @override
@@ -141,7 +208,8 @@ class CredentialEstablishmentForm extends StatefulWidget {
 class _CredentialEstablishmentFormState
     extends State<CredentialEstablishmentForm> {
   final _form = GlobalKey<FormState>();
-  final _token = TextEditingController();
+  late final _token = TextEditingController(text: widget.capability);
+  late final CredentialAttempt _attempt;
   final _password = TextEditingController();
   final _confirmation = TextEditingController();
   late final _submission = AccountSubmissionController(
@@ -150,6 +218,22 @@ class _CredentialEstablishmentFormState
   );
 
   bool get _isReset => widget.operation == AccountOperation.reset;
+
+  @override
+  void initState() {
+    super.initState();
+    _attempt = widget.owner.begin(widget.operation);
+  }
+
+  @override
+  void didUpdateWidget(covariant CredentialEstablishmentForm oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.operation != widget.operation ||
+        oldWidget.capability != widget.capability ||
+        oldWidget.owner != widget.owner) {
+      throw StateError('A new credential input requires a new workflow.');
+    }
+  }
 
   void _clearSensitiveInput() {
     _token.clear();
@@ -169,29 +253,20 @@ class _CredentialEstablishmentFormState
     }
     final capability = _token.text;
     final password = _password.text;
-    await _submission.submit(
-      () => _isReset
-          ? widget.api.resetPassword(capability, password)
-          : widget.api.completeAccountSetup(capability, password),
-    );
+    if (AuthValidators.capability(capability) != null) return;
+    await widget.owner.submit(_attempt, _submission, capability, password);
     if (!mounted) return;
-    if (_submission.isCompleted) {
+    if (_submission.isCompleted ||
+        _submission.failure?.kind == AccountFailureKind.uncertain ||
+        _submission.failure?.kind == AccountFailureKind.unavailable) {
       TextInput.finishAutofillContext(shouldSave: false);
-      _clearSensitiveInput();
-      widget.onCompleted(
-        _isReset
-            ? 'Đặt lại mật khẩu thành công.'
-            : 'Kích hoạt tài khoản thành công.',
-      );
-    } else if (!_submission.canSubmit &&
-        (_submission.failure?.kind == AccountFailureKind.uncertain ||
-            _submission.failure?.kind == AccountFailureKind.unavailable)) {
       _clearSensitiveInput();
     }
   }
 
   @override
   void dispose() {
+    widget.owner.abandon(_attempt);
     _submission.dispose();
     _clearSensitiveInput();
     _token.dispose();
@@ -223,20 +298,35 @@ class _CredentialEstablishmentFormState
                   style: Theme.of(context).textTheme.titleLarge
                       ?.copyWith(fontWeight: FontWeight.w800),
                 ),
-                const SizedBox(height: 18),
-                TextFormField(
-                  controller: _token,
-                  enabled: editable,
-                  obscureText: true,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  validator: AuthValidators.capability,
-                  onChanged: (_) => _submission.clearRejectedFeedback(),
-                  decoration: const InputDecoration(
-                    labelText: 'Mã xác thực',
-                    prefixIcon: Icon(Icons.key_outlined),
-                  ),
+                const SizedBox(height: 12),
+                Text(
+                  _isReset
+                      ? 'Chọn mật khẩu mới. Mã khôi phục có hiệu lực tối đa '
+                            '30 phút kể từ khi cấp.'
+                      : 'Thiết lập mật khẩu cho tài khoản được tổ chức cấp. '
+                            'Mã thiết lập có hiệu lực tối đa 24 giờ kể từ khi cấp.',
                 ),
+                const SizedBox(height: 18),
+                if (widget.capability == null)
+                  TextFormField(
+                    controller: _token,
+                    enabled: editable,
+                    obscureText: true,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    validator: AuthValidators.capability,
+                    onChanged: (_) => _submission.clearRejectedFeedback(),
+                    decoration: const InputDecoration(
+                      labelText: 'Mã xác thực',
+                      prefixIcon: Icon(Icons.key_outlined),
+                    ),
+                  ),
+                if (widget.capability != null &&
+                    AuthValidators.capability(widget.capability) != null)
+                  const AuthFeedback(
+                    message: 'Thông tin từ email không hợp lệ.',
+                    isError: true,
+                  ),
                 const SizedBox(height: 14),
                 AuthPasswordField(
                   controller: _password,
@@ -259,18 +349,35 @@ class _CredentialEstablishmentFormState
                   autofillHint: AutofillHints.newPassword,
                 ),
                 const SizedBox(height: 18),
-                if (failure == null &&
-                    _submission.retryRemaining > Duration.zero)
-                  const AuthFeedback(
-                    message:
-                        'Vui lòng chờ hết thời hạn giới hạn trước khi thử lại.',
-                  ),
-                if (failure != null && failure.field == null)
+                AccountRetryFeedback(submission: _submission),
+                if (failure != null &&
+                    failure.field == null &&
+                    failure.kind != AccountFailureKind.throttled)
                   AuthFeedback(message: failure.message, isError: true),
+                if (failure?.kind == AccountFailureKind.rejected &&
+                    failure?.field == null)
+                  if (_isReset)
+                    TextButton(
+                      onPressed: () {
+                        _clearSensitiveInput();
+                        widget.onRecovery();
+                      },
+                      child: const Text('Yêu cầu liên kết khôi phục mới'),
+                    )
+                  else
+                    const Text(
+                      'Mở lại lời mời hợp lệ hoặc liên hệ quản trị viên.',
+                    ),
                 AuthSubmitButton(
                   label: 'Xác nhận',
                   busy: _submission.isSubmitting,
-                  onPressed: _submission.canSubmit ? _submit : null,
+                  onPressed:
+                      _submission.canSubmit &&
+                          (widget.capability == null ||
+                              AuthValidators.capability(widget.capability) ==
+                                  null)
+                      ? _submit
+                      : null,
                 ),
                 TextButton(
                   onPressed: _submission.isSubmitting ? null : _back,
@@ -283,4 +390,94 @@ class _CredentialEstablishmentFormState
       );
     },
   );
+}
+
+class AccountRetryFeedback extends StatelessWidget {
+  const AccountRetryFeedback({super.key, required this.submission});
+
+  final AccountSubmissionController submission;
+
+  @override
+  Widget build(BuildContext context) {
+    final message = submission.retryFeedback;
+    return message == null
+        ? const SizedBox.shrink()
+        : AuthFeedback(message: message);
+  }
+}
+
+class CredentialOutcomeView extends StatelessWidget {
+  const CredentialOutcomeView({
+    super.key,
+    required this.outcome,
+    required this.onContinue,
+    required this.authenticated,
+    this.onRecovery,
+  });
+
+  final CredentialOutcome outcome;
+  final VoidCallback onContinue;
+  final bool authenticated;
+  final VoidCallback? onRecovery;
+
+  @override
+  Widget build(BuildContext context) {
+    final reset = outcome.operation == AccountOperation.reset;
+    final completed = outcome.kind == CredentialOutcomeKind.completed;
+    final title = switch (outcome.kind) {
+      CredentialOutcomeKind.completed => reset
+          ? 'Đặt lại mật khẩu thành công'
+          : 'Kích hoạt tài khoản thành công',
+      CredentialOutcomeKind.uncertain => 'Chưa xác nhận được kết quả',
+      CredentialOutcomeKind.unavailable => 'Tính năng hiện không khả dụng',
+    };
+    final message = switch (outcome.kind) {
+      CredentialOutcomeKind.completed => reset
+          ? 'Mật khẩu đã được cập nhật. Các phiên đăng nhập trước đó '
+                'của tài khoản được đặt lại đã bị thu hồi.'
+          : 'Tài khoản đã sẵn sàng. Hãy đăng nhập bằng email doanh nghiệp '
+                'và mật khẩu vừa thiết lập.',
+      CredentialOutcomeKind.uncertain =>
+        'Thao tác có thể đã hoàn tất. Hãy thử đăng nhập bằng mật khẩu '
+            'vừa chọn. Không gửi lại yêu cầu này.',
+      CredentialOutcomeKind.unavailable =>
+        'Không thể tiếp tục thao tác hiện tại. Hãy thử lại sau.',
+    };
+    return ContentCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Icon(
+            completed ? Icons.check_circle_outline : Icons.info_outline,
+            size: 48,
+          ),
+          const SizedBox(height: 16),
+          Text(title, style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 12),
+          Semantics(liveRegion: true, child: Text(message)),
+          if (!completed) ...[
+            const SizedBox(height: 12),
+            Text(
+              reset
+                  ? 'Nếu không thể đăng nhập, hãy yêu cầu liên kết khôi phục mới.'
+                  : 'Nếu không thể đăng nhập, hãy mở lại lời mời hợp lệ '
+                        'hoặc liên hệ quản trị viên để được cấp quyền thiết lập mới.',
+            ),
+          ],
+          const SizedBox(height: 18),
+          FilledButton(
+            onPressed: onContinue,
+            child: Text(
+              authenticated ? 'Tiếp tục phiên hiện tại' : 'Tiếp tục đăng nhập',
+            ),
+          ),
+          if (!completed && reset && onRecovery != null)
+            TextButton(
+              onPressed: onRecovery,
+              child: const Text('Yêu cầu liên kết khôi phục mới'),
+            ),
+        ],
+      ),
+    );
+  }
 }
