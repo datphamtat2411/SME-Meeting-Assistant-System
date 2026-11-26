@@ -510,6 +510,7 @@ class _AppShellState extends State<AppShell> {
       AssistantPage(dependencies: widget.dependencies, active: index == 3),
       ProfilePage(
         api: widget.api,
+        repository: widget.dependencies.profileRepository,
         appearance: widget.appearance,
       ),
     ];
