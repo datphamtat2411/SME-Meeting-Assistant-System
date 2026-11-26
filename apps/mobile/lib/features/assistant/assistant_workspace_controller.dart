@@ -42,6 +42,8 @@ class AssistantPendingTurn {
   bool busy = true;
   bool retryAllowed = false;
   bool uncertain = false;
+  bool reclaimUncertain = false;
+  bool reconciliationDeferred = false;
   DateTime? retryAt;
   DateTime? statusRetryAt;
   DateTime? automaticDeadline;
@@ -53,7 +55,12 @@ class AssistantPendingTurn {
           !DateTime.now().isBefore(automaticDeadline!));
   bool get canRetry => !busy && retryAllowed && !_waiting(retryAt);
   bool get canAbandon =>
-      !busy && uncertain && !terminal && (turn == null || retryAllowed);
+      !busy &&
+      uncertain &&
+      !terminal &&
+      (turn == null ||
+          retryAllowed ||
+          (reclaimUncertain && automaticExhausted));
 
   bool get terminal =>
       turn != null && turn!.state != AssistantTurnState.processing;
@@ -129,6 +136,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       historyVerified &&
       !historyLoading &&
       !askCoolingDown &&
+      conversation?.status == AssistantConversationStatus.active &&
       pending?.canRetry == true;
   DateTime? get creationRetryAt => _creationRetryAt;
   bool get creationCoolingDown => _waiting(_creationRetryAt);
@@ -370,7 +378,14 @@ class AssistantWorkspaceController extends ChangeNotifier {
   Future<void> _syncHistory({required bool authoritative}) async {
     final selected = conversation;
     if (!current || !_active || selected == null) return;
-    if (!authoritative && historyLoading) return;
+    if (!authoritative && historyLoading) {
+      final command = pending;
+      if (command != null && command.terminal) {
+        command.reconciliationDeferred = true;
+      }
+      return;
+    }
+    pending?.reconciliationDeferred = false;
     final previous = List<AssistantMessage>.of(_messages);
     final previousHasMore = historyHasMore;
     final desiredDepth = max(_historyDepth, previous.length);
@@ -474,9 +489,25 @@ class AssistantWorkspaceController extends ChangeNotifier {
       if (current && generation == _historyGeneration) {
         historyLoading = false;
         _publish();
+        await _drainDeferredReconciliation();
         _scheduleStatusMonitoring();
       }
     }
+  }
+
+  Future<void> _drainDeferredReconciliation() async {
+    final command = pending;
+    if (!current ||
+        !_active ||
+        historyLoading ||
+        command == null ||
+        !command.terminal ||
+        !command.reconciliationDeferred) {
+      return;
+    }
+    // Consume once; a failure remains an actionable terminal notice.
+    command.reconciliationDeferred = false;
+    await reconcilePending();
   }
 
   Future<void> loadOlder() async {
@@ -524,6 +555,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       if (_ownsHistory(generation, selected.id)) {
         historyLoading = false;
         _publish();
+        await _drainDeferredReconciliation();
         _scheduleStatusMonitoring();
       }
     }
@@ -584,14 +616,22 @@ class AssistantWorkspaceController extends ChangeNotifier {
           ),
           mutation: true,
         );
+        if (command.turn?.state == AssistantTurnState.processing) {
+          command.reclaimUncertain = true;
+        }
       } else {
         command.turn = AssistantPendingResult(turn);
+        command.reclaimUncertain = false;
       }
       command.uncertain = true;
       command.retryAllowed = false;
     } on AssistantFailure catch (error) {
       if (!_ownsCommand(command)) return;
       command.failure = error;
+      if (command.turn?.state == AssistantTurnState.processing &&
+          error.outcome == AssistantMutationOutcome.unknown) {
+        command.reclaimUncertain = true;
+      }
       command.uncertain =
           command.uncertain ||
           error.outcome == AssistantMutationOutcome.unknown;
@@ -678,6 +718,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       } else {
         command.failure = null;
         command.turn = AssistantPendingResult(status.turn);
+        command.reclaimUncertain = false;
         command.uncertain = true;
         command.retryAllowed = status.recoveryEligible;
         if (status.turn.state == AssistantTurnState.staleSource) {
@@ -783,6 +824,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
             _askRetryAt,
             pending?.retryAt,
             pending?.statusRetryAt,
+            if (pending?.reclaimUncertain == true) pending?.automaticDeadline,
           ].whereType<DateTime>().where((value) => value.isAfter(now)).toList()
           ..sort();
     if (deadlines.isEmpty) return;
