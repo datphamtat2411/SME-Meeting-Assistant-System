@@ -66,69 +66,7 @@ class AccountLinkParser {
       throw const AccountLinkException(AccountLinkFailure.malformed);
     }
     final rawAuthority = match.group(1)!;
-    if (!RegExp(r'^[A-Za-z0-9.:-]+
-    if (authority != trusted && authority != '$trusted:443') {
-      throw const AccountLinkException(AccountLinkFailure.untrusted);
-    }
-    final operation = switch (match.group(2)) {
-      '/account-setup' || '/sign-up' => AccountOperation.setup,
-      '/reset-password' || '/otp' => AccountOperation.reset,
-      _ => throw const AccountLinkException(AccountLinkFailure.unsupported),
-    };
-    final fragment = match.group(3)!;
-    final separator = fragment.indexOf('=');
-    if (separator < 0 || fragment.contains('&')) {
-      throw const AccountLinkException(AccountLinkFailure.malformed);
-    }
-    final String capability;
-    try {
-      if (_badEscape.hasMatch(fragment) ||
-          Uri.decodeQueryComponent(fragment.substring(0, separator)) !=
-              'token') {
-        throw const FormatException();
-      }
-      capability = Uri.decodeQueryComponent(fragment.substring(separator + 1));
-    } on FormatException {
-      throw const AccountLinkException(AccountLinkFailure.malformed);
-    } on ArgumentError {
-      throw const AccountLinkException(AccountLinkFailure.malformed);
-    }
-    if (capability.isEmpty ||
-        capability.length > maxCapabilityLength ||
-        _unsafe.hasMatch(capability) ||
-        _hasUnpairedSurrogate(capability)) {
-      throw const AccountLinkException(AccountLinkFailure.malformed);
-    }
-    return AccountLink._(operation, capability);
-  }
-
-  static bool _hasUnpairedSurrogate(String value) {
-    final units = value.codeUnits;
-    for (var index = 0; index < units.length; index++) {
-      final unit = units[index];
-      if (unit >= 0xd800 && unit <= 0xdbff) {
-        if (++index == units.length ||
-            units[index] < 0xdc00 ||
-            units[index] > 0xdfff) {
-          return true;
-        }
-      } else if (unit >= 0xdc00 && unit <= 0xdfff) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  static final _url = RegExp(
-    r'^https://([^/?#]+)(/[^?#]*)#([^#]*)$',
-    caseSensitive: false,
-  );
-  static final _badEscape = RegExp(r'%(?![0-9a-fA-F]{2})');
-  static final _unsafe = RegExp(
-    r'[\s\u0000-\u001f\u007f-\u009f\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]',
-  );
-}
-).hasMatch(rawAuthority)) {
+    if (!RegExp(r'^[A-Za-z0-9.:-]+$').hasMatch(rawAuthority)) {
       throw const AccountLinkException(AccountLinkFailure.untrusted);
     }
     final authority = rawAuthority.toLowerCase();
