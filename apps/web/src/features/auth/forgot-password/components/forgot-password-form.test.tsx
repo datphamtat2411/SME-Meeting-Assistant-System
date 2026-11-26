@@ -56,9 +56,11 @@ describe('ForgotPasswordForm', () => {
   })
 
   it('makes an unavailable deployment explicit', async () => {
-    const post = vi.spyOn(coreApi, 'post').mockRejectedValue(
-      new CoreApiError({ message: 'Not found', status: 404, kind: 'http' })
-    )
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockRejectedValue(
+        new CoreApiError({ message: 'Not found', status: 404, kind: 'http' })
+      )
     const screen = await render(<ForgotPasswordForm />)
     await userEvent.fill(
       screen.getByRole('textbox', { name: 'Organization email' }),
@@ -77,8 +79,14 @@ describe('ForgotPasswordForm', () => {
   })
 
   it('reports an uncertain outcome and permits only an explicit recovery retry', async () => {
-    const post = vi.spyOn(coreApi, 'post')
-      .mockRejectedValueOnce(new CoreApiError({ message: 'private transport detail', kind: 'network' }))
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockRejectedValueOnce(
+        new CoreApiError({
+          message: 'private transport detail',
+          kind: 'network',
+        })
+      )
       .mockResolvedValueOnce({ message: 'Acknowledged' })
     const screen = await render(<ForgotPasswordForm />)
     await userEvent.fill(

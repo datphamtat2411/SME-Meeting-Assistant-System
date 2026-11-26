@@ -243,16 +243,73 @@ describe('integrated generated Web runtime', () => {
   })
 
   it.each([
-    ['/sign-up', 'Activate your organization account'],
-    ['/forgot-password', 'Recover access'],
-    ['/otp', 'Reset account password'],
-    ['/account-setup', 'Set your password'],
-    ['/sign-in-2', 'Sign in'],
-  ] as const)('renders the public route %s', async (path, expectedText) => {
-    const { screen } = await renderGeneratedRoute(path)
+    ['/sign-up', 'Activate your account', 'Back to sign in', '/sign-in'],
+    ['/account-setup', 'Activate your account', 'Back to sign in', '/sign-in'],
+    ['/otp', 'Reset account password', 'Request recovery', '/forgot-password'],
+  ] as const)(
+    'renders the public callback %s and requires a capability',
+    async (path, title, action, destination) => {
+      const post = vi
+        .spyOn(coreApi, 'post')
+        .mockRejectedValue(
+          new Error('Unexpected account-flow mutation without a capability')
+        )
+      const { screen, router } = await renderGeneratedRoute(path)
+
+      await expect
+        .element(screen.getByText(title, { exact: true }))
+        .toBeVisible()
+      await expect
+        .element(screen.getByRole('alert'))
+        .toHaveTextContent(/link is missing or invalid/i)
+      await expect
+        .element(screen.getByLabelText('New password'))
+        .not.toBeInTheDocument()
+      await expect
+        .element(screen.getByLabelText('Confirm password'))
+        .not.toBeInTheDocument()
+      await expect
+        .element(screen.getByRole('link', { name: action, exact: true }))
+        .toHaveAttribute('href', destination)
+      expect(router.state.location.pathname).toBe(path)
+      expect(post).not.toHaveBeenCalled()
+    }
+  )
+
+  it('renders password recovery and acknowledges a request without revealing account existence', async () => {
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockResolvedValue({ message: 'Acknowledged' })
+    const { screen, router } = await renderGeneratedRoute('/forgot-password')
 
     await expect
-      .element(screen.getByText(expectedText, { exact: true }).first())
+      .element(screen.getByText('Forgot password', { exact: true }))
+      .toBeVisible()
+    const email = screen.getByRole('textbox', { name: 'Organization email' })
+    const submit = screen.getByRole('button', { name: 'Send recovery link' })
+    await expect.element(submit).toBeDisabled()
+    expect(post).not.toHaveBeenCalled()
+    await userEvent.fill(email, 'operator@example.test')
+    await userEvent.click(submit)
+    await expect
+      .element(screen.getByRole('status'))
+      .toHaveTextContent(/If an eligible account exists/i)
+    expect(post).toHaveBeenCalledExactlyOnceWith(
+      '/auth/password-recovery',
+      { email: 'operator@example.test' },
+      { timeout: 30_000 }
+    )
+    expect(router.state.location.pathname).toBe('/forgot-password')
+    await expect
+      .element(screen.getByRole('link', { name: 'Return to sign in' }))
+      .toHaveAttribute('href', '/sign-in')
+  })
+
+  it('renders the public route /sign-in-2', async () => {
+    const { screen } = await renderGeneratedRoute('/sign-in-2')
+
+    await expect
+      .element(screen.getByText('Sign in', { exact: true }).first())
       .toBeInTheDocument()
   })
 

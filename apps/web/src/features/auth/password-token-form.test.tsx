@@ -50,37 +50,43 @@ describe('password-token callback surfaces', () => {
   it.each([
     ['/account-setup', AccountSetup],
     ['/sign-up', SignUp],
-  ] as const)('activates through the same workflow at %s', async (path, Page) => {
-    const token = 'single-use-setup-capability'
-    window.history.replaceState(
-      { marker: 'preserved' },
-      '',
-      path + '?source=email#token=' + token
-    )
-    const screen = await render(
-      <StrictMode>
-        <Page />
-      </StrictMode>
-    )
-    const password = 'a sufficiently long setup password'
+  ] as const)(
+    'activates through the same workflow at %s',
+    async (path, Page) => {
+      const token = 'single-use-setup-capability'
+      window.history.replaceState(
+        { marker: 'preserved' },
+        '',
+        path + '?source=email#token=' + token
+      )
+      const screen = await render(
+        <StrictMode>
+          <Page />
+        </StrictMode>
+      )
+      const password = 'a sufficiently long setup password'
 
-    expect(window.location.hash).toBe('')
-    expect(window.location.search).toBe('?source=email')
-    expect(window.history.state).toEqual({ marker: 'preserved' })
-    await userEvent.fill(screen.getByLabelText('New password'), password)
-    await userEvent.fill(screen.getByLabelText('Confirm password'), password)
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Activate account' })
-    )
-    await expect
-      .element(screen.getByRole('status'))
-      .toHaveTextContent(/account is ready/i)
-    expect(completeAccountSetup).toHaveBeenCalledExactlyOnceWith(token, password)
-    expect(resetAccountPassword).not.toHaveBeenCalled()
-    await expect
-      .element(screen.getByRole('link', { name: 'Continue to sign in' }))
-      .toBeVisible()
-  })
+      expect(window.location.hash).toBe('')
+      expect(window.location.search).toBe('?source=email')
+      expect(window.history.state).toEqual({ marker: 'preserved' })
+      await userEvent.fill(screen.getByLabelText('New password'), password)
+      await userEvent.fill(screen.getByLabelText('Confirm password'), password)
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Activate account' })
+      )
+      await expect
+        .element(screen.getByRole('status'))
+        .toHaveTextContent(/account is ready/i)
+      expect(completeAccountSetup).toHaveBeenCalledExactlyOnceWith(
+        token,
+        password
+      )
+      expect(resetAccountPassword).not.toHaveBeenCalled()
+      await expect
+        .element(screen.getByRole('link', { name: 'Continue to sign in' }))
+        .toBeVisible()
+    }
+  )
 
   it('requires reopening the email after a sanitized callback is remounted', async () => {
     window.history.replaceState({}, '', '/account-setup#token=first')
@@ -120,7 +126,10 @@ describe('password-token callback surfaces', () => {
     await expect
       .element(screen.getByRole('status'))
       .toHaveTextContent(/password was set successfully/i)
-    expect(resetAccountPassword).toHaveBeenCalledExactlyOnceWith(token, password)
+    expect(resetAccountPassword).toHaveBeenCalledExactlyOnceWith(
+      token,
+      password
+    )
     expect(completeAccountSetup).not.toHaveBeenCalled()
     expect(window.location.hash).toBe('')
   })

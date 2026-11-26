@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { CoreApiError } from '@/lib/core-api'
-import { classifyAccountFlowFailure, parseRetryAfter } from './account-flow-errors'
+import {
+  classifyAccountFlowFailure,
+  parseRetryAfter,
+} from './account-flow-errors'
 
 describe('account flow failures', () => {
   it('does not expose arbitrary server messages', () => {

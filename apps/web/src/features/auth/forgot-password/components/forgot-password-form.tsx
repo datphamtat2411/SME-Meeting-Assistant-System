@@ -61,8 +61,8 @@ export function ForgotPasswordForm({
           <MailCheck className='size-8 text-primary' aria-hidden='true' />
           <p className='font-medium'>Check your email</p>
           <p className='text-sm text-muted-foreground'>
-            If an eligible account exists for this email address, password
-            reset instructions will be sent. Check your inbox and spam folder.
+            If an eligible account exists for this email address, password reset
+            instructions will be sent. Check your inbox and spam folder.
           </p>
         </div>
         <Button
@@ -116,11 +116,7 @@ export function ForgotPasswordForm({
           className='mt-2'
           disabled={submission.blocked || !email.trim()}
         >
-          {submission.pending ? (
-            <Loader2 className='animate-spin' />
-          ) : (
-            <Mail />
-          )}
+          {submission.pending ? <Loader2 className='animate-spin' /> : <Mail />}
           {submission.pending ? 'Requesting…' : 'Send recovery link'}
         </Button>
       </form>

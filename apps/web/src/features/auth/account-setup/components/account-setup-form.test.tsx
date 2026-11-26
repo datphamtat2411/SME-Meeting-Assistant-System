@@ -33,7 +33,9 @@ describe('shared credential establishment form', () => {
     await userEvent.fill(confirmation, 'different')
     await userEvent.click(action)
     await expect
-      .element(screen.getByText('Use 15–128 Unicode characters.', { exact: true }))
+      .element(
+        screen.getByText('Use 15–128 Unicode characters.', { exact: true })
+      )
       .toBeInTheDocument()
     await expect
       .element(screen.getByText("Passwords don't match."))
@@ -71,7 +73,9 @@ describe('shared credential establishment form', () => {
     )
     await expect.element(screen.getByLabelText('New password')).toBeDisabled()
     const form = screen.getByLabelText('New password').element().closest('form')
-    form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    form?.dispatchEvent(
+      new Event('submit', { bubbles: true, cancelable: true })
+    )
     expect(submit).toHaveBeenCalledOnce()
     rejectRequest(
       new CoreApiError({ kind: 'network', message: 'lost response' })

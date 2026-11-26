@@ -7,10 +7,10 @@ import {
   Outlet,
   RouterProvider,
 } from '@tanstack/react-router'
+import { Route as setupRoute } from '@/routes/(auth)/account-setup'
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
-import { Route as setupRoute } from '@/routes/(auth)/account-setup'
 import { completeAccountSetup } from '../account-flows-api'
 
 vi.mock('../account-flows-api', () => ({

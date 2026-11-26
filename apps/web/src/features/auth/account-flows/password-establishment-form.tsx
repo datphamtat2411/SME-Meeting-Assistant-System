@@ -73,8 +73,8 @@ export function PasswordEstablishmentForm({
                 />
               </FormControl>
               <FormDescription className='text-xs'>
-                Use 15–128 Unicode characters. Spaces are allowed. Avoid
-                common or compromised passwords.
+                Use 15–128 Unicode characters. Spaces are allowed. Avoid common
+                or compromised passwords.
               </FormDescription>
               <FormMessage role='alert' />
             </FormItem>

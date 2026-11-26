@@ -45,10 +45,7 @@ export function useAccountFlowSubmission(operation: AccountFlowOperation) {
     function releaseWhenDue() {
       const remaining = deadline - Date.now()
       if (remaining > 0) {
-        timer = setTimeout(
-          releaseWhenDue,
-          Math.min(remaining, 2_147_483_647)
-        )
+        timer = setTimeout(releaseWhenDue, Math.min(remaining, 2_147_483_647))
         return
       }
       const previous = current.current
