@@ -29,6 +29,7 @@ public final class AssistantModels {
                            String answerStatus, String answer, List<ClaimView> claims,
                            List<CitationView> citations) {}
     public record TurnOutcome(int httpStatus, TurnView result) {}
+    public record TurnStatusView(TurnView turn, boolean recoveryEligible) {}
 
     /** AI-only result validated before it is eligible for canonical persistence. */
     record ValidatedAnswer(String status, String text, JsonNode claims, JsonNode diagnostics,

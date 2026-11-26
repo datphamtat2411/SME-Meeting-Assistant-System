@@ -27,17 +27,26 @@ final class AssistantController {
             .body(responses.success(service.list(page,size)));
     }
     @PostMapping
-    ResponseEntity<ApiResponse<ConversationView>> create(@Valid @RequestBody CreateConversation input){
-        ConversationView view=service.create(input);
+    ResponseEntity<ApiResponse<ConversationView>> create(
+            @RequestHeader(value="Idempotency-Key",required=false) String key,
+            @Valid @RequestBody CreateConversation input){
+        ConversationView view=service.create(input,key);
         return ResponseEntity.created(URI.create("/api/v1/assistant/conversations/"+view.id()))
             .cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
             .body(responses.success(view));
     }
     @GetMapping("/{conversationId}")
     ResponseEntity<ApiResponse<ConversationDetail>> detail(@PathVariable UUID conversationId,
-            @RequestParam(defaultValue="0") int page,@RequestParam(defaultValue="50") int size){
+            @RequestParam(defaultValue="0") int page,@RequestParam(defaultValue="50") int size,
+            @RequestParam(required=false) UUID beforeMessageId){
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
-            .body(responses.success(service.detail(conversationId,page,size)));
+            .body(responses.success(service.detail(conversationId,page,size,beforeMessageId)));
+    }
+    @GetMapping("/{conversationId}/turns/by-key")
+    ResponseEntity<ApiResponse<TurnStatusView>> turnStatus(@PathVariable UUID conversationId,
+            @RequestHeader("Idempotency-Key") String key){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
+            .body(responses.success(service.turnStatus(conversationId,key)));
     }
     @PostMapping("/{conversationId}/messages")
     ResponseEntity<ApiResponse<TurnView>> submit(@PathVariable UUID conversationId,

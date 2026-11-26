@@ -22,6 +22,7 @@ class AssistantStore {
                         OffsetDateTime createdAt,OffsetDateTime updatedAt) {
         ConversationView view(){return new ConversationView(id,meetingId,title,status,createdAt,updatedAt);}
     }
+    record Creation(Conversation conversation,String requestDigest){}
     record Turn(UUID id,UUID conversationId,String fingerprint,String key,UUID userMessageId,
                 UUID assistantMessageId,String state,UUID token,OffsetDateTime expiresAt,String scopeVersion){}
     record Message(UUID id,UUID conversationId,String role,String content,String answerStatus,
@@ -63,10 +64,21 @@ class AssistantStore {
         if(rows.isEmpty())throw new ResponseStatusException(HttpStatus.NOT_FOUND);
     }
     Conversation create(UUID id,UUID owner,UUID meeting,String title) {
+        return create(id,owner,meeting,title,null,null);
+    }
+    Conversation create(UUID id,UUID owner,UUID meeting,String title,String keyDigest,String requestDigest) {
         jdbc.update("""
-            INSERT INTO assistant_conversations(id,user_id,meeting_id,title,status)
-            VALUES (?,?,?,?,'ACTIVE')""",id,owner,meeting,title);
+            INSERT INTO assistant_conversations(id,user_id,meeting_id,title,status,
+                creation_key_digest,creation_request_digest)
+            VALUES (?,?,?,?,'ACTIVE',?,?)""",id,owner,meeting,title,keyDigest,requestDigest);
         return require(id,owner,false);
+    }
+    Creation findCreation(UUID owner,String keyDigest){
+        return jdbc.query("""
+            SELECT id,user_id,meeting_id,title,status,created_at,updated_at,creation_request_digest
+              FROM assistant_conversations WHERE user_id=? AND creation_key_digest=?
+            """,(rs,i)->new Creation(conversation(rs,i),rs.getString("creation_request_digest")),
+            owner,keyDigest).stream().findFirst().orElse(null);
     }
     List<ConversationView> list(UUID actor,int page,int size) {
         return jdbc.query("""
@@ -83,6 +95,13 @@ class AssistantStore {
              SELECT id,conversation_id,request_sha256,idempotency_key,user_message_id,
                     assistant_message_id,state,claim_token,claim_expires_at,scope_version
                FROM assistant_turns WHERE conversation_id=? AND idempotency_key=? FOR UPDATE
+            """,AssistantStore::turn,conversation,key).stream().findFirst().orElse(null);
+    }
+    Turn readTurn(UUID conversation,String key) {
+        return jdbc.query("""
+             SELECT id,conversation_id,request_sha256,idempotency_key,user_message_id,
+                    assistant_message_id,state,claim_token,claim_expires_at,scope_version
+               FROM assistant_turns WHERE conversation_id=? AND idempotency_key=?
             """,AssistantStore::turn,conversation,key).stream().findFirst().orElse(null);
     }
     Turn active(UUID conversation) {
@@ -187,6 +206,20 @@ class AssistantStore {
               FROM assistant_messages WHERE conversation_id=?
              ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?
             """,AssistantStore::message,conversation,limit,offset);
+        Collections.reverse(reversed);
+        return reversed;
+    }
+    /** Stable history continuation, scoped to an existing message in this conversation. */
+    List<Message> messagesBefore(UUID conversation,UUID anchor,int limit){
+        List<OffsetDateTime> timestamps=jdbc.query("""
+            SELECT created_at FROM assistant_messages WHERE conversation_id=? AND id=?
+            """,(rs,i)->rs.getObject(1,OffsetDateTime.class),conversation,anchor);
+        if(timestamps.isEmpty())throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        List<Message> reversed=jdbc.query("""
+            SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,created_at
+              FROM assistant_messages WHERE conversation_id=? AND (created_at,id)<(?,?)
+             ORDER BY created_at DESC,id DESC LIMIT ?
+            """,AssistantStore::message,conversation,timestamps.getFirst(),anchor,limit);
         Collections.reverse(reversed);
         return reversed;
     }

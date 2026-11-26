@@ -53,7 +53,7 @@ public final class AssistantService {
     }
     private UUID actor(){return identity.requireActiveActor().getId();}
 
-    ConversationView create(CreateConversation input) {
+    ConversationView create(CreateConversation input,String idempotencyKey) {
         requireEnabled();
         UUID user;
         try {
@@ -63,6 +63,11 @@ public final class AssistantService {
         }
         if(input==null||input.meetingId()==null)throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         String title=input.title()==null||input.title().isBlank()?null:input.title().trim();
+        if(idempotencyKey!=null&&!KEY.matcher(idempotencyKey).matches())
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+        String keyDigest=idempotencyKey==null?null:WorkerJson.sha256(idempotencyKey.getBytes(StandardCharsets.UTF_8));
+        String requestDigest=keyDigest==null?null:WorkerJson.sha256(
+            (input.meetingId()+"\n"+(title==null?"":title)).getBytes(StandardCharsets.UTF_8));
         try {
             access.requireReadable(input.meetingId(),user);
         } catch (DataAccessException|TransactionException unavailable) {
@@ -73,8 +78,18 @@ public final class AssistantService {
             created=tx.execute(s->{
                 admission.lockConversationCreationScope(user);
                 access.requireReadable(input.meetingId(),user);
+                if(keyDigest!=null){
+                    var prior=store.findCreation(user,keyDigest);
+                    if(prior!=null){
+                        access.requireReadable(prior.conversation().meetingId(),user);
+                        if(!prior.requestDigest().equals(requestDigest))
+                            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                                "Idempotency key reused with different conversation intent");
+                        return prior.conversation().view();
+                    }
+                }
                 admission.ensureConversationCreationQuota(user);
-                var saved=store.create(UUID.randomUUID(),user,input.meetingId(),title);
+                var saved=store.create(UUID.randomUUID(),user,input.meetingId(),title,keyDigest,requestDigest);
                 admission.recordConversationCreation(user,saved.id());
                 return saved.view();
             });
@@ -90,17 +105,36 @@ public final class AssistantService {
         return store.list(user,page,size);
     }
 
-    ConversationDetail detail(UUID id,int page,int size){
+    ConversationDetail detail(UUID id,int page,int size,UUID beforeMessageId){
         requireEnabled();UUID user=actor();validatePage(page,size);
+        if(beforeMessageId!=null&&page!=0)
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         var conversation=store.require(id,user,false);
         access.requireReadable(conversation.meetingId(),user);
-        List<AssistantStore.Message> messages=store.messages(id,size+1,page*size);
+        List<AssistantStore.Message> messages=beforeMessageId==null
+            ?store.messages(id,size+1,page*size)
+            :store.messagesBefore(id,beforeMessageId,size+1);
         boolean hasMore=messages.size()>size;
         if(hasMore)messages=messages.subList(messages.size()-size,messages.size());
         List<MessageView> views=new ArrayList<>();
         for(var message:messages)views.add(view(message,conversation.meetingId()));
         access.requireReadable(conversation.meetingId(),user);
         return new ConversationDetail(conversation.view(),List.copyOf(views),page,size,hasMore);
+    }
+
+    /** Read-only recovery lookup: never reserves, reclaims or invokes inference. */
+    TurnStatusView turnStatus(UUID conversationId,String key){
+        requireEnabled();UUID user=actor();
+        if(key==null||!KEY.matcher(key).matches())
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+        var conversation=store.require(conversationId,user,false);
+        access.requireReadable(conversation.meetingId(),user);
+        var turn=store.readTurn(conversationId,key);
+        if(turn==null)throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        var result=outcome(turn,conversation.meetingId()).result();
+        boolean recoveryEligible="PROCESSING".equals(turn.state())&&!store.live(turn);
+        access.requireReadable(conversation.meetingId(),user);
+        return new TurnStatusView(result,recoveryEligible);
     }
 
     TurnOutcome submit(UUID conversationId,String idempotencyKey,Ask input){
