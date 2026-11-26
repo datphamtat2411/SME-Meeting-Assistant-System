@@ -85,8 +85,8 @@ class AccountFlowFailure {
       AccountFailureKind.unavailable => switch (operation) {
         AccountOperation.recovery => 'Dịch vụ yêu cầu khôi phục hiện không khả dụng. Vui lòng thử lại sau.',
         AccountOperation.reset =>
-          'Liên kết khôi phục không còn khả dụng. Hãy yêu cầu liên kết mới.',
-        AccountOperation.setup => 'Lời mời thiết lập không còn khả dụng. Hãy yêu cầu lời mời mới từ tổ chức.',
+          'Dịch vụ đặt lại mật khẩu hiện không khả dụng. Vui lòng thử lại sau.',
+        AccountOperation.setup => 'Dịch vụ thiết lập tài khoản hiện không khả dụng. Vui lòng thử lại sau.',
       },
       AccountFailureKind.uncertain => switch (operation) {
         AccountOperation.recovery =>
@@ -127,7 +127,7 @@ class AccountFlowFailure {
   }
 }
 
-/// Non-sensitive throttling state owned by the authentication flow host.
+/// Non-sensitive restrictions shared across application account-flow entry.
 /// Separate operations have separate deadlines; replacing a form does not
 /// reset a server-provided retry restriction.
 class AccountRetryDeadlines extends ChangeNotifier {
@@ -135,6 +135,21 @@ class AccountRetryDeadlines extends ChangeNotifier {
   bool _disposed = false;
 
   DateTime? _recoveryAcknowledgedUntil;
+  int _activeSubmissions = 0;
+
+  bool get hasActiveSubmission => _activeSubmissions > 0;
+
+  void _beginSubmission() {
+    if (_disposed) return;
+    _activeSubmissions++;
+    notifyListeners();
+  }
+
+  void _endSubmission() {
+    if (_disposed) return;
+    _activeSubmissions--;
+    notifyListeners();
+  }
 
   DateTime? serverDeadlineFor(AccountOperation operation) =>
       _deadlines[operation];
@@ -246,6 +261,7 @@ class AccountSubmissionController extends ChangeNotifier {
     _retryTimer?.cancel();
     _failure = null;
     _phase = AccountSubmissionPhase.submitting;
+    _retryDeadlines._beginSubmission();
     notifyListeners();
     AccountFlowFailure? settledFailure;
     try {
@@ -271,8 +287,12 @@ class AccountSubmissionController extends ChangeNotifier {
     }
     // Security side effects belong to the dispatched operation, not the form.
     // Never classify their results as the outcome of the original mutation.
-    onSettled?.call(settledFailure);
-    if (!_disposed) notifyListeners();
+    try {
+      onSettled?.call(settledFailure);
+    } finally {
+      _retryDeadlines._endSubmission();
+      if (!_disposed) notifyListeners();
+    }
   }
 
   void _scheduleRetry() {

@@ -8,6 +8,10 @@ import 'core/app_dependencies.dart';
 import 'core/app_theme.dart';
 import 'core/appearance_controller.dart';
 import 'features/auth/account_forms.dart';
+import 'features/auth/account_flow.dart';
+import 'features/auth/account_link.dart';
+import 'features/auth/account_link_coordinator.dart';
+import 'features/auth/account_link_views.dart';
 import 'features/auth/auth_form_widgets.dart';
 import 'features/auth/auth_page.dart';
 import 'features/auth/credential_workflow.dart';
@@ -24,8 +28,20 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   try {
     final baseUri = AppConfig.resolve();
+    final AccountLinkParser parser;
+    try {
+      parser = AccountLinkParser(AccountLinkParser.configuredHost);
+    } on FormatException {
+      throw const AppConfigException('ACCOUNT_LINK_HOST không hợp lệ.');
+    }
     final dependencies = AppDependencies.create(apiBaseUri: baseUri);
-    runApp(MeetingAssistantApp(dependencies: dependencies));
+    runApp(
+      MeetingAssistantApp(
+        dependencies: dependencies,
+        accountLinkParser: parser,
+        receiveNativeAccountLinks: true,
+      ),
+    );
   } on AppConfigException catch (error) {
     runApp(ConfigurationErrorApp(error: error));
   }
@@ -81,11 +97,15 @@ class MeetingAssistantApp extends StatefulWidget {
   /// An application host may supply the owner when it also owns capability
   /// dispatch. Otherwise this app creates and disposes its own owner.
   final CredentialWorkflowOwner? credentialWorkflowOwner;
+  final AccountLinkParser? accountLinkParser;
+  final bool receiveNativeAccountLinks;
 
   const MeetingAssistantApp({
     super.key,
     required this.dependencies,
     this.credentialWorkflowOwner,
+    this.accountLinkParser,
+    this.receiveNativeAccountLinks = false,
   });
 
   @override
@@ -96,6 +116,15 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
   GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   AuthenticatedSessionScope? _navigationScope;
   bool _openingRecording = false;
+  bool _pasteOpen = false;
+  bool _autoOpenInitial = false;
+  bool _entryScheduled = false;
+  AccountLinkTicket? _activeLink;
+  AccountLinkReceiver? _linkReceiver;
+  final _retryDeadlines = AccountRetryDeadlines();
+  late final _accountLinks = AccountLinkCoordinator(
+    widget.accountLinkParser ?? AccountLinkParser(AccountLinkParser.configuredHost),
+  );
   late final ApiClient api = widget.dependencies.api;
   late final bool _ownsCredentialWorkflows =
       widget.credentialWorkflowOwner == null;
@@ -112,7 +141,10 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     api,
     appearance,
     widget.dependencies.recording,
+    widget.dependencies.submissions,
     _credentialWorkflows,
+    _accountLinks,
+    _retryDeadlines,
   ]);
 
   @override
@@ -124,6 +156,20 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         'The credential workflow owner must use this app ApiClient.',
       );
     }
+    api.addListener(_scheduleInitialEntry);
+    _credentialWorkflows.addListener(_observeCredentialOutcome);
+    if (widget.receiveNativeAccountLinks) {
+      _linkReceiver = AccountLinkReceiver(
+        onLink: (raw, initial) {
+          final result = _accountLinks.receive(raw);
+          if (result == AccountLinkReception.accepted) {
+            _autoOpenInitial = initial && !api.signedIn;
+            _scheduleInitialEntry();
+          }
+        },
+        onFailure: _accountLinks.reportDeliveryFailure,
+      )..start();
+    }
     unawaited(api.initialize());
     appearance.initialize();
   }
@@ -132,6 +178,11 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
 
   @override
   void dispose() {
+    _linkReceiver?.dispose();
+    api.removeListener(_scheduleInitialEntry);
+    _credentialWorkflows.removeListener(_observeCredentialOutcome);
+    _accountLinks.dispose();
+    _retryDeadlines.dispose();
     if (_ownsCredentialWorkflows) _credentialWorkflows.dispose();
     appearance.dispose();
     widget.dependencies.dispose();
@@ -146,8 +197,23 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
       if (scope != _navigationScope) {
         // A protected route stack belongs to exactly one authenticated epoch.
         // Replacing only the home widget leaves pushed routes and dialogs alive.
+        final previousScope = _navigationScope;
+        final previousLink = _activeLink;
+        _activeLink = null;
+        _pasteOpen = false;
         _navigationScope = scope;
         _navigatorKey = GlobalKey<NavigatorState>();
+        if (previousScope != null || previousLink != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            if (previousLink != null) _accountLinks.finish(previousLink);
+            if (_accountLinks.hasPending) {
+              _accountLinks.discardPending(
+                notice: 'Phiên đăng nhập đã thay đổi. Hãy mở lại email.',
+              );
+            }
+          });
+        }
         _openingRecording = false;
       }
       return MaterialApp(
@@ -190,6 +256,8 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
               onOpen: () => _openRecording(meetingId, scope),
             ),
           ),
+        if (_accountLinks.hasPending || _accountLinks.notice != null)
+          _accountLinkBanner(),
         Expanded(child: child ?? const SizedBox.shrink()),
       ],
     );
@@ -229,10 +297,181 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     }
   }
 
+
+  bool get _sessionReady => switch (api.sessionState.phase) {
+    AuthSessionPhase.authenticated ||
+    AuthSessionPhase.unauthenticated ||
+    AuthSessionPhase.reauthenticationRequired => true,
+    _ => false,
+  };
+
+  bool get _meetingWorkActive =>
+      widget.dependencies.recording.hasActiveWork ||
+      widget.dependencies.submissions.hasActiveWork;
+
+  bool get _canOpenAccountLink =>
+      _sessionReady &&
+      !_meetingWorkActive &&
+      !_pasteOpen &&
+      !_accountLinks.hasActive &&
+      !_credentialWorkflows.hasInFlight &&
+      !_retryDeadlines.hasActiveSubmission &&
+      _credentialWorkflows.outcome == null;
+
+  void _observeCredentialOutcome() {
+    final ticket = _activeLink;
+    if (ticket != null && _credentialWorkflows.outcome != null) {
+      _accountLinks.markTerminal(ticket);
+    }
+  }
+
+  void _scheduleInitialEntry() {
+    if (!_autoOpenInitial || _entryScheduled || !_sessionReady) return;
+    _entryScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _entryScheduled = false;
+      if (!mounted || !_autoOpenInitial) return;
+      _autoOpenInitial = false;
+      if (!api.signedIn && _canOpenAccountLink) {
+        unawaited(_continueAccountLink());
+      }
+    });
+  }
+
+  Widget _accountLinkBanner() {
+    final pending = _accountLinks.hasPending;
+    final message = !pending
+        ? _accountLinks.notice!
+        : _meetingWorkActive
+        ? 'Hãy hoàn tất ghi âm, nhập hoặc gửi âm thanh trước khi mở liên kết.'
+        : _accountLinks.hasActive
+        ? 'Có liên kết khác. Hãy hoàn tất hoặc hủy biểu mẫu hiện tại trước.'
+        : !_sessionReady
+        ? 'Hãy hoàn tất xác minh phiên đăng nhập trước khi tiếp tục.'
+        : api.signedIn
+        ? 'Liên kết có thể thuộc tài khoản khác. Phiên hiện tại được giữ '
+              'cho đến khi cần xác minh bảo mật.'
+        : 'Đã nhận liên kết tài khoản. Hãy tiếp tục khi bạn sẵn sàng.';
+    return Material(
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
+          child: Row(
+            children: [
+              Expanded(child: Text(message)),
+              if (pending)
+                TextButton(
+                  onPressed: _canOpenAccountLink
+                      ? _continueAccountLink
+                      : null,
+                  child: const Text('Tiếp tục'),
+                ),
+              TextButton(
+                onPressed: pending
+                    ? () {
+                        _autoOpenInitial = false;
+                        _accountLinks.discardPending();
+                      }
+                    : _accountLinks.clearNotice,
+                child: Text(pending ? 'Bỏ qua' : 'Đóng'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openAccountLinkPaste() async {
+    if (!_canOpenAccountLink) {
+      _accountLinks.reportDeliveryFailure();
+      return;
+    }
+    final key = _navigatorKey;
+    final navigator = key.currentState;
+    if (navigator == null) return;
+    setState(() => _pasteOpen = true);
+    bool? accepted;
+    try {
+      accepted = await navigator.push<bool>(
+        MaterialPageRoute<bool>(
+          builder: (_) => AccountLinkPasteView(
+            accept: (raw) {
+              final result = _accountLinks.receive(raw, pasted: true);
+              if (result == AccountLinkReception.rejected) {
+                final message = _accountLinks.notice;
+                _accountLinks.clearNotice();
+                return message ?? 'Liên kết không hợp lệ.';
+              }
+              return null;
+            },
+          ),
+        ),
+      );
+    } finally {
+      if (mounted && identical(key, _navigatorKey)) {
+        setState(() => _pasteOpen = false);
+      }
+    }
+    if (mounted &&
+        identical(key, _navigatorKey) &&
+        accepted == true &&
+        !api.signedIn &&
+        _canOpenAccountLink) {
+      await _continueAccountLink();
+    }
+  }
+
+  Future<void> _continueAccountLink() async {
+    if (!_canOpenAccountLink) return;
+    final key = _navigatorKey;
+    final navigator = key.currentState;
+    if (navigator == null) return;
+    final scope = api.authenticatedSessionScope;
+    final ticket = _accountLinks.claim();
+    if (ticket == null) return;
+    setState(() => _activeLink = ticket);
+    try {
+      await navigator.push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => AccountLinkEntryView(
+            ticket: ticket,
+            api: api,
+            owner: _credentialWorkflows,
+            retryDeadlines: _retryDeadlines,
+            canDispatch: () =>
+                mounted &&
+                identical(key, _navigatorKey) &&
+                identical(ticket, _activeLink) &&
+                _sessionReady &&
+                api.authenticatedSessionScope == scope &&
+                !_meetingWorkActive &&
+                !_credentialWorkflows.hasInFlight &&
+                !_retryDeadlines.hasActiveSubmission,
+          ),
+        ),
+      );
+    } finally {
+      if (mounted && identical(ticket, _activeLink)) {
+        setState(() => _activeLink = null);
+        _accountLinks.finish(ticket);
+      }
+    }
+  }
+
+  Widget _publicAuthPage() => AuthPage(
+    api: api,
+    credentialWorkflows: _credentialWorkflows,
+    retryDeadlines: _retryDeadlines,
+    onOpenLink: _openAccountLinkPaste,
+    showOutcome: _activeLink == null,
+  );
+
   Widget _sessionHome() {
     final session = api.sessionState;
     final outcome = _credentialWorkflows.outcome;
-    if (session.isAuthenticated && outcome != null) {
+    if (session.isAuthenticated && outcome != null && _activeLink == null) {
       return AuthLayout(
         child: CredentialOutcomeView(
           outcome: outcome,
@@ -245,16 +484,13 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
       AuthSessionPhase.initializing => const StartupProgressView(),
       AuthSessionPhase.verifyingIdentity || AuthSessionPhase.signingIn =>
         api.sessionCoordinator.isInteractiveSignIn
-            ? AuthPage(api: api, credentialWorkflows: _credentialWorkflows)
+            ? _publicAuthPage()
             : const StartupProgressView(message: 'Đang xác minh danh tính...'),
       AuthSessionPhase.signingOut => const StartupProgressView(
         message: 'Đang đăng xuất...',
       ),
       AuthSessionPhase.unauthenticated ||
-      AuthSessionPhase.reauthenticationRequired => AuthPage(
-        api: api,
-        credentialWorkflows: _credentialWorkflows,
-      ),
+      AuthSessionPhase.reauthenticationRequired => _publicAuthPage(),
       AuthSessionPhase.recoverableFailure => _recoverableSessionView(session),
       AuthSessionPhase.authenticated => AppShell(
         key: ValueKey(api.authenticatedSessionScope),
@@ -262,6 +498,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         api: api,
         themeMode: appearance.mode,
         onThemeChanged: changeTheme,
+        onOpenAccountLink: _openAccountLinkPaste,
       ),
     };
   }
@@ -491,12 +728,14 @@ class AppShell extends StatefulWidget {
   final ApiClient api;
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode> onThemeChanged;
+  final VoidCallback? onOpenAccountLink;
   const AppShell({
     super.key,
     required this.dependencies,
     required this.api,
     required this.themeMode,
     required this.onThemeChanged,
+    this.onOpenAccountLink,
   });
 
   @override
@@ -568,6 +807,7 @@ class _AppShellState extends State<AppShell> {
         api: widget.api,
         themeMode: widget.themeMode,
         onThemeChanged: widget.onThemeChanged,
+        onOpenAccountLink: widget.onOpenAccountLink,
       ),
     ];
     final wide = MediaQuery.sizeOf(context).width >= 700;

@@ -7,18 +7,24 @@ import 'auth_form_widgets.dart';
 import 'credential_workflow.dart';
 import 'login_form.dart';
 
-enum _AuthDestination { login, recovery, reset, setup }
+enum _AuthDestination { login, recovery }
 
-/// Public workflow navigation and non-sensitive retry deadlines.
+/// Public workflow navigation. Link trust and retry ownership are app-scoped.
 class AuthPage extends StatefulWidget {
   const AuthPage({
     super.key,
     required this.api,
     required this.credentialWorkflows,
+    required this.retryDeadlines,
+    required this.onOpenLink,
+    this.showOutcome = true,
   });
 
   final ApiClient api;
   final CredentialWorkflowOwner credentialWorkflows;
+  final AccountRetryDeadlines retryDeadlines;
+  final VoidCallback onOpenLink;
+  final bool showOutcome;
 
   @override
   State<AuthPage> createState() => _AuthPageState();
@@ -26,13 +32,6 @@ class AuthPage extends StatefulWidget {
 
 class _AuthPageState extends State<AuthPage> {
   _AuthDestination _destination = _AuthDestination.login;
-  final _retryDeadlines = AccountRetryDeadlines();
-
-  @override
-  void dispose() {
-    _retryDeadlines.dispose();
-    super.dispose();
-  }
 
   void _select(_AuthDestination next) {
     widget.credentialWorkflows.dismiss();
@@ -45,7 +44,7 @@ class _AuthPageState extends State<AuthPage> {
       listenable: widget.credentialWorkflows,
       builder: (context, _) {
         final outcome = widget.credentialWorkflows.outcome;
-        if (outcome != null) {
+        if (outcome != null && widget.showOutcome) {
           return CredentialOutcomeView(
             outcome: outcome,
             authenticated: false,
@@ -57,25 +56,13 @@ class _AuthPageState extends State<AuthPage> {
           _AuthDestination.login => LoginForm(
             api: widget.api,
             onRecovery: () => _select(_AuthDestination.recovery),
-            onReset: () => _select(_AuthDestination.reset),
-            onSetup: () => _select(_AuthDestination.setup),
+            onReset: widget.onOpenLink,
+            onSetup: widget.onOpenLink,
           ),
           _AuthDestination.recovery => RecoveryRequestForm(
             api: widget.api,
-            retryDeadlines: _retryDeadlines,
+            retryDeadlines: widget.retryDeadlines,
             onBack: () => _select(_AuthDestination.login),
-          ),
-          _AuthDestination.reset ||
-          _AuthDestination.setup => CredentialEstablishmentForm(
-            key: ValueKey(_destination),
-            api: widget.api,
-            owner: widget.credentialWorkflows,
-            retryDeadlines: _retryDeadlines,
-            operation: _destination == _AuthDestination.reset
-                ? AccountOperation.reset
-                : AccountOperation.setup,
-            onBack: () => _select(_AuthDestination.login),
-            onRecovery: () => _select(_AuthDestination.recovery),
           ),
         };
       },

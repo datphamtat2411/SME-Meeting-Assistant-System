@@ -35,6 +35,9 @@ class CredentialWorkflowOwner extends ChangeNotifier {
   CredentialAttempt? _active;
   CredentialOutcome? _outcome;
   bool _disposed = false;
+  int _activeDispatches = 0;
+
+  bool get hasInFlight => _activeDispatches > 0;
 
   CredentialOutcome? get outcome => _outcome;
 
@@ -77,6 +80,7 @@ class CredentialWorkflowOwner extends ChangeNotifier {
     // Latch before the first await. A replacement controller cannot start a
     // second dispatch while this attempt is already in flight.
     attempt._dispatchInFlight = true;
+    _activeDispatches++;
     try {
       await submission.submit(
         () => attempt.operation == AccountOperation.reset
@@ -88,6 +92,7 @@ class CredentialWorkflowOwner extends ChangeNotifier {
       // AccountSubmissionController can decline a dispatch if its own state
       // changed before it accepted the call. Never leave the attempt latched.
       attempt._dispatchInFlight = false;
+      _activeDispatches--;
     }
   }
 

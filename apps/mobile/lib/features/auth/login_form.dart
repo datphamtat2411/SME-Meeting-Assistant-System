@@ -202,7 +202,7 @@ class _LoginFormState extends State<LoginForm> {
         ),
         TextButton(
           onPressed: _busy ? null : () => _leave(widget.onReset),
-          child: const Text('Đã có mã khôi phục?'),
+          child: const Text('Đã có liên kết khôi phục?'),
         ),
       ],
     );

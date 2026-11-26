@@ -195,7 +195,9 @@ class CredentialEstablishmentForm extends StatefulWidget {
     required this.owner,
     required this.onRecovery,
     required this.retryDeadlines,
-    this.capability,
+    required this.capability,
+    this.canDispatch,
+    this.backLabel = 'Quay lại đăng nhập',
   }) : assert(operation != AccountOperation.recovery);
 
   final ApiClient api;
@@ -203,7 +205,9 @@ class CredentialEstablishmentForm extends StatefulWidget {
   final VoidCallback onBack;
   final CredentialWorkflowOwner owner;
   final VoidCallback onRecovery;
-  final String? capability;
+  final String capability;
+  final bool Function()? canDispatch;
+  final String backLabel;
   final AccountRetryDeadlines retryDeadlines;
 
   @override
@@ -260,6 +264,14 @@ class _CredentialEstablishmentFormState
     final capability = _token.text;
     final password = _password.text;
     if (AuthValidators.capability(capability) != null) return;
+    if (widget.canDispatch?.call() == false) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Hãy hoàn tất thao tác hiện tại trước khi tiếp tục.'),
+        ),
+      );
+      return;
+    }
     await widget.owner.submit(_attempt, _submission, capability, password);
     if (!mounted) return;
     if (_submission.isCompleted ||
@@ -313,22 +325,7 @@ class _CredentialEstablishmentFormState
                             'Mã thiết lập có hiệu lực tối đa 24 giờ kể từ khi cấp.',
                 ),
                 const SizedBox(height: 18),
-                if (widget.capability == null)
-                  TextFormField(
-                    controller: _token,
-                    enabled: editable,
-                    obscureText: true,
-                    autocorrect: false,
-                    enableSuggestions: false,
-                    validator: AuthValidators.capability,
-                    onChanged: (_) => _submission.clearRejectedFeedback(),
-                    decoration: const InputDecoration(
-                      labelText: 'Mã xác thực',
-                      prefixIcon: Icon(Icons.key_outlined),
-                    ),
-                  ),
-                if (widget.capability != null &&
-                    AuthValidators.capability(widget.capability) != null)
+                if (AuthValidators.capability(widget.capability) != null)
                   const AuthFeedback(
                     message: 'Thông tin từ email không hợp lệ.',
                     isError: true,
@@ -379,15 +376,13 @@ class _CredentialEstablishmentFormState
                   busy: _submission.isSubmitting,
                   onPressed:
                       _submission.canSubmit &&
-                          (widget.capability == null ||
-                              AuthValidators.capability(widget.capability) ==
-                                  null)
+                          AuthValidators.capability(widget.capability) == null
                       ? _submit
                       : null,
                 ),
                 TextButton(
                   onPressed: _submission.isSubmitting ? null : _back,
-                  child: const Text('Quay lại đăng nhập'),
+                  child: Text(widget.backLabel),
                 ),
               ],
             ),
@@ -438,8 +433,8 @@ class CredentialOutcomeView extends StatelessWidget {
       CredentialOutcomeKind.uncertain => 'Chưa xác nhận được kết quả',
       CredentialOutcomeKind.unavailable =>
         reset
-            ? 'Liên kết khôi phục không còn khả dụng'
-            : 'Lời mời thiết lập không còn khả dụng',
+            ? 'Dịch vụ đặt lại mật khẩu hiện không khả dụng'
+            : 'Dịch vụ thiết lập tài khoản hiện không khả dụng',
     };
     final message = authenticated
         ? switch (outcome.kind) {
@@ -466,10 +461,10 @@ class CredentialOutcomeView extends StatelessWidget {
                         'trị viên để được cấp lời mời mới.',
             CredentialOutcomeKind.unavailable =>
               reset
-                  ? 'Liên kết khôi phục không còn khả dụng. Phiên đăng nhập hiện tại '
+                  ? 'Dịch vụ đặt lại mật khẩu hiện không khả dụng. Phiên đăng nhập hiện tại '
                         'vẫn hoạt động. Bạn có thể tiếp tục phiên này hoặc yêu cầu '
                         'một liên kết khôi phục mới.'
-                  : 'Lời mời thiết lập không còn khả dụng. Phiên đăng nhập hiện tại '
+                  : 'Dịch vụ thiết lập tài khoản hiện không khả dụng. Phiên đăng nhập hiện tại '
                         'vẫn hoạt động. Bạn có thể tiếp tục phiên này hoặc yêu cầu '
                         'quản trị viên cấp lời mời mới.',
           }
@@ -489,10 +484,9 @@ class CredentialOutcomeView extends StatelessWidget {
                         'Không gửi lại yêu cầu này.',
             CredentialOutcomeKind.unavailable =>
               reset
-                  ? 'Liên kết khôi phục không còn khả dụng. Có thể liên kết đã hết '
-                        'hạn, đã được sử dụng hoặc không hợp lệ. Hãy yêu cầu liên '
-                        'kết khôi phục mới.'
-                  : 'Lời mời thiết lập không còn khả dụng. Hãy yêu cầu lời mời mới '
+                  ? 'Dịch vụ đặt lại mật khẩu hiện không khả dụng. Vui lòng thử lại sau '
+                        'hoặc liên hệ quản trị viên.'
+                  : 'Dịch vụ thiết lập tài khoản hiện không khả dụng. Hãy yêu cầu lời mời mới '
                         'từ tổ chức hoặc liên hệ quản trị viên.',
           };
     return ContentCard(

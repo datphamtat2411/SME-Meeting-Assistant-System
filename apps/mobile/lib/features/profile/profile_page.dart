@@ -12,10 +12,12 @@ class ProfilePage extends StatefulWidget {
     required this.api,
     required this.themeMode,
     required this.onThemeChanged,
+    this.onOpenAccountLink,
   });
   final ApiClient api;
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode> onThemeChanged;
+  final VoidCallback? onOpenAccountLink;
   @override
   State<ProfilePage> createState() => _ProfilePageState();
 }
@@ -191,6 +193,12 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
       ),
       const SizedBox(height: 12),
+      if (widget.onOpenAccountLink != null)
+        OutlinedButton.icon(
+          onPressed: busy ? null : widget.onOpenAccountLink,
+          icon: const Icon(Icons.link),
+          label: const Text('Mở liên kết tài khoản'),
+        ),
       OutlinedButton.icon(
         onPressed: busy ? null : signOut,
         icon: const Icon(Icons.logout),

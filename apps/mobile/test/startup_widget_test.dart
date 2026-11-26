@@ -9,6 +9,7 @@ import 'package:sme_meeting_assistant/core/app_config.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/auth/account_flow.dart';
+import 'package:sme_meeting_assistant/features/auth/account_link.dart';
 import 'package:sme_meeting_assistant/features/auth/account_forms.dart';
 import 'package:sme_meeting_assistant/features/auth/credential_workflow.dart';
 import 'package:sme_meeting_assistant/main.dart';
@@ -94,7 +95,10 @@ void main() {
         final client = _authClient(credentialStatus: status);
         final harness = _Harness.create(client, InMemoryCredentialStorage());
         await tester.pumpWidget(
-          MeetingAssistantApp(dependencies: harness.dependencies),
+          MeetingAssistantApp(
+            dependencies: harness.dependencies,
+            accountLinkParser: AccountLinkParser('meeting.example.invalid'),
+          ),
         );
         await pumpUntil(
           tester,
@@ -103,17 +107,23 @@ void main() {
         );
         final entry = find.text(
           reset
-              ? 'Đã có mã khôi phục?'
+              ? 'Đã có liên kết khôi phục?'
               : 'Đã nhận lời mời? Kích hoạt tài khoản',
         );
         await tester.ensureVisible(entry);
         await tester.tap(entry);
-        await tester.pump();
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byType(TextFormField).first,
+          'https://meeting.example.invalid/'+ (reset ? 'reset-password' : 'account-setup') +
+              '#token=opaque%2B%2F%3D',
+        );
+        await tester.tap(find.widgetWithText(FilledButton, 'Tiếp tục'));
+        await tester.pumpAndSettle();
         final fields = find.byType(TextFormField);
         const password = '  Mật khẩu mới 🔐  ';
-        await tester.enterText(fields.at(0), 'opaque+/=');
+        await tester.enterText(fields.at(0), password);
         await tester.enterText(fields.at(1), password);
-        await tester.enterText(fields.at(2), password);
         final submit = find.widgetWithText(FilledButton, 'Xác nhận');
         await tester.ensureVisible(submit);
         await tester.tap(submit);
@@ -121,8 +131,8 @@ void main() {
             ? 'Chưa xác nhận được kết quả'
             : status == 404
             ? reset
-                  ? 'Liên kết khôi phục không còn khả dụng'
-                  : 'Lời mời thiết lập không còn khả dụng'
+                  ? 'Dịch vụ đặt lại mật khẩu hiện không khả dụng'
+                  : 'Dịch vụ thiết lập tài khoản hiện không khả dụng'
             : reset
             ? 'Đặt lại mật khẩu thành công'
             : 'Kích hoạt tài khoản thành công';
@@ -152,7 +162,7 @@ void main() {
         final continuation = find.text('Tiếp tục đăng nhập');
         await tester.ensureVisible(continuation);
         await tester.tap(continuation);
-        await tester.pump();
+        await tester.pumpAndSettle();
         expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
         expect(
           client.requests.where((r) => r.url.path.endsWith('/auth/login')),
@@ -860,7 +870,10 @@ void main() {
         InMemoryCredentialStorage(),
       );
       await tester.pumpWidget(
-        MeetingAssistantApp(dependencies: harness.dependencies),
+        MeetingAssistantApp(
+          dependencies: harness.dependencies,
+          accountLinkParser: AccountLinkParser('meeting.example.invalid'),
+        ),
       );
       await pumpUntil(
         tester,
@@ -870,18 +883,26 @@ void main() {
       if (destination != 'login') {
         final link = find.text(
           destination == 'reset'
-              ? 'Đã có mã khôi phục?'
+              ? 'Đã có liên kết khôi phục?'
               : 'Đã nhận lời mời? Kích hoạt tài khoản',
         );
         await tester.ensureVisible(link);
         await tester.tap(link);
-        await tester.pump();
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byType(TextFormField).first,
+          'https://meeting.example.invalid/' +
+              (destination == 'reset' ? 'reset-password' : 'account-setup') +
+              '#token=synthetic',
+        );
+        await tester.tap(find.widgetWithText(FilledButton, 'Tiếp tục'));
+        await tester.pumpAndSettle();
       }
       final fields = find.byType(TextFormField);
       final controllers = <TextEditingController>[];
       final cleared = <bool>[];
       final first = destination == 'login' ? 1 : 0;
-      final count = destination == 'login' ? 2 : 3;
+      const count = 2;
       for (var i = first; i < count; i++) {
         final field = fields.at(i);
         await tester.ensureVisible(field);
