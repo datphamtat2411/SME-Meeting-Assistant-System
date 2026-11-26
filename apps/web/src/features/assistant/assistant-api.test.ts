@@ -10,7 +10,9 @@ import {
   createAssistantConversation,
   fetchAssistantConversations,
   fetchAssistantConversationDetail,
+  fetchAssistantTurnStatus,
   findAssistantTurnMessage,
+  lookupAssistantTurn,
   parseAssistantConversationDetailResponse,
   parseAssistantConversationsResponse,
   parseAssistantTurnResponse,
@@ -297,6 +299,51 @@ describe('Assistant Core API adapter', () => {
         [0, 1]
       )
     ).toBeUndefined()
+  })
+
+  it('reads authoritative turn status and looks up an exact request without posting', async () => {
+    const turnId = '66666666-6666-4666-8666-666666666666'
+    const status = {
+      conversationId,
+      turnId,
+      state: 'PROCESSING',
+      leaseStatus: 'EXPIRED',
+      userMessageId,
+      assistantMessageId: null,
+      answerStatus: null,
+    }
+    const get = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockResolvedValue(success(status))
+    const post = vi.spyOn(coreApi, 'post')
+    await expect(fetchAssistantTurnStatus(conversationId, turnId)).resolves.toEqual(
+      status
+    )
+    await expect(lookupAssistantTurn(conversationId, 'request-1')).resolves.toEqual(
+      status
+    )
+    expect(get).toHaveBeenNthCalledWith(
+      2,
+      `/assistant/conversations/${conversationId}/turns`,
+      { headers: { 'Idempotency-Key': 'request-1' } }
+    )
+    expect(post).not.toHaveBeenCalled()
+    get.mockResolvedValueOnce(success({ ...status, conversationId: meetingId }))
+    await expect(fetchAssistantTurnStatus(conversationId, turnId)).rejects.toMatchObject(
+      { code: 'MALFORMED_RESPONSE' }
+    )
+  })
+
+  it('uses an exclusive message anchor without sending an offset page', async () => {
+    const get = vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(success(detail))
+    await fetchAssistantConversationDetail(conversationId, {
+      beforeMessageId: assistantMessageId,
+      size: 50,
+    })
+    expect(get).toHaveBeenCalledWith(
+      `/assistant/conversations/${conversationId}`,
+      { params: { beforeMessageId: assistantMessageId, size: 50 } }
+    )
   })
 
   it('requires and forwards one caller-held idempotency key unchanged', async () => {

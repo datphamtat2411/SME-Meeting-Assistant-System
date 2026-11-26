@@ -20,6 +20,7 @@ const assistantMessageRoles = ['USER', 'ASSISTANT'] as const
 const assistantMessageVisibilities = ['VISIBLE', 'SOURCE_UNAVAILABLE'] as const
 
 const uuidSchema = z.string().uuid()
+const timestampSchema = z.iso.datetime({ offset: true })
 const claimSchema = z.object({
   claimId: z.string().min(1),
   text: z.string(),
@@ -42,8 +43,8 @@ const conversationSchema = z.object({
   meetingId: uuidSchema,
   title: z.string().nullable(),
   status: z.string().min(1),
-  createdAt: z.string().min(1),
-  updatedAt: z.string().min(1),
+  createdAt: timestampSchema,
+  updatedAt: timestampSchema,
 })
 
 const messageSchema = z.object({
@@ -54,8 +55,40 @@ const messageSchema = z.object({
   visibility: z.enum(assistantMessageVisibilities),
   claims: z.array(claimSchema),
   citations: z.array(citationSchema),
-  createdAt: z.string().min(1),
+  createdAt: timestampSchema,
 })
+
+const turnStatusSchema = z
+  .object({
+    conversationId: uuidSchema,
+    turnId: uuidSchema,
+    state: z.enum(assistantTurnStates),
+    leaseStatus: z.enum(['ACTIVE', 'EXPIRED']).nullable(),
+    userMessageId: uuidSchema,
+    assistantMessageId: uuidSchema.nullable(),
+    answerStatus: z.enum(assistantAnswerStatuses).nullable(),
+  })
+  .refine((turn) => {
+    if (turn.state === 'PROCESSING') {
+      return (
+        turn.leaseStatus !== null &&
+        turn.assistantMessageId === null &&
+        turn.answerStatus === null
+      )
+    }
+    if (
+      turn.leaseStatus !== null ||
+      turn.assistantMessageId === null ||
+      turn.answerStatus === null
+    ) {
+      return false
+    }
+    if (turn.state === 'FAILED') return turn.answerStatus === 'FAILED'
+    if (turn.state === 'STALE_SOURCE') {
+      return ['GROUNDED', 'PARTIAL'].includes(turn.answerStatus)
+    }
+    return turn.answerStatus !== 'FAILED'
+  })
 
 const conversationDetailSchema = z.object({
   conversation: conversationSchema,
@@ -63,6 +96,8 @@ const conversationDetailSchema = z.object({
   page: z.number().int().nonnegative(),
   size: z.number().int().positive(),
   hasMore: z.boolean(),
+  nextBeforeMessageId: uuidSchema.nullable().optional(),
+  pendingTurn: turnStatusSchema.nullable().optional(),
 })
 
 const turnSchema = z.object({
@@ -86,6 +121,7 @@ export type AssistantConversationDetail = z.infer<
   typeof conversationDetailSchema
 >
 export type AssistantTurn = z.infer<typeof turnSchema>
+export type AssistantTurnStatus = z.infer<typeof turnStatusSchema>
 
 const conversationsPath = '/assistant/conversations'
 export const ASSISTANT_PAGE_SIZE = 50
@@ -125,11 +161,36 @@ export function parseAssistantConversationsResponse(
 export function parseAssistantConversationDetailResponse(
   response: ApiResponseData<unknown>
 ): AssistantConversationDetail {
-  return parseAssistantResponse(
+  const detail = parseAssistantResponse(
     response,
     conversationDetailSchema,
     'Core API returned a malformed Assistant conversation detail response.'
   )
+  if (
+    detail.messages.length > detail.size ||
+    detail.messages.some(
+      (message) =>
+        message.citations.some(
+          (citation) => citation.meetingId !== detail.conversation.meetingId
+        ) ||
+        (message.visibility === 'SOURCE_UNAVAILABLE' &&
+          (message.content !== null ||
+            message.claims.length > 0 ||
+            message.citations.length > 0))
+    ) ||
+    (detail.pendingTurn &&
+      (detail.pendingTurn.conversationId !== detail.conversation.id ||
+        detail.pendingTurn.state !== 'PROCESSING')) ||
+    (detail.nextBeforeMessageId !== undefined &&
+      detail.nextBeforeMessageId !==
+        (detail.hasMore ? detail.messages[0]?.id : null))
+  ) {
+    throw malformedAssistantResponse(
+      'Core API returned inconsistent Assistant history or evidence.',
+      undefined
+    )
+  }
+  return detail
 }
 
 export function parseAssistantTurnResponse(
@@ -203,30 +264,51 @@ export async function createAssistantConversation(
     conversationsPath,
     trimmedTitle ? { meetingId, title: trimmedTitle } : { meetingId }
   )
-  return parseAssistantResponse(
+  const conversation = parseAssistantResponse(
     { data: response, meta: {} },
     conversationSchema,
     'Core API returned a malformed Assistant conversation response.'
   )
+  if (conversation.meetingId !== meetingId) {
+    throw malformedAssistantResponse(
+      'Core returned a conversation for a different meeting.',
+      undefined
+    )
+  }
+  return conversation
 }
 
 export async function fetchAssistantConversationDetail(
   conversationId: string,
-  options: { page?: number; size?: number; signal?: AbortSignal } = {}
+  options: {
+    page?: number
+    size?: number
+    beforeMessageId?: string
+    signal?: AbortSignal
+  } = {}
 ): Promise<AssistantConversationDetail> {
   const page = options.page ?? 0
   const size = options.size ?? ASSISTANT_PAGE_SIZE
+  if (options.beforeMessageId && options.page !== undefined) {
+    throw invalidAssistantInput('Use either page or beforeMessageId.')
+  }
   const response = await coreApi.getWithMeta<unknown>(
     `${conversationsPath}/${encodeURIComponent(conversationId)}`,
     {
-      params: { page, size },
+      params: options.beforeMessageId
+        ? { beforeMessageId: options.beforeMessageId, size }
+        : { page, size },
       ...(options.signal ? { signal: options.signal } : {}),
     }
   )
   const detail = parseAssistantConversationDetailResponse(response)
-  if (detail.page !== page || detail.size !== size) {
+  if (
+    detail.conversation.id !== conversationId ||
+    detail.page !== page ||
+    detail.size !== size
+  ) {
     throw malformedAssistantResponse(
-      'Core API returned Assistant history for a different page.',
+      'Core API returned Assistant history for a different page or conversation.',
       {
         requestedPage: page,
         requestedSize: size,
@@ -297,8 +379,37 @@ export function assistantConversationHistoryQueryOptions(
 
 const idempotencyKeyPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 
-function codePointLength(value: string): number {
-  return [...value].length
+// Match the server's existing String.trim fingerprint normalization exactly.
+export function normalizeAssistantQuestion(value: string): string {
+  let start = 0
+  let end = value.length
+  while (start < end && value.charCodeAt(start) <= 32) start += 1
+  while (end > start && value.charCodeAt(end - 1) <= 32) end -= 1
+  return value.slice(start, end)
+}
+
+export const ASSISTANT_QUESTION_LIMIT = 4096
+
+export function assistantQuestionLength(value: string): number {
+  return [...normalizeAssistantQuestion(value)].length
+}
+
+// Character.isWhitespace / String.isBlank in the canonical Java API.
+export function isBlankAssistantQuestion(value: string): boolean {
+  return [...normalizeAssistantQuestion(value)].every((character) => {
+    const code = character.codePointAt(0)!
+    return (
+      (code >= 9 && code <= 13) ||
+      (code >= 28 && code <= 32) ||
+      code === 0x1680 ||
+      (code >= 0x2000 && code <= 0x2006) ||
+      (code >= 0x2008 && code <= 0x200a) ||
+      code === 0x2028 ||
+      code === 0x2029 ||
+      code === 0x205f ||
+      code === 0x3000
+    )
+  })
 }
 
 function invalidAssistantInput(message: string): CoreApiError {
@@ -325,8 +436,11 @@ export async function submitAssistantQuestion(
   idempotencyKey: string,
   signal?: AbortSignal
 ): Promise<AssistantTurn> {
-  const normalizedQuestion = question.trim()
-  if (!normalizedQuestion || codePointLength(normalizedQuestion) > 4096) {
+  const normalizedQuestion = normalizeAssistantQuestion(question)
+  if (
+    isBlankAssistantQuestion(normalizedQuestion) ||
+    assistantQuestionLength(normalizedQuestion) > ASSISTANT_QUESTION_LIMIT
+  ) {
     throw invalidAssistantInput(
       'Enter a nonblank Assistant question of at most 4096 characters.'
     )
@@ -347,6 +461,58 @@ export async function submitAssistantQuestion(
     turnSchema,
     'Core API returned a malformed Assistant turn response.'
   )
+}
+
+function parseTurnStatus(
+  response: ApiResponseData<unknown>,
+  conversationId: string,
+  turnId?: string
+): AssistantTurnStatus {
+  const status = parseAssistantResponse(
+    response,
+    turnStatusSchema,
+    'Core API returned a malformed Assistant turn status.'
+  )
+  if (
+    status.conversationId !== conversationId ||
+    (turnId !== undefined && status.turnId !== turnId)
+  ) {
+    throw malformedAssistantResponse(
+      'Core API returned status for a different Assistant turn.',
+      undefined
+    )
+  }
+  return status
+}
+
+export async function fetchAssistantTurnStatus(
+  conversationId: string,
+  turnId: string,
+  signal?: AbortSignal
+): Promise<AssistantTurnStatus> {
+  const response = await coreApi.getWithMeta<unknown>(
+    `${conversationsPath}/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}`,
+    { ...(signal ? { signal } : {}) }
+  )
+  return parseTurnStatus(response, conversationId, turnId)
+}
+
+export async function lookupAssistantTurn(
+  conversationId: string,
+  idempotencyKey: string,
+  signal?: AbortSignal
+): Promise<AssistantTurnStatus> {
+  if (!idempotencyKeyPattern.test(idempotencyKey)) {
+    throw invalidAssistantInput('The Assistant request identity is invalid.')
+  }
+  const response = await coreApi.getWithMeta<unknown>(
+    `${conversationsPath}/${encodeURIComponent(conversationId)}/turns`,
+    {
+      headers: { 'Idempotency-Key': idempotencyKey },
+      ...(signal ? { signal } : {}),
+    }
+  )
+  return parseTurnStatus(response, conversationId)
 }
 
 export function findAssistantTurnMessage(
