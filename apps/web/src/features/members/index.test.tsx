@@ -350,10 +350,12 @@ describe('Members directory', () => {
     const search = screen.getByRole('textbox', { name: 'Search members' })
     // Keep the debounce pending until navigation, even on a busy CI runner.
     // Verify that navigation cancels the actual timer, not just its UI draft.
-    const scheduleTimeout = window.setTimeout.bind(window)
+    // Use the DOM timer contract, not the global Node/DOM overload set.
+    const browserWindow: Window = window
+    const scheduleTimeout = browserWindow.setTimeout.bind(browserWindow)
     let pendingSearchTimer: number | undefined
     const scheduleSpy = vi
-      .spyOn(window, 'setTimeout')
+      .spyOn(browserWindow, 'setTimeout')
       .mockImplementation((handler, delay, ...args) => {
         const isSearchDebounce = delay === 350
         const id = scheduleTimeout(
@@ -364,7 +366,7 @@ describe('Members directory', () => {
         if (isSearchDebounce) pendingSearchTimer = id
         return id
       })
-    const clearSpy = vi.spyOn(window, 'clearTimeout')
+    const clearSpy = vi.spyOn(browserWindow, 'clearTimeout')
     try {
       await userEvent.fill(search, 'obsolete draft')
       await expect.poll(() => pendingSearchTimer).toBeDefined()
@@ -376,7 +378,7 @@ describe('Members directory', () => {
       await expect.poll(() => clearSpy.mock.calls).toContainEqual([timerId])
     } finally {
       if (pendingSearchTimer !== undefined) {
-        window.clearTimeout(pendingSearchTimer)
+        browserWindow.clearTimeout(pendingSearchTimer)
       }
       scheduleSpy.mockRestore()
       clearSpy.mockRestore()

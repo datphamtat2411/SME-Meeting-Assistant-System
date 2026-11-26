@@ -26,6 +26,14 @@ Branch: `web/module-dashboard-export`. Starting revision: `ee5a1da6`.
   Members debounce/history failure. The new query-invalidation tests
   passed. Both failures have been addressed in the follow-up, which must
   be verified by its own CI run.
+- Web run [45907208121](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45907208121)
+  on `19fb4dbf`: lint and formatting passed; all 142 browser suites
+  and 1200 tests passed. TypeScript build failed with TS2345 because
+  the browser timer mock inherited the combined DOM/Node overloads.
+  The follow-up explicitly types the timer target as DOM Window, preserving
+  numeric browser handles, timer cancellation assertions and cleanup.
+  No cast, compiler suppression or production behavior change is used.
+  Full verification remains tied to the follow-up revision.
 - API verification on earlier revisions is not evidence of passing the
   new HTTP test. Check the final source revision's API run and its
   DashboardExportModuleAcceptanceTests and ExportHttpIntegrationTests
