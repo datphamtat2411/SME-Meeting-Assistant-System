@@ -191,11 +191,17 @@ export function actionItemsQuery(
         signal,
       })
       const items = parseActions(response.data)
-      if (owner && items.some((item) =>
-        (filter.assignee === 'me' && item.assigneeUserId !== owner.actorId) ||
-        (filter.status !== 'all' && item.status !== filter.status) ||
-        (filter.official !== 'all' && item.isOfficial !== filter.official)
-      )) {
+      if (
+        owner &&
+        items.some(
+          (item) =>
+            (params.assignee === 'me' &&
+              item.assigneeUserId !== owner.actorId) ||
+            (params.status !== undefined && item.status !== params.status) ||
+            (params.official !== undefined &&
+              String(item.isOfficial) !== params.official)
+        )
+      ) {
         throw malformedActionResponse(
           'Core API returned Action Items outside the requested assigned-work scope.'
         )
