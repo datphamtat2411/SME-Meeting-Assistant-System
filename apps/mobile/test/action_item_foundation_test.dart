@@ -89,42 +89,45 @@ Future<ActionItemRepository> repositoryFor(MeetingTestHttpClient client) async {
 }
 
 void main() {
-  test('decodes official and restricted projections without inventing data', () {
-    final item = ActionItemResource.fromJson(
-      itemJson(restricted: true, source: 'AI_EXTRACTED'),
-    );
-    expect(item.official, isTrue);
-    expect(item.source, ActionItemSource.aiExtracted);
-    expect(item.confirmedByUserId, isNull);
-    expect(item.meetingContext.title, isNull);
-    expect(item.capabilities.canEdit, isFalse);
-    expect(item.dueDate, '2026-12-01');
-    expect(item.capabilities.allows(ActionItemCommand.complete), isTrue);
-
-    final proposal = ActionItemResource.fromJson(
-      itemJson(
-        status: 'PROPOSED',
-        official: false,
-        source: 'AI_EXTRACTED',
-        assigneeId: null,
-      ),
-    );
-    expect(proposal.assignee, isNull);
-    expect(proposal.official, isFalse);
-    expect(proposal.capabilities.allows(ActionItemCommand.confirm), isFalse);
-
-    for (final malformed in <Map<String, dynamic>>[
-      {...itemJson(), 'status': 'OVERDUE'},
-      {...itemJson(), 'capabilities': null},
-      {...itemJson(), 'dueDate': '2026-02-30'},
-      {...itemJson(), 'official': false},
-    ]) {
-      expect(
-        () => ActionItemResource.fromJson(malformed),
-        throwsA(isA<ApiFailure>()),
+  test(
+    'decodes official and restricted projections without inventing data',
+    () {
+      final item = ActionItemResource.fromJson(
+        itemJson(restricted: true, source: 'AI_EXTRACTED'),
       );
-    }
-  });
+      expect(item.official, isTrue);
+      expect(item.source, ActionItemSource.aiExtracted);
+      expect(item.confirmedByUserId, isNull);
+      expect(item.meetingContext.title, isNull);
+      expect(item.capabilities.canEdit, isFalse);
+      expect(item.dueDate, '2026-12-01');
+      expect(item.capabilities.allows(ActionItemCommand.complete), isTrue);
+
+      final proposal = ActionItemResource.fromJson(
+        itemJson(
+          status: 'PROPOSED',
+          official: false,
+          source: 'AI_EXTRACTED',
+          assigneeId: null,
+        ),
+      );
+      expect(proposal.assignee, isNull);
+      expect(proposal.official, isFalse);
+      expect(proposal.capabilities.allows(ActionItemCommand.confirm), isFalse);
+
+      for (final malformed in <Map<String, dynamic>>[
+        {...itemJson(), 'status': 'OVERDUE'},
+        {...itemJson(), 'capabilities': null},
+        {...itemJson(), 'dueDate': '2026-02-30'},
+        {...itemJson(), 'official': false},
+      ]) {
+        expect(
+          () => ActionItemResource.fromJson(malformed),
+          throwsA(isA<ApiFailure>()),
+        );
+      }
+    },
+  );
 
   test('query and patch preserve filter and explicit null semantics', () {
     final query = ActionItemQuery(
@@ -150,151 +153,156 @@ void main() {
     expect(patch.toJson(), {'details': null, 'dueDate': null});
     expect(() => ActionItemPatch(), throwsArgumentError);
     expect(
-      () => ActionItemPatch(
-        title: const ActionItemFieldUpdate<String>.set(' '),
-      ),
+      () =>
+          ActionItemPatch(title: const ActionItemFieldUpdate<String>.set(' ')),
       throwsArgumentError,
     );
   });
 
-  test('reads collection, eligible meetings and assignment directory', () async {
-    final client = MeetingTestHttpClient((request) async {
-      final path = request.url.path;
-      if (path.endsWith('/creation-meetings')) {
-        expect(request.url.queryParameters['q'], testMeetingId);
+  test(
+    'reads collection, eligible meetings and assignment directory',
+    () async {
+      final client = MeetingTestHttpClient((request) async {
+        final path = request.url.path;
+        if (path.endsWith('/creation-meetings')) {
+          expect(request.url.queryParameters['q'], testMeetingId);
+          return meetingApiSuccess([
+            {
+              'id': testMeetingId,
+              'title': null,
+              'canReadMeetingContext': false,
+            },
+          ], meta: pageMeta());
+        }
+        if (path.endsWith('/meeting-candidates')) {
+          expect(request.url.queryParameters['q'], 'Al');
+          return meetingApiSuccess([
+            {
+              'id': testRoomId,
+              'displayName': 'Alice',
+              'email': 'alice@example.test',
+              'organizationalUnitName': null,
+            },
+          ], meta: pageMeta());
+        }
+        expect(request.url.queryParameters['official'], 'true');
+        expect(request.url.queryParameters['assignee'], 'me');
         return meetingApiSuccess([
-          {
-            'id': testMeetingId,
-            'title': null,
-            'canReadMeetingContext': false,
-          },
+          itemJson(restricted: true),
         ], meta: pageMeta());
-      }
-      if (path.endsWith('/meeting-candidates')) {
-        expect(request.url.queryParameters['q'], 'Al');
-        return meetingApiSuccess([
-          {
-            'id': testRoomId,
-            'displayName': 'Alice',
-            'email': 'alice@example.test',
-            'organizationalUnitName': null,
-          },
-        ], meta: pageMeta());
-      }
-      expect(request.url.queryParameters['official'], 'true');
-      expect(request.url.queryParameters['assignee'], 'me');
-      return meetingApiSuccess([
-        itemJson(restricted: true),
-      ], meta: pageMeta());
-    });
-    final repository = await repositoryFor(client);
-    final scope = repository.captureSession();
-    final list = await repository.list(
-      ActionItemQuery(
-        official: true,
-        assignee: const ActionItemAssigneeFilter.me(),
-      ),
-      sessionScope: scope,
-    );
-    expect(list.items.single.id, itemId);
-    final meetings = await repository.creationMeetings(
-      ActionItemCreationMeetingQuery(search: testMeetingId),
-      sessionScope: scope,
-    );
-    expect(meetings.items.single.title, isNull);
-    final candidates = await repository.assignmentCandidates(
-      MeetingCandidateQuery(search: 'Al'),
-      sessionScope: scope,
-    );
-    expect(candidates.items.single.displayName, 'Alice');
-    expect(repository.selfCandidate(scope).id, testUserId);
-  });
-
-  test('preserves original ETag and stable create intent across failures', () async {
-    var creates = 0;
-    final client = MeetingTestHttpClient((request) async {
-      if (request.method == 'GET') {
-        return meetingApiSuccess(
-          itemJson(),
-          headers: const {'etag': '"original"'},
-        );
-      }
-      if (request.method == 'PATCH') {
-        expect(request.headers['If-Match'], '"original"');
-        expect(decodeRequestBody(request), {'dueDate': null});
-        return meetingApiFailure(412, 'RESOURCE_VERSION_CONFLICT');
-      }
-      creates++;
-      expect(request.headers['Idempotency-Key'], 'stable-action-create');
-      expect(decodeRequestBody(request)['assigneeUserId'], testUserId);
-      if (creates == 1) {
-        // The mutation may have committed despite an invalid response.
-        return meetingApiSuccess(itemJson(), status: 201);
-      }
-      return meetingApiSuccess(
-        itemJson(version: 2),
-        status: 201,
-        headers: const {'etag': '"created"'},
+      });
+      final repository = await repositoryFor(client);
+      final scope = repository.captureSession();
+      final list = await repository.list(
+        ActionItemQuery(
+          official: true,
+          assignee: const ActionItemAssigneeFilter.me(),
+        ),
+        sessionScope: scope,
       );
-    });
-    final repository = await repositoryFor(client);
-    final signal = repository.invalidation;
-    final scope = repository.captureSession();
-    final snapshot = await repository.detail(itemId, sessionScope: scope);
-    await expectLater(
-      repository.update(
-        snapshot,
-        ActionItemPatch(
-          dueDate: const ActionItemFieldUpdate<String?>.set(null),
+      expect(list.items.single.id, itemId);
+      final meetings = await repository.creationMeetings(
+        ActionItemCreationMeetingQuery(search: testMeetingId),
+        sessionScope: scope,
+      );
+      expect(meetings.items.single.title, isNull);
+      final candidates = await repository.assignmentCandidates(
+        MeetingCandidateQuery(search: 'Al'),
+        sessionScope: scope,
+      );
+      expect(candidates.items.single.displayName, 'Alice');
+      expect(repository.selfCandidate(scope).id, testUserId);
+    },
+  );
+
+  test(
+    'preserves original ETag and stable create intent across failures',
+    () async {
+      var creates = 0;
+      final client = MeetingTestHttpClient((request) async {
+        if (request.method == 'GET') {
+          return meetingApiSuccess(
+            itemJson(),
+            headers: const {'etag': '"original"'},
+          );
+        }
+        if (request.method == 'PATCH') {
+          expect(request.headers['If-Match'], '"original"');
+          expect(decodeRequestBody(request), {'dueDate': null});
+          return meetingApiFailure(412, 'RESOURCE_VERSION_CONFLICT');
+        }
+        creates++;
+        expect(request.headers['Idempotency-Key'], 'stable-action-create');
+        expect(decodeRequestBody(request)['assigneeUserId'], testUserId);
+        if (creates == 1) {
+          // The mutation may have committed despite an invalid response.
+          return meetingApiSuccess(itemJson(), status: 201);
+        }
+        return meetingApiSuccess(
+          itemJson(version: 2),
+          status: 201,
+          headers: const {'etag': '"created"'},
+        );
+      });
+      final repository = await repositoryFor(client);
+      final signal = repository.invalidation;
+      final scope = repository.captureSession();
+      final snapshot = await repository.detail(itemId, sessionScope: scope);
+      await expectLater(
+        repository.update(
+          snapshot,
+          ActionItemPatch(
+            dueDate: const ActionItemFieldUpdate<String?>.set(null),
+          ),
         ),
-      ),
-      throwsA(
-        isA<ActionItemFailure>()
-            .having(
-              (e) => e.category,
-              'category',
-              ActionItemFailureCategory.versionConflict,
-            )
-            .having(
-              (e) => e.outcome,
-              'outcome',
-              ActionItemMutationOutcome.rejected,
-            ),
-      ),
-    );
-    expect(signal.revision, 0);
-    final intent = ActionItemCreateIntent(
-      sessionScope: scope,
-      idempotencyKey: 'stable-action-create',
-      input: ActionItemCreateInput(
-        meetingId: testMeetingId,
-        title: 'Send report',
-        assigneeUserId: testUserId,
-      ),
-    );
-    await expectLater(
-      repository.create(intent),
-      throwsA(
-        isA<ActionItemFailure>().having(
-          (e) => e.outcome,
-          'outcome',
-          ActionItemMutationOutcome.unknown,
+        throwsA(
+          isA<ActionItemFailure>()
+              .having(
+                (e) => e.category,
+                'category',
+                ActionItemFailureCategory.versionConflict,
+              )
+              .having(
+                (e) => e.outcome,
+                'outcome',
+                ActionItemMutationOutcome.rejected,
+              ),
         ),
-      ),
-    );
-    expect(signal.revision, 1);
-    expect(signal.lastMeetingId, testMeetingId);
-    expect(signal.lastActionItemId, isNull);
-    final created = await repository.create(intent);
-    expect(created.etag, '"created"');
-    expect(signal.revision, 2);
-    expect(signal.lastActionItemId, itemId);
-    expect(creates, 2);
-    expect(
-      client.requests.where((r) => r.url.path.endsWith('/$itemId')).length,
-      2,
-    );
-  });
+      );
+      expect(signal.revision, 0);
+      final intent = ActionItemCreateIntent(
+        sessionScope: scope,
+        idempotencyKey: 'stable-action-create',
+        input: ActionItemCreateInput(
+          meetingId: testMeetingId,
+          title: 'Send report',
+          assigneeUserId: testUserId,
+        ),
+      );
+      await expectLater(
+        repository.create(intent),
+        throwsA(
+          isA<ActionItemFailure>().having(
+            (e) => e.outcome,
+            'outcome',
+            ActionItemMutationOutcome.unknown,
+          ),
+        ),
+      );
+      expect(signal.revision, 1);
+      expect(signal.lastMeetingId, testMeetingId);
+      expect(signal.lastActionItemId, isNull);
+      final created = await repository.create(intent);
+      expect(created.etag, '"created"');
+      expect(signal.revision, 2);
+      expect(signal.lastActionItemId, itemId);
+      expect(creates, 2);
+      expect(
+        client.requests.where((r) => r.url.path.endsWith('/$itemId')).length,
+        2,
+      );
+    },
+  );
 
   test('all commands use the preceding verified snapshot', () async {
     final commands = [

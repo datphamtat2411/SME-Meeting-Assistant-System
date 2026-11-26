@@ -33,8 +33,8 @@ enum ActionItemCommand {
 
   // Validate the shape of the server's command projection, not caller rights.
   bool validFrom(ActionItemStatus status) => switch (this) {
-    ActionItemCommand.confirm || ActionItemCommand.reject =>
-      status == ActionItemStatus.proposed,
+    ActionItemCommand.confirm ||
+    ActionItemCommand.reject => status == ActionItemStatus.proposed,
     ActionItemCommand.start => status == ActionItemStatus.open,
     ActionItemCommand.complete || ActionItemCommand.cancel =>
       status == ActionItemStatus.open || status == ActionItemStatus.inProgress,
@@ -470,9 +470,7 @@ bool _control(int c) => c < 32 || (c >= 127 && c <= 159);
 
 String _title(String value) {
   final trimmed = value.trim();
-  if (value.length > 500 ||
-      trimmed.isEmpty ||
-      trimmed.runes.any(_control)) {
+  if (value.length > 500 || trimmed.isEmpty || trimmed.runes.any(_control)) {
     throw ArgumentError('Invalid Action Item title.');
   }
   return trimmed;
@@ -544,9 +542,7 @@ class ActionItemCreateIntent {
 class ActionItemFieldUpdate<T> {
   const ActionItemFieldUpdate.unchanged() : isSpecified = false, _value = null;
 
-  const ActionItemFieldUpdate.set(T value)
-    : isSpecified = true,
-      _value = value;
+  const ActionItemFieldUpdate.set(T value) : isSpecified = true, _value = value;
 
   final bool isSpecified;
   final T? _value;

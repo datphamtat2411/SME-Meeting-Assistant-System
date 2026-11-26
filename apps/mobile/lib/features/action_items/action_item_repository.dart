@@ -132,23 +132,20 @@ class ActionItemRepository {
   Future<PagedCollection<MeetingParticipantCandidate>> assignmentCandidates(
     MeetingCandidateQuery query, {
     required AuthenticatedSessionScope sessionScope,
-  }) => _read(
-    sessionScope,
-    () async {
-      final page = await participantCandidates.search(
-        query,
-        sessionScope: sessionScope,
+  }) => _read(sessionScope, () async {
+    final page = await participantCandidates.search(
+      query,
+      sessionScope: sessionScope,
+    );
+    if (page.items.any((candidate) => !isActionItemUuid(candidate.id))) {
+      throw const ApiFailure(
+        0,
+        ApiFailure.invalidResponseCode,
+        'The server returned an invalid assignment candidate.',
       );
-      if (page.items.any((candidate) => !isActionItemUuid(candidate.id))) {
-        throw const ApiFailure(
-          0,
-          ApiFailure.invalidResponseCode,
-          'The server returned an invalid assignment candidate.',
-        );
-      }
-      return page;
-    },
-  );
+    }
+    return page;
+  });
 
   /// The invite directory deliberately excludes its caller. Self assignment
   /// remains an explicit selection, subject to server eligibility validation.
@@ -270,7 +267,8 @@ class ActionItemRepository {
         throw _sessionFailure(ActionItemMutationOutcome.unknown);
       }
       final source = _apiFailure(error);
-      final outcome = error is ActionItemFailure || error is AuthSessionException
+      final outcome =
+          error is ActionItemFailure || error is AuthSessionException
           ? ActionItemMutationOutcome.unknown
           : _outcomeFor(source);
       if (outcome == ActionItemMutationOutcome.unknown) {
