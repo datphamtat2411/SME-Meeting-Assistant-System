@@ -473,7 +473,11 @@ describe('session restoration and protected routing', () => {
 
       const previousExportKey = 'sme:meeting-minutes-export:previous-session'
       sessionStorage.setItem(previousExportKey, '{}')
-      const previousReportKey = ['dashboard', 'management', getSessionContextKey(identity)]
+      const previousReportKey = [
+        'dashboard',
+        'management',
+        getSessionContextKey(identity),
+      ]
       queryClient.setQueryData(previousReportKey, { protected: true })
       verifiedIdentity = replacement
       await revalidateBrowserSession()

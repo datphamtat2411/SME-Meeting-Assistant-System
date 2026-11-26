@@ -249,27 +249,34 @@ describe('ExportPanel authorization and download boundary', () => {
     authorizationMocks.value.capabilities.authorizationResolution = 'allowed'
     authorizationMocks.value.capabilities.canReadMeetingContent = true
     vi.stubEnv('VITE_EXPORT_DOWNLOAD_HOSTS', 'localhost')
-    exportMocks.capabilities = { admission: true, recovery: true, status: true, access: true }
+    exportMocks.capabilities = {
+      admission: true,
+      recovery: true,
+      status: true,
+      access: true,
+    }
     minutesData.value = {
       ...minutesData.value,
       completeness: 'COMPLETE',
       proposalsIncluded: false,
     }
-    exportMocks.fetchExportStatus.mockImplementation(async (exportId: string) => ({
-      exportId,
-      meetingId:
-        exportId === secondExportId
-          ? secondMeetingId
-          : '11111111-1111-4111-8111-111111111111',
-      format: 'PDF',
-      status: 'READY',
-      attemptCount: 1,
-      createdAt: '2026-11-23T00:00:00Z',
-      readyAt: '2026-11-23T00:01:00Z',
-      safeErrorCode: null,
-      freshness: 'CURRENT',
-      freshnessCheckedAt: '2026-11-23T00:01:00Z',
-    }))
+    exportMocks.fetchExportStatus.mockImplementation(
+      async (exportId: string) => ({
+        exportId,
+        meetingId:
+          exportId === secondExportId
+            ? secondMeetingId
+            : '11111111-1111-4111-8111-111111111111',
+        format: 'PDF',
+        status: 'READY',
+        attemptCount: 1,
+        createdAt: '2026-11-23T00:00:00Z',
+        readyAt: '2026-11-23T00:01:00Z',
+        safeErrorCode: null,
+        freshness: 'CURRENT',
+        freshnessCheckedAt: '2026-11-23T00:01:00Z',
+      })
+    )
     exportMocks.createMinutesExport.mockResolvedValue({ exportId })
     exportMocks.recoverMinutesExport.mockResolvedValue({ exportId })
     exportMocks.accessMinutesExport.mockResolvedValue(exportCapability)
@@ -278,17 +285,35 @@ describe('ExportPanel authorization and download boundary', () => {
   it('does not create exports when deployment admission is disabled', async () => {
     exportMocks.capabilities.admission = false
     const screen = await renderPanel()
-    await expect.element(screen.getByText('New export generation is disabled in this deployment.')).toBeVisible()
-    await expect.element(screen.getByRole('button', { name: 'Generate PDF' })).toBeDisabled()
-    await expect.element(screen.getByRole('button', { name: 'Generate Markdown' })).toBeDisabled()
+    await expect
+      .element(
+        screen.getByText(
+          'New export generation is disabled in this deployment.'
+        )
+      )
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('button', { name: 'Generate PDF' }))
+      .toBeDisabled()
+    await expect
+      .element(screen.getByRole('button', { name: 'Generate Markdown' }))
+      .toBeDisabled()
     expect(exportMocks.createMinutesExport).not.toHaveBeenCalled()
   })
 
   it('does not create exports without a trusted download configuration', async () => {
     vi.stubEnv('VITE_EXPORT_DOWNLOAD_HOSTS', '*')
     const screen = await renderPanel()
-    await expect.element(screen.getByText('Secure downloads are not configured. Contact your administrator.')).toBeVisible()
-    await expect.element(screen.getByRole('button', { name: 'Generate PDF' })).toBeDisabled()
+    await expect
+      .element(
+        screen.getByText(
+          'Secure downloads are not configured. Contact your administrator.'
+        )
+      )
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('button', { name: 'Generate PDF' }))
+      .toBeDisabled()
     expect(exportMocks.createMinutesExport).not.toHaveBeenCalled()
   })
 
@@ -318,14 +343,17 @@ describe('ExportPanel authorization and download boundary', () => {
     await expect
       .element(screen.getByRole('button', { name: 'Download' }))
       .toBeInTheDocument()
-    const observationsBeforeDownload = exportMocks.fetchExportStatus.mock.calls.length
+    const observationsBeforeDownload =
+      exportMocks.fetchExportStatus.mock.calls.length
     await userEvent.click(screen.getByRole('button', { name: 'Download' }))
 
     await expect
       .poll(() => exportMocks.accessMinutesExport.mock.calls.length)
       .toBe(1)
     expect(clickSpy).toHaveBeenCalledOnce()
-    expect(exportMocks.fetchExportStatus.mock.calls.length).toBeGreaterThan(observationsBeforeDownload)
+    expect(exportMocks.fetchExportStatus.mock.calls.length).toBeGreaterThan(
+      observationsBeforeDownload
+    )
   })
 
   it('refuses an insecure or untrusted download capability', async () => {

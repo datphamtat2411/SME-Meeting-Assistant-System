@@ -17,10 +17,10 @@ import {
   noteBrowserSessionLoss,
   revalidateBrowserSession,
 } from '@/features/auth/session/session-revalidation'
-import { containProtectedState } from './protected-state-containment'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
+import { containProtectedState } from './protected-state-containment'
 // Generated Routes
 import { routeTree } from './routeTree.gen'
 // Styles

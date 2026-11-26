@@ -287,7 +287,10 @@ function FormatExportCard({
         if (!isCurrent()) return
         // A download must begin its own authorization/freshness read rather
         // than joining an older in-flight polling request.
-        const observed = await fetchExportStatus(exportId, { meetingId, format })
+        const observed = await fetchExportStatus(exportId, {
+          meetingId,
+          format,
+        })
         if (!isCurrent()) return
         if (
           observed.exportId !== exportId ||

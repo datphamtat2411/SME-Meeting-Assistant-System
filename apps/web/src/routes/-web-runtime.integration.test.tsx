@@ -232,36 +232,50 @@ function apiError(status: number, message = `Core response ${status}`) {
 }
 
 function installCoreFixtures(options: FixtureOptions = {}) {
-  const get = vi.spyOn(coreApi, 'get').mockImplementation(async (url, config) => {
-    if (url === '/auth/me') return (options.identity ?? identity) as never
-    if (url === '/dashboard/me')
-      return (options.dashboard ?? dashboard) as never
-    if (url === '/dashboard/management') {
-      if (options.managementError) throw options.managementError
-      return {
-        asOf: dashboardAsOf,
-        timezone: dashboard.timezone,
-        period: {
-          fromInclusive: config?.params?.from,
-          toExclusive: config?.params?.to,
-          cohortTimeField: 'ACTION_ITEM_CREATED_AT',
-          statusTimeSemantics: 'CURRENT_STATE',
-        },
-        scope: {
-          type: 'MANAGED_OFFICIAL_ACTION_ITEMS',
-          organizationalUnitIds: config?.params?.orgUnitId
-            ? [config.params.orgUnitId]
-            : (options.managementUnitIds ?? []),
-        },
-        actionItems: { open: 3, inProgress: 4, done: 5, cancelled: 1, overdue: 2, totalOfficial: 13 },
-        unavailableMetrics: [{ metric: 'COMPLETION_RATE', reason: 'PRODUCT_DENOMINATOR_AND_COHORT_POLICY_NOT_APPROVED' }],
-      } as never
-    }
-    if (url === '/me/profile') return profile as never
-    if (url === '/me/preferences') return preferences as never
-    if (url.endsWith(`/meetings/${meetingId}/media`)) return [] as never
-    throw new Error(`Unexpected Core GET ${url}`)
-  })
+  const get = vi
+    .spyOn(coreApi, 'get')
+    .mockImplementation(async (url, config) => {
+      if (url === '/auth/me') return (options.identity ?? identity) as never
+      if (url === '/dashboard/me')
+        return (options.dashboard ?? dashboard) as never
+      if (url === '/dashboard/management') {
+        if (options.managementError) throw options.managementError
+        return {
+          asOf: dashboardAsOf,
+          timezone: dashboard.timezone,
+          period: {
+            fromInclusive: config?.params?.from,
+            toExclusive: config?.params?.to,
+            cohortTimeField: 'ACTION_ITEM_CREATED_AT',
+            statusTimeSemantics: 'CURRENT_STATE',
+          },
+          scope: {
+            type: 'MANAGED_OFFICIAL_ACTION_ITEMS',
+            organizationalUnitIds: config?.params?.orgUnitId
+              ? [config.params.orgUnitId]
+              : (options.managementUnitIds ?? []),
+          },
+          actionItems: {
+            open: 3,
+            inProgress: 4,
+            done: 5,
+            cancelled: 1,
+            overdue: 2,
+            totalOfficial: 13,
+          },
+          unavailableMetrics: [
+            {
+              metric: 'COMPLETION_RATE',
+              reason: 'PRODUCT_DENOMINATOR_AND_COHORT_POLICY_NOT_APPROVED',
+            },
+          ],
+        } as never
+      }
+      if (url === '/me/profile') return profile as never
+      if (url === '/me/preferences') return preferences as never
+      if (url.endsWith(`/meetings/${meetingId}/media`)) return [] as never
+      throw new Error(`Unexpected Core GET ${url}`)
+    })
 
   const getWithMeta = vi
     .spyOn(coreApi, 'getWithMeta')
@@ -272,7 +286,8 @@ function installCoreFixtures(options: FixtureOptions = {}) {
       }
       if (url === '/action-items') {
         if (
-          config?.params?.status === (options.actionItemsFailureStatus ?? 'IN_PROGRESS') &&
+          config?.params?.status ===
+            (options.actionItemsFailureStatus ?? 'IN_PROGRESS') &&
           options.actionItemsError
         ) {
           throw options.actionItemsError
@@ -280,7 +295,10 @@ function installCoreFixtures(options: FixtureOptions = {}) {
         if (config?.params?.status === 'OPEN' && options.actionItemsOpen) {
           return options.actionItemsOpen as never
         }
-        if (config?.params?.status === 'IN_PROGRESS' && options.actionItemsInProgress) {
+        if (
+          config?.params?.status === 'IN_PROGRESS' &&
+          options.actionItemsInProgress
+        ) {
           return options.actionItemsInProgress as never
         }
         return emptyActionItemList as never
@@ -291,10 +309,20 @@ function installCoreFixtures(options: FixtureOptions = {}) {
         const ids = options.managementUnitIds ?? []
         return {
           data: ids.map((id, index) => ({
-            id, name: 'Unit ' + (index + 1), code: 'UNIT-' + (index + 1),
-            parentId: null, status: 'ACTIVE',
+            id,
+            name: 'Unit ' + (index + 1),
+            code: 'UNIT-' + (index + 1),
+            parentId: null,
+            status: 'ACTIVE',
           })),
-          meta: { pagination: { ...pagination, size: 100, totalElements: ids.length, totalPages: ids.length ? 1 : 0 } },
+          meta: {
+            pagination: {
+              ...pagination,
+              size: 100,
+              totalElements: ids.length,
+              totalPages: ids.length ? 1 : 0,
+            },
+          },
         } as never
       }
       if (url.endsWith(`/meetings/${meetingId}/participants`)) {
@@ -632,28 +660,47 @@ describe('integrated generated Web runtime', () => {
       const successPage = {
         data: [assigned],
         meta: {
-          pagination: { ...pagination, size: 5, totalElements: 1, totalPages: 1 },
+          pagination: {
+            ...pagination,
+            size: 5,
+            totalElements: 1,
+            totalPages: 1,
+          },
         },
       }
       const options: FixtureOptions = {
         actionItemsError: apiError(503, 'Work unavailable'),
         actionItemsFailureStatus: failedStatus,
         actionItemsOpen: successfulStatus === 'OPEN' ? successPage : undefined,
-        actionItemsInProgress: successfulStatus === 'IN_PROGRESS' ? successPage : undefined,
+        actionItemsInProgress:
+          successfulStatus === 'IN_PROGRESS' ? successPage : undefined,
       }
       const { getWithMeta } = installCoreFixtures(options)
       const { screen } = await renderGeneratedRoute('/')
       await expect.element(screen.getByText('Work unavailable')).toBeVisible()
-      await expect.element(screen.getByText('Pending action items')).toBeVisible()
-      await expect.element(screen.getByText('No pending assigned work')).not.toBeInTheDocument()
-      await expect.element(screen.getByText(assigned.title)).not.toBeInTheDocument()
+      await expect
+        .element(screen.getByText('Pending action items'))
+        .toBeVisible()
+      await expect
+        .element(screen.getByText('No pending assigned work'))
+        .not.toBeInTheDocument()
+      await expect
+        .element(screen.getByText(assigned.title))
+        .not.toBeInTheDocument()
       for (const status of ['OPEN', 'IN_PROGRESS']) {
-        expect(getWithMeta).toHaveBeenCalledWith('/action-items', expect.objectContaining({ params: expect.objectContaining({ status, size: '5' }) }))
+        expect(getWithMeta).toHaveBeenCalledWith(
+          '/action-items',
+          expect.objectContaining({
+            params: expect.objectContaining({ status, size: '5' }),
+          })
+        )
       }
       options.actionItemsError = undefined
       await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
       await expect.element(screen.getByText(assigned.title)).toBeVisible()
-      await expect.element(screen.getByText('Work unavailable')).not.toBeInTheDocument()
+      await expect
+        .element(screen.getByText('Work unavailable'))
+        .not.toBeInTheDocument()
     }
   )
 
@@ -705,15 +752,28 @@ describe('integrated generated Web runtime', () => {
         identity: {
           ...identity,
           globalRole: role,
-          directoryManagementScope: { allUnits: role === 'ADMINISTRATOR', unitIds: [] },
+          directoryManagementScope: {
+            allUnits: role === 'ADMINISTRATOR',
+            unitIds: [],
+          },
         },
       })
       const { screen } = await renderGeneratedRoute('/')
-      await expect.element(screen.getByText('Pending action items')).toBeVisible()
+      await expect
+        .element(screen.getByText('Pending action items'))
+        .toBeVisible()
       if (role === 'DEPARTMENT_MANAGER') {
-        await expect.element(screen.getByText('No active organizational management scope is available.')).toBeVisible()
+        await expect
+          .element(
+            screen.getByText(
+              'No active organizational management scope is available.'
+            )
+          )
+          .toBeVisible()
       }
-      expect(get.mock.calls.some(([url]) => url === '/dashboard/management')).toBe(false)
+      expect(
+        get.mock.calls.some(([url]) => url === '/dashboard/management')
+      ).toBe(false)
     }
   )
 
@@ -729,12 +789,21 @@ describe('integrated generated Web runtime', () => {
     })
     const { screen } = await renderGeneratedRoute('/', 390, 844)
     await expect.element(screen.getByText('Official actions')).toBeVisible()
-    await expect.element(screen.getByText('Reporting limitations')).toBeVisible()
+    await expect
+      .element(screen.getByText('Reporting limitations'))
+      .toBeVisible()
     await expect.element(screen.getByText('Pending action items')).toBeVisible()
-    const requests = () => get.mock.calls.filter(([url]) => url === '/dashboard/management')
+    const requests = () =>
+      get.mock.calls.filter(([url]) => url === '/dashboard/management')
     expect(requests()).toHaveLength(1)
-    await userEvent.selectOptions(screen.getByLabelText('Reporting period'), '7')
-    await userEvent.selectOptions(screen.getByLabelText('Organizational scope'), unitId)
+    await userEvent.selectOptions(
+      screen.getByLabelText('Reporting period'),
+      '7'
+    )
+    await userEvent.selectOptions(
+      screen.getByLabelText('Organizational scope'),
+      unitId
+    )
     expect(requests()).toHaveLength(1)
     await userEvent.click(screen.getByRole('button', { name: 'Apply filters' }))
     await expect.poll(() => requests().length).toBe(2)
