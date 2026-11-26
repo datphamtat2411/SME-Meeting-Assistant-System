@@ -119,6 +119,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
   bool historyHasMore = false;
   bool historyVerified = false;
 
+  int get historyGeneration => _historyGeneration;
+
   bool get current =>
       !_disposed && repository.api.isCurrentAuthenticatedSession(scope);
   List<AssistantConversation> get conversations =>

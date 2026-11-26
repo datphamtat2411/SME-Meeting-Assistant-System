@@ -6,6 +6,8 @@ import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 
+import 'assistant_evidence_page.dart';
+import 'assistant_evidence_resolver.dart';
 import 'assistant_meeting_picker.dart';
 import 'assistant_message_view.dart';
 import 'assistant_repository.dart';
@@ -35,6 +37,7 @@ class _AssistantPageState extends State<AssistantPage>
   String? _meetingTitle;
   int _selection = 0;
   bool _choosingMeeting = false;
+  bool _openingEvidence = false;
   bool _foreground = true;
   bool _routeVisible = false;
   bool _contextVerified = false;
@@ -103,6 +106,9 @@ class _AssistantPageState extends State<AssistantPage>
       _contextGeneration++;
       _contextVerified = false;
       _contextChecking = false;
+      _saveDraft();
+      _draftOwner = null;
+      _input.clear();
       _controller.setPresentationActive(this, false);
       return;
     }
@@ -160,6 +166,9 @@ class _AssistantPageState extends State<AssistantPage>
     _contextGeneration++;
     _contextVerified = false;
     _contextChecking = false;
+    _saveDraft();
+    _draftOwner = null;
+    _input.clear();
     _controller.setPresentationActive(this, false);
     if (mounted) setState(() {});
     if (_eligible) unawaited(_syncPresentation());
@@ -303,6 +312,78 @@ class _AssistantPageState extends State<AssistantPage>
       setState(() => _meetingTitle = meeting.meeting.title);
     } on Object {
       // A missing metadata label cannot grant access to conversation history.
+    }
+  }
+
+  Future<void> _openCitation(
+    AssistantMessage message,
+    AssistantCitation citation,
+  ) async {
+    final selected = _controller.conversation;
+    if (!_presenting ||
+        _openingEvidence ||
+        !_controller.historyVerified ||
+        selected == null ||
+        message.visibility != AssistantMessageVisibility.visible ||
+        !sameAssistantIdentity(selected.meetingId, citation.meetingId)) {
+      return;
+    }
+    final messages = _controller.messages;
+    final index = messages.indexWhere((item) => identical(item, message));
+    if (index < 0 || !message.citations.contains(citation)) return;
+    final selection = _selection;
+    final generation = _controller.historyGeneration;
+    bool owns() =>
+        _presenting &&
+        _controller.current &&
+        _controller.historyVerified &&
+        _controller.historyGeneration == generation &&
+        _selection == selection &&
+        _controller.conversation?.id == selected.id &&
+        (ModalRoute.of(context)?.isCurrent ?? true);
+    final target = AssistantEvidenceTarget(
+      scope: _controller.scope,
+      conversationId: selected.id,
+      messageId: message.id,
+      citation: citation,
+      beforeMessageId: index + 1 < messages.length
+          ? messages[index + 1].id
+          : null,
+    );
+    final dependencies = widget.dependencies;
+    final resolver = AssistantEvidenceResolver(
+      assistant: dependencies.assistant,
+      results: dependencies.results,
+      actionItems: dependencies.actionItems,
+    );
+    setState(() => _openingEvidence = true);
+    try {
+      await resolver.verify(target, stillCurrent: owns);
+      if (!owns()) return;
+      // The destination performs its own verification; never pass a protected
+      // preflight snapshot across the navigation boundary as current evidence.
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => AssistantEvidencePage(
+            dependencies: dependencies,
+            target: target,
+            resolver: resolver,
+          ),
+        ),
+      );
+    } on Object catch (error) {
+      if (!owns()) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(assistantEvidenceFailureLabel(error))),
+      );
+      if (error is AssistantEvidenceFailure &&
+          (error.issue == AssistantEvidenceIssue.obsolete ||
+              error.issue == AssistantEvidenceIssue.unavailable)) {
+        await _controller.refreshHistory();
+      }
+    } finally {
+      if (mounted) setState(() => _openingEvidence = false);
     }
   }
 
@@ -673,6 +754,7 @@ class _AssistantPageState extends State<AssistantPage>
           ),
         ),
         const Divider(height: 1),
+        if (_openingEvidence) const LinearProgressIndicator(),
         Expanded(
           child: !state.historyVerified
               ? Center(
@@ -722,9 +804,13 @@ class _AssistantPageState extends State<AssistantPage>
                         ],
                       );
                     }
+                    final message = messages[messages.length - 1 - index];
                     return AssistantMessageView(
-                      key: ValueKey(messages[messages.length - 1 - index].id),
-                      message: messages[messages.length - 1 - index],
+                      key: ValueKey(message.id),
+                      message: message,
+                      onOpenCitation: _openingEvidence
+                          ? null
+                          : (citation) => unawaited(_openCitation(message, citation)),
                     );
                   },
                 ),
@@ -855,7 +941,8 @@ class _AssistantPageState extends State<AssistantPage>
                       'Nguồn đã thay đổi · Chưa đồng bộ đủ lịch sử',
                     AssistantTurnState.processing => 'Đang xử lý',
                   }
-                : pending.turn?.state == AssistantTurnState.processing
+                : pending.turn?.state == AssistantTurnState.processing &&
+                    !pending.reclaimUncertain
                 ? 'AI đang xử lý câu hỏi'
                 : 'Chưa xác nhận được kết quả',
             style: Theme.of(context).textTheme.titleSmall,
