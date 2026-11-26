@@ -96,6 +96,7 @@ class ParticipantCandidateRepository {
     final response = await api.get(
       '/users/meeting-candidates',
       query: query.toQueryParameters(),
+      sessionScope: sessionScope,
     );
     api.requireCurrentAuthenticatedSession(sessionScope);
     return PagedCollection<MeetingParticipantCandidate>.fromResult(

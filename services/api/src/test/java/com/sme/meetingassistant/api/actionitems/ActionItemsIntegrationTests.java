@@ -677,6 +677,14 @@ class ActionItemsIntegrationTests {
         ReflectionTestUtils.setField(outsider, "accountStatus", AccountStatus.INACTIVE);
         users.saveAndFlush(outsider);
 
+        MvcResult inactive = mvc.perform(get("/api/v1/action-items/{id}", item)
+                .principal(principal(organizer))).andExpect(status().isOk()).andReturn();
+        assertThat(body(inactive).path("data").path("assignee").path("accountStatus").asText())
+            .isEqualTo("INACTIVE");
+        assertThat(body(inactive).path("data").path("capabilities").path("canAssign").asBoolean()).isTrue();
+        assertThat(body(inactive).path("data").path("capabilities").path("allowedCommands").toString())
+            .contains("CANCEL").doesNotContain("START", "COMPLETE");
+
         // A deactivated assignee retains database provenance, not API permissions.
         assertThat(jdbc.queryForObject(
             "SELECT assignee_user_id FROM action_items WHERE id=?",UUID.class,item))
@@ -707,6 +715,113 @@ class ActionItemsIntegrationTests {
         assertThat(jdbc.queryForObject(
             "SELECT completed_by_user_id FROM action_items WHERE id=?",UUID.class,item))
             .isEqualTo(assignee.getId());
+    }
+
+    @Test void waveOneCapabilitiesAndOfficialFiltersUseCurrentResourceAuthority() throws Exception {
+        UUID proposal = createAiProposal();
+        UUID manual = createManual(outsider.getId(), null);
+        MvcResult initial = mvc.perform(get("/api/v1/action-items/{id}", proposal)
+                .principal(principal(organizer))).andExpect(status().isOk()).andReturn();
+        JsonNode draft = body(initial).path("data");
+        assertThat(draft.path("official").asBoolean()).isFalse();
+        assertThat(draft.path("capabilities").path("canAssign").asBoolean()).isTrue();
+        assertThat(draft.path("capabilities").path("allowedCommands").toString())
+            .contains("REJECT").doesNotContain("CONFIRM");
+
+        MvcResult review = mvc.perform(get("/api/v1/action-items")
+                .principal(principal(organizer)).param("meetingId", meetingId.toString())
+                .param("reviewable", "true").param("official", "false").param("size", "1"))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(review).path("data").get(0).path("id").asText()).isEqualTo(proposal.toString());
+        assertThat(body(review).path("meta").path("pagination").path("totalElements").asLong()).isEqualTo(1);
+        MvcResult participantReview = mvc.perform(get("/api/v1/action-items")
+                .principal(principal(assignee)).param("reviewable", "true"))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(participantReview).path("data").size()).isZero();
+
+        MvcResult assigned = mvc.perform(patch("/api/v1/action-items/{id}", proposal)
+                .principal(principal(organizer))
+                .header(HttpHeaders.IF_MATCH, initial.getResponse().getHeader(HttpHeaders.ETAG))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("assigneeUserId", outsider.getId()))))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(assigned).path("data").path("capabilities").path("allowedCommands").toString())
+            .contains("CONFIRM", "REJECT");
+        MvcResult confirmed = mvc.perform(post("/api/v1/action-items/{id}/confirm", proposal)
+                .principal(principal(organizer))
+                .header(HttpHeaders.IF_MATCH, assigned.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(confirmed).path("data").path("official").asBoolean()).isTrue();
+
+        MvcResult external = mvc.perform(get("/api/v1/action-items/{id}", proposal)
+                .principal(principal(outsider))).andExpect(status().isOk()).andReturn();
+        JsonNode limited = body(external).path("data");
+        assertThat(limited.path("official").asBoolean()).isTrue();
+        assertThat(limited.path("meetingContext").path("title").isNull()).isTrue();
+        assertThat(limited.path("assignee").path("displayName").asText()).isEqualTo("Action Test");
+        assertThat(limited.path("capabilities").path("canReadMeetingContext").asBoolean()).isFalse();
+        assertThat(limited.path("capabilities").path("canEdit").asBoolean()).isFalse();
+        assertThat(limited.path("capabilities").path("allowedCommands").toString())
+            .contains("START", "COMPLETE").doesNotContain("CANCEL");
+        MvcResult mine = mvc.perform(get("/api/v1/action-items")
+                .principal(principal(outsider)).param("assignee", "me")
+                .param("official", "true").param("size", "1"))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(mine).path("meta").path("pagination").path("totalElements").asLong()).isEqualTo(2);
+        assertThat(body(mine).path("data").size()).isEqualTo(1);
+
+        MvcResult manualDetail = mvc.perform(get("/api/v1/action-items/{id}", manual)
+                .principal(principal(organizer))).andExpect(status().isOk()).andReturn();
+        MvcResult cancelled = mvc.perform(post("/api/v1/action-items/{id}/cancel", manual)
+                .principal(principal(organizer))
+                .header(HttpHeaders.IF_MATCH, manualDetail.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(cancelled).path("data").path("official").asBoolean()).isTrue();
+        assertThat(body(cancelled).path("data").path("capabilities").path("allowedCommands").size()).isZero();
+    }
+
+    @Test void waveOneRejectedProposalNeverBecomesOfficial() throws Exception {
+        UUID proposal = createAiProposal();
+        MvcResult original = mvc.perform(get("/api/v1/action-items/{id}", proposal)
+                .principal(principal(organizer))).andExpect(status().isOk()).andReturn();
+        MvcResult rejected = mvc.perform(post("/api/v1/action-items/{id}/reject", proposal)
+                .principal(principal(organizer))
+                .header(HttpHeaders.IF_MATCH, original.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(rejected).path("data").path("official").asBoolean()).isFalse();
+        MvcResult result = mvc.perform(get("/api/v1/action-items")
+                .principal(principal(organizer)).param("official", "false")
+                .param("reviewable", "false").param("status", "CANCELLED"))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(result).path("data").get(0).path("id").asText()).isEqualTo(proposal.toString());
+    }
+
+    @Test void waveOneCreationMeetingsConcealRestrictedTitlesAndRespectScopeRevocation() throws Exception {
+        UUID unitId = unit();
+        organizer.assignPrimaryOrgUnit(unitId);
+        users.saveAndFlush(organizer);
+        UserEntity manager = user(GlobalRole.DEPARTMENT_MANAGER, unitId);
+        jdbc.update("INSERT INTO manager_scope_units(user_id,org_unit_id,granted_by_user_id) VALUES (?,?,?)",
+            manager.getId(), unitId, organizer.getId());
+        UUID scopedMeeting = newMeeting(List.of(assignee.getId()));
+        MvcResult visible = mvc.perform(get("/api/v1/action-items/creation-meetings")
+                .principal(principal(manager))).andExpect(status().isOk()).andReturn();
+        JsonNode row = body(visible).path("data").get(0);
+        assertThat(row.path("id").asText()).isEqualTo(scopedMeeting.toString());
+        assertThat(row.path("title").isNull()).isTrue();
+        assertThat(row.path("canReadMeetingContext").asBoolean()).isFalse();
+        MvcResult search = mvc.perform(get("/api/v1/action-items/creation-meetings")
+                .principal(principal(manager)).param("q", "Scoped meeting"))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(search).path("meta").path("pagination").path("totalElements").asLong()).isZero();
+        MvcResult organizerSearch = mvc.perform(get("/api/v1/action-items/creation-meetings")
+                .principal(principal(organizer)).param("q", "Scoped meeting"))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(organizerSearch).path("data").get(0).path("title").asText()).isEqualTo("Scoped meeting");
+        jdbc.update("DELETE FROM manager_scope_units WHERE user_id=? AND org_unit_id=?", manager.getId(), unitId);
+        MvcResult revoked = mvc.perform(get("/api/v1/action-items/creation-meetings")
+                .principal(principal(manager))).andExpect(status().isOk()).andReturn();
+        assertThat(body(revoked).path("data").size()).isZero();
     }
 
     private UUID unit() {

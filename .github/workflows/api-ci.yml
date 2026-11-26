@@ -8,6 +8,8 @@ on:
       - 'integration/**'
       # M05 contains an additive Core API reviewed-source contract.
       - 'mobile/module-meeting-results'
+      # M06 Wave 01 extends the Core API Action Item contract.
+      - 'mobile/module-action-items'
   pull_request:
     branches:
       - develop

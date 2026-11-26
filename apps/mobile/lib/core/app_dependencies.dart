@@ -7,6 +7,8 @@ import 'api_client.dart';
 import 'models.dart';
 import 'appearance_preferences.dart';
 
+import 'package:sme_meeting_assistant/features/action_items/action_item_invalidation.dart';
+import 'package:sme_meeting_assistant/features/action_items/action_item_repository.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_creation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart';
@@ -31,6 +33,8 @@ class AppDependencies {
   final ApiClient api;
   final AppearancePreferences appearancePreferences;
   final http.Client httpClient;
+  late final ActionItemInvalidationSignal actionItemInvalidation;
+  late final ActionItemRepository actionItems;
   late final MeetingInvalidationSignal meetingInvalidation;
   late final MeetingRepository meetings;
   late final RoomSchedulingRepository roomScheduling;
@@ -67,6 +71,12 @@ class AppDependencies {
     meetings = MeetingRepository(api: api, invalidation: meetingInvalidation);
     roomScheduling = RoomSchedulingRepository(api);
     participantCandidates = ParticipantCandidateRepository(api);
+    actionItemInvalidation = ActionItemInvalidationSignal(api);
+    actionItems = ActionItemRepository(
+      api: api,
+      invalidation: actionItemInvalidation,
+      participantCandidates: participantCandidates,
+    );
     meetingMembership = MeetingMembershipRepository(
       api: api,
       meetings: meetings,
@@ -179,6 +189,7 @@ class AppDependencies {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    actionItemInvalidation.dispose();
     // Fence every producer before releasing shared transport or local
     // persistence. If nothing is active, the close path runs synchronously
     // through the first await so Flutter's existing State.dispose contract
