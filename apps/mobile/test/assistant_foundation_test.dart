@@ -1182,13 +1182,23 @@ void main() {
     await tester.tap(find.byTooltip('Danh sách hội thoại'));
     await pumpUntil(
       tester,
-      () => meeting.evaluate().isNotEmpty,
+      () =>
+          dependencies.assistantWorkspace.conversation == null &&
+          !dependencies.assistantWorkspace.listLoading,
       reason: 'return to conversation collection',
     );
-    await tester.tap(meeting);
+    final existingConversation = find.descendant(
+      of: find.byType(ListTile),
+      matching: find.text('Weekly review'),
+    );
+    expect(existingConversation, findsOneWidget);
+    await tester.tap(existingConversation);
     await pumpUntil(
       tester,
-      () => dependencies.assistantWorkspace.canCompose,
+      () =>
+          dependencies.assistantWorkspace.canCompose &&
+          dependencies.assistantWorkspace.historyVerified &&
+          !dependencies.assistantWorkspace.historyLoading,
       reason: 'reopen canonical history',
     );
     expect(dependencies.assistantWorkspace.messages.length, 2);
