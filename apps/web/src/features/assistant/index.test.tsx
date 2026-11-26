@@ -1899,9 +1899,7 @@ describe('AssistantPage', () => {
       },
     })
     const screen = await renderPage({ initial: { conversationId, meetingId } })
-    await expect
-      .poll(() => getStatusReads(), { timeout: 6_000 })
-      .toBe(1)
+    await expect.poll(() => getStatusReads(), { timeout: 6_000 }).toBe(1)
     await userEvent.click(
       screen.getByRole('button', {
         name: 'Open conversation: Other meeting questions',
