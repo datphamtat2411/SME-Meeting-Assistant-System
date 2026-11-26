@@ -1083,8 +1083,7 @@ describe('integrated generated Web runtime', () => {
     await expect.poll(preview).toContain(item.title)
     const reads = () => [
       get.mock.calls.filter(([url]) => url === '/dashboard/me').length,
-      get.mock.calls.filter(([url]) => url === '/dashboard/management')
-        .length,
+      get.mock.calls.filter(([url]) => url === '/dashboard/management').length,
       get.mock.calls.filter(([url]) => url.endsWith('/minutes')).length,
       getWithMeta.mock.calls.filter(([url]) => url === '/action-items').length,
     ]

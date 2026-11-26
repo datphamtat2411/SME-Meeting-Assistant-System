@@ -45,6 +45,44 @@ Branch: `web/module-dashboard-export`. Starting revision: `ee5a1da6`.
   script `pnpm run test:transport:node` is an additional gate; no new
   execution of that script is claimed in this record.
 
+## Final verification and closeout follow-up
+
+Reviewed application baseline: `072cdb8f503febc8732c34d8f2d4b1b61845087d`.
+
+- Exact baseline Web CI [45907933766](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45907933766):
+  static checks passed; 142 browser suites and 1200 tests passed.
+- Exact baseline API CI [45907933672](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45907933672):
+  1616 tests, 0 assertion failures, 1 error, 19 skipped. The HTTP retry
+  disposition fixture attempted the prohibited PENDING-to-FAILED transition.
+  The PostgreSQL lifecycle guard correctly rejected that transition.
+- `3b7c55a3`: the HTTP regression now claims only its admitted row using
+  the legal PENDING-to-GENERATING transition, an incremented attempt and
+  version, and a DB-clock lease and token; the actual generation state
+  machine performs failure and requeue. Scheduled dispatch is isolated
+  for this HTTP fixture; worker behavior remains covered by worker tests.
+  The public status endpoint must report PENDING, GENERATING, retryable
+  FAILED, requeued PENDING, second GENERATING and exhausted FAILED for the
+  same ID. The database guard, production retry policy and duplicate-count
+  assertion remain unchanged.
+- `8b8e980b` and `72e25f1c`: a controlled browser regression submits the
+  reviewed Complete command through the real ActionCommands component.
+  It checks visible Personal and Management Dashboard counts, pending
+  assigned-work removal, the canonical Minutes state and dependent GET
+  requests. Only the mocked API changes its response after the mutation;
+  the test does not patch the QueryClient. This is browser-level
+  integration evidence only when the test passes, not live Core acceptance.
+- `a2127094`: the existing `pnpm run test:transport:node` command is now a
+  mandatory step in Web CI static checks with the pinned toolchain.
+  The first run on that revision passed lint but failed formatting on one
+  wrapped line. This follow-up applies the exact Prettier diff from
+  [job 140216724287](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45910276431/job/140216724287).
+  No test assertion was weakened. Build and transport verification were
+  skipped by that failed job; browser and API verification had not completed
+  when this record was prepared.
+- The final report revision must be verified by its own [branch CI runs](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions?query=branch%3Aweb%2Fmodule-dashboard-export).
+  Pending or cancelled runs do not count as passes; do not promote the
+  preceding baseline's success or a proposed correction to final-SHA evidence.
+
 ## Live acceptance checklist
 
 Use the existing authorized test environment, dedicated accounts, real
@@ -89,5 +127,14 @@ every mutation path or authorization race. Verify final CI, execute the
 remaining live journeys and review API contract/governance approval
 before full acceptance. A green CI run alone is not production readiness.
 
-Verdict at time of writing: **acceptance pending** (final revision
-verification and external live acceptance prerequisites outstanding).
+Verdict at time of writing: **NOT ACCEPTED — final verification pending**.
+The known illegal-transition fixture has been corrected in source; passing
+final-revision CI is still required. Live authenticated journeys, actual
+same-tab reload, artifact transfer over approved trusted HTTPS, and manual
+visual and keyboard acceptance remain **BLOCKED** in this execution.
+The execution container has no repository checkout, Docker, pinned Web
+toolchain or connection to the operator's WSL2 runtime; GitHub MCP can
+edit source and inspect CI but cannot execute those live journeys. No
+runtime configuration, shared data or permissions were changed. No pull
+request for this branch was returned by the GitHub PR listing at review
+time, so required human governance approval remains unverified.
