@@ -226,6 +226,7 @@ class ProfileController extends _AccountResource<ProfileSnapshot> {
   Future<void>? _identitySync;
   final _identityCooldown = _RetryCooldown();
   int _identityGeneration = 0;
+  String? _lastIdentityTarget;
 
   ProfileEditIntent? get pendingEdit => current ? _pendingEdit : null;
   IdentitySyncStatus get identityStatus =>
@@ -258,9 +259,33 @@ class ProfileController extends _AccountResource<ProfileSnapshot> {
     _startIdentitySynchronization();
   }
 
+  /// A workspace read also reconciles application identity when another
+  /// client changes the server-confirmed display name.
+  Future<void> refreshWorkspace() async {
+    if (!current || saving || retryNotBefore != null) return;
+    await refresh();
+    final observed = snapshot?.profile.displayName;
+    if (!current || saving || failure != null || observed == null) return;
+    if (_identitySync != null) return;
+    if (repository.api.displayName == observed) {
+      _lastIdentityTarget = null;
+      if (_identityStatus == IdentitySyncStatus.failed) {
+        _identityStatus = IdentitySyncStatus.synchronized;
+        _identityCooldown.clear();
+        notifyListeners();
+      }
+      return;
+    }
+    if (_lastIdentityTarget == observed || identityRetryNotBefore != null) {
+      return;
+    }
+    _startIdentitySynchronization();
+  }
+
   @override
   void _clearWorkflow() {
     _pendingEdit = null;
+    _lastIdentityTarget = null;
     _identityStatus = IdentitySyncStatus.idle;
     _identityCooldown.clear();
     _identityGeneration++;
@@ -288,6 +313,7 @@ class ProfileController extends _AccountResource<ProfileSnapshot> {
         current && snapshot != null && generation == _identityGeneration;
 
     _identityStatus = IdentitySyncStatus.synchronizing;
+    _lastIdentityTarget = snapshot!.profile.displayName;
     final pending = Future<void>.microtask(() async {
       try {
         if (!owns()) return;

@@ -1520,7 +1520,7 @@ void main() {
             );
           }
           if (request.method == 'GET') {
-            return _profileResponse('Original', '"v1"');
+            return _profileResponse('Test User', '"v1"');
           }
           patches++;
           return _profileResponse('New name', '"v2"');

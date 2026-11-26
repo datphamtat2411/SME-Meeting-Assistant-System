@@ -512,6 +512,7 @@ class _AppShellState extends State<AppShell> {
         api: widget.api,
         repository: widget.dependencies.profileRepository,
         appearance: widget.appearance,
+        active: index == 4,
       ),
     ];
     final wide = MediaQuery.sizeOf(context).width >= 700;
@@ -542,6 +543,7 @@ class _AppShellState extends State<AppShell> {
                           .toList(),
                     ),
                   Expanded(
+                    key: const ValueKey('authenticated-destinations'),
                     child: IndexedStack(index: index, children: pages),
                   ),
                 ],

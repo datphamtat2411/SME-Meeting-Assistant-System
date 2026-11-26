@@ -38,6 +38,8 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     final queries = <Map<String, String>>[];
     var meetingReads = 0;
+    var profileReads = 0;
+    var preferenceReads = 0;
     var restricted = false;
     var denyMeeting = false;
     final client = MeetingTestHttpClient((request) async {
@@ -88,6 +90,7 @@ void main() {
         return meetingApiSuccess([]);
       }
       if (path.endsWith('/me/profile')) {
+        profileReads++;
         return meetingApiSuccess(
           {
             'id': testUserId,
@@ -101,6 +104,7 @@ void main() {
         );
       }
       if (path.endsWith('/me/preferences')) {
+        preferenceReads++;
         return meetingApiSuccess({
           'timezone': null,
           'locale': null,
@@ -139,6 +143,8 @@ void main() {
       () => find.text('Cần thực hiện').evaluate().isNotEmpty,
       reason: 'personal Dashboard',
     );
+    expect(profileReads, 0);
+    expect(preferenceReads, 0);
     final collection = find.byType(ActionItemsPage, skipOffstage: false);
     final originalState = tester.state(collection);
     await tester.tap(find.text('Công việc'));

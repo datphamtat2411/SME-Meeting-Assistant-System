@@ -4,7 +4,6 @@ import '../../core/widgets.dart';
 import 'account_resource_view.dart';
 import 'profile_controllers.dart';
 import 'profile_models.dart';
-import 'profile_repository.dart';
 import 'regional_preference_dialog.dart';
 
 const _timezones = {
@@ -47,31 +46,12 @@ String _valueLabel(Object? value) => switch (value) {
   _ => value.toString(),
 };
 
-class PreferencesPanel extends StatefulWidget {
-  const PreferencesPanel({super.key, required this.repository});
-  final ProfileRepository repository;
-
-  @override
-  State<PreferencesPanel> createState() => _PreferencesPanelState();
-}
-
-class _PreferencesPanelState extends State<PreferencesPanel> {
-  late final PreferencesController controller;
-
-  @override
-  void initState() {
-    super.initState();
-    controller = PreferencesController(widget.repository);
-    controller.refresh();
-  }
-
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
-  }
+class PreferencesPanel extends StatelessWidget {
+  const PreferencesPanel({super.key, required this.controller});
+  final PreferencesController controller;
 
   Future<void> _choose(
+    BuildContext context,
     PreferenceField field,
     PreferencesSnapshot original,
   ) async {
@@ -96,7 +76,11 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
       ? '$description\nĐang lưu lựa chọn...'
       : description;
 
-  Widget _recovery(PreferenceIntent intent, PreferencesSnapshot snapshot) {
+  Widget _recovery(
+    BuildContext context,
+    PreferenceIntent intent,
+    PreferencesSnapshot snapshot,
+  ) {
     final currentValue = intent.valueIn(snapshot.preferences);
     final checking = controller.needsReconciliation;
     final busy = controller.loading || controller.saving;
@@ -139,7 +123,7 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
                       : () {
                           if (intent.field == PreferenceField.timezone ||
                               intent.field == PreferenceField.locale) {
-                            _choose(intent.field, snapshot);
+                            _choose(context, intent.field, snapshot);
                           } else {
                             controller.confirmPending(currentValue);
                           }
@@ -179,7 +163,12 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
           children: [
             ContentCard(
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  Text(
+                    'Thông báo',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                   SwitchListTile.adaptive(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Email cuộc họp'),
@@ -225,6 +214,10 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
                     ),
                   ),
                   const Divider(),
+                  Text(
+                    'Thiết lập khu vực',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.public_outlined),
@@ -237,7 +230,7 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: controller.canMutate
-                        ? () => _choose(PreferenceField.timezone, snapshot)
+                        ? () => _choose(context, PreferenceField.timezone, snapshot)
                         : null,
                   ),
                   const Divider(),
@@ -253,7 +246,7 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: controller.canMutate
-                        ? () => _choose(PreferenceField.locale, snapshot)
+                        ? () => _choose(context, PreferenceField.locale, snapshot)
                         : null,
                   ),
                   Padding(
@@ -271,7 +264,7 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
                 ],
               ),
             ),
-            if (pending != null) _recovery(pending, snapshot),
+            if (pending != null) _recovery(context, pending, snapshot),
             if (controller.reconciled)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 8),

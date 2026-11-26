@@ -1,8 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
 import '../../core/appearance_controller.dart';
-import '../../core/app_theme.dart';
 import '../../core/command_actions.dart';
 import '../../core/widgets.dart';
 import 'appearance_panel.dart';
@@ -19,26 +20,93 @@ class ProfilePage extends StatefulWidget {
     required this.api,
     required this.repository,
     required this.appearance,
+    this.active = true,
   });
   final ApiClient api;
   final ProfileRepository repository;
   final AppearanceController appearance;
+  final bool active;
   @override
   State<ProfilePage> createState() => _ProfilePageState();
 }
 
-class _ProfilePageState extends State<ProfilePage> {
+class _ProfilePageState extends State<ProfilePage>
+    with WidgetsBindingObserver {
   late final ProfileController controller;
+  late final PreferencesController preferences;
+  bool _foreground = true;
+  bool _routeVisible = false;
+  bool _refreshRequested = false;
+  bool _refreshScheduled = false;
+  bool _confirmingLogout = false;
 
   @override
   void initState() {
     super.initState();
     controller = ProfileController(widget.repository);
-    controller.refresh();
+    preferences = PreferencesController(widget.repository);
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    _foreground = lifecycle == null || lifecycle == AppLifecycleState.resumed;
+    WidgetsBinding.instance.addObserver(this);
+    _refreshRequested = widget.active;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _routeVisible = ModalRoute.isCurrentOf(context) ?? true;
+    _scheduleRefresh();
+  }
+
+  @override
+  void didUpdateWidget(covariant ProfilePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.active) {
+      _refreshRequested = false;
+    } else if (!oldWidget.active) {
+      _refreshRequested = true;
+    }
+    _scheduleRefresh();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final wasForeground = _foreground;
+    _foreground = state == AppLifecycleState.resumed;
+    if (!wasForeground && _foreground && widget.active) {
+      _refreshRequested = true;
+      _scheduleRefresh();
+    }
+  }
+
+  bool get _eligible =>
+      widget.active && _foreground && _routeVisible && controller.current;
+
+  void _scheduleRefresh() {
+    if (!_refreshRequested || !_eligible || _refreshScheduled) return;
+    _refreshScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _refreshScheduled = false;
+      if (!mounted || !_refreshRequested || !_eligible) return;
+      if (ModalRoute.of(context)?.isCurrent == false) return;
+      _refreshRequested = false;
+      unawaited(_refresh());
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  Future<void> _refresh() async {
+    if (!_eligible) return;
+    await Future.wait<void>([
+      controller.refreshWorkspace(),
+      preferences.refresh(),
+    ]);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    preferences.dispose();
     controller.dispose();
     super.dispose();
   }
@@ -57,25 +125,52 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Future<void> signOut() async {
-    if (!await confirmCommand(
-      context,
-      title: 'Đăng xuất khỏi thiết bị?',
-      description: 'Phiên đăng nhập hiện tại sẽ bị thu hồi.',
-      confirmLabel: 'Đăng xuất',
-    ))
-      return;
+    if (_confirmingLogout || !controller.current) return;
+    final scope = controller.scope;
+    final pending =
+        controller.saving ||
+        preferences.saving ||
+        controller.needsReconciliation ||
+        preferences.needsReconciliation;
+    setState(() => _confirmingLogout = true);
     try {
+      final confirmed = await confirmCommand(
+        context,
+        title: 'Đăng xuất khỏi thiết bị?',
+        description:
+            'Ứng dụng sẽ kết thúc phiên trên thiết bị và yêu cầu máy chủ '
+            'thu hồi phiên đăng nhập.'
+            '${pending ? ' Thay đổi đã gửi có thể chưa được xác nhận.' : ''}',
+        confirmLabel: 'Đăng xuất',
+        destructive: true,
+      );
+      if (!confirmed ||
+          !mounted ||
+          !widget.api.isCurrentAuthenticatedSession(scope)) {
+        return;
+      }
       await widget.api.signOut();
-    } catch (error) {
-      if (mounted) showFailure(context, error);
+    } on AuthSessionException catch (error) {
+      // The authentication destination owns logout and recovery outcomes.
+      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
+        showFailure(context, error);
+      }
+    } finally {
+      if (mounted) setState(() => _confirmingLogout = false);
     }
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
+  Widget build(BuildContext context) => RefreshIndicator(
+    onRefresh: _refresh,
+    child: _accountList(),
+  );
+
+  Widget _accountList() => ListenableBuilder(
     listenable: controller,
     builder: (context, _) => ListView(
       padding: const EdgeInsets.all(18),
+      physics: const AlwaysScrollableScrollPhysics(),
       children: [
         const SectionHeading(
           'Tài khoản & cài đặt',
@@ -88,7 +183,7 @@ class _ProfilePageState extends State<ProfilePage> {
           failure: controller.pendingEdit == null ? controller.failure : null,
           needsReconciliation:
               controller.pendingEdit == null && controller.needsReconciliation,
-          retry: controller.refresh,
+          retry: controller.refreshWorkspace,
           canRetry: controller.canRefresh,
           retryNotBefore: controller.retryNotBefore,
           builder: (response) {
@@ -185,9 +280,9 @@ class _ProfilePageState extends State<ProfilePage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Hồ sơ đã được xác nhận trên máy chủ. '
-                  'Danh tính ứng dụng chưa đồng bộ. Có thể tải lại hồ sơ '
-                  'nếu thông tin đã thay đổi trên thiết bị khác.',
+                  'Hồ sơ hiện tại được lấy từ máy chủ. '
+                  'Danh tính ứng dụng chưa đồng bộ. Hãy thử đồng bộ lại '
+                  'hoặc tải lại hồ sơ nếu thông tin đã thay đổi.',
                 ),
                 if (controller.identityRetryNotBefore case final deadline?)
                   AccountRetryNotice(deadline: deadline),
@@ -200,22 +295,25 @@ class _ProfilePageState extends State<ProfilePage> {
               ],
             ),
           ),
-        const SectionHeading('Thông báo và khu vực'),
-        PreferencesPanel(repository: widget.repository),
+        const SectionHeading('Thiết lập tài khoản'),
+        PreferencesPanel(controller: preferences),
         const SizedBox(height: 12),
         const SectionHeading('Giao diện'),
         AppearancePanel(controller: widget.appearance),
         const SizedBox(height: 12),
         OutlinedButton.icon(
-          onPressed: controller.saving ? null : signOut,
+          onPressed: _confirmingLogout || !controller.current ? null : signOut,
           icon: const Icon(Icons.logout),
           label: const Text('Đăng xuất'),
         ),
         const SizedBox(height: 24),
-        const Text(
+        Text(
           'SME Meeting Assistant · Internal mobile client',
           textAlign: TextAlign.center,
-          style: TextStyle(color: Palette.muted, fontSize: 12),
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            fontSize: 12,
+          ),
         ),
       ],
     ),
