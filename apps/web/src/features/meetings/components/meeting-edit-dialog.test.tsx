@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { cdp, userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { canonicalizeLocalDateTime } from '../data/meeting-creation-api'
 import { MeetingEditDialog } from './meeting-edit-dialog'
 
@@ -84,7 +86,10 @@ function localDateInTimeZone(timeZone: string, value: string) {
 }
 
 function createQueryClient() {
-  return new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  client.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  client.setQueryData(preferencesQueryKey, { timezone: null, locale: null, meetingEmailEnabled: true, actionItemEmailEnabled: true })
+  return client
 }
 
 function mockRoomQueries(hideSelectedRoomFromDirectory = false) {
@@ -131,12 +136,14 @@ describe('MeetingEditDialog', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
     const screen = await render(
       <QueryClientProvider client={queryClient}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={onOpenChange}
           meeting={draftMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -173,12 +180,14 @@ describe('MeetingEditDialog', () => {
   it('prefills a same-day meeting with the same start and end date', async () => {
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -208,12 +217,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -240,12 +251,14 @@ describe('MeetingEditDialog', () => {
     await setBrowserTimeZone(vietnamTimeZone)
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={overnightMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -265,12 +278,14 @@ describe('MeetingEditDialog', () => {
     await setBrowserTimeZone(utcTimeZone)
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={utcOvernightMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -289,6 +304,7 @@ describe('MeetingEditDialog', () => {
   it('prefills a multi-day meeting with its authoritative end date', async () => {
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
@@ -299,6 +315,7 @@ describe('MeetingEditDialog', () => {
           }}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -323,12 +340,14 @@ describe('MeetingEditDialog', () => {
     const queryClient = createQueryClient()
     const screen = await render(
       <QueryClientProvider client={queryClient}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={overnightMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -382,12 +401,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -418,12 +439,14 @@ describe('MeetingEditDialog', () => {
     const invalidEnd = canonicalizeLocalDateTime('2026-11-10', '01:00')
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -484,12 +507,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={draftMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -550,12 +575,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -606,12 +633,14 @@ describe('MeetingEditDialog', () => {
     const queryClient = createQueryClient()
     const screen = await render(
       <QueryClientProvider client={queryClient}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -672,12 +701,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -734,12 +765,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -791,12 +824,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={roomlessMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -836,12 +871,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -886,12 +923,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={draftMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -955,12 +994,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={overnightMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1037,12 +1078,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1114,12 +1157,14 @@ describe('MeetingEditDialog', () => {
     const scheduleSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1206,12 +1251,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={draftMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1251,12 +1298,14 @@ describe('MeetingEditDialog', () => {
       )
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={draftMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1299,12 +1348,14 @@ describe('MeetingEditDialog', () => {
       })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={draftMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1337,12 +1388,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={draftMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1377,6 +1430,7 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
@@ -1384,6 +1438,7 @@ describe('MeetingEditDialog', () => {
           etag='etag-current'
           currentUserId='organizer-1'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1415,6 +1470,7 @@ describe('MeetingEditDialog', () => {
     const onCommitted = vi.fn()
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
@@ -1422,6 +1478,7 @@ describe('MeetingEditDialog', () => {
           etag='etag-current'
           onCommitted={onCommitted}
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1454,6 +1511,7 @@ describe('MeetingEditDialog', () => {
     const queryClient = createQueryClient()
     const screen = await render(
       <QueryClientProvider client={queryClient}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
@@ -1461,6 +1519,7 @@ describe('MeetingEditDialog', () => {
           etag='etag-current'
           onCommitted={onCommitted}
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1502,12 +1561,14 @@ describe('MeetingEditDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={scheduledMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1557,12 +1618,14 @@ describe('MeetingEditDialog', () => {
     )
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={draftMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -1602,12 +1665,14 @@ describe('MeetingEditDialog', () => {
       .mockReturnValueOnce(pending)
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
           meeting={draftMeeting}
           etag='etag-current'
         />
+              </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
