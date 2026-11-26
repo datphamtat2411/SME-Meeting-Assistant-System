@@ -386,20 +386,23 @@ void main() {
       expect(writes, 1);
     },
   );
-  test('workflow owner preserves recovery across routes but not sessions', () async {
-    final repository = await repositoryFor(
-      MeetingTestHttpClient((request) async {
-        throw StateError('No business request expected.');
-      }),
-    );
-    final owner = ActionItemWorkflowOwner(repository);
-    addTearDown(owner.dispose);
-    final first = owner.creation;
-    expect(owner.creation, same(first));
-    await repository.api.signOut();
-    expect(first.current, isFalse);
-    await repository.api.signIn('user@example.test', 'password');
-    expect(owner.creation, isNot(same(first)));
-    expect(owner.creation.current, isTrue);
-  });
+  test(
+    'workflow owner preserves recovery across routes but not sessions',
+    () async {
+      final repository = await repositoryFor(
+        MeetingTestHttpClient((request) async {
+          throw StateError('No business request expected.');
+        }),
+      );
+      final owner = ActionItemWorkflowOwner(repository);
+      addTearDown(owner.dispose);
+      final first = owner.creation;
+      expect(owner.creation, same(first));
+      await repository.api.signOut();
+      expect(first.current, isFalse);
+      await repository.api.signIn('user@example.test', 'password');
+      expect(owner.creation, isNot(same(first)));
+      expect(owner.creation.current, isTrue);
+    },
+  );
 }
