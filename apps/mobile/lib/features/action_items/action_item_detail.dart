@@ -26,6 +26,41 @@ class ActionItemMutationAdmission {
   }
 }
 
+enum ActionItemLifecyclePhase {
+  submitting,
+  notDispatched,
+  rejected,
+  verifiedSuccess,
+  unknown,
+}
+
+/// Historical outcome of one command, distinct from snapshot freshness.
+/// Observing a target state does not prove that an uncertain write caused it.
+class ActionItemLifecycleOperation {
+  const ActionItemLifecycleOperation({
+    required this.command,
+    required this.reviewedVersion,
+    required this.phase,
+    this.failure,
+    this.observedStatus,
+  });
+
+  final ActionItemCommand command;
+  final int reviewedVersion;
+  final ActionItemLifecyclePhase phase;
+  final ActionItemFailure? failure;
+  final ActionItemStatus? observedStatus;
+
+  ActionItemLifecycleOperation observed(ActionItemStatus status) =>
+      ActionItemLifecycleOperation(
+        command: command,
+        reviewedVersion: reviewedVersion,
+        phase: phase,
+        failure: failure,
+        observedStatus: status,
+      );
+}
+
 class ActionItemDetailController extends ChangeNotifier {
   ActionItemDetailController({
     required this.repository,
@@ -49,6 +84,7 @@ class ActionItemDetailController extends ChangeNotifier {
   ActionItemDraft? _draft;
   ActionItemReconciliation? _reconciliation;
   Object? _error;
+  ActionItemLifecycleOperation? _lifecycleOperation;
   bool _busy = false;
   bool _unresolved = false;
   bool _requiresRevalidation = true;
@@ -62,12 +98,24 @@ class ActionItemDetailController extends ChangeNotifier {
   ActionItemDraft? get draft => _draft;
   ActionItemReconciliation? get reconciliation => _reconciliation;
   Object? get error => _error;
+  ActionItemLifecycleOperation? get lifecycleOperation => _lifecycleOperation;
   bool get busy => _busy;
   bool get unresolved => _unresolved;
   bool get revalidationRequired => _requiresRevalidation || _dirty;
   bool get canUseSnapshot =>
       current && !_busy && !revalidationRequired && _snapshot != null;
   bool get editing => _baseline != null || _reconciliation != null;
+
+  bool canExecuteCommand(
+    ActionItemCommand command,
+    ActionItemSnapshot reviewed,
+  ) =>
+      canUseSnapshot &&
+      !_unresolved &&
+      !editing &&
+      identical(_snapshot, reviewed) &&
+      reviewed.item.capabilities.allows(command);
+
   bool get current =>
       !_disposed &&
       !_expiredSession &&
@@ -111,6 +159,7 @@ class ActionItemDetailController extends ChangeNotifier {
             !currentSnapshot.item.capabilities.canAssign)) {
       return;
     }
+    _lifecycleOperation = null;
     _baseline = currentSnapshot;
     _draft = ActionItemDraft.fromResource(currentSnapshot.item);
     _error = null;
@@ -182,28 +231,33 @@ class ActionItemDetailController extends ChangeNotifier {
     ActionItemCommand command, {
     required ActionItemSnapshot reviewed,
   }) async {
-    final original = _snapshot;
-    if (!canUseSnapshot ||
-        _unresolved ||
-        editing ||
-        original == null ||
-        !identical(original, reviewed) ||
-        !original.item.capabilities.allows(command)) {
-      return false;
-    }
+    if (!canExecuteCommand(command, reviewed)) return false;
     return _mutate(
-      () => repository.command(original, command),
+      () => repository.command(reviewed, command),
       contentEdit: false,
+      lifecycle: ActionItemLifecycleOperation(
+        command: command,
+        reviewedVersion: reviewed.item.version,
+        phase: ActionItemLifecyclePhase.submitting,
+      ),
     );
   }
 
   Future<bool> _mutate(
     Future<ActionItemSnapshot> Function() operation, {
     required bool contentEdit,
+    ActionItemLifecycleOperation? lifecycle,
   }) async {
     final lease = admission.acquire(_scope, itemId);
     if (lease == null) {
       _error = StateError('Another mutation is in progress.');
+      if (lifecycle != null) {
+        _lifecycleOperation = ActionItemLifecycleOperation(
+          command: lifecycle.command,
+          reviewedVersion: lifecycle.reviewedVersion,
+          phase: ActionItemLifecyclePhase.notDispatched,
+        );
+      }
       notifyListeners();
       return false;
     }
@@ -212,9 +266,20 @@ class ActionItemDetailController extends ChangeNotifier {
     final wasDirty = _dirty;
     _busy = true;
     _error = null;
+    _lifecycleOperation = lifecycle;
     notifyListeners();
     try {
       if (!current) return false;
+      if (revalidationRequired) {
+        if (lifecycle != null) {
+          _lifecycleOperation = ActionItemLifecycleOperation(
+            command: lifecycle.command,
+            reviewedVersion: lifecycle.reviewedVersion,
+            phase: ActionItemLifecyclePhase.notDispatched,
+          );
+        }
+        return false;
+      }
       final result = await operation();
       if (!current) return false;
       _snapshot = result;
@@ -229,6 +294,14 @@ class ActionItemDetailController extends ChangeNotifier {
       }
       _clearEdit();
       _unresolved = false;
+      if (lifecycle != null) {
+        _lifecycleOperation = ActionItemLifecycleOperation(
+          command: lifecycle.command,
+          reviewedVersion: lifecycle.reviewedVersion,
+          phase: ActionItemLifecyclePhase.verifiedSuccess,
+          observedStatus: result.item.status,
+        );
+      }
       return true;
     } catch (error) {
       if (!current) return false;
@@ -237,12 +310,31 @@ class ActionItemDetailController extends ChangeNotifier {
       _unresolved =
           failure == null ||
           failure.outcome == ActionItemMutationOutcome.unknown;
+      if (lifecycle != null) {
+        final phase = switch (failure?.outcome) {
+          ActionItemMutationOutcome.notDispatched =>
+            ActionItemLifecyclePhase.notDispatched,
+          ActionItemMutationOutcome.rejected =>
+            ActionItemLifecyclePhase.rejected,
+          _ => ActionItemLifecyclePhase.unknown,
+        };
+        _lifecycleOperation = ActionItemLifecycleOperation(
+          command: lifecycle.command,
+          reviewedVersion: lifecycle.reviewedVersion,
+          phase: phase,
+          failure: failure,
+        );
+      }
       final needsRevalidation =
           _unresolved ||
           failure?.category == ActionItemFailureCategory.versionConflict ||
+          failure?.category == ActionItemFailureCategory.missingPrecondition ||
+          failure?.category == ActionItemFailureCategory.authentication ||
           failure?.category == ActionItemFailureCategory.authorization ||
           failure?.category == ActionItemFailureCategory.resourceUnavailable ||
-          failure?.category == ActionItemFailureCategory.businessConflict;
+          failure?.category == ActionItemFailureCategory.businessConflict ||
+          (lifecycle != null &&
+              failure?.category == ActionItemFailureCategory.validation);
       if (needsRevalidation) {
         _requiresRevalidation = true;
         _mergeRequired = contentEdit;
@@ -270,6 +362,7 @@ class ActionItemDetailController extends ChangeNotifier {
       if (_meetingId != null &&
           !sameActionItemIdentity(_meetingId!, latest.item.meetingId)) {
         _snapshot = null;
+        _lifecycleOperation = null;
         _clearEdit();
         _unresolved = true;
         throw StateError('The resource meeting identity unexpectedly changed.');
@@ -279,6 +372,11 @@ class ActionItemDetailController extends ChangeNotifier {
       final local = _draft;
       final previousMerge = _reconciliation;
       _snapshot = latest;
+      final lifecycle = _lifecycleOperation;
+      if (lifecycle != null &&
+          lifecycle.phase != ActionItemLifecyclePhase.verifiedSuccess) {
+        _lifecycleOperation = lifecycle.observed(latest.item.status);
+      }
       if (local != null && (original != null || previousMerge != null)) {
         if (!latest.item.capabilities.canEdit &&
             !latest.item.capabilities.canAssign) {
@@ -326,6 +424,7 @@ class ActionItemDetailController extends ChangeNotifier {
               error.category ==
                   ActionItemFailureCategory.resourceUnavailable)) {
         _snapshot = null;
+        _lifecycleOperation = null;
         _clearEdit();
         _unresolved = false;
       }
@@ -368,6 +467,7 @@ class ActionItemDetailController extends ChangeNotifier {
     _expiredSession = true;
     _snapshot = null;
     _meetingId = null;
+    _lifecycleOperation = null;
     _clearEdit();
     _error = null;
     _busy = false;
@@ -382,6 +482,7 @@ class ActionItemDetailController extends ChangeNotifier {
     if (_disposed) return;
     _disposed = true;
     _snapshot = null;
+    _lifecycleOperation = null;
     _clearEdit();
     repository.invalidation.removeListener(_onInvalidation);
     repository.api.sessionCoordinator.removeListener(_sessionChanged);

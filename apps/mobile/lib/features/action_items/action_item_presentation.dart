@@ -31,9 +31,13 @@ String actionItemAssigneeReferenceLabel(String id) =>
 
 String actionItemAssigneeLabel(ActionItemAssignee? assignee) {
   if (assignee == null) return 'Chưa phân công';
-  return assignee.accountStatus == ActionItemAccountStatus.active
-      ? assignee.displayName
-      : '${assignee.displayName} (không hoạt động)';
+  return switch (assignee.accountStatus) {
+    ActionItemAccountStatus.active => assignee.displayName,
+    ActionItemAccountStatus.inactive =>
+      '${assignee.displayName} (không hoạt động)',
+    ActionItemAccountStatus.pendingSetup =>
+      '${assignee.displayName} (chưa kích hoạt)',
+  };
 }
 
 String actionItemDueLabel(String? dueDate) =>
@@ -63,6 +67,8 @@ String actionItemFailureLabel(Object? failure) {
         'Thông tin chưa hợp lệ. Kiểm tra các trường.',
       ActionItemFailureCategory.versionConflict =>
         'Công việc đã được cập nhật ở nơi khác.',
+      ActionItemFailureCategory.missingPrecondition =>
+        'Cần tải lại phiên bản công việc trước khi thao tác.',
       ActionItemFailureCategory.businessConflict =>
         'Trạng thái hiện tại không cho phép thao tác.',
       ActionItemFailureCategory.idempotencyConflict =>

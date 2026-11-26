@@ -185,6 +185,9 @@ class ActionItemRepository {
       sessionScope: original.sessionScope,
       meetingId: original.item.meetingId,
       actionItemId: original.item.id,
+      expectedStatus: original.item.status,
+      expectedSource: original.item.source,
+      expectedOfficial: original.item.official,
       send: () => api.patch(
         _path(original.item.id),
         payload,
@@ -204,6 +207,12 @@ class ActionItemRepository {
       meetingId: original.item.meetingId,
       actionItemId: original.item.id,
       expectedStatus: command.targetStatus,
+      expectedSource: original.item.source,
+      expectedOfficial: switch (command) {
+        ActionItemCommand.confirm => true,
+        ActionItemCommand.reject => false,
+        _ => original.item.official,
+      },
       send: () => api.post(
         [_path(original.item.id), command.name].join('/'),
         const <String, dynamic>{},
@@ -236,6 +245,8 @@ class ActionItemRepository {
     required String meetingId,
     String? actionItemId,
     ActionItemStatus? expectedStatus,
+    ActionItemSource? expectedSource,
+    bool? expectedOfficial,
     required Future<ApiResult> Function() send,
   }) async {
     _requireCurrent(sessionScope);
@@ -255,7 +266,10 @@ class ActionItemRepository {
               !result.item.official)) {
         throw response.invalidDataFailure();
       }
-      if (expectedStatus != null && result.item.status != expectedStatus) {
+      if ((expectedStatus != null && result.item.status != expectedStatus) ||
+          (expectedSource != null && result.item.source != expectedSource) ||
+          (expectedOfficial != null &&
+              result.item.official != expectedOfficial)) {
         throw response.invalidDataFailure();
       }
       if (!invalidation.invalidate(

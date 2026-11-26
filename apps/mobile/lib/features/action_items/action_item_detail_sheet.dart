@@ -145,7 +145,14 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     if (!(_form.currentState?.validate() ?? false)) return;
     final saved = await _controller.save();
     if (mounted && _controller.current && saved) {
-      showSuccess(context, 'Đã lưu thay đổi.');
+      final proposal =
+          _controller.snapshot?.item.status == ActionItemStatus.proposed;
+      showSuccess(
+        context,
+        proposal
+            ? 'Đã lưu đề xuất. Hãy xem lại trước khi xác nhận.'
+            : 'Đã lưu thay đổi.',
+      );
     }
   }
 
@@ -156,17 +163,19 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     final destructive =
         command == ActionItemCommand.cancel ||
         command == ActionItemCommand.reject;
-    if (destructive || command == ActionItemCommand.confirm) {
+    if (!_controller.canExecuteCommand(command, reviewed)) return;
+    if (command != ActionItemCommand.start) {
       final accepted = await confirmCommand(
         context,
         title: '${actionItemCommandLabel(command)}?',
-        description: 'Máy chủ sẽ lưu lịch sử thay đổi trạng thái công việc.',
+        description: _commandDescription(reviewed.item, command),
+        confirmLabel: actionItemCommandLabel(command),
         destructive: destructive,
       );
       if (!accepted || !mounted || !_controller.current) return;
     }
     if (!mounted || !_controller.current) return;
-    if (!identical(reviewed, _controller.snapshot)) {
+    if (!_controller.canExecuteCommand(command, reviewed)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Công việc đã thay đổi. Vui lòng xem lại.'),
@@ -176,11 +185,45 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     }
     final saved = await _controller.command(command, reviewed: reviewed);
     if (mounted && _controller.current && saved) {
-      showSuccess(context, 'Đã cập nhật trạng thái.');
+      showSuccess(
+        context,
+        command == ActionItemCommand.confirm
+            ? 'Đã xác nhận thành công việc chính thức.'
+            : command == ActionItemCommand.reject
+            ? 'Đã từ chối đề xuất.'
+            : 'Đã cập nhật trạng thái.',
+      );
     }
   }
 
+  String _commandDescription(
+    ActionItemResource item,
+    ActionItemCommand command,
+  ) => switch (command) {
+    ActionItemCommand.confirm =>
+      'Xác nhận nội dung vừa xem và giao công việc chính thức cho '
+          '${actionItemAssigneeLabel(item.assignee)}. '
+          'Hạn: ${actionItemDueLabel(item.dueDate)}.',
+    ActionItemCommand.reject =>
+      'Đề xuất sẽ không trở thành công việc chính thức. Lịch sử vẫn được giữ.',
+    ActionItemCommand.start => 'Bắt đầu thực hiện công việc này.',
+    ActionItemCommand.complete => 'Xác nhận công việc đã hoàn thành.',
+    ActionItemCommand.cancel =>
+      'Công việc sẽ không còn là nghĩa vụ đang thực hiện. Lịch sử vẫn được giữ.',
+    ActionItemCommand.reopen =>
+      'Công việc sẽ trở lại trạng thái cần làm với người phụ trách hiện tại.',
+  };
+
   Future<bool> _confirmDiscard() async {
+    if (!_controller.editing && _controller.unresolved) {
+      return confirmCommand(
+        context,
+        title: 'Rời chi tiết công việc?',
+        description:
+            'Chưa xác định kết quả thao tác. Công việc có thể đã thay đổi trên máy chủ.',
+        confirmLabel: 'Rời chi tiết',
+      );
+    }
     if (!_controller.hasChanges && !_controller.unresolved) return true;
     return confirmCommand(
       context,
@@ -217,15 +260,16 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     final item = snapshot.item;
     final capabilities = item.capabilities;
     final enabled = _controller.canUseSnapshot && !_controller.unresolved;
-    final commands = capabilities.allowedCommands.where(
-      (command) =>
-          command != ActionItemCommand.complete ||
-          item.status != ActionItemStatus.open,
-    );
+    final commands = ActionItemCommand.values.where(capabilities.allows);
+    final proposed = item.status == ActionItemStatus.proposed;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         ActionItemStatusIndicators(item: item),
+        if (proposed) ...[
+          const SizedBox(height: 12),
+          _proposalReview(item),
+        ],
         const SizedBox(height: 12),
         Text(item.title, style: Theme.of(context).textTheme.headlineSmall),
         if (item.details != null) ...[
@@ -269,33 +313,104 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
           ),
         ),
         if (capabilities.canEdit || capabilities.canAssign)
-          FilledButton.icon(
+          OutlinedButton.icon(
             onPressed: !enabled
                 ? null
                 : () => _controller.beginEdit(reviewed: snapshot),
             icon: const Icon(Icons.edit_outlined),
-            label: Text(capabilities.canEdit ? 'Chỉnh sửa' : 'Phân công lại'),
+            label: Text(
+              proposed
+                  ? (capabilities.canEdit
+                        ? 'Chỉnh sửa đề xuất'
+                        : 'Phân công đề xuất')
+                  : (capabilities.canEdit ? 'Chỉnh sửa' : 'Phân công lại'),
+            ),
+          ),
+        if (!proposed &&
+            item.status != ActionItemStatus.cancelled &&
+            item.assignee?.accountStatus != ActionItemAccountStatus.active &&
+            item.assignee != null)
+          MessagePanel(
+            title: 'Người phụ trách chưa hoạt động',
+            description: capabilities.canAssign
+                ? 'Cần phân công người đang hoạt động để tiếp tục công việc.'
+                : item.status == ActionItemStatus.done
+                ? 'Không thể mở lại với người phụ trách hiện tại.'
+                : 'Chỉ người có thẩm quyền mới có thể phân công lại.',
           ),
         if (!capabilities.canEdit &&
             !capabilities.canAssign &&
             commands.isEmpty)
           const Text('Bạn có quyền xem công việc này.'),
-        if (commands.isNotEmpty)
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final command in commands)
-                OutlinedButton(
-                  onPressed: !enabled
-                      ? null
-                      : () => _command(snapshot, command),
-                  child: Text(actionItemCommandLabel(command)),
-                ),
-            ],
-          ),
+        for (final command in commands)
+          if (command == ActionItemCommand.confirm ||
+              command == ActionItemCommand.start ||
+              (command == ActionItemCommand.complete &&
+                  item.status == ActionItemStatus.inProgress))
+            FilledButton(
+              onPressed: !_controller.canExecuteCommand(command, snapshot)
+                  ? null
+                  : () => _command(snapshot, command),
+              child: Text(actionItemCommandLabel(command)),
+            )
+          else
+            OutlinedButton(
+              onPressed: !_controller.canExecuteCommand(command, snapshot)
+                  ? null
+                  : () => _command(snapshot, command),
+              style:
+                  command == ActionItemCommand.reject ||
+                      command == ActionItemCommand.cancel
+                  ? OutlinedButton.styleFrom(
+                      foregroundColor: Theme.of(context).colorScheme.error,
+                    )
+                  : null,
+              child: Text(actionItemCommandLabel(command)),
+            ),
       ],
     );
+  }
+
+  Widget _proposalReview(ActionItemResource item) {
+    final assignment = item.assignee?.accountStatus;
+    final canConfirm = item.capabilities.allows(ActionItemCommand.confirm);
+    final explanation = switch (assignment) {
+      null => 'Cần phân công một người phụ trách đang hoạt động.',
+      ActionItemAccountStatus.inactive =>
+        'Người phụ trách đã ngừng hoạt động. Cần phân công lại.',
+      ActionItemAccountStatus.pendingSetup =>
+        'Người phụ trách chưa kích hoạt tài khoản. Cần phân công lại.',
+      ActionItemAccountStatus.active =>
+        canConfirm
+            ? 'Kiểm tra nội dung, người phụ trách và thời hạn trước khi xác nhận.'
+            : 'Bạn không có quyền xác nhận đề xuất ở trạng thái hiện tại.',
+    };
+    return MessagePanel(
+      title: 'Đề xuất AI chưa phải công việc chính thức',
+      description: explanation,
+    );
+  }
+
+  Widget _lifecycleFeedback(ActionItemLifecycleOperation operation) {
+    final action = actionItemCommandLabel(operation.command);
+    final observed = operation.observedStatus;
+    final pending = _controller.revalidationRequired;
+    final message = switch (operation.phase) {
+      ActionItemLifecyclePhase.unknown =>
+        pending || observed == null
+            ? 'Thao tác có thể đã được lưu. Cần tải lại trước khi tiếp tục.'
+            : 'Trạng thái hiện tại: ${actionItemStatusLabel(observed)}. '
+                  'Không thể xác định chắc chắn yêu cầu trước đã được thực hiện.',
+      ActionItemLifecyclePhase.rejected =>
+        pending
+            ? 'Yêu cầu bị từ chối. Cần xem lại phiên bản hiện tại.'
+            : 'Yêu cầu bị từ chối. ${actionItemFailureLabel(operation.failure)}',
+      ActionItemLifecyclePhase.notDispatched =>
+        'Chưa gửi yêu cầu. Hãy xem lại công việc trước khi tiếp tục.',
+      ActionItemLifecyclePhase.submitting => 'Đang gửi yêu cầu.',
+      ActionItemLifecyclePhase.verifiedSuccess => 'Đã cập nhật trạng thái.',
+    };
+    return MessagePanel(title: 'Thao tác: $action', description: message);
   }
 
   Widget _label(String label, String value) => Padding(
@@ -339,7 +454,11 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
           const SizedBox(height: 16),
           FilledButton(
             onPressed: enabled && _controller.hasChanges ? _save : null,
-            child: const Text('Lưu thay đổi'),
+            child: Text(
+              item.status == ActionItemStatus.proposed
+                  ? 'Lưu đề xuất và xem lại'
+                  : 'Lưu thay đổi',
+            ),
           ),
           TextButton(
             onPressed: _controller.busy ? null : _discardEdit,
@@ -469,6 +588,12 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     final snapshot = _controller.snapshot;
     final draft = _controller.draft;
     final merge = _controller.reconciliation;
+    final lifecycle = _controller.lifecycleOperation;
+    final feedback =
+        lifecycle != null &&
+            lifecycle.phase != ActionItemLifecyclePhase.verifiedSuccess
+        ? lifecycle
+        : null;
     return PopScope<void>(
       canPop: _allowExit || (!_controller.busy && !_controller.current),
       onPopInvokedWithResult: (didPop, _) {
@@ -477,7 +602,11 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
       child: Scaffold(
         appBar: AppBar(
           title: Text(
-            _controller.editing ? 'Chỉnh sửa công việc' : 'Chi tiết công việc',
+            _controller.editing
+                ? 'Chỉnh sửa công việc'
+                : snapshot?.item.status == ActionItemStatus.proposed
+                ? 'Xem xét đề xuất AI'
+                : 'Chi tiết công việc',
           ),
           leading: IconButton(
             tooltip: 'Quay lại',
@@ -501,7 +630,11 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
                   padding: const EdgeInsets.all(20),
                   children: [
                     if (_controller.busy) const LinearProgressIndicator(),
-                    if (_localError != null || _controller.error != null)
+                    if (feedback != null) _lifecycleFeedback(feedback),
+                    if (_localError != null ||
+                        (_controller.error != null &&
+                            (feedback == null ||
+                                _controller.revalidationRequired)))
                       MessagePanel(
                         title: actionItemFailureLabel(
                           _localError ?? _controller.error,
