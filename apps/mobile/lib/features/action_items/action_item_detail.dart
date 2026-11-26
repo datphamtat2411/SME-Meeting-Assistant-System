@@ -90,13 +90,14 @@ class ActionItemDetailController extends ChangeNotifier {
     }
   }
 
-  void beginEdit() {
+  void beginEdit({ActionItemSnapshot? reviewed}) {
     final currentSnapshot = _snapshot;
     if (!current ||
         _busy ||
         _unresolved ||
         editing ||
         currentSnapshot == null ||
+        (reviewed != null && !identical(currentSnapshot, reviewed)) ||
         (!currentSnapshot.item.capabilities.canEdit &&
             !currentSnapshot.item.capabilities.canAssign)) {
       return;
@@ -118,8 +119,7 @@ class ActionItemDetailController extends ChangeNotifier {
   void discardEdit({bool acknowledgeUnresolved = false}) {
     if (!current || _busy || (_unresolved && !acknowledgeUnresolved)) return;
     _clearEdit();
-    _unresolved = false;
-    _error = null;
+    if (!_unresolved) _error = null;
     notifyListeners();
   }
 
@@ -168,13 +168,17 @@ class ActionItemDetailController extends ChangeNotifier {
     );
   }
 
-  Future<bool> command(ActionItemCommand command) async {
+  Future<bool> command(
+    ActionItemCommand command, {
+    required ActionItemSnapshot reviewed,
+  }) async {
     final original = _snapshot;
     if (!current ||
         _busy ||
         _unresolved ||
         editing ||
         original == null ||
+        !identical(original, reviewed) ||
         !original.item.capabilities.allows(command)) {
       return false;
     }
@@ -243,6 +247,7 @@ class ActionItemDetailController extends ChangeNotifier {
           _clearEdit();
           _unresolved = false;
         } else if (forceMerge ||
+            _reconciliation != null ||
             _unresolved ||
             original.etag != latest.etag ||
             original.item.capabilities.canEdit !=
