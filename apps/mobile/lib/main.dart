@@ -291,10 +291,8 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
       return SessionRestoreFailureView(
         api: api,
         mutationNotice: switch (outcome?.kind) {
-          CredentialOutcomeKind.completed =>
-            'Mật khẩu đã được cập nhật. Không gửi lại yêu cầu này. Vùng bảo vệ đang khóa cho đến khi máy chủ xác minh lại phiên đăng nhập hiện tại.',
-          CredentialOutcomeKind.uncertain =>
-            'Yêu cầu đặt lại mật khẩu có thể đã được xử lý. Không gửi lại yêu cầu này; vùng bảo vệ vẫn khóa cho đến khi xác minh lại phiên hiện tại.',
+          CredentialOutcomeKind.completed => 'Mật khẩu đã được cập nhật. Không gửi lại yêu cầu này. Vùng bảo vệ đang khóa cho đến khi máy chủ xác minh lại phiên đăng nhập hiện tại.',
+          CredentialOutcomeKind.uncertain => 'Yêu cầu đặt lại mật khẩu có thể đã được xử lý. Không gửi lại yêu cầu này; vùng bảo vệ vẫn khóa cho đến khi xác minh lại phiên hiện tại.',
           _ => null,
         },
       );

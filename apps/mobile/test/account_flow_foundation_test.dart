@@ -291,9 +291,15 @@ void main() {
       now: now,
     );
     expect(resetUncertain.kind, AccountFailureKind.uncertain);
-    expect(resetUncertain.message, contains('Mật khẩu có thể đã được cập nhật'));
+    expect(
+      resetUncertain.message,
+      contains('Mật khẩu có thể đã được cập nhật'),
+    );
     expect(setupUncertain.kind, AccountFailureKind.uncertain);
-    expect(setupUncertain.message, contains('Tài khoản có thể đã được kích hoạt'));
+    expect(
+      setupUncertain.message,
+      contains('Tài khoản có thể đã được kích hoạt'),
+    );
 
     final resetRejected = AccountFlowFailure.classify(
       const ApiFailure(422, 'VALIDATION_FAILED', 'private'),

@@ -1207,14 +1207,8 @@ void main() {
         reason: 'unavailable verification to remain fail-closed',
       );
       expect(owner.outcome?.kind, CredentialOutcomeKind.completed);
-      expect(
-        find.textContaining('Mật khẩu đã được cập nhật.'),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('Không gửi lại yêu cầu này'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('Mật khẩu đã được cập nhật.'), findsOneWidget);
+      expect(find.textContaining('Không gửi lại yêu cầu này'), findsOneWidget);
 
       await tester.tap(find.text('Thử xác minh lại'));
       await pumpUntil(
@@ -1222,7 +1216,8 @@ void main() {
         () =>
             harness.api.sessionState.isAuthenticated &&
             find.byType(CredentialOutcomeView).evaluate().isNotEmpty,
-        reason: 'successful verification to restore the original mutation outcome',
+        reason:
+            'successful verification to restore the original mutation outcome',
       );
       expect(owner.outcome?.kind, CredentialOutcomeKind.completed);
       expect(find.text('Đặt lại mật khẩu thành công'), findsOneWidget);
@@ -1502,6 +1497,4 @@ class _FailingDeleteStorage extends InMemoryCredentialStorage {
     }
     return super.delete(key: key);
   }
-
-
 }

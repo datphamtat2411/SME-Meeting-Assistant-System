@@ -436,9 +436,10 @@ class CredentialOutcomeView extends StatelessWidget {
             ? 'Đặt lại mật khẩu thành công'
             : 'Kích hoạt tài khoản thành công',
       CredentialOutcomeKind.uncertain => 'Chưa xác nhận được kết quả',
-      CredentialOutcomeKind.unavailable => reset
-          ? 'Liên kết khôi phục không còn khả dụng'
-          : 'Lời mời thiết lập không còn khả dụng',
+      CredentialOutcomeKind.unavailable =>
+        reset
+            ? 'Liên kết khôi phục không còn khả dụng'
+            : 'Lời mời thiết lập không còn khả dụng',
     };
     final message = authenticated
         ? switch (outcome.kind) {

@@ -83,12 +83,10 @@ class AccountFlowFailure {
       AccountFailureKind.throttled =>
         'Máy chủ đang giới hạn yêu cầu. Vui lòng thử lại khi phù hợp.',
       AccountFailureKind.unavailable => switch (operation) {
-        AccountOperation.recovery =>
-          'Dịch vụ yêu cầu khôi phục hiện không khả dụng. Vui lòng thử lại sau.',
+        AccountOperation.recovery => 'Dịch vụ yêu cầu khôi phục hiện không khả dụng. Vui lòng thử lại sau.',
         AccountOperation.reset =>
           'Liên kết khôi phục không còn khả dụng. Hãy yêu cầu liên kết mới.',
-        AccountOperation.setup =>
-          'Lời mời thiết lập không còn khả dụng. Hãy yêu cầu lời mời mới từ tổ chức.',
+        AccountOperation.setup => 'Lời mời thiết lập không còn khả dụng. Hãy yêu cầu lời mời mới từ tổ chức.',
       },
       AccountFailureKind.uncertain => switch (operation) {
         AccountOperation.recovery =>
