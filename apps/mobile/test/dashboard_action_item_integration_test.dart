@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/features/action_items/action_item_collection.dart';
+import 'package:sme_meeting_assistant/features/action_items/action_item_detail_sheet.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_invalidation.dart';
 import 'package:sme_meeting_assistant/features/dashboard/dashboard_controller.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
@@ -252,7 +253,38 @@ void main() {
     expect(profileReads, 0);
     expect(preferenceReads, 0);
 
-    await tester.tap(find.text('Tài khoản'));
+    // The restricted detail is still a pushed route, even though it has
+    // no meeting-navigation action. Its opaque surface owns pointer input.
+    final detail = find.byType(ActionItemDetailPage);
+    final accountDestination = find.descendant(
+      of: find.byType(NavigationBar),
+      matching: find.text('Tài khoản'),
+    );
+    expect(detail, findsOneWidget);
+    expect(accountDestination.hitTestable(), findsNothing);
+
+    final closeDetail = find.descendant(
+      of: detail,
+      matching: find.byTooltip('Quay lại'),
+    );
+    expect(closeDetail.hitTestable(), findsOneWidget);
+    await tester.tap(closeDetail);
+    await tester.pumpAndSettle();
+    expect(detail, findsNothing);
+    expect(accountDestination.hitTestable(), findsOneWidget);
+    expect(profileReads, 0);
+    expect(preferenceReads, 0);
+    expect(
+      tester.widget<NavigationBar>(find.byType(NavigationBar)).selectedIndex,
+      2,
+    );
+
+    await tester.tap(accountDestination);
+    await tester.pump();
+    expect(
+      tester.widget<NavigationBar>(find.byType(NavigationBar)).selectedIndex,
+      4,
+    );
     await pumpUntil(
       tester,
       () =>
@@ -280,15 +312,26 @@ void main() {
     expect(profileReads, 1);
     expect(preferenceReads, 1);
 
-    tester
-        .widget<NavigationRail>(find.byType(NavigationRail))
-        .onDestinationSelected!(0);
+    final rail = find.byType(NavigationRail);
+    final dashboardDestination = find.descendant(
+      of: rail,
+      matching: find.text('Tổng quan'),
+    );
+    final accountRailDestination = find.descendant(
+      of: rail,
+      matching: find.text('Tài khoản'),
+    );
+    expect(tester.widget<NavigationRail>(rail).selectedIndex, 4);
+    expect(dashboardDestination.hitTestable(), findsOneWidget);
+    await tester.tap(dashboardDestination);
     await tester.pumpAndSettle();
+    expect(tester.widget<NavigationRail>(rail).selectedIndex, 0);
     expect(profileReads, 1);
     expect(preferenceReads, 1);
-    tester
-        .widget<NavigationRail>(find.byType(NavigationRail))
-        .onDestinationSelected!(4);
+    expect(accountRailDestination.hitTestable(), findsOneWidget);
+    await tester.tap(accountRailDestination);
+    await tester.pump();
+    expect(tester.widget<NavigationRail>(rail).selectedIndex, 4);
     await pumpUntil(
       tester,
       () =>
