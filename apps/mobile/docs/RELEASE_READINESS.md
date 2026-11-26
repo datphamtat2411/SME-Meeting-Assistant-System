@@ -12,6 +12,8 @@ For M06 Action Items and its verification status, see
 [`M06_ACCEPTANCE.md`](M06_ACCEPTANCE.md).
 For M07 Assistant, see [`M07_ACCEPTANCE.md`](M07_ACCEPTANCE.md) and the
 [Assistant contract](M07_WAVE01_CONTRACT.md).
+For M08 Authentication Account Flows, see [M08_ACCEPTANCE.md](M08_ACCEPTANCE.md)
+for current development and live integration gates.
 
 ## Verified foundation capabilities
 
@@ -64,8 +66,9 @@ downloaded or required by the Mobile CI job.
 
 These checks are separate from the M01 foundation gate:
 
-- M02 authentication/session lifecycle edge cases with an authorized live API,
-  including refresh rotation, recovery, and logout behavior.
+- M02/M08 authentication and account-flow live acceptance, including refresh
+  rotation, recovery, setup, logout, verified App Links and browser fallback.
+  The M08 acceptance record distinguishes automated evidence from external gates.
 - Physical microphone permission grant/denial/revocation, recording lifecycle,
   interrupted capture, and local draft recovery.
 - Long-running and interrupted uploads, signed URL expiry, file-format

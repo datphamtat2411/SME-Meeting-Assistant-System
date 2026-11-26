@@ -421,46 +421,50 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('manual link input rejects untrusted URLs before workflow entry', (
-    tester,
-  ) async {
-    final harness = _Harness.create(_authClient(), InMemoryCredentialStorage());
-    await tester.pumpWidget(
-      MeetingAssistantApp(
-        dependencies: harness.dependencies,
-        accountLinkParser: AccountLinkParser('meeting.example.invalid'),
-      ),
-    );
-    await pumpUntil(
-      tester,
-      () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
-      reason: 'login ready',
-    );
-    final entry = find.text('Đã có liên kết khôi phục?');
-    await tester.ensureVisible(entry);
-    await tester.tap(entry);
-    await tester.pumpAndSettle();
-    final input = find.byType(TextFormField).first;
-    final submit = find.widgetWithText(FilledButton, 'Tiếp tục');
-    await tester.enterText(input, 'https://evil.invalid/otp#token=fixture');
-    await tester.ensureVisible(submit);
-    await tester.tap(submit);
-    await tester.pumpAndSettle();
-    expect(find.textContaining('Nguồn liên kết tài khoản'), findsOneWidget);
-    expect(find.text('Đặt lại mật khẩu'), findsNothing);
-    expect(_credentialRequests(harness.client), isEmpty);
+  testWidgets(
+    'manual link input rejects untrusted URLs before workflow entry',
+    (tester) async {
+      final harness = _Harness.create(
+        _authClient(),
+        InMemoryCredentialStorage(),
+      );
+      await tester.pumpWidget(
+        MeetingAssistantApp(
+          dependencies: harness.dependencies,
+          accountLinkParser: AccountLinkParser('meeting.example.invalid'),
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+        reason: 'login ready',
+      );
+      final entry = find.text('Đã có liên kết khôi phục?');
+      await tester.ensureVisible(entry);
+      await tester.tap(entry);
+      await tester.pumpAndSettle();
+      final input = find.byType(TextFormField).first;
+      final submit = find.widgetWithText(FilledButton, 'Tiếp tục');
+      await tester.enterText(input, 'https://evil.invalid/otp#token=fixture');
+      await tester.ensureVisible(submit);
+      await tester.tap(submit);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Nguồn liên kết tài khoản'), findsOneWidget);
+      expect(find.text('Đặt lại mật khẩu'), findsNothing);
+      expect(_credentialRequests(harness.client), isEmpty);
 
-    await tester.enterText(
-      input,
-      'https://meeting.example.invalid/reset-password#token=synthetic',
-    );
-    await tester.ensureVisible(submit);
-    await tester.tap(submit);
-    await tester.pumpAndSettle();
-    expect(find.text('Đặt lại mật khẩu'), findsOneWidget);
-    expect(_credentialRequests(harness.client), isEmpty);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      await tester.enterText(
+        input,
+        'https://meeting.example.invalid/reset-password#token=synthetic',
+      );
+      await tester.ensureVisible(submit);
+      await tester.tap(submit);
+      await tester.pumpAndSettle();
+      expect(find.text('Đặt lại mật khẩu'), findsOneWidget);
+      expect(_credentialRequests(harness.client), isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('authenticated link requires confirmation and reconciles reset', (
     tester,

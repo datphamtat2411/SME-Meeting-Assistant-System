@@ -5,8 +5,9 @@
 - AuthPage coordinates public workflow navigation; login, recovery and
   credential establishment own separate transient form state.
 - The shared submission controller tracks single flight, typed failure and
-  completion, never the password or capability. The public flow host owns
-  operation-specific retry deadlines in memory so navigation cannot bypass
+  completion, never the password or capability. The public flow host originally
+  owned operation-specific retry deadlines; Wave 03 moved them to the app host
+  in memory so navigation cannot bypass
   a server-provided cooldown. No automatic retry or persistent cooldown.
 - Authentication and current identity remain owned by AuthSessionCoordinator.
   No new session store, state management package, or endpoint was added.
@@ -49,7 +50,8 @@ the existing safe identity-retry path. Logout supersedes in-flight verification.
 Wave 02 owns integration of reconciliation with confirmed or uncertain
 password-reset completion and the finished recovery/setup/reset workflows.
 Wave 03 owns Android capability links and dispatch. Neither is implemented
-as part of this foundation. The existing manual entry points remain usable.
+as part of this foundation. Wave 03 supersedes the transitional raw-capability
+entry with validated whole-link paste. See [final acceptance](M08_ACCEPTANCE.md).
 
 ## Verification
 

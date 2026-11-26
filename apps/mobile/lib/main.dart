@@ -387,7 +387,9 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
                         if (_initialLinkRevision == revision) {
                           _initialLinkRevision = null;
                         }
-                        _accountLinks.discardPending(expectedRevision: revision);
+                        _accountLinks.discardPending(
+                          expectedRevision: revision,
+                        );
                       }
                     : _accountLinks.clearNotice,
                 child: Text(pending ? 'Bỏ qua' : 'Đóng'),

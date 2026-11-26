@@ -48,6 +48,10 @@ link received during the verification gate remains deferred; after successful
 verification it cannot replace the terminal outcome and requires explicit
 continuation after that outcome is acknowledged.
 Deferred links are not restored from persistent storage or auto-opened on idle.
+Wave 04 binds initial entry, paste continuation, banner actions and deferred
+cleanup to the non-sensitive pending-candidate revision. Equivalent duplicates
+retain the same revision. A stale continuation or discard cannot act on a
+replacement candidate; the replacement requires its own explicit action.
 
 The account route reuses Wave 02 credential workflows; the host continues to
 own non-sensitive outcomes when mandatory reset reconciliation replaces the
@@ -122,16 +126,15 @@ disabled. Never paste real capabilities into shell history, logs or screenshots.
 
 ## Acceptance status
 
-Development implementation and regression tests are version controlled.
-The previous revision's Flutter checks passed; native verification stopped
-at Maven Central HTTP 429 resolving the pinned Kotlin Gradle plugin BOM.
-No dependency pin, repository, or verification gate is changed for this
-external provisioning failure. The hardening revision adds source-tagged native
-deliveries and regression scenarios for terminal navigation, pending mutation,
-verification retry, authenticated setup and shared retry restrictions.
-The final Mobile CI run is required to establish formatting, analysis,
-Flutter tests, native JVM tests and both manifest configurations/builds.
-The approved deployment host, production signing certificate, actual
-Digital Asset Links publication, physical-device verification, SMTP and
-live Core API acceptance remain external gates. Do not infer them from
-synthetic URLs, mocked channels or a debug APK.
+The Wave 03 baseline [713ddc85](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/commit/713ddc8531abacd4ed95ee68d11a910ac49d2f74)
+passed [Mobile CI 45901286507](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45901286507):
+634 Flutter tests, formatting, analysis, native credential verification and
+both configured/unconfigured Android APK and effective manifest checks.
+This resolves the earlier Maven Central HTTP 429 provisioning blocker without
+changing dependency pins or verification gates. Wave 04 adds candidate-bound
+continuation fencing and regressions; see [M08 acceptance](M08_ACCEPTANCE.md)
+for its separate revision-specific results and remaining deployment gates.
+
+Approved deployment host, actual installed signing certificate, published
+Digital Asset Links association, physical-device verification, SMTP and live
+Core/Web acceptance remain separate from synthetic build and fixture evidence.

@@ -7,12 +7,14 @@ remain authoritative. Recovery displays a neutral acknowledgement, never
 delivery or account-eligibility confirmation. The submitted address is
 retained transiently for deliberate resend. A 60-second UX cooldown after
 acknowledgement is separate from server Retry-After; the later deadline
-applies within the public authentication flow, including form replacement.
+applies across form replacement and, since Wave 03, all application account-flow
+entry contexts.
 Neither expiry nor retry automatically dispatches a request.
 
 Reset and setup use the same credential presentation and separate fixed
-operation purposes. A caller can provide an opaque capability or use the
-existing manual entry. A new capability requires a new keyed workflow.
+operation purposes. The workflow accepts an opaque capability supplied by its
+caller. Wave 03 replaces transitional raw input with validated whole-link
+entry. A new capability requires a new keyed workflow.
 Passwords and capabilities are not normalized, persisted or logged.
 Validated completion, uncertainty and unavailable outcomes are terminal
 for that attempt. Setup directs the user to the organizational invitation
@@ -56,7 +58,7 @@ recovery uncertainty, structured password-policy correction, purpose-specific
 rejection guidance, authenticated continuation, externally supplied opaque
 capabilities, and stale-outcome fencing. The application-root test covers
 actual navigator replacement and outcome handoff through session verification.
-The Mobile CI workflow must verify formatting, analysis, tests and Android
-debug build on the final revision.
+See [final acceptance](M08_ACCEPTANCE.md) for revision-specific CI and
+external verification evidence.
 Live Core API, SMTP, physical-device and verified HTTPS acceptance are not
 established by these mocked tests or by source review.
