@@ -16,10 +16,12 @@ class AssistantPage extends StatefulWidget {
     super.key,
     required this.dependencies,
     required this.active,
+    this.contextualMeeting,
   });
 
   final AppDependencies dependencies;
   final bool active;
+  final Meeting? contextualMeeting;
 
   @override
   State<AssistantPage> createState() => _AssistantPageState();
@@ -29,23 +31,46 @@ class _AssistantPageState extends State<AssistantPage>
     with WidgetsBindingObserver {
   late final AssistantWorkspaceController _controller;
   final _input = TextEditingController();
-  final Map<String, String> _drafts = {};
   String? _draftOwner;
   String? _meetingTitle;
   int _selection = 0;
   bool _choosingMeeting = false;
   bool _foreground = true;
+  bool _routeVisible = false;
+  bool _contextVerified = false;
+  bool _contextChecking = false;
+  bool _enteredContext = false;
+  int _contextGeneration = 0;
+  Object? _contextFailure;
+
+  bool get _eligible =>
+      mounted && widget.active && _foreground && _routeVisible;
+  bool get _presenting =>
+      _eligible && _controller.ownsPresentation(this);
+  bool _matchesContext(String meetingId) =>
+      widget.contextualMeeting == null ||
+      widget.contextualMeeting!.id.toLowerCase() == meetingId.toLowerCase();
 
   @override
   void initState() {
     super.initState();
-    _controller = AssistantWorkspaceController(widget.dependencies.assistant);
+    _controller = widget.dependencies.assistantWorkspace;
     _controller.addListener(_workspaceChanged);
+    _input.addListener(_saveDraft);
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    _foreground = lifecycle == null || lifecycle == AppLifecycleState.resumed;
     WidgetsBinding.instance.addObserver(this);
-    widget.dependencies.meetingInvalidation.addListener(_invalidate);
-    widget.dependencies.resultsInvalidation.addListener(_invalidate);
-    widget.dependencies.actionItemInvalidation.addListener(_invalidate);
-    _controller.setActive(widget.active);
+    widget.dependencies.meetingInvalidation.addListener(_contextInvalidated);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final visible = ModalRoute.isCurrentOf(context) ?? true;
+    if (visible == _routeVisible) return;
+    _routeVisible = visible;
+    if (!visible && !_choosingMeeting) _selection++;
+    _schedulePresentation();
   }
 
   @override
@@ -53,7 +78,7 @@ class _AssistantPageState extends State<AssistantPage>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.active != widget.active) {
       if (!widget.active) _selection++;
-      _controller.setActive(widget.active && _foreground);
+      _schedulePresentation();
     }
   }
 
@@ -63,49 +88,126 @@ class _AssistantPageState extends State<AssistantPage>
     if (foreground == _foreground) return;
     _foreground = foreground;
     if (!foreground) _selection++;
-    _controller.setActive(widget.active && foreground);
+    unawaited(_syncPresentation());
   }
 
-  void _invalidate() {
-    if (widget.active && _foreground) unawaited(_controller.revalidate());
+  void _schedulePresentation() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_syncPresentation());
+    });
+  }
+
+  Future<void> _syncPresentation() async {
+    if (!mounted || !_controller.current) return;
+    if (!_eligible) {
+      _contextGeneration++;
+      _contextVerified = false;
+      _contextChecking = false;
+      _controller.setPresentationActive(this, false);
+      return;
+    }
+    final contextual = widget.contextualMeeting;
+    if (contextual != null && !_contextVerified) {
+      if (_contextChecking) return;
+      final generation = ++_contextGeneration;
+      setState(() {
+        _contextChecking = true;
+        _contextFailure = null;
+      });
+      try {
+        final allowed = await widget.dependencies.results.verifyReadAccess(
+          sessionScope: _controller.scope,
+          meetingId: contextual.id,
+        );
+        if (!_eligible ||
+            !_controller.current ||
+            generation != _contextGeneration) {
+          return;
+        }
+        if (!allowed) throw StateError('Meeting content unavailable.');
+        _contextVerified = true;
+      } on Object catch (error) {
+        if (_eligible && generation == _contextGeneration) {
+          _contextFailure = error;
+        }
+      } finally {
+        if (mounted && generation == _contextGeneration) {
+          setState(() => _contextChecking = false);
+        }
+      }
+      if (!_contextVerified || !_eligible || !_controller.current) return;
+    }
+    if (contextual != null &&
+        (!_enteredContext ||
+            (_controller.conversation != null &&
+                !_matchesContext(_controller.conversation!.meetingId)))) {
+      _enteredContext = true;
+      await _controller.closeConversation();
+      if (!_eligible || !_controller.current) return;
+    }
+    _controller.setPresentationActive(this, true);
+    _workspaceChanged();
+  }
+
+  void _contextInvalidated() {
+    final meeting = widget.contextualMeeting;
+    final signal = widget.dependencies.meetingInvalidation;
+    if (meeting == null ||
+        signal.sessionScope != _controller.scope ||
+        !_matchesContext(signal.lastMeetingId ?? meeting.id)) {
+      return;
+    }
+    _contextGeneration++;
+    _contextVerified = false;
+    _contextChecking = false;
+    _controller.setPresentationActive(this, false);
+    if (mounted) setState(() {});
+    if (_eligible) unawaited(_syncPresentation());
   }
 
   void _workspaceChanged() {
     if (!_controller.current) {
-      _drafts.clear();
       _draftOwner = null;
       _input.clear();
-    } else if (_draftOwner != null &&
-        _controller.conversation == null &&
-        _controller.historyFailure != null) {
-      _drafts.remove(_draftOwner);
-      _draftOwner = null;
-      _input.clear();
+      return;
+    }
+    if (!_controller.ownsPresentation(this)) return;
+    final selected = _controller.conversation;
+    if (_draftOwner != selected?.id) {
+      _draftOwner = selected?.id;
+      _input.text = selected == null ? '' : _controller.draftFor(selected.id);
+      _meetingTitle = selected != null && _matchesContext(selected.meetingId)
+          ? widget.contextualMeeting?.title
+          : null;
     }
   }
 
   void _saveDraft() {
     final owner = _draftOwner;
-    if (owner != null && _controller.current) {
-      _drafts[owner] = _input.text;
+    if (owner != null && _controller.ownsPresentation(this)) {
+      _controller.saveDraft(owner, _input.text);
     }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    widget.dependencies.meetingInvalidation.removeListener(_invalidate);
-    widget.dependencies.resultsInvalidation.removeListener(_invalidate);
-    widget.dependencies.actionItemInvalidation.removeListener(_invalidate);
+    widget.dependencies.meetingInvalidation.removeListener(_contextInvalidated);
     _controller.removeListener(_workspaceChanged);
-    _drafts.clear();
-    _controller.dispose();
+    _input.removeListener(_saveDraft);
+    final owner = _controller;
+    // Route disposal can occur during a build; release only this host.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      owner.setPresentationActive(this, false);
+    });
     _input.dispose();
     super.dispose();
   }
 
   Future<void> _chooseMeeting() async {
-    if (_choosingMeeting ||
+    if (!_presenting ||
+        _choosingMeeting ||
+        _controller.creation != null ||
         _controller.creating ||
         _controller.creationCoolingDown) {
       return;
@@ -113,17 +215,21 @@ class _AssistantPageState extends State<AssistantPage>
     final pickerSelection = _selection;
     setState(() => _choosingMeeting = true);
     try {
-      final meeting = await Navigator.push<Meeting>(
-        context,
-        MaterialPageRoute<Meeting>(
-          builder: (_) =>
-              AssistantMeetingPicker(dependencies: widget.dependencies),
-        ),
-      );
+      final meeting = widget.contextualMeeting ??
+          await Navigator.push<Meeting>(
+            context,
+            MaterialPageRoute<Meeting>(
+              builder: (_) =>
+                  AssistantMeetingPicker(dependencies: widget.dependencies),
+            ),
+          );
+      if (mounted && (ModalRoute.of(context)?.isCurrent ?? true)) {
+        _routeVisible = true;
+        await _syncPresentation();
+      }
       if (!mounted ||
           meeting == null ||
-          !widget.active ||
-          !_foreground ||
+          !_presenting ||
           pickerSelection != _selection ||
           !_controller.current) {
         return;
@@ -132,8 +238,7 @@ class _AssistantPageState extends State<AssistantPage>
       final created = await _controller.create(meeting.id, meeting.title);
       if (!mounted ||
           created == null ||
-          !widget.active ||
-          !_foreground ||
+          !_presenting ||
           !_controller.current ||
           selection != _selection ||
           _controller.conversation != null) {
@@ -146,12 +251,15 @@ class _AssistantPageState extends State<AssistantPage>
   }
 
   Future<void> _retryCreation() async {
+    final command = _controller.creation;
+    if (!_presenting || command == null || !_matchesContext(command.meetingId)) {
+      return;
+    }
     final selection = _selection;
     final created = await _controller.retryCreation();
     if (!mounted ||
         created == null ||
-        !widget.active ||
-        !_foreground ||
+        !_presenting ||
         !_controller.current ||
         selection != _selection ||
         _controller.conversation != null) {
@@ -164,13 +272,15 @@ class _AssistantPageState extends State<AssistantPage>
     AssistantConversation conversation, {
     String? meetingTitle,
   }) async {
+    if (!_presenting || !_matchesContext(conversation.meetingId)) return;
     final selection = ++_selection;
     _saveDraft();
     _draftOwner = conversation.id;
-    _input.text = _drafts[conversation.id] ?? '';
+    _input.text = _controller.draftFor(conversation.id);
     setState(() => _meetingTitle = meetingTitle);
     await _controller.open(conversation);
     if (!mounted ||
+        !_presenting ||
         selection != _selection ||
         _controller.conversation?.id != conversation.id ||
         !_controller.historyVerified ||
@@ -182,6 +292,7 @@ class _AssistantPageState extends State<AssistantPage>
         conversation.meetingId,
       );
       if (!mounted ||
+          !_presenting ||
           !_controller.current ||
           selection != _selection ||
           _controller.conversation?.id != conversation.id ||
@@ -206,14 +317,14 @@ class _AssistantPageState extends State<AssistantPage>
 
   void _send() {
     final question = _input.text.trim();
-    if (!_controller.canSend || question.isEmpty || question.length > 4096) {
+    if (!_presenting || !_controller.canSend || question.isEmpty || question.length > 4096) {
       return;
     }
     FocusScope.of(context).unfocus();
     final submission = _controller.submit(question);
     if (_controller.pending?.request.question == question) {
       _input.clear();
-      _drafts.remove(_draftOwner);
+
     }
     unawaited(submission);
   }
@@ -245,10 +356,12 @@ class _AssistantPageState extends State<AssistantPage>
           'trên máy chủ. Hãy kiểm tra danh sách trước khi tạo lại.',
         ) &&
         mounted &&
-        widget.active &&
-        _foreground &&
         identical(_controller.creation, intent)) {
-      await _controller.abandonCreation();
+      _routeVisible = ModalRoute.of(context)?.isCurrent ?? true;
+      await _syncPresentation();
+      if (_presenting && identical(_controller.creation, intent)) {
+        await _controller.abandonCreation();
+      }
     }
   }
 
@@ -258,10 +371,12 @@ class _AssistantPageState extends State<AssistantPage>
           'trên thiết bị và không gửi lại câu hỏi.',
         ) &&
         mounted &&
-        widget.active &&
-        _foreground &&
         identical(_controller.pending, intent)) {
-      await _controller.abandonPending();
+      _routeVisible = ModalRoute.of(context)?.isCurrent ?? true;
+      await _syncPresentation();
+      if (_presenting && identical(_controller.pending, intent)) {
+        await _controller.abandonPending();
+      }
     }
   }
 
@@ -269,13 +384,33 @@ class _AssistantPageState extends State<AssistantPage>
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: _controller,
     builder: (context, _) {
+      if (!_eligible) return const SizedBox.shrink();
+      if (widget.contextualMeeting != null && !_contextVerified) {
+        return Center(
+          child: _contextFailure == null || _contextChecking
+              ? const CircularProgressIndicator()
+              : Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: MessagePanel(
+                    title: 'Không thể xác nhận quyền truy cập',
+                    description: 'Cuộc họp chưa thể được xác minh.',
+                    onRetry: _syncPresentation,
+                  ),
+                ),
+        );
+      }
+      if (!_presenting) {
+        return const Center(child: CircularProgressIndicator());
+      }
       final selected = _controller.conversation;
       return PopScope<Object?>(
         canPop: !widget.active || selected == null,
         onPopInvokedWithResult: (didPop, _) {
           if (!didPop && selected != null) unawaited(_close());
         },
-        child: selected == null ? _list(context) : _chat(context, selected),
+        child: selected == null || !_matchesContext(selected.meetingId)
+            ? _list(context)
+            : _chat(context, selected),
       );
     },
   );
@@ -283,7 +418,12 @@ class _AssistantPageState extends State<AssistantPage>
   Widget _list(BuildContext context) {
     final state = _controller;
     final colors = Theme.of(context).colorScheme;
-    final items = state.conversations;
+    final items = state.conversations
+        .where((item) => _matchesContext(item.meetingId))
+        .toList(growable: false);
+    final contextual = widget.contextualMeeting;
+    final foreignCreation = state.creation != null &&
+        !_matchesContext(state.creation!.meetingId);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -291,7 +431,9 @@ class _AssistantPageState extends State<AssistantPage>
           padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
           child: SectionHeading(
             'Trợ lý AI',
-            subtitle: 'Khám phá lại tri thức từ các cuộc họp của bạn.',
+            subtitle: contextual == null
+                ? 'Khám phá lại tri thức từ các cuộc họp của bạn.'
+                : 'Phạm vi: ${contextual.title}',
             trailing: IconButton(
               tooltip: 'Làm mới hội thoại',
               onPressed: state.refreshList,
@@ -331,8 +473,11 @@ class _AssistantPageState extends State<AssistantPage>
                           ),
                           const SizedBox(height: 6),
                           Text(
-                            'Chọn một cuộc họp để tìm quyết định, công việc '
-                            'và những thông tin đã thảo luận.',
+                            contextual == null
+                                ? 'Chọn một cuộc họp để tìm quyết định, công việc '
+                                    'và những thông tin đã thảo luận.'
+                                : 'Hỏi về quyết định, công việc và nội dung '
+                                    'của cuộc họp này.',
                             style: TextStyle(color: colors.onPrimaryContainer),
                           ),
                           const SizedBox(height: 14),
@@ -359,7 +504,12 @@ class _AssistantPageState extends State<AssistantPage>
                       'Có thể tạo hội thoại sau ${DateFormat('HH:mm:ss').format(state.creationRetryAt!.toLocal())}',
                     ),
                   ),
-                if (state.creation != null)
+                if (foreignCreation)
+                  const MessagePanel(
+                    title: 'Có yêu cầu tạo hội thoại ở cuộc họp khác',
+                    description: 'Quay lại tab Trợ lý AI để xử lý yêu cầu đó.',
+                  )
+                else if (state.creation != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
                     child: ContentCard(
@@ -423,10 +573,14 @@ class _AssistantPageState extends State<AssistantPage>
                     onRetry: state.refreshList,
                   )
                 else if (items.isEmpty)
-                  const MessagePanel(
-                    title: 'Chưa có hội thoại',
+                  MessagePanel(
+                    title: state.listHasMore
+                        ? 'Chưa thấy hội thoại trong phần đã tải'
+                        : 'Chưa có hội thoại',
                     icon: Icons.chat_bubble_outline,
-                    description: 'Bắt đầu từ một cuộc họp bạn được phép đọc.',
+                    description: state.listHasMore
+                        ? 'Tải thêm để tìm hội thoại hoặc tạo hội thoại mới.'
+                        : 'Bắt đầu từ một cuộc họp bạn được phép đọc.',
                   ),
                 for (final item in items)
                   Card(
@@ -444,7 +598,7 @@ class _AssistantPageState extends State<AssistantPage>
                             .format(item.updatedAt.toLocal()),
                       ),
                       trailing: const Icon(Icons.chevron_right),
-                      onTap: () => _open(item),
+                      onTap: () => _open(item, meetingTitle: contextual?.title),
                     ),
                   ),
                 if (state.listFailure != null && items.isNotEmpty)
@@ -453,7 +607,7 @@ class _AssistantPageState extends State<AssistantPage>
                     description: assistantFailureLabel(state.listFailure!),
                     onRetry: state.refreshList,
                   ),
-                if (state.listHasMore && items.isNotEmpty)
+                if (state.listHasMore)
                   TextButton.icon(
                     onPressed: state.listLoading
                         ? null

@@ -6,6 +6,7 @@ import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/app_theme.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
+import 'package:sme_meeting_assistant/features/assistant/assistant_page.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_detail_controller.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_edit_sheet.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
@@ -37,6 +38,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
     with WidgetsBindingObserver {
   late MeetingDetailController _controller;
   int _tab = 0;
+  bool _openingAssistant = false;
 
   @override
   void initState() {
@@ -232,6 +234,52 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
     }
   }
 
+  Future<void> _openAssistant(MeetingSnapshot snapshot) async {
+    if (_openingAssistant || !mounted) return;
+    final scope = snapshot.sessionScope;
+    final meeting = snapshot.meeting;
+    setState(() => _openingAssistant = true);
+    try {
+      final allowed = await widget.dependencies.results.verifyReadAccess(
+        sessionScope: scope,
+        meetingId: meeting.id,
+      );
+      if (!mounted ||
+          !widget.api.isCurrentAuthenticatedSession(scope) ||
+          _controller.state.snapshot?.meeting.id != meeting.id ||
+          !(ModalRoute.of(context)?.isCurrent ?? true)) {
+        return;
+      }
+      if (!allowed) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Không thể truy cập nội dung cuộc họp.')),
+        );
+        return;
+      }
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('Trợ lý cuộc họp')),
+            body: SafeArea(
+              child: AssistantPage(
+                dependencies: widget.dependencies,
+                active: true,
+                contextualMeeting: meeting,
+              ),
+            ),
+          ),
+        ),
+      );
+    } on Object catch (error) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
+        showFailure(context, error);
+      }
+    } finally {
+      if (mounted) setState(() => _openingAssistant = false);
+    }
+  }
+
   Widget _overview(MeetingDetailState state, MeetingSnapshot snapshot) {
     final meeting = snapshot.meeting;
     final capabilities = MeetingCapabilityPolicy.evaluate(
@@ -242,6 +290,14 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
         state.activeMutation != null ||
         state.needsRevalidation ||
         state.phase != MeetingDetailPhase.ready;
+    final canAsk = MeetingCapabilityPolicy.evaluate(
+      callerId: widget.api.userId,
+      meeting: meeting,
+      callerIsActiveParticipant: state.participantsLoaded &&
+          state.participants.any((participant) =>
+              participant.isActive &&
+              participant.userId.toLowerCase() == widget.api.userId?.toLowerCase()),
+    ).canReadMedia;
     final validInterval = MeetingScheduleDraft(
       start: meeting.scheduledStartAt,
       end: meeting.scheduledEndAt,
@@ -269,6 +325,28 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
             title: 'Không thể làm mới cuộc họp',
             description: _failureMessage(state.failure),
             onRetry: _controller.refresh,
+          ),
+        if (canAsk)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: ContentCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Trợ lý cuộc họp'),
+                  const SizedBox(height: 6),
+                  const Text('Tra cứu nội dung và bằng chứng từ cuộc họp này.'),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: busy || _openingAssistant
+                        ? null
+                        : () => _openAssistant(snapshot),
+                    icon: const Icon(Icons.auto_awesome),
+                    label: const Text('Hỏi trợ lý về cuộc họp này'),
+                  ),
+                ],
+              ),
+            ),
           ),
         if (capabilities.canEdit)
           Padding(

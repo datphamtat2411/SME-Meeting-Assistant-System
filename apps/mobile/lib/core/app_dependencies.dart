@@ -11,6 +11,7 @@ import 'package:sme_meeting_assistant/features/action_items/action_item_invalida
 import 'package:sme_meeting_assistant/features/action_items/action_item_repository.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_workflows.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_repository.dart';
+import 'package:sme_meeting_assistant/features/assistant/assistant_workspace_controller.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_creation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart';
@@ -38,6 +39,15 @@ class AppDependencies {
   late final ActionItemInvalidationSignal actionItemInvalidation;
   late final ActionItemRepository actionItems;
   late final AssistantRepository assistant;
+  AssistantWorkspaceController? _assistantWorkspace;
+
+  AssistantWorkspaceController get assistantWorkspace {
+    if (_disposed) throw StateError('Application dependencies disposed.');
+    final existing = _assistantWorkspace;
+    if (existing != null && existing.current) return existing;
+    existing?.dispose();
+    return _assistantWorkspace = AssistantWorkspaceController(assistant);
+  }
   late final ActionItemWorkflowOwner actionItemWorkflows;
   late final MeetingInvalidationSignal meetingInvalidation;
   late final MeetingRepository meetings;
@@ -130,7 +140,31 @@ class AppDependencies {
         );
     this.processingManager.addListener(_observeActionItemProcessing);
     api.sessionCoordinator.addListener(_resetProcessingOutcomeScope);
+    meetingInvalidation.addListener(_invalidateAssistantMeeting);
+    resultsInvalidation.addListener(_invalidateAssistantResults);
+    actionItemInvalidation.addListener(_invalidateAssistantActionItem);
     _observeActionItemProcessing();
+  }
+
+  void _invalidateAssistantMeeting() {
+    final owner = _assistantWorkspace;
+    if (owner != null && meetingInvalidation.sessionScope == owner.scope) {
+      owner.invalidateMeeting(meetingInvalidation.lastMeetingId);
+    }
+  }
+
+  void _invalidateAssistantResults() {
+    final owner = _assistantWorkspace;
+    if (owner != null && resultsInvalidation.sessionScope == owner.scope) {
+      owner.invalidateMeeting(resultsInvalidation.meetingId);
+    }
+  }
+
+  void _invalidateAssistantActionItem() {
+    final owner = _assistantWorkspace;
+    if (owner != null && actionItemInvalidation.sessionScope == owner.scope) {
+      owner.invalidateMeeting(actionItemInvalidation.lastMeetingId);
+    }
   }
 
   void _resetProcessingOutcomeScope() {
@@ -253,6 +287,11 @@ class AppDependencies {
     processingManager.removeListener(_observeActionItemProcessing);
     api.sessionCoordinator.removeListener(_resetProcessingOutcomeScope);
     _processingOutcomes.clear();
+    meetingInvalidation.removeListener(_invalidateAssistantMeeting);
+    resultsInvalidation.removeListener(_invalidateAssistantResults);
+    actionItemInvalidation.removeListener(_invalidateAssistantActionItem);
+    _assistantWorkspace?.dispose();
+    _assistantWorkspace = null;
     actionItemWorkflows.dispose();
     actionItemInvalidation.removeListener(_invalidateActionItemMinutes);
     actionItemInvalidation.dispose();

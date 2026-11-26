@@ -89,6 +89,10 @@ class AssistantWorkspaceController extends ChangeNotifier {
   final AuthenticatedSessionScope scope;
   bool _disposed = false;
   bool _active = false;
+  Object? _presentationOwner;
+  bool _invalidationScheduled = false;
+  bool _invalidationRunning = false;
+  bool _invalidationDirty = false;
   Timer? _statusTimer;
   Timer? _cooldownTimer;
   int _historyDepth = 0;
@@ -99,6 +103,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
   final List<AssistantConversation> _conversations = [];
   final List<AssistantMessage> _messages = [];
   final Map<String, AssistantPendingTurn> _pending = {};
+  final Map<String, String> _drafts = {};
   AssistantConversation? conversation;
   AssistantCreateConversationRequest? creation;
   AssistantFailure? creationFailure;
@@ -163,12 +168,85 @@ class AssistantWorkspaceController extends ChangeNotifier {
   bool _ownsHistory(int generation, String id) =>
       current && generation == _historyGeneration && conversation?.id == id;
 
+  bool ownsPresentation(Object host) =>
+      current && _active && identical(_presentationOwner, host);
+
+  void setPresentationActive(Object host, bool active) {
+    if (!current) return;
+    if (!active) {
+      if (!identical(_presentationOwner, host)) return;
+      _presentationOwner = null;
+      setActive(false);
+      return;
+    }
+    if (identical(_presentationOwner, host)) return;
+    if (_active) setActive(false);
+    _presentationOwner = host;
+    setActive(true);
+  }
+
+  String draftFor(String conversationId) => _drafts[conversationId] ?? '';
+
+  void saveDraft(String conversationId, String text) {
+    if (!current) return;
+    if (text.isEmpty) {
+      _drafts.remove(conversationId);
+    } else {
+      _drafts[conversationId] = text;
+    }
+  }
+
+  void invalidateMeeting(String? meetingId) {
+    if (!current || !_active) return;
+    final selected = conversation;
+    if (selected != null &&
+        meetingId != null &&
+        selected.meetingId.toLowerCase() != meetingId.toLowerCase()) {
+      return;
+    }
+    _invalidationDirty = true;
+    _stopStatusMonitoring();
+    if (selected != null) {
+      _historyDepth = max(_historyDepth, _messages.length);
+      _historyGeneration++;
+      _messages.clear();
+      historyVerified = false;
+      historyHasMore = false;
+      historyLoading = true;
+    } else {
+      _listGeneration++;
+      _conversations.clear();
+      listLoading = true;
+    }
+    _publish();
+    if (_invalidationScheduled || _invalidationRunning) return;
+    _invalidationScheduled = true;
+    scheduleMicrotask(() {
+      _invalidationScheduled = false;
+      unawaited(_revalidateInvalidations());
+    });
+  }
+
+  Future<void> _revalidateInvalidations() async {
+    if (_invalidationRunning) return;
+    _invalidationRunning = true;
+    try {
+      while (current && _active && _invalidationDirty) {
+        _invalidationDirty = false;
+        await revalidate();
+      }
+    } finally {
+      _invalidationRunning = false;
+    }
+  }
+
   void setActive(bool active) {
     if (!current || _active == active) return;
     _active = active;
     if (active) {
       unawaited(revalidate());
     } else {
+      _invalidationDirty = false;
       _stopStatusMonitoring();
       _cooldownTimer?.cancel();
       _historyDepth = max(_historyDepth, _messages.length);
@@ -480,6 +558,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         historyVerified = false;
         historyHasMore = false;
         _pending.remove(selected.id);
+        _drafts.remove(selected.id);
         _conversations.clear();
         listFailure = error;
         conversation = null;
@@ -880,6 +959,9 @@ class AssistantWorkspaceController extends ChangeNotifier {
     _conversations.clear();
     _messages.clear();
     _pending.clear();
+    _drafts.clear();
+    _presentationOwner = null;
+    _invalidationDirty = false;
     conversation = null;
     creation = null;
     creationFailure = null;
@@ -905,6 +987,9 @@ class AssistantWorkspaceController extends ChangeNotifier {
     _cooldownTimer?.cancel();
     repository.api.sessionCoordinator.removeListener(_sessionChanged);
     _pending.clear();
+    _drafts.clear();
+    _presentationOwner = null;
+    _invalidationDirty = false;
     _messages.clear();
     _conversations.clear();
     creation = null;
