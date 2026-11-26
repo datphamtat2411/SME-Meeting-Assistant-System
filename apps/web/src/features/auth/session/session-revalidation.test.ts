@@ -22,6 +22,8 @@ import { currentUserQueryKey, type AuthContext } from './current-user'
 import {
   configureSessionRevalidation,
   getSessionRevalidationState,
+  reconcileProtectedScope,
+  resetProtectedScopeReconciliation,
   revalidateBrowserSession,
   retrySessionRevalidation,
   waitForSessionRevalidation,
@@ -114,6 +116,21 @@ describe('mandatory browser-session revalidation', () => {
     resetCsrfToken()
     coreApiAxios.defaults.adapter = originalAdapter
     client.clear()
+  })
+
+  it('reconciles a rejected scope once until a new explicit attempt or successful read', async () => {
+    client.setQueryData(currentUserQueryKey, identity)
+    transport(async (config) => success(config, identity))
+    await reconcileProtectedScope(client, 'export-status-PDF', 'same-export')
+    await reconcileProtectedScope(client, 'export-status-PDF', 'same-export')
+    expect(requests).toEqual(['/auth/me'])
+    resetProtectedScopeReconciliation(
+      client,
+      'export-status-PDF',
+      'same-export'
+    )
+    await reconcileProtectedScope(client, 'export-status-PDF', 'same-export')
+    expect(requests).toEqual(['/auth/me', '/auth/me'])
   })
 
   it('preserves a valid unrelated session and compatible protected cache', async () => {

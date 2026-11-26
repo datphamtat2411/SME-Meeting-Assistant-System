@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, ListChecks, TriangleAlert } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { formatPresentationInstant } from '@/lib/presentation-time'
@@ -10,7 +10,9 @@ import { RequestError, RequestLoading } from '@/components/request-state'
 import type { AuthContext } from '@/features/auth/session/current-user'
 import {
   getSessionContextKey,
+  reconcileProtectedScope,
   requestSessionRevalidation,
+  resetProtectedScopeReconciliation,
 } from '@/features/auth/session/session-revalidation'
 import {
   getMemberDirectoryAccess,
@@ -66,6 +68,8 @@ function ManagementReport({
   identity: AuthContext
   access: AuthorizedMemberDirectoryAccess
 }) {
+  const queryClient = useQueryClient()
+  const contextKey = getSessionContextKey(identity)
   const [preset, setPreset] = useState('30')
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
@@ -74,11 +78,7 @@ function ManagementReport({
   const [appliedPreset, setAppliedPreset] = useState('30')
   const [applied, setApplied] = useState(() => rollingPeriod(30))
   const report = useQuery(
-    managementDashboardQuery(
-      getSessionContextKey(identity),
-      access.unitIds,
-      applied
-    )
+    managementDashboardQuery(contextKey, access.unitIds, applied)
   )
   const units = useQuery({
     ...organizationalUnitsQuery(access),
@@ -89,6 +89,28 @@ function ManagementReport({
   )
   const data = report.isError ? undefined : report.data
   const timezone = data?.timezone
+
+  useEffect(() => {
+    if (report.isError) {
+      const failure = normalizeCoreApiError(report.error)
+      if (
+        failure.status === 401 ||
+        failure.status === 403 ||
+        failure.code === 'DASHBOARD_SCOPE_CHANGED'
+      ) {
+        void reconcileProtectedScope(queryClient, 'management', contextKey)
+      }
+    } else if (report.isSuccess && !report.isFetching) {
+      resetProtectedScopeReconciliation(queryClient, 'management', contextKey)
+    }
+  }, [
+    contextKey,
+    queryClient,
+    report.error,
+    report.isError,
+    report.isFetching,
+    report.isSuccess,
+  ])
 
   function applyFilters() {
     try {

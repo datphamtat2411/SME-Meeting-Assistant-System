@@ -5,10 +5,15 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, FileDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import {
+  isProtectedResourceAccessFailure,
+  reconcileProtectedScope,
+  resetProtectedScopeReconciliation,
+} from '@/features/auth/session/session-revalidation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -164,7 +169,11 @@ function FormatExportCard({
   canObserve: boolean
   canDownload: boolean
 }) {
+  const queryClient = useQueryClient()
   const label = format === 'PDF' ? 'PDF' : 'Markdown'
+  const statusScope = JSON.stringify([scope, meetingId, operation?.exportId])
+  const statusChannel = 'export-status-' + format
+  const downloadChannel = 'export-download-' + format
   const visible = useSyncExternalStore(subscribeVisibility, pageVisible)
   const [paused, setPaused] = useState(false)
   const remaining = useRef(observationBudgetMs)
@@ -208,6 +217,28 @@ function FormatExportCard({
     refetchOnReconnect: false,
     retryOnMount: false,
   })
+  useEffect(() => {
+    if (!canObserve || !operation?.exportId) return
+    if (
+      statusQuery.isError &&
+      isProtectedResourceAccessFailure(statusQuery.error)
+    ) {
+      void reconcileProtectedScope(queryClient, statusChannel, statusScope)
+    } else if (statusQuery.isSuccess && !statusQuery.isFetching) {
+      resetProtectedScopeReconciliation(queryClient, statusChannel, statusScope)
+    }
+  }, [
+    canObserve,
+    operation?.exportId,
+    queryClient,
+    statusChannel,
+    statusScope,
+    statusQuery.error,
+    statusQuery.isError,
+    statusQuery.isFetching,
+    statusQuery.isSuccess,
+  ])
+
   const status =
     canObserve && !statusQuery.isError ? statusQuery.data : undefined
   const terminal = isTerminalExportStatus(status)
@@ -273,6 +304,11 @@ function FormatExportCard({
           exportId !== operation.previousReadyId)
       )
         return
+      resetProtectedScopeReconciliation(
+        queryClient,
+        downloadChannel,
+        statusScope
+      )
       const ticket = ++downloadGeneration.current
       const isCurrent = () =>
         mounted.current &&
@@ -319,8 +355,9 @@ function FormatExportCard({
         ) {
           toast.error('Download unavailable', {
             description:
-              'Access could not be confirmed. Refresh the workspace before retrying.',
+              'Access could not be confirmed. Verifying the workspace.',
           })
+          void reconcileProtectedScope(queryClient, downloadChannel, statusScope)
         } else {
           toast.error('Download unavailable', {
             description:
@@ -337,6 +374,7 @@ function FormatExportCard({
       remaining.current = observationBudgetMs
       setPaused(false)
     }
+    resetProtectedScopeReconciliation(queryClient, statusChannel, statusScope)
     void statusQuery.refetch()
   }
 
@@ -530,6 +568,7 @@ export function ExportPanel({
   meetingId: string
   canExport: boolean
 }) {
+  const queryClient = useQueryClient()
   const authorization = useOptionalMeetingAuthorization()
   const session = useOptionalMeetingSession()
   const owner = session?.exportOperations
@@ -551,6 +590,34 @@ export function ExportPanel({
     ...exportCapabilitiesQuery(meetingId, scope),
     enabled: authorized,
   })
+  const capabilityScope = JSON.stringify([scope, meetingId])
+  useEffect(() => {
+    if (!authorized) return
+    if (
+      availability.isError &&
+      isProtectedResourceAccessFailure(availability.error)
+    ) {
+      void reconcileProtectedScope(
+        queryClient,
+        'export-capabilities',
+        capabilityScope
+      )
+    } else if (availability.isSuccess && !availability.isFetching) {
+      resetProtectedScopeReconciliation(
+        queryClient,
+        'export-capabilities',
+        capabilityScope
+      )
+    }
+  }, [
+    authorized,
+    availability.error,
+    availability.isError,
+    availability.isFetching,
+    availability.isSuccess,
+    capabilityScope,
+    queryClient,
+  ])
   const capabilities = availability.isError ? undefined : availability.data
   const trusted = trustedDownloadHosts().length > 0
   const proposalsIncluded = minutes.data?.proposalsIncluded === true
@@ -591,7 +658,14 @@ export function ExportPanel({
             {availability.isError && (
               <RequestError
                 error={availability.error}
-                retry={() => void availability.refetch()}
+                retry={() => {
+                  resetProtectedScopeReconciliation(
+                    queryClient,
+                    'export-capabilities',
+                    capabilityScope
+                  )
+                  void availability.refetch()
+                }}
               />
             )}
             {capabilities && !capabilities.admission && (

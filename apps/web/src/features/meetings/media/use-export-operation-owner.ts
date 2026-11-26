@@ -9,6 +9,11 @@ import { z } from 'zod'
 import { useQueryClient } from '@tanstack/react-query'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import {
+  isProtectedResourceAccessFailure,
+  reconcileProtectedScope,
+  resetProtectedScopeReconciliation,
+} from '@/features/auth/session/session-revalidation'
+import {
   getAuthLifecycleSnapshot,
   subscribeAuthLifecycle,
 } from '@/features/auth/session/auth-lifecycle'
@@ -530,6 +535,17 @@ export function useExportOperationOwner({
           : createIntentId(format, key),
         ownerGeneration: ownerGeneration.current,
       }
+      const reconciliationChannel = 'export-admission-' + format
+      const reconciliationScope = JSON.stringify([
+        scope.actorId,
+        scope.sessionId,
+        meetingId,
+      ])
+      resetProtectedScopeReconciliation(
+        queryClient,
+        reconciliationChannel,
+        reconciliationScope
+      )
       executing.current[format] = operation
       storeOperations({ ...operationsRef.current, [format]: operation }, scope)
       setFailures((previous) => ({ ...previous, [format]: null }))
@@ -584,6 +600,13 @@ export function useExportOperationOwner({
             ...previous,
             [format]: { format, error },
           }))
+          if (isProtectedResourceAccessFailure(error)) {
+            void reconcileProtectedScope(
+              queryClient,
+              reconciliationChannel,
+              reconciliationScope
+            )
+          }
           if (failure.status === 409 || failure.status === 422) {
             void queryClient.invalidateQueries({
               queryKey: ['minutes', meetingId],
