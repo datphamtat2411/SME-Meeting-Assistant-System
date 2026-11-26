@@ -165,11 +165,9 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
         command == ActionItemCommand.reject;
     if (!_controller.canExecuteCommand(command, reviewed)) return;
     if (command != ActionItemCommand.start) {
-      final accepted = await confirmCommand(
-        context,
-        title: '${actionItemCommandLabel(command)}?',
-        description: _commandDescription(reviewed.item, command),
-        confirmLabel: actionItemCommandLabel(command),
+      final accepted = await _confirmReviewedCommand(
+        reviewed,
+        command,
         destructive: destructive,
       );
       if (!accepted || !mounted || !_controller.current) return;
@@ -194,6 +192,56 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
             : 'Đã cập nhật trạng thái.',
       );
     }
+  }
+
+  Future<bool> _confirmReviewedCommand(
+    ActionItemSnapshot reviewed,
+    ActionItemCommand command, {
+    required bool destructive,
+  }) async {
+    final answer = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => ListenableBuilder(
+        listenable: _controller,
+        builder: (context, _) {
+          final usable =
+              mounted && _controller.canExecuteCommand(command, reviewed);
+          // A dialog is a protected presentation surface too. Never retain
+          // reviewed metadata after the detail workflow invalidates it.
+          return AlertDialog(
+            title: Text('${actionItemCommandLabel(command)}?'),
+            content: Text(
+              usable
+                  ? _commandDescription(reviewed.item, command)
+                  : 'Công việc đã thay đổi. Vui lòng xem lại.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Quay lại'),
+              ),
+              FilledButton(
+                style: destructive
+                    ? FilledButton.styleFrom(
+                        backgroundColor: Theme.of(context).colorScheme.error,
+                        foregroundColor: Theme.of(context).colorScheme.onError,
+                      )
+                    : null,
+                onPressed: usable
+                    ? () => Navigator.pop(
+                        dialogContext,
+                        mounted &&
+                            _controller.canExecuteCommand(command, reviewed),
+                      )
+                    : null,
+                child: Text(actionItemCommandLabel(command)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    return answer == true;
   }
 
   String _commandDescription(
@@ -388,13 +436,13 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
 
   Widget _lifecycleFeedback(ActionItemLifecycleOperation operation) {
     final action = actionItemCommandLabel(operation.command);
-    final observed = operation.observedStatus;
+    final observed = _controller.snapshot?.item;
     final pending = _controller.revalidationRequired;
     final message = switch (operation.phase) {
       ActionItemLifecyclePhase.unknown =>
         pending || observed == null
             ? 'Thao tác có thể đã được lưu. Cần tải lại trước khi tiếp tục.'
-            : 'Trạng thái hiện tại: ${actionItemStatusLabel(observed)}. '
+            : 'Trạng thái hiện tại: ${actionItemStateLabel(observed)}. '
                   'Không thể xác định chắc chắn yêu cầu trước đã được thực hiện.',
       ActionItemLifecyclePhase.rejected =>
         pending
