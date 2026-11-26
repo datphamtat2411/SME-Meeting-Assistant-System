@@ -20,7 +20,7 @@ class UserProfile {
 
   factory UserProfile.fromResult(ApiResult response) {
     final raw = response.objectData();
-    final org = optionalIdentifier(raw, 'primaryOrgUnitId', response: response);
+    final org = _nullableIdentifier(raw, 'primaryOrgUnitId', response);
     return UserProfile._(
       id: AuthUuid.parse(
         requiredIdentifier(raw, 'id', response: response),
@@ -91,8 +91,8 @@ class UserPreferences {
   factory UserPreferences.fromResult(ApiResult response) {
     final raw = response.objectData();
     return UserPreferences._(
-      timezone: optionalIdentifier(raw, 'timezone', response: response),
-      locale: optionalIdentifier(raw, 'locale', response: response),
+      timezone: _nullableIdentifier(raw, 'timezone', response),
+      locale: _nullableIdentifier(raw, 'locale', response),
       meetingEmailEnabled: requiredBool(
         raw,
         'meetingEmailEnabled',
@@ -112,4 +112,13 @@ class PreferencesSnapshot {
 
   final UserPreferences preferences;
   final AuthenticatedSessionScope sessionScope;
+}
+
+String? _nullableIdentifier(
+  Map<String, dynamic> raw,
+  String field,
+  ApiResult response,
+) {
+  if (!raw.containsKey(field)) invalidApiData(response: response);
+  return optionalIdentifier(raw, field, response: response);
 }

@@ -37,7 +37,18 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
     if (saved) {
       showSuccess(context, 'Đã lưu thiết lập.');
     } else if (controller.failure != null) {
-      showFailure(context, controller.failure!);
+      if (controller.outcome == ProfileMutationOutcome.unknown) {
+        showFailure(
+          context,
+          ProfileFailure.local(
+            0,
+            'PREFERENCES_OUTCOME_UNKNOWN',
+            'Chưa xác định được kết quả lưu. Vui lòng tải lại thiết lập.',
+          ),
+        );
+      } else {
+        showFailure(context, controller.failure!);
+      }
     }
   }
 
@@ -81,6 +92,7 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
     builder: (context, _) => AccountResourceView<PreferencesSnapshot>(
       snapshot: controller.snapshot,
       loading: controller.loading,
+      saving: controller.saving,
       failure: controller.failure,
       needsReconciliation: controller.needsReconciliation,
       retry: controller.refresh,

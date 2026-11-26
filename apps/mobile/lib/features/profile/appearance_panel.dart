@@ -30,6 +30,24 @@ class AppearancePanel extends StatelessWidget {
             onSelectionChanged: (values) => controller.setMode(values.first),
           ),
           if (controller.persistenceStatus ==
+              AppearancePersistenceStatus.restoring)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text('Đang tải giao diện đã lưu...'),
+            ),
+          if (controller.persistenceStatus ==
+              AppearancePersistenceStatus.restoreFailed) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Không thể tải giao diện đã lưu. Đang dùng giao diện hệ thống.',
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+            TextButton(
+              onPressed: controller.retryPersistence,
+              child: const Text('Thử tải lại'),
+            ),
+          ],
+          if (controller.persistenceStatus ==
               AppearancePersistenceStatus.saving)
             const Padding(
               padding: EdgeInsets.only(top: 8),

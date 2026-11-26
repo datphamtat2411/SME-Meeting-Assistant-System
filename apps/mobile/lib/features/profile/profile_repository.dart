@@ -207,13 +207,14 @@ class ProfileRepository {
             ? ProfileMutationOutcome.rejected
             : ProfileMutationOutcome.unknown,
       );
-    } on AuthSessionException {
+    } on AuthSessionException catch (error) {
       throw ProfileFailure(
-        const ApiFailure(
-          401,
-          'AUTH_SESSION_CHANGED',
-          'Phiên đăng nhập đã thay đổi.',
-        ),
+        error.failure.apiFailure ??
+            ApiFailure(
+              401,
+              error.failure.machineCode ?? 'AUTH_SESSION_CHANGED',
+              error.failure.message,
+            ),
         outcome: mutation
             ? ProfileMutationOutcome.unknown
             : ProfileMutationOutcome.notDispatched,

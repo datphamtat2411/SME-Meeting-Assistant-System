@@ -86,7 +86,18 @@ class _ProfilePageState extends State<ProfilePage> {
             : 'Đã cập nhật hồ sơ.',
       );
     } else if (controller.failure != null) {
-      showFailure(context, controller.failure!);
+      if (controller.outcome == ProfileMutationOutcome.unknown) {
+        showFailure(
+          context,
+          const ApiFailure(
+            0,
+            'PROFILE_OUTCOME_UNKNOWN',
+            'Chưa xác định được kết quả lưu. Vui lòng tải lại hồ sơ.',
+          ),
+        );
+      } else {
+        showFailure(context, controller.failure!);
+      }
     } else {
       showFailure(
         context,
@@ -123,6 +134,7 @@ class _ProfilePageState extends State<ProfilePage> {
         AccountResourceView<ProfileSnapshot>(
           snapshot: controller.snapshot,
           loading: controller.loading,
+          saving: controller.saving,
           failure: controller.failure,
           needsReconciliation: controller.needsReconciliation,
           retry: controller.refresh,

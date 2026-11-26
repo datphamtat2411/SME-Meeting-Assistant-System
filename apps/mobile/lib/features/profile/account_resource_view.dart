@@ -9,6 +9,7 @@ class AccountResourceView<T> extends StatelessWidget {
     super.key,
     required this.snapshot,
     required this.loading,
+    required this.saving,
     required this.failure,
     required this.needsReconciliation,
     required this.retry,
@@ -17,6 +18,7 @@ class AccountResourceView<T> extends StatelessWidget {
 
   final T? snapshot;
   final bool loading;
+  final bool saving;
   final ProfileFailure? failure;
   final bool needsReconciliation;
   final VoidCallback retry;
@@ -42,7 +44,7 @@ class AccountResourceView<T> extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         builder(value),
-        if (loading) const LinearProgressIndicator(),
+        if (loading || saving) const LinearProgressIndicator(),
         if (failure != null || needsReconciliation)
           ContentCard(
             child: Column(

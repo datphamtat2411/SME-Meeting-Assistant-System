@@ -36,7 +36,7 @@ abstract class _AccountResource<T> extends ChangeNotifier {
   bool get canMutate =>
       current && _snapshot != null && !_saving && !_needsReconciliation;
 
-  Future<T> readResource();
+  Future<T> _readResource();
 
   Future<void> refresh() {
     if (!current || _saving) return Future<void>.value();
@@ -55,7 +55,7 @@ abstract class _AccountResource<T> extends ChangeNotifier {
   Future<void> _read(int generation) async {
     try {
       if (!_owns(generation)) return;
-      final result = await readResource();
+      final result = await _readResource();
       if (!_owns(generation)) return;
       _snapshot = result;
       _failure = null;
@@ -76,7 +76,7 @@ abstract class _AccountResource<T> extends ChangeNotifier {
     if (error.requiresReconciliation) _needsReconciliation = true;
   }
 
-  Future<bool> mutate(
+  Future<bool> _mutate(
     Future<T> Function() send, {
     Future<void> Function()? afterConfirmed,
   }) async {
@@ -148,7 +148,7 @@ class ProfileController extends _AccountResource<ProfileSnapshot> {
   bool get identityRefreshFailed => current && _identityRefreshFailed;
 
   @override
-  Future<ProfileSnapshot> readResource() => repository.profile(scope);
+  Future<ProfileSnapshot> _readResource() => repository.profile(scope);
 
   Future<bool> updateName(ProfileSnapshot original, String name) async {
     if (original.sessionScope != scope ||
@@ -157,7 +157,7 @@ class ProfileController extends _AccountResource<ProfileSnapshot> {
       return false;
     }
     if (original.profile.displayName == name) return true;
-    return mutate(
+    return _mutate(
       () => repository.updateName(original, name),
       afterConfirmed: () async {
         try {
@@ -178,17 +178,17 @@ class PreferencesController extends _AccountResource<PreferencesSnapshot> {
   PreferencesController(super.repository);
 
   @override
-  Future<PreferencesSnapshot> readResource() => repository.preferences(scope);
+  Future<PreferencesSnapshot> _readResource() => repository.preferences(scope);
 
   Future<bool> updateMeetingEmail(bool enabled) =>
-      mutate(() => repository.updateMeetingEmail(scope, enabled));
+      _mutate(() => repository.updateMeetingEmail(scope, enabled));
 
   Future<bool> updateActionItemEmail(bool enabled) =>
-      mutate(() => repository.updateActionItemEmail(scope, enabled));
+      _mutate(() => repository.updateActionItemEmail(scope, enabled));
 
   Future<bool> updateTimezone(String? value) =>
-      mutate(() => repository.updateTimezone(scope, value));
+      _mutate(() => repository.updateTimezone(scope, value));
 
   Future<bool> updateLocale(String? value) =>
-      mutate(() => repository.updateLocale(scope, value));
+      _mutate(() => repository.updateLocale(scope, value));
 }

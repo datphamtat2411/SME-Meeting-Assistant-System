@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'appearance_preferences.dart';
 
-enum AppearancePersistenceStatus { idle, saving, saved, failed }
+enum AppearancePersistenceStatus { idle, restoring, restoreFailed, saving, saved, failed }
 
 class AppearanceController extends ChangeNotifier {
   final AppearancePreferences preferences;
@@ -22,6 +22,7 @@ class AppearanceController extends ChangeNotifier {
   void initialize() {
     if (_loadStarted || _disposed) return;
     _loadStarted = true;
+    _status = AppearancePersistenceStatus.restoring;
     _load();
   }
 
@@ -34,7 +35,7 @@ class AppearanceController extends ChangeNotifier {
       notifyListeners();
     } catch (_) {
       if (_disposed || _selectionChanged) return;
-      _status = AppearancePersistenceStatus.failed;
+      _status = AppearancePersistenceStatus.restoreFailed;
       notifyListeners();
     }
   }
@@ -51,7 +52,15 @@ class AppearanceController extends ChangeNotifier {
     return writer;
   }
 
-  Future<void> retryPersistence() => setMode(_mode);
+  Future<void> retryPersistence() {
+    if (_disposed) return Future<void>.value();
+    if (_status == AppearancePersistenceStatus.restoreFailed) {
+      _status = AppearancePersistenceStatus.restoring;
+      notifyListeners();
+      return _load();
+    }
+    return setMode(_mode);
+  }
 
   Future<void> _persist() async {
     while (!_disposed) {

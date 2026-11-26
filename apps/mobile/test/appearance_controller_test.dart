@@ -31,7 +31,22 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(controller.mode, ThemeMode.system);
-    expect(controller.persistenceStatus, AppearancePersistenceStatus.failed);
+    expect(controller.persistenceStatus, AppearancePersistenceStatus.restoreFailed);
+    controller.dispose();
+  });
+
+  test('retrying a failed restore reads rather than overwriting', () async {
+    final preferences = RecoveringRestore();
+    final controller = AppearanceController(preferences: preferences);
+    controller.initialize();
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      controller.persistenceStatus,
+      AppearancePersistenceStatus.restoreFailed,
+    );
+    await controller.retryPersistence();
+    expect(controller.mode, ThemeMode.dark);
+    expect(preferences.saves, 0);
     controller.dispose();
   });
 
@@ -110,4 +125,20 @@ class FailingAppearancePreferences implements AppearancePreferences {
 
   @override
   Future<void> saveThemeMode(ThemeMode mode) async {}
+}
+
+class RecoveringRestore implements AppearancePreferences {
+  int reads = 0;
+  int saves = 0;
+
+  @override
+  Future<ThemeMode?> loadThemeMode() async {
+    if (++reads == 1) throw StateError('storage unavailable');
+    return ThemeMode.dark;
+  }
+
+  @override
+  Future<void> saveThemeMode(ThemeMode mode) async {
+    saves++;
+  }
 }
