@@ -184,10 +184,14 @@ class AssistantHttpIntegrationTests {
             Integer.class,id)).isZero();
     }
     private String grounded(String requestJson,UUID sourceId,UUID meetingId) throws Exception {
+        return grounded(requestJson,sourceId,meetingId,"TRANSCRIPT",0L);
+    }
+
+    private String grounded(String requestJson,UUID sourceId,UUID meetingId,String type,long version) throws Exception {
         JsonNode req=json.readTree(requestJson);
-        Map<String,Object> identity=Map.of("sourceType","TRANSCRIPT",
+        Map<String,Object> identity=Map.of("sourceType",type,
             "sourceId",sourceId.toString(),"meetingId",meetingId.toString());
-        Map<String,Object> revision=Map.of("number",0);
+        Map<String,Object> revision=Map.of("number",version);
         Map<String,Object> citation=Map.of(
             "citationId","C1","verificationStatus","AUTHORITATIVELY_VERIFIED",
             "sourceIdentity",identity,"sourceRevision",revision,
@@ -208,6 +212,133 @@ class AssistantHttpIntegrationTests {
             "configuredModel","test-pinned","attempts",1));
         body.put("failures",List.of());
         return json.writeValueAsString(body);
+    }
+
+    @Autowired com.sme.meetingassistant.api.knowledge.KnowledgeIndexingWorkerService knowledgeSources;
+
+    @Test void evidenceResolvesCanonicalSourcesAndRechecksCurrentAccess() throws Exception {
+        UUID owner=user(),member=user(),outsider=user(),meeting=meeting(owner,member);
+        UUID conversation=conversation(member,meeting);
+        UUID media=UUID.randomUUID(),job=UUID.randomUUID(),transcript=UUID.randomUUID();
+        UUID stage=UUID.randomUUID(),snapshot=UUID.randomUUID(),receipt=UUID.randomUUID();
+        UUID summary=UUID.randomUUID(),decision=UUID.randomUUID(),item=UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO meeting_media(id,meeting_id,source_type,status,object_key,
+                pending_object_key,content_type,expected_size_bytes,size_bytes,
+                duration_ms,uploaded_by_user_id,available_at)
+            VALUES (?,?,'UPLOAD','AVAILABLE',?,?,'audio/wav',100,100,10000,?,CURRENT_TIMESTAMP)
+            """,media,meeting,"meetings/"+meeting+"/sources/"+media,
+            "meetings/"+meeting+"/pending/"+media,owner);
+        jdbc.update("""
+            INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status)
+            VALUES (?,?,?,?,'COMPLETED')
+            """,job,meeting,media,owner);
+        jdbc.update("""
+            INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,
+                version_number,language_code,status,is_current,content_revision,finalized_at)
+            VALUES (?,?,?,?,1,'vi','READY',TRUE,0,CURRENT_TIMESTAMP)
+            """,transcript,meeting,media,job);
+        jdbc.update("""
+            INSERT INTO transcript_segments(id,transcript_id,ordinal,start_ms,end_ms,current_text,quality_status)
+            VALUES (?,?,0,0,1000,'Canonical transcript','ACCEPTED')
+            """,UUID.randomUUID(),transcript);
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            VALUES (?,?,'GENERATING_SUMMARY',1,'SUCCEEDED')
+            """,stage,job);
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_source_snapshots(id,meeting_id,source_media_id,
+                processing_job_id,transcript_id,content_revision,sha256,object_key,size_bytes)
+            VALUES (?,?,?,?,?,0,?,?,100)
+            """,snapshot,meeting,media,job,transcript,"a".repeat(64),
+            "processing/"+job+"/intelligence/source/"+snapshot+".json");
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_result_receipts(id,meeting_id,processing_job_id,
+                stage_run_id,result_type,source_snapshot_id,transcript_id,content_revision,
+                artifact_sha256,artifact_object_key,artifact_size_bytes)
+            VALUES (?,?,?,?,'SUMMARY',?,?,0,?,?,200)
+            """,receipt,meeting,job,stage,snapshot,transcript,"b".repeat(64),
+            "processing/"+job+"/intelligence/results/"+stage+".json");
+        jdbc.update("""
+            INSERT INTO meeting_summary_versions(id,meeting_id,version_number,content,source_type,
+                processing_job_id,result_receipt_id,transcript_id,content_revision,quality_status,is_current)
+            VALUES (?,?,1,?,'AI_GENERATED',?,?,?,0,'READY',TRUE)
+            """,summary,meeting,"😀".repeat(520),job,receipt,transcript);
+        jdbc.update("""
+            INSERT INTO meeting_decisions(id,meeting_id,content,status,source_type,created_by_user_id,
+                confirmed_by_user_id,confirmed_at)
+            VALUES (?,?,'Canonical decision','CONFIRMED','MANUAL',?,?,CURRENT_TIMESTAMP)
+            """,decision,meeting,owner,owner);
+        jdbc.update("""
+            INSERT INTO action_items(id,meeting_id,title,status,assignee_user_id,source_type,created_by_user_id)
+            VALUES (?,?,'Canonical action','OPEN',?,'MANUAL',?)
+            """,item,meeting,member,owner);
+
+        // Delegate the existing mock to real current-revision verification for this test.
+        var realVerifier=new CoreAssistantSourceVerifier(knowledgeSources);
+        when(sourceVerifier.current(anyString(),any(UUID.class),any(UUID.class),anyLong()))
+            .thenAnswer(inv->realVerifier.current(inv.getArgument(0),inv.getArgument(1),
+                inv.getArgument(2),inv.getArgument(3)));
+        record Source(String type,UUID id,long revision,String target,String preview) {}
+        List<Source> sources=List.of(
+            new Source("TRANSCRIPT",transcript,0,"MEETING_TRANSCRIPT",null),
+            new Source("SUMMARY",summary,1,"MEETING_SUMMARY","😀".repeat(500)),
+            new Source("DECISION",decision,0,"MEETING_DECISIONS","Canonical decision"),
+            new Source("ACTION_ITEM",item,0,"MEETING_ACTION_ITEMS","Canonical action"));
+        String lastUrl=null;
+        for(Source source:sources){
+            when(gateway.answer(anyString())).thenAnswer(inv->
+                grounded(inv.getArgument(0),source.id(),meeting,source.type(),source.revision()));
+            JsonNode turn=response(mvc.perform(post(target(conversation)).principal(principal(member))
+                .header("Idempotency-Key","evidence-"+source.type())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"question\":\"What was agreed?\"}"))
+                .andExpect(status().isOk()).andReturn());
+            String url=target(conversation)+"/"+turn.path("assistantMessageId").asText()+"/evidence";
+            lastUrl=url;
+            JsonNode evidence=response(mvc.perform(get(url).principal(principal(member)))
+                .andExpect(status().isOk()).andReturn()).path("evidence").get(0);
+            assertThat(evidence.path("sourceId").asText()).isEqualTo(source.id().toString());
+            assertThat(evidence.path("sourceRevision").asLong()).isEqualTo(source.revision());
+            assertThat(evidence.path("citationId").asText()).isEqualTo("C1");
+            assertThat(evidence.path("claimIds").get(0).asText()).isEqualTo("A1");
+            assertThat(evidence.path("meetingTitle").asText()).isEqualTo("Assistant test");
+            assertThat(evidence.path("navigation").path("target").asText()).isEqualTo(source.target());
+            assertThat(evidence.path("navigation").path("precision").asText()).isEqualTo("SOURCE");
+            if(source.preview()==null)assertThat(evidence.path("preview").isNull()).isTrue();
+            else assertThat(evidence.path("preview").asText()).isEqualTo(source.preview());
+            mvc.perform(get(url).principal(principal(outsider))).andExpect(status().isNotFound());
+            mvc.perform(get(url).principal(principal(owner))).andExpect(status().isNotFound());
+            mvc.perform(get(target(conversation)+"/"+turn.path("userMessageId").asText()+"/evidence")
+                .principal(principal(member))).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("ASSISTANT_MESSAGE_NOT_FOUND"));
+        }
+        jdbc.update("UPDATE action_items SET version=version+1,title='New version' WHERE id=?",item);
+        mvc.perform(get(lastUrl).principal(principal(member))).andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("ASSISTANT_SOURCE_STALE"))
+            .andExpect(jsonPath("$.data").doesNotExist());
+        jdbc.update("UPDATE meeting_participants SET removed_at=CURRENT_TIMESTAMP WHERE meeting_id=? AND user_id=?",
+            meeting,member);
+        mvc.perform(get(lastUrl).principal(principal(member))).andExpect(status().isNotFound());
+        verify(gateway,times(4)).answer(anyString());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_turns WHERE conversation_id=?",
+            Integer.class,conversation)).isEqualTo(4);
+    }
+
+    @Test void evidenceWithoutCitationsIsEmptyAndMessageLookupIsParentScoped() throws Exception {
+        UUID owner=user(),meeting=meeting(owner),id=conversation(owner,meeting);
+        UUID other=conversation(owner,meeting);
+        when(gateway.answer(anyString())).thenAnswer(inv->insufficient(inv.getArgument(0)));
+        JsonNode turn=response(mvc.perform(post(target(id)).principal(principal(owner))
+            .header("Idempotency-Key","empty-evidence")
+            .contentType(MediaType.APPLICATION_JSON).content("{\"question\":\"What happened?\"}"))
+            .andExpect(status().isOk()).andReturn());
+        String message=turn.path("assistantMessageId").asText();
+        mvc.perform(get(target(id)+"/"+message+"/evidence").principal(principal(owner)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.evidence").isEmpty());
+        mvc.perform(get(target(other)+"/"+message+"/evidence").principal(principal(owner)))
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.code").value("ASSISTANT_MESSAGE_NOT_FOUND"));
+        verify(gateway).answer(anyString());
     }
 
     @Test void sourceRevisionChangeBetweenVerificationAndCommitFailsClosed() throws Exception {

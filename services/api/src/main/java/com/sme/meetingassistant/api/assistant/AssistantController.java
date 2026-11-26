@@ -51,6 +51,12 @@ final class AssistantController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
             .body(responses.success(service.observe(conversationId,null,key)));
     }
+    @GetMapping("/{conversationId}/messages/{messageId}/evidence")
+    ResponseEntity<ApiResponse<MessageEvidence>> evidence(@PathVariable UUID conversationId,
+            @PathVariable UUID messageId){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
+            .body(responses.success(service.evidence(conversationId,messageId)));
+    }
     @ExceptionHandler(AssistantDomainException.class)
     ResponseEntity<ApiResponse<Void>> domainError(AssistantDomainException error){
         return ResponseEntity.status(error.getStatusCode()).cacheControl(CacheControl.noStore())

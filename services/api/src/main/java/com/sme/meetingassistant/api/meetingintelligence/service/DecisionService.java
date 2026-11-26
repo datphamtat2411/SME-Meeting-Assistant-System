@@ -54,6 +54,13 @@ public class DecisionService {
         return decisions.page(meetingId, status, page, size);
     }
 
+    /** Exact authorized read for cross-feature canonical evidence resolution. */
+    @Transactional(readOnly = true)
+    public DecisionView detail(UUID meetingId, UUID decisionId) {
+        access.requireIntelligenceReadable(meetingId, identity.requireUserId());
+        return decisions.find(meetingId, decisionId).orElseThrow(DecisionService::missing);
+    }
+
     @Transactional
     public DecisionView create(UUID meetingId, CreateDecisionRequest request) {
         UUID actor = identity.requireUserId();

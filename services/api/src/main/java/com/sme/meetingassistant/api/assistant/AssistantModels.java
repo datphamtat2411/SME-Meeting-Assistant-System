@@ -32,6 +32,13 @@ public final class AssistantModels {
                            List<CitationView> citations) {}
     public record TurnOutcome(int httpStatus, TurnView result) {}
 
+    public record EvidenceNavigation(String target, String precision) {}
+    public record EvidenceView(String citationId, String sourceType, UUID sourceId,
+                               long sourceRevision, String label, String meetingTitle,
+                               String preview, List<String> claimIds, EvidenceNavigation navigation) {}
+    public record MessageEvidence(UUID conversationId, UUID messageId, UUID meetingId,
+                                  List<EvidenceView> evidence) {}
+
     /** AI-only result validated before it is eligible for canonical persistence. */
     record ValidatedAnswer(String status, String text, JsonNode claims, JsonNode diagnostics,
                            JsonNode provenance, List<CitationView> citations, List<ClaimView> claimViews) {}

@@ -31,6 +31,7 @@ public final class AssistantService {
     private final OrganizationalAuthorizationService identity;
     private final AssistantSourceVerifier sources;
     private final AssistantAnswerValidator answers;
+    private final AssistantEvidenceResolver evidenceResolver;
     private final ObjectProvider<AssistantAiGateway> gateway;
     private final ObjectMapper json;
     private final TransactionTemplate tx;
@@ -38,10 +39,11 @@ public final class AssistantService {
 
     AssistantService(AssistantStore store,AssistantAdmissionGuard admission,MeetingMediaAccess access,
             OrganizationalAuthorizationService identity,AssistantSourceVerifier sources,
-            ObjectProvider<AssistantAiGateway> gateway,ObjectMapper json,
+            AssistantEvidenceResolver evidenceResolver,ObjectProvider<AssistantAiGateway> gateway,ObjectMapper json,
             PlatformTransactionManager transactions,Environment env) {
         this.store=store;this.admission=admission;this.access=access;this.identity=identity;this.sources=sources;
-        this.answers=new AssistantAnswerValidator(sources);this.gateway=gateway;this.json=json;
+        this.answers=new AssistantAnswerValidator(sources);this.evidenceResolver=evidenceResolver;
+        this.gateway=gateway;this.json=json;
         this.tx=new TransactionTemplate(transactions);
         this.enabled=env.getProperty("app.assistant.enabled",Boolean.class,false);
         if(enabled && gateway.getIfAvailable()==null)
@@ -134,6 +136,30 @@ public final class AssistantService {
         TurnStatusView pendingView=pending==null?null:statusView(conversation,pending);
         access.requireReadable(conversation.meetingId(),user);
         return new ConversationDetail(conversation.view(),List.copyOf(views),requestedPage,size,hasMore,next,pendingView);
+    }
+
+    MessageEvidence evidence(UUID conversationId,UUID messageId){
+        requireEnabled();
+        return readWithAvailability(()->tx.execute(status->{
+            UUID user=actor();
+            var conversation=store.require(conversationId,user,false);
+            UUID meeting=conversation.meetingId();
+            access.requireReadable(meeting,user);
+            // Serialize with source changes using the existing evidence lock.
+            store.lockMeetingForEvidence(meeting);
+            access.requireReadable(meeting,user);
+            var message=store.answer(messageId);
+            if(message==null||!conversationId.equals(message.conversationId())||!"ASSISTANT".equals(message.role()))
+                throw new AssistantDomainException(HttpStatus.NOT_FOUND,"ASSISTANT_MESSAGE_NOT_FOUND",
+                    "Assistant message was not found.");
+            List<CitationView> citations=store.citations(messageId);
+            boolean grounded="GROUNDED".equals(message.answerStatus())||"PARTIAL".equals(message.answerStatus());
+            if(citations.size()>64||grounded==citations.isEmpty())
+                throw AssistantEvidenceResolver.stale();
+            List<EvidenceView> evidence=evidenceResolver.resolve(meeting,user,citations);
+            access.requireReadable(meeting,user);
+            return new MessageEvidence(conversationId,messageId,meeting,evidence);
+        }));
     }
 
     TurnStatusView observe(UUID conversationId,UUID turnId,String key){
