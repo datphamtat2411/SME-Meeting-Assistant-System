@@ -569,63 +569,6 @@ describe('settings navigation and cleanup', () => {
     expect(get).toHaveBeenCalledTimes(readsBeforeRecovery)
   })
 
-  it('ignores a profile mutation response from a previous session', async () => {
-    mockSettingsReads()
-    const nextProfile = {
-      ...profile,
-      id: '22222222-2222-4222-8222-222222222222',
-      displayName: 'Next user',
-    }
-    let finish!: (value: {
-      data: typeof profile
-      etag: string
-      meta: Record<string, never>
-    }) => void
-    const pending = new Promise<{
-      data: typeof profile
-      etag: string
-      meta: Record<string, never>
-    }>((resolve) => {
-      finish = resolve
-    })
-    const patch = vi
-      .spyOn(coreApi, 'patchWithMetaAndEtag')
-      .mockImplementationOnce(() => pending as never)
-    const { screen, queryClient } = await renderApiSettings(<ProfileForm />)
-    const name = screen.getByRole('textbox', { name: 'Display name' })
-    await expect.element(name).toHaveValue(profile.displayName)
-    await userEvent.fill(name, 'Previous user draft')
-    await userEvent.click(screen.getByRole('button', { name: 'Save profile' }))
-    await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
-
-    const oldMutation = queryClient.getMutationCache().getAll()[0]
-    if (!oldMutation) throw new Error('Expected a pending profile update')
-    vi.mocked(coreApi.getWithMetaAndEtag).mockResolvedValue({
-      data: nextProfile,
-      etag: '"next-v1"',
-      meta: {},
-    })
-    beginRequestRecoveryLogout()
-    queryClient.removeQueries()
-    queryClient.getMutationCache().clear()
-    resetRequestRecoveryState()
-    const nextSnapshot = { profile: nextProfile, etag: '"next-v1"' }
-    queryClient.setQueryData(profileQueryKey, nextSnapshot)
-    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
-    finish({
-      data: { ...profile, displayName: 'Previous user draft' },
-      etag: '"profile-v2"',
-      meta: {},
-    })
-
-    await vi.waitFor(() => expect(oldMutation.state.status).toBe('success'))
-    await expect.element(name).toHaveValue('Next user')
-    expect(queryClient.getQueryData(profileQueryKey)).toEqual(nextSnapshot)
-    expect(invalidate).not.toHaveBeenCalledWith({
-      queryKey: currentUserQueryKey,
-    })
-  })
-
   it('shows an API failure and supports a real retry instead of hiding it', async () => {
     const get = vi
       .spyOn(coreApi, 'getWithMetaAndEtag')

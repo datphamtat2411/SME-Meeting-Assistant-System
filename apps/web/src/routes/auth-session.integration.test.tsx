@@ -34,6 +34,7 @@ import {
   configureSessionRevalidation,
   revalidateBrowserSession,
 } from '@/features/auth/session/session-revalidation'
+import { profileQueryKey } from '@/features/settings/profile/profile-api'
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -428,6 +429,138 @@ describe('session restoration and protected routing', () => {
       .not.toBeInTheDocument()
     expect(protectedRead.mock.calls.length).toBe(readsBeforeReplacement)
   })
+
+  it.each(['success', 'error'] as const)(
+    'isolates a pending profile update after session replacement (%s)',
+    async (outcome) => {
+      const originalProfile = {
+        id: identity.userId,
+        email: identity.email,
+        displayName: identity.displayName,
+        globalRole: identity.globalRole,
+        accountStatus: identity.accountStatus,
+        primaryOrgUnitId: identity.primaryOrgUnitId,
+      }
+      const nextIdentity = {
+        ...identity,
+        userId: '66666666-6666-4666-8666-666666666666',
+        email: 'next@example.test',
+        displayName: 'Next user',
+        session: {
+          ...identity.session,
+          id: '77777777-7777-4777-8777-777777777777',
+        },
+      }
+      const nextProfile = {
+        ...originalProfile,
+        id: nextIdentity.userId,
+        email: nextIdentity.email,
+        displayName: nextIdentity.displayName,
+      }
+      const originalResponse = {
+        data: originalProfile,
+        etag: '"profile-v1"',
+        meta: {},
+      }
+      const nextResponse = {
+        data: nextProfile,
+        etag: '"next-v1"',
+        meta: {},
+      }
+      const read = vi
+        .spyOn(coreApi, 'getWithMetaAndEtag')
+        .mockResolvedValue(originalResponse)
+      let resolve!: (value: typeof originalResponse) => void
+      let reject!: (error: CoreApiError) => void
+      const pending = new Promise<typeof originalResponse>((done, fail) => {
+        resolve = done
+        reject = fail
+      })
+      const patch = vi
+        .spyOn(coreApi, 'patchWithMetaAndEtag')
+        .mockImplementationOnce(() => pending as never)
+
+      const { queryClient, screen } = await renderRoute('/settings')
+      const dispose = configureSessionRevalidation({
+        queryClient,
+        onContainment: () => {
+          void queryClient.cancelQueries()
+          queryClient.removeQueries()
+          queryClient.getMutationCache().clear()
+        },
+        onChanged: () => undefined,
+      })
+      try {
+        const name = screen.getByRole('textbox', { name: 'Display name' })
+        await expect.element(name).toHaveValue(originalProfile.displayName)
+        const originalInput = name.element()
+        await userEvent.fill(name, 'Previous user draft')
+        await userEvent.click(
+          screen.getByRole('button', { name: 'Save profile' })
+        )
+        await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+        const oldMutation = queryClient.getMutationCache().getAll()[0]
+        if (!oldMutation) throw new Error('Expected a pending profile update')
+        expect(oldMutation.state.status).toBe('pending')
+
+        // Revalidate a different session through the real authenticated route.
+        // Cache removal alone does not replace mounted Query observers or forms.
+        getCurrentUser.mockResolvedValue(nextIdentity as never)
+        read.mockResolvedValue(nextResponse)
+        await revalidateBrowserSession()
+
+        await expect.element(name).toHaveValue(nextProfile.displayName)
+        expect(originalInput.isConnected).toBe(false)
+        const nextSnapshot = { profile: nextProfile, etag: nextResponse.etag }
+        expect(queryClient.getQueryData(profileQueryKey)).toEqual(nextSnapshot)
+        const readsBeforeCompletion = read.mock.calls.length
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+        // Deliberately deliver the old response after the new editor is mounted.
+        if (outcome === 'success') {
+          resolve({
+            ...originalResponse,
+            data: { ...originalProfile, displayName: 'Previous user draft' },
+            etag: '"profile-v2"',
+          })
+        } else {
+          reject(
+            new CoreApiError({
+              message: 'Stale profile',
+              status: 412,
+              kind: 'http',
+            })
+          )
+        }
+
+        await vi.waitFor(() => expect(oldMutation.state.status).toBe(outcome))
+        await expect.element(name).toHaveValue(nextProfile.displayName)
+        await expect
+          .element(screen.getByRole('textbox', { name: 'Organization email' }))
+          .toHaveValue(nextProfile.email)
+        await expect
+          .element(screen.getByRole('button', { name: 'Save profile' }))
+          .toBeDisabled()
+        await expect
+          .element(screen.getByText('Review the latest profile'))
+          .not.toBeInTheDocument()
+        expect(queryClient.getQueryData(profileQueryKey)).toEqual(nextSnapshot)
+        expect(queryClient.getQueryData(currentUserQueryKey)).toEqual(
+          nextIdentity
+        )
+        expect(read).toHaveBeenCalledTimes(readsBeforeCompletion)
+        expect(patch).toHaveBeenCalledTimes(1)
+        expect(invalidate).not.toHaveBeenCalledWith({
+          queryKey: currentUserQueryKey,
+        })
+      } finally {
+        dispose()
+        resetAuthLifecycleAfterSignIn()
+        await screen.unmount()
+        resolve(originalResponse)
+      }
+    }
+  )
 
   it('preserves a compatible Member draft during transient identity verification failure', async () => {
     const administrator = {
