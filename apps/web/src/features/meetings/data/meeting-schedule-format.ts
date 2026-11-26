@@ -5,7 +5,8 @@ type MeetingScheduleValue = string | null | undefined
 export function formatMeetingSchedule(
   scheduledStartAt: MeetingScheduleValue,
   scheduledEndAt: MeetingScheduleValue,
-  timeZone = presentationTimeZone
+  timeZone = presentationTimeZone,
+  locale = 'en-US'
 ) {
   if (!scheduledStartAt || !scheduledEndAt) return 'Unscheduled'
 
@@ -18,18 +19,21 @@ export function formatMeetingSchedule(
     return 'Unscheduled'
   }
 
-  const dateFormatter = new Intl.DateTimeFormat('en-US', {
+  const dateFormatter = new Intl.DateTimeFormat(locale, {
+    calendar: 'gregory',
     month: 'short',
     day: 'numeric',
     year: 'numeric',
     timeZone,
   })
-  const timeFormatter = new Intl.DateTimeFormat('en-US', {
+  const timeFormatter = new Intl.DateTimeFormat(locale, {
+    calendar: 'gregory',
     hour: 'numeric',
     minute: '2-digit',
     timeZone,
   })
-  const dateKeyFormatter = new Intl.DateTimeFormat('en-US', {
+  const dateKeyFormatter = new Intl.DateTimeFormat(locale, {
+    calendar: 'gregory',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',

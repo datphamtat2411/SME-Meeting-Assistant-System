@@ -15,6 +15,7 @@ import {
   Users,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { getPageNumbers } from '@/lib/utils'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -333,6 +334,7 @@ function MeetingsTable({
 }
 
 function MeetingRow({ meeting }: { meeting: MeetingListItem }) {
+  const { timezone, locale } = useRegionalPresentation()
   const display = getMeetingDisplay(meeting)
   const room = getRoomDisplay(meeting, display)
 
@@ -355,7 +357,14 @@ function MeetingRow({ meeting }: { meeting: MeetingListItem }) {
       <TableCell>
         <div className='flex items-start gap-2'>
           <CalendarDays className='mt-0.5 size-4 shrink-0 text-muted-foreground' />
-          <span>{formatMeetingSchedule(meeting)}</span>
+          <span>
+            {formatSchedule(
+              meeting.scheduledStartAt,
+              meeting.scheduledEndAt,
+              timezone,
+              locale
+            )}
+          </span>
         </div>
       </TableCell>
       <TableCell className='whitespace-normal'>
@@ -622,10 +631,6 @@ function formatMeetingRange(pagination: MeetingPagination) {
   const first = pagination.page * pagination.size + 1
   const last = Math.min(pagination.totalElements, first + pagination.size - 1)
   return `${first}-${last} of ${pagination.totalElements}`
-}
-
-function formatMeetingSchedule(meeting: MeetingListItem) {
-  return formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt)
 }
 
 function formatParticipantCount(display: MeetingDisplay) {

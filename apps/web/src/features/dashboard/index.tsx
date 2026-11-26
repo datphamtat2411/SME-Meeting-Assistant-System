@@ -19,14 +19,13 @@ import {
   RequestError,
   RequestLoading,
 } from '@/components/request-state'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { currentUserQueryOptions } from '@/features/auth/session/current-user'
 import {
   managementDashboardQuery,
   personalDashboardQuery,
 } from './dashboard-api'
 
-const dateTime = (date: string | null) =>
-  date ? new Date(date).toLocaleString() : 'Not scheduled'
 function Metric({
   label,
   value,
@@ -36,12 +35,13 @@ function Metric({
   value: number
   icon: typeof CalendarDays
 }) {
+  const { locale } = useRegionalPresentation()
   return (
     <Card>
       <CardContent className='flex items-center justify-between gap-3 p-5'>
         <div>
           <p className='text-sm text-muted-foreground'>{label}</p>
-          <p className='mt-1 text-3xl font-bold'>{value}</p>
+          <p className='mt-1 text-3xl font-bold'>{new Intl.NumberFormat(locale).format(value)}</p>
         </div>
         <Icon className='size-7 text-primary' />
       </CardContent>
@@ -49,6 +49,18 @@ function Metric({
   )
 }
 export function Dashboard() {
+  const { timezone, locale } = useRegionalPresentation()
+  const dateTime = (value: string | null) => {
+    if (!value) return 'Not scheduled'
+    const date = new Date(value)
+    if (!Number.isFinite(date.getTime())) return 'Not scheduled'
+    return new Intl.DateTimeFormat(locale, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: timezone,
+      calendar: 'gregory',
+    }).format(date)
+  }
   const identity = useQuery(currentUserQueryOptions())
   const personal = useQuery(personalDashboardQuery())
   const isManager =
@@ -170,7 +182,7 @@ export function Dashboard() {
               </div>
               <p className='text-xs text-muted-foreground'>
                 Personal dashboard as of {dateTime(data.asOf)} ·{' '}
-                {data.assignedActionItems.done} completed actions.
+                {new Intl.NumberFormat(locale).format(data.assignedActionItems.done)} completed actions.
               </p>
             </>
           )

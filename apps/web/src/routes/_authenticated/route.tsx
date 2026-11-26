@@ -4,6 +4,7 @@ import {
   getSessionRevalidationGeneration,
   prepareRequestRecoveryRetry,
 } from '@/lib/request-recovery'
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import { WorkspaceVisibilityBoundary } from '@/context/workspace-visibility-boundary'
 import { AuthenticatedLayout } from '@/components/layout/authenticated-layout'
 import { AuthenticatedRouteFallback } from '@/components/layout/authenticated-route-fallback'
@@ -146,10 +147,12 @@ function AuthenticatedRoute() {
         )}
         hidden={shielded}
       >
-        <AuthenticatedLayout
-          user={toUserPresentation(verifiedUser)}
-          identity={verifiedIdentity}
-        />
+        <RegionalPresentationProvider>
+          <AuthenticatedLayout
+            user={toUserPresentation(verifiedUser)}
+            identity={verifiedIdentity}
+          />
+        </RegionalPresentationProvider>
       </WorkspaceVisibilityBoundary>
       {shielded && (
         <SessionGate
