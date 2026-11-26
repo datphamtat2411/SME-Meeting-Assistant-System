@@ -126,25 +126,6 @@ export function parsePersonalDashboard(value: unknown): PersonalDashboard {
   }
   return result.data
 }
-export const managementDashboardSchema = z.object({
-  asOf: z.string(),
-  timezone: z.string(),
-  actionItems: z.object({
-    open: z.number(),
-    inProgress: z.number(),
-    done: z.number(),
-    overdue: z.number(),
-    cancelled: z.number(),
-    totalOfficial: z.number(),
-  }),
-  unavailableMetrics: z.array(
-    z.object({ metric: z.string(), reason: z.string() })
-  ),
-  scope: z.object({
-    type: z.string(),
-    organizationalUnitIds: z.array(z.string()),
-  }),
-})
 export const personalDashboardQuery = (scope: string) =>
   queryOptions({
     queryKey: ['dashboard', 'me', scope],
@@ -154,24 +135,119 @@ export const personalDashboardQuery = (scope: string) =>
       ),
     retry: false,
   })
-export function managementDashboardQuery(days = 30) {
-  // Anchor to tomorrow's UTC midnight so a rerender never changes the query key.
-  const to = new Date((Math.floor(Date.now() / 86400000) + 1) * 86400000)
-  const from = new Date(to.getTime() - days * 86400000)
+export type ManagementSelection = {
+  from: string
+  to: string
+  orgUnitId?: string
+}
+
+export const managementDashboardSchema = z
+  .object({
+    asOf: instant,
+    timezone: z.string().refine(isValidTimeZone),
+    period: z.object({
+      fromInclusive: instant,
+      toExclusive: instant,
+      cohortTimeField: z.literal('ACTION_ITEM_CREATED_AT'),
+      statusTimeSemantics: z.literal('CURRENT_STATE'),
+    }),
+    actionItems: z.object({
+      open: count,
+      inProgress: count,
+      done: count,
+      overdue: count,
+      cancelled: count,
+      totalOfficial: count,
+    }),
+    unavailableMetrics: z.array(
+      z.object({ metric: z.string().min(1), reason: z.string().min(1) })
+    ),
+    scope: z.object({
+      type: z.literal('MANAGED_OFFICIAL_ACTION_ITEMS'),
+      organizationalUnitIds: z.array(z.string().uuid()).min(1),
+    }),
+  })
+  .superRefine((data, context) => {
+    const { open, inProgress, done, cancelled, overdue, totalOfficial } =
+      data.actionItems
+    const ids = data.scope.organizationalUnitIds
+    if (
+      overdue > open + inProgress ||
+      open + inProgress + done + cancelled !== totalOfficial ||
+      new Set(ids).size !== ids.length ||
+      Date.parse(data.period.fromInclusive) >= Date.parse(data.period.toExclusive)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Contradictory management reporting projection.',
+      })
+    }
+  })
+
+export function parseManagementDashboard(
+  value: unknown,
+  selection: ManagementSelection,
+  authorizedUnitIds: readonly string[]
+) {
+  const result = managementDashboardSchema.safeParse(value)
+  if (!result.success) {
+    throw new CoreApiError({
+      message: 'Core API returned an invalid management dashboard response.',
+      code: 'MALFORMED_RESPONSE',
+      kind: 'malformed',
+      cause: result.error,
+    })
+  }
+  const data = result.data
+  if (
+    Date.parse(data.period.fromInclusive) !== Date.parse(selection.from) ||
+    Date.parse(data.period.toExclusive) !== Date.parse(selection.to)
+  ) {
+    throw new CoreApiError({
+      message: 'The returned reporting period does not match your selection.',
+      code: 'MALFORMED_RESPONSE',
+      kind: 'malformed',
+    })
+  }
+  const expected = selection.orgUnitId
+    ? [selection.orgUnitId]
+    : [...new Set(authorizedUnitIds)]
+  const actual = data.scope.organizationalUnitIds
+  if (
+    expected.some((id) => !authorizedUnitIds.includes(id)) ||
+    actual.length !== expected.length ||
+    actual.some((id) => !expected.includes(id))
+  ) {
+    throw new CoreApiError({
+      message: 'Your management scope has changed. Verify your access again.',
+      code: 'DASHBOARD_SCOPE_CHANGED',
+      kind: 'malformed',
+    })
+  }
+  return data
+}
+
+export function managementDashboardQuery(
+  contextKey: string,
+  authorizedUnitIds: readonly string[],
+  selection: ManagementSelection
+) {
   return queryOptions({
     queryKey: [
       'dashboard',
       'management',
-      days,
-      from.toISOString(),
-      to.toISOString(),
+      contextKey,
+      [...new Set(authorizedUnitIds)].sort(),
+      selection,
     ],
     queryFn: async ({ signal }) =>
-      managementDashboardSchema.parse(
+      parseManagementDashboard(
         await coreApi.get<unknown>('/dashboard/management', {
-          params: { from: from.toISOString(), to: to.toISOString() },
+          params: selection,
           signal,
-        })
+        }),
+        selection,
+        authorizedUnitIds
       ),
     retry: false,
   })
