@@ -24,6 +24,7 @@ import 'package:sme_meeting_assistant/features/results/results_repository.dart';
 import 'package:sme_meeting_assistant/features/results/results_panel.dart';
 import 'package:sme_meeting_assistant/features/results/results_workspace_controller.dart';
 
+import 'action_item_foundation_test.dart' show itemId, itemJson, pageMeta;
 import 'support/meeting_test_support.dart';
 import 'support/widget_test_support.dart';
 
@@ -406,6 +407,92 @@ PagedCollection<MeetingDecision> _decisionPage(MeetingDecision decision) =>
     );
 
 void main() {
+  testWidgets('Results Action Items use meeting scope and revoke the route', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    var listReads = 0;
+    var detailReads = 0;
+    final client = MeetingTestHttpClient((request) async {
+      expect(request.method, 'GET');
+      if (request.url.path.endsWith('/action-items/creation-meetings')) {
+        return meetingApiSuccess([], meta: {
+          ...pageMeta(total: 0),
+          'pagination': {
+            ...(pageMeta(total: 0)['pagination'] as Map<String, dynamic>),
+            'size': 1,
+          },
+        });
+      }
+      if (request.url.path.endsWith('/action-items/$itemId')) {
+        detailReads++;
+        return meetingApiSuccess(itemJson(), headers: {'etag': '"v1"'});
+      }
+      if (request.url.path.endsWith('/action-items')) {
+        listReads++;
+        expect(request.url.queryParameters['meetingId'], testMeetingId);
+        expect(request.url.queryParameters.containsKey('assignee'), isFalse);
+        return meetingApiSuccess([itemJson()], meta: pageMeta());
+      }
+      throw StateError('Unexpected request ${request.url.path}');
+    });
+    final api = createMeetingTestApi(client);
+    await tester.runAsync(() => signInMeetingTestApi(api));
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+    );
+    final workspace = ResultsWorkspaceController(
+      api: api,
+      repository: _Repository(api),
+      meetingId: testMeetingId,
+      meeting: Meeting.fromJson(meetingTestJson()),
+      capabilities: const ResultsCapabilities(canRead: true, canMutate: true),
+      invalidation: dependencies.resultsInvalidation,
+    );
+    addTearDown(() async {
+      workspace.dispose();
+      await dependencies.shutdown();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResultsPanel(
+            workspace: workspace,
+            dependencies: dependencies,
+            initialSection: ResultsSection.actionItems,
+          ),
+        ),
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Send report').evaluate().isNotEmpty,
+      reason: 'meeting-scoped Action Item',
+    );
+    expect(listReads, greaterThanOrEqualTo(1));
+    await tester.tap(find.text('Send report').first);
+    await pumpUntil(tester, () => detailReads == 1, reason: 'detail read');
+    await tester.pumpAndSettle();
+    expect(find.text('Send report'), findsWidgets);
+    expect(find.text('Mở cuộc họp'), findsNothing);
+
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: false, canMutate: false),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Send report'), findsNothing);
+    expect(find.text('Công việc'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+
   test('decision command validates response identity and status', () async {
     var returnedId = 'wrong-decision';
     var returnedStatus = 'REJECTED';

@@ -9,6 +9,26 @@ import 'action_item_repository.dart';
 
 enum ActionItemCollectionMode { myWork, allAccessible, needsReview }
 
+enum MyWorkDestination { all, open, inProgress, overdue, done }
+
+/// Each explicit navigation intent is consumed once, even when navigating to
+/// the same metric again after editing the collection filters.
+class ActionItemNavigationIntent {
+  const ActionItemNavigationIntent(this.destination);
+
+  final MyWorkDestination destination;
+
+  ActionItemCollectionCriteria get criteria => ActionItemCollectionCriteria(
+    status: switch (destination) {
+      MyWorkDestination.open => ActionItemStatus.open,
+      MyWorkDestination.inProgress => ActionItemStatus.inProgress,
+      MyWorkDestination.done => ActionItemStatus.done,
+      _ => null,
+    },
+    overdue: destination == MyWorkDestination.overdue ? true : null,
+  );
+}
+
 enum ActionItemCollectionPhase { idle, initial, debounce, refresh, append }
 
 enum ActionItemCollectionFailure { initial, refresh, append, changed, access }
@@ -96,6 +116,7 @@ class ActionItemCollectionController extends ChangeNotifier {
         const ActionItemCollectionCriteria(),
     this.searchDebounce = const Duration(milliseconds: 300),
     bool active = true,
+    this.hostIsCurrent,
   }) : _criteria = criteria,
        _scope = repository.captureSession() {
     if (!active) _active = false;
@@ -107,6 +128,7 @@ class ActionItemCollectionController extends ChangeNotifier {
 
   final ActionItemRepository repository;
   final String? fixedMeetingId;
+  final bool Function()? hostIsCurrent;
   final Duration searchDebounce;
   final AuthenticatedSessionScope _scope;
   ActionItemCollectionCriteria _criteria;
@@ -145,6 +167,7 @@ class ActionItemCollectionController extends ChangeNotifier {
   bool get _current =>
       !_disposed &&
       !_invalidSession &&
+      (hostIsCurrent?.call() ?? true) &&
       repository.api.isCurrentAuthenticatedSession(_scope);
 
   Future<void> initialize() {

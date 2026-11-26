@@ -17,11 +17,19 @@ class ActionItemDetailPage extends StatefulWidget {
     required this.repository,
     required this.admission,
     required this.itemId,
+    this.expectedMeetingId,
+    this.hostIsCurrent,
+    this.onClose,
+    this.openMeeting,
   });
 
   final ActionItemRepository repository;
   final ActionItemMutationAdmission admission;
   final String itemId;
+  final String? expectedMeetingId;
+  final bool Function()? hostIsCurrent;
+  final VoidCallback? onClose;
+  final Future<void> Function(BuildContext, String)? openMeeting;
 
   @override
   State<ActionItemDetailPage> createState() => _ActionItemDetailPageState();
@@ -46,6 +54,8 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
       repository: widget.repository,
       admission: widget.admission,
       itemId: widget.itemId,
+      expectedMeetingId: widget.expectedMeetingId,
+      hostIsCurrent: widget.hostIsCurrent,
     );
     _controller.addListener(_changed);
     unawaited(_controller.refresh());
@@ -101,7 +111,11 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
 
   Future<void> _pickAssignee() async {
     final original = _controller.draft;
-    final selected = await pickActionItemAssignee(context, widget.repository);
+    final selected = await pickActionItemAssignee(
+      context,
+      widget.repository,
+      hostIsCurrent: widget.hostIsCurrent,
+    );
     if (!mounted ||
         !_controller.current ||
         !_controller.canUseSnapshot ||
@@ -201,6 +215,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
   }) async {
     final answer = await showDialog<bool>(
       context: context,
+      useRootNavigator: false,
       builder: (dialogContext) => ListenableBuilder(
         listenable: _controller,
         builder: (context, _) {
@@ -265,6 +280,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     if (!_controller.editing && _controller.unresolved) {
       return confirmCommand(
         context,
+        useRootNavigator: false,
         title: 'Rời chi tiết công việc?',
         description: 'Chưa xác định kết quả thao tác. Công việc có thể đã thay đổi trên máy chủ.',
         confirmLabel: 'Rời chi tiết',
@@ -273,6 +289,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     if (!_controller.hasChanges && !_controller.unresolved) return true;
     return confirmCommand(
       context,
+      useRootNavigator: false,
       title: 'Bỏ nội dung chỉnh sửa?',
       description: _controller.unresolved
           ? 'Kết quả lưu trước đó chưa được xác định. Công việc có thể đã thay đổi trên máy chủ.'
@@ -298,7 +315,13 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     if (!mounted || !confirmed) return;
     setState(() => _allowExit = true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) Navigator.pop(context);
+      if (!mounted) return;
+      final close = widget.onClose;
+      if (close != null) {
+        close();
+      } else {
+        Navigator.pop(context);
+      }
     });
   }
 
@@ -355,6 +378,19 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
             ],
           ),
         ),
+        if (capabilities.canReadMeetingContext && widget.openMeeting != null)
+          OutlinedButton.icon(
+            onPressed: enabled
+                ? () {
+                    if (_controller.canUseSnapshot &&
+                        identical(_controller.snapshot, snapshot)) {
+                      unawaited(widget.openMeeting!(context, item.meetingId));
+                    }
+                  }
+                : null,
+            icon: const Icon(Icons.video_camera_front_outlined),
+            label: const Text('Mở cuộc họp'),
+          ),
         if (capabilities.canEdit || capabilities.canAssign)
           OutlinedButton.icon(
             onPressed: !enabled

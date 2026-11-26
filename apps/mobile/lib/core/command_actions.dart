@@ -9,9 +9,11 @@ Future<bool> confirmCommand(
   required String description,
   String confirmLabel = 'Xác nhận',
   bool destructive = false,
+  bool useRootNavigator = true,
 }) async {
   final answer = await showDialog<bool>(
     context: context,
+    useRootNavigator: useRootNavigator,
     builder: (dialogContext) => AlertDialog(
       title: Text(title),
       content: Text(description),

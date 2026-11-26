@@ -11,6 +11,23 @@ import 'action_item_foundation_test.dart' show itemId, itemJson, repositoryFor;
 import 'support/meeting_test_support.dart';
 
 void main() {
+  test('meeting-owned detail rejects a different meeting', () async {
+    final client = MeetingTestHttpClient((request) async {
+      return meetingApiSuccess(itemJson(), headers: {'etag': '"v1"'});
+    });
+    final repository = await repositoryFor(client);
+    final detail = ActionItemDetailController(
+      repository: repository,
+      admission: ActionItemMutationAdmission(),
+      itemId: itemId,
+      expectedMeetingId: testRoomId,
+    );
+    addTearDown(detail.dispose);
+    await detail.refresh();
+    expect(detail.snapshot, isNull);
+    expect(detail.canUseSnapshot, isFalse);
+  });
+
   test('draft emits only changed fields, including explicit nulls', () {
     final item = ActionItemResource.fromJson({
       ...itemJson(),

@@ -81,8 +81,11 @@ class ActionItemCreationController extends ChangeNotifier {
     required ActionItemCreateInput input,
     required ActionItemCreationMeeting meeting,
     required ActionItemAssignee assignee,
+    bool Function()? stillAllowed,
   }) async {
-    if (!current || busy || _intent != null) return null;
+    if (!current || busy || _intent != null || !(stillAllowed?.call() ?? true)) {
+      return null;
+    }
     if (!sameActionItemIdentity(input.meetingId, meeting.id) ||
         !sameActionItemIdentity(input.assigneeUserId, assignee.id) ||
         assignee.accountStatus != ActionItemAccountStatus.active) {
@@ -95,6 +98,11 @@ class ActionItemCreationController extends ChangeNotifier {
     notifyListeners();
     try {
       if (!current) return null;
+      if (!(stillAllowed?.call() ?? true)) {
+        _phase = ActionItemCreationPhase.idle;
+        notifyListeners();
+        return null;
+      }
       // The contract supports exact opaque UUID lookup without reading
       // protected meeting titles or enumerating every eligible meeting.
       final page = await repository.creationMeetings(
@@ -102,6 +110,11 @@ class ActionItemCreationController extends ChangeNotifier {
         sessionScope: _scope,
       );
       if (!current) return null;
+      if (!(stillAllowed?.call() ?? true)) {
+        _phase = ActionItemCreationPhase.idle;
+        notifyListeners();
+        return null;
+      }
       if (!page.items.any(
         (candidate) => sameActionItemIdentity(candidate.id, input.meetingId),
       )) {
@@ -121,7 +134,7 @@ class ActionItemCreationController extends ChangeNotifier {
       _elapsed
         ..reset()
         ..start();
-      return await _dispatch(recovering: false);
+      return await _dispatch(recovering: false, stillAllowed: stillAllowed);
     } catch (error) {
       if (current) {
         _error = error;
@@ -132,12 +145,17 @@ class ActionItemCreationController extends ChangeNotifier {
     }
   }
 
-  Future<ActionItemSnapshot?> retry() {
-    if (!canRetry) return Future<ActionItemSnapshot?>.value();
-    return _dispatch(recovering: true);
+  Future<ActionItemSnapshot?> retry({bool Function()? stillAllowed}) {
+    if (!canRetry || !(stillAllowed?.call() ?? true)) {
+      return Future<ActionItemSnapshot?>.value();
+    }
+    return _dispatch(recovering: true, stillAllowed: stillAllowed);
   }
 
-  Future<ActionItemSnapshot?> _dispatch({required bool recovering}) async {
+  Future<ActionItemSnapshot?> _dispatch({
+    required bool recovering,
+    bool Function()? stillAllowed,
+  }) async {
     final intent = _intent;
     if (!current || intent == null) return null;
     _phase = ActionItemCreationPhase.submitting;
@@ -146,6 +164,14 @@ class ActionItemCreationController extends ChangeNotifier {
     notifyListeners();
     try {
       if (!current) return null;
+      if (!(stillAllowed?.call() ?? true)) {
+        if (!recovering) _clearIntent();
+        _phase = recovering
+            ? ActionItemCreationPhase.unresolved
+            : ActionItemCreationPhase.idle;
+        notifyListeners();
+        return null;
+      }
       final result = await repository.create(intent);
       if (!current) return null;
       _clearIntent();

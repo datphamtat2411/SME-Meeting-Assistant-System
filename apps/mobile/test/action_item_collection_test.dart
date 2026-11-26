@@ -27,6 +27,46 @@ Map<String, dynamic> _item(int index) => {
 };
 
 void main() {
+  test('meeting scope rejects a response for another meeting', () async {
+    final client = MeetingTestHttpClient((request) async {
+      expect(request.url.queryParameters['meetingId'], testRoomId);
+      return meetingApiSuccess([_item(1)], meta: _meta(0, 1));
+    });
+    final repository = await repositoryFor(client);
+    final controller = ActionItemCollectionController(
+      repository: repository,
+      fixedMeetingId: testRoomId,
+    );
+    addTearDown(controller.dispose);
+
+    await controller.initialize();
+    expect(controller.state.items, isEmpty);
+    expect(controller.state.failure, isNotNull);
+  });
+
+  test('revoked Results owner fences a pending collection response', () async {
+    final started = Completer<void>();
+    final response = Completer<http.StreamedResponse>();
+    var allowed = true;
+    final client = MeetingTestHttpClient((request) {
+      started.complete();
+      return response.future;
+    });
+    final repository = await repositoryFor(client);
+    final controller = ActionItemCollectionController(
+      repository: repository,
+      fixedMeetingId: testMeetingId,
+      hostIsCurrent: () => allowed,
+    );
+    addTearDown(controller.dispose);
+    final pending = controller.initialize();
+    await started.future;
+    allowed = false;
+    response.complete(await meetingApiSuccess([_item(1)], meta: _meta(0, 1)));
+    await pending;
+    expect(controller.state.items, isEmpty);
+  });
+
   test('collection modes enforce server-side ownership and review', () {
     final mine = ActionItemCollectionCriteria(
       status: ActionItemStatus.proposed,

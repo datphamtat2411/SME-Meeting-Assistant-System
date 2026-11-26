@@ -8,6 +8,7 @@ import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/media_contracts.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_manager.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
 import 'package:sme_meeting_assistant/features/results/results_invalidation.dart';
@@ -16,6 +17,74 @@ import 'support/http_test_support.dart';
 import 'support/meeting_test_support.dart';
 
 void main() {
+  test('processing outcomes invalidate once per meeting and session', () async {
+    final client = MeetingTestHttpClient((request) async {
+      throw StateError('Unexpected request ${request.url.path}');
+    });
+    final api = createMeetingTestApi(client);
+    await signInMeetingTestApi(api);
+    final manager = _ObservedProcessingManager(api);
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+      processingManager: manager,
+    );
+    addTearDown(dependencies.shutdown);
+    final actions = dependencies.actionItemInvalidation;
+    final scope = api.requireAuthenticatedSessionScope();
+    ProcessingMeetingState state(ProcessingJobStatus status) {
+      final now = DateTime.utc(2026, 11, 26);
+      return ProcessingMeetingState(
+        meetingId: testMeetingId,
+        sessionScope: scope,
+        jobs: [
+          ProcessingJobRecord(
+            id: 'job-1',
+            meetingId: testMeetingId,
+            sourceMediaId: null,
+            jobType: ProcessingJobType.offlineMeetingProcessing,
+            status: status,
+            requestedByUserId: null,
+            currentStage: null,
+            warningSummary: null,
+            errorSummary: null,
+            errorCode: null,
+            retryable: false,
+            retryCount: 0,
+            reprocessOfJobId: null,
+            queuedAt: null,
+            startedAt: null,
+            completedAt: null,
+            createdAt: now,
+            updatedAt: now,
+            stageRuns: const [],
+          ),
+        ],
+      );
+    }
+
+    manager.publish(state(ProcessingJobStatus.running));
+    expect(actions.revision, 0);
+    manager.publish(state(ProcessingJobStatus.waitingForReview));
+    expect(actions.revision, 1);
+    expect(actions.lastMeetingId, testMeetingId);
+    manager.publish(state(ProcessingJobStatus.waitingForReview));
+    expect(actions.revision, 1);
+    manager.publish(state(ProcessingJobStatus.completed));
+    expect(actions.revision, 2);
+    expect(dependencies.resultsInvalidation.resources, {
+      ResultsResourceKind.minutes,
+    });
+
+    await api.signOut();
+    await api.signIn('user@example.test', 'password');
+    final revision = actions.revision;
+    manager.publish(state(ProcessingJobStatus.completed));
+    expect(actions.revision, revision);
+  });
+
+
   test('the dependency holder closes owned resources exactly once', () {
     final client = NoNetworkHttpClient();
     final api = TrackingApiClient(client);
@@ -284,4 +353,24 @@ class _DelayedDrainManager extends ProcessingManager {
 
   @override
   Future<void> drainActiveWork() => drained.future;
+}
+
+class _ObservedProcessingManager extends ProcessingManager {
+  _ObservedProcessingManager(ApiClient api)
+    : super(
+        api: api,
+        mediaRepository: MediaRepository(api: api),
+        processingRepository: ProcessingRepository(api: api),
+        localMedia: LocalMediaRepository.lazyDefault(),
+      );
+
+  List<ProcessingMeetingState> _observed = [];
+
+  @override
+  Iterable<ProcessingMeetingState> get currentStates => _observed;
+
+  void publish(ProcessingMeetingState state) {
+    _observed = [state];
+    notifyListeners();
+  }
 }

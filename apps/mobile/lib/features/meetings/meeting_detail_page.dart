@@ -20,11 +20,13 @@ class MeetingDetailPage extends StatefulWidget {
     required this.dependencies,
     required this.meetingId,
     this.openRecording = false,
+    this.initialResultsSection,
   });
 
   final AppDependencies dependencies;
   final String meetingId;
   final bool openRecording;
+  final ResultsSection? initialResultsSection;
   ApiClient get api => dependencies.api;
 
   @override
@@ -39,7 +41,11 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
   @override
   void initState() {
     super.initState();
-    _tab = widget.openRecording ? 2 : 0;
+    _tab = widget.openRecording
+        ? 2
+        : widget.initialResultsSection != null
+        ? 1
+        : 0;
     WidgetsBinding.instance.addObserver(this);
     _createController();
   }
@@ -611,7 +617,11 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
         child: Text('Không thể xác minh quyền truy cập kết quả cuộc họp.'),
       );
     }
-    return ResultsPanel(workspace: workspace);
+    return ResultsPanel(
+      workspace: workspace,
+      dependencies: widget.dependencies,
+      initialSection: widget.initialResultsSection ?? ResultsSection.summary,
+    );
   }
 }
 

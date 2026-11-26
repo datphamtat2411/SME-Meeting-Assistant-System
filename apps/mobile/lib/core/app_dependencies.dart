@@ -51,6 +51,8 @@ class AppDependencies {
   late final ProcessingManager processingManager;
   late final ResultsRepository results;
   late final ResultsInvalidationSignal resultsInvalidation;
+  AuthenticatedSessionScope? _processingOutcomeScope;
+  final Map<(String, String), String> _processingOutcomes = {};
   bool _disposed = false;
   bool _resourcesClosed = false;
   Future<void>? _shutdownFuture;
@@ -69,6 +71,7 @@ class AppDependencies {
     resultsInvalidation = ResultsInvalidationSignal(
       api: api,
       meetingInvalidation: meetingInvalidation,
+      processingMinutesHandledExternally: true,
     );
     meetings = MeetingRepository(api: api, invalidation: meetingInvalidation);
     roomScheduling = RoomSchedulingRepository(api);
@@ -122,6 +125,45 @@ class AppDependencies {
           localMedia: this.localMedia,
           capabilityResolver: _resolveProcessingCapability,
         );
+    this.processingManager.addListener(_observeActionItemProcessing);
+    api.sessionCoordinator.addListener(_resetProcessingOutcomeScope);
+    _observeActionItemProcessing();
+  }
+
+  void _resetProcessingOutcomeScope() {
+    final scope = api.authenticatedSessionScope;
+    if (scope == _processingOutcomeScope) return;
+    _processingOutcomeScope = scope;
+    _processingOutcomes.clear();
+  }
+
+  void _observeActionItemProcessing() {
+    if (_disposed) return;
+    _resetProcessingOutcomeScope();
+    final scope = _processingOutcomeScope;
+    if (scope == null) return;
+    final affected = <String>{};
+    for (final state in processingManager.currentStates) {
+      if (state.sessionScope != scope ||
+          state.failure != null ||
+          state.isRefreshing) {
+        continue;
+      }
+      for (final job in state.jobs) {
+        if (!job.status.isTerminal && !job.isWaitingForReview) continue;
+        final key = (state.meetingId.toLowerCase(), job.id);
+        final outcome = '${job.status.wireValue}:${job.retryCount}';
+        if (_processingOutcomes[key] == outcome) continue;
+        _processingOutcomes[key] = outcome;
+        affected.add(state.meetingId);
+      }
+    }
+    for (final meetingId in affected) {
+      actionItemInvalidation.invalidate(
+        sessionScope: scope,
+        meetingId: meetingId,
+      );
+    }
   }
 
   void _invalidateActionItemMinutes() {
@@ -205,6 +247,9 @@ class AppDependencies {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    processingManager.removeListener(_observeActionItemProcessing);
+    api.sessionCoordinator.removeListener(_resetProcessingOutcomeScope);
+    _processingOutcomes.clear();
     actionItemWorkflows.dispose();
     actionItemInvalidation.removeListener(_invalidateActionItemMinutes);
     actionItemInvalidation.dispose();

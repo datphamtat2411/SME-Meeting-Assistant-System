@@ -131,6 +131,7 @@ class ResultsWorkspaceController extends ChangeNotifier
   final Map<ResultsResourceKind, int> _generations =
       <ResultsResourceKind, int>{};
   final Set<ResultsResourceKind> _active = <ResultsResourceKind>{};
+  bool _observeActionItems = false;
   final Set<ResultsResourceKind> _dirty = <ResultsResourceKind>{};
   final Set<ResultsResourceKind> _authorizationAbsent = <ResultsResourceKind>{};
   ResultsProcessingBridge? _processingBridge;
@@ -342,6 +343,7 @@ class ResultsWorkspaceController extends ChangeNotifier
     final shouldObserve =
         capabilities.canRead &&
         (_active.isNotEmpty ||
+            _observeActionItems ||
             _mutations.regenerationUncertain ||
             _mutations.acceptedRegenerationJobId != null);
     if (!shouldObserve) {
@@ -397,8 +399,12 @@ class ResultsWorkspaceController extends ChangeNotifier
   /// The integration boundary calls this after the section has entered the
   /// tree. Panels only render the resulting state and never start their own
   /// initial requests.
-  void activateResources(Set<ResultsResourceKind> kinds) {
+  void activateResources(
+    Set<ResultsResourceKind> kinds, {
+    bool observeActionItems = false,
+  }) {
     if (_disposed || !ownsSession) return;
+    _observeActionItems = observeActionItems;
     _active
       ..clear()
       ..addAll(kinds);
@@ -416,6 +422,7 @@ class ResultsWorkspaceController extends ChangeNotifier
   void deactivate() {
     if (_disposed) return;
     _active.clear();
+    _observeActionItems = false;
     _summaryHistory?.setActive(false);
     _syncProcessingObservation();
   }

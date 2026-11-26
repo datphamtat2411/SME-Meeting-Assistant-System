@@ -25,6 +25,7 @@ class ResultsInvalidationSignal extends ChangeNotifier {
   ResultsInvalidationSignal({
     required ApiClient api,
     required MeetingInvalidationSignal meetingInvalidation,
+    this.processingMinutesHandledExternally = false,
   }) : _api = api,
        _meetingInvalidation = meetingInvalidation,
        _scope = api.authenticatedSessionScope {
@@ -32,6 +33,7 @@ class ResultsInvalidationSignal extends ChangeNotifier {
     _meetingInvalidation.addListener(_onMeetingInvalidation);
   }
 
+  final bool processingMinutesHandledExternally;
   final ApiClient _api;
   final MeetingInvalidationSignal _meetingInvalidation;
   AuthenticatedSessionScope? _scope;
@@ -162,6 +164,9 @@ class ResultsProcessingBridge {
           ResultsResourceKind.minutes,
         });
       }
+    }
+    if (_invalidation.processingMinutesHandledExternally) {
+      affected.remove(ResultsResourceKind.minutes);
     }
     if (publish && affected.isNotEmpty) {
       _invalidation.invalidate(

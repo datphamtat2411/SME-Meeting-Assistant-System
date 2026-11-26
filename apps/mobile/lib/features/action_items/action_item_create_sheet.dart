@@ -13,10 +13,16 @@ class ActionItemCreatePage extends StatefulWidget {
     super.key,
     required this.controller,
     this.initialMeetingId,
+    this.hostIsCurrent,
+    this.onClose,
+    this.recoveryOnly = false,
   });
 
   final ActionItemCreationController controller;
   final String? initialMeetingId;
+  final bool Function()? hostIsCurrent;
+  final ValueChanged<bool>? onClose;
+  final bool recoveryOnly;
 
   @override
   State<ActionItemCreatePage> createState() => _ActionItemCreatePageState();
@@ -36,6 +42,10 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
   bool _showRecoveryContext = true;
 
   ActionItemCreationController get _controller => widget.controller;
+  bool get _current =>
+      mounted &&
+      _controller.current &&
+      (widget.hostIsCurrent?.call() ?? true);
   bool get _unresolved =>
       _controller.phase == ActionItemCreationPhase.unresolved;
   bool get _dirty =>
@@ -52,7 +62,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
     if (_unresolved) {
       _showRecoveryContext = false;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_controller.current) return;
+        if (!mounted || !_current) return;
         _showRecoveryContext = true;
         unawaited(_controller.refreshRecoveryContext());
       });
@@ -71,7 +81,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
 
   void _controllerChanged() {
     if (!mounted) return;
-    if (!_controller.current) {
+    if (!_current) {
       _title.clear();
       _details.clear();
       _meeting = null;
@@ -84,7 +94,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
 
   Future<void> _verifyInitialMeeting() async {
     final id = widget.initialMeetingId;
-    if (id == null || !_controller.current) return;
+    if (id == null || !_current) return;
     final repository = _controller.repository;
     final scope = repository.captureSession();
     setState(() {
@@ -96,7 +106,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
         ActionItemCreationMeetingQuery(search: id),
         sessionScope: scope,
       );
-      if (!mounted || !_controller.current) return;
+      if (!mounted || !_current) return;
       final eligible = result.items.where(
         (meeting) => sameActionItemIdentity(meeting.id, id),
       );
@@ -107,18 +117,19 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
         }
       });
     } catch (error) {
-      if (mounted && _controller.current) setState(() => _localError = error);
+      if (mounted && _current) setState(() => _localError = error);
     } finally {
       if (mounted) setState(() => _checkingInitialMeeting = false);
     }
   }
 
   Future<void> _pickMeeting() async {
+    if (!_current || widget.initialMeetingId != null) return;
     final selected = await pickActionItemCreationMeeting(
       context,
       _controller.repository,
     );
-    if (mounted && _controller.current && selected != null) {
+    if (mounted && _current && selected != null) {
       setState(() {
         _meeting = selected;
         _localError = null;
@@ -127,18 +138,20 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
   }
 
   Future<void> _pickAssignee() async {
+    if (!_current) return;
     final selected = await pickActionItemAssignee(
       context,
       _controller.repository,
+      hostIsCurrent: widget.hostIsCurrent,
     );
-    if (mounted && _controller.current && selected != null) {
+    if (mounted && _current && selected != null) {
       setState(() => _assignee = selected);
     }
   }
 
   Future<void> _pickDate() async {
     final value = await chooseActionItemDueDate(context, _dueDate);
-    if (mounted && _controller.current && value != null) {
+    if (mounted && _current && value != null) {
       setState(() => _dueDate = value);
     }
   }
@@ -146,9 +159,11 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
   Future<void> _submit() async {
     final meeting = _meeting;
     final assignee = _assignee;
-    if (!_controller.current ||
+    if (!_current ||
         _controller.busy ||
         meeting == null ||
+        (widget.initialMeetingId != null &&
+            !sameActionItemIdentity(meeting.id, widget.initialMeetingId!)) ||
         assignee == null ||
         !(_form.currentState?.validate() ?? false)) {
       return;
@@ -166,32 +181,34 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
         input: input,
         meeting: meeting,
         assignee: assignee,
+        stillAllowed: widget.hostIsCurrent,
       );
-      if (!mounted || !_controller.current) return;
+      if (!mounted || !_current) return;
       if (result != null) _exit(true);
     } catch (error) {
-      if (mounted && _controller.current) setState(() => _localError = error);
+      if (mounted && _current) setState(() => _localError = error);
     }
   }
 
   Future<void> _retry() async {
-    if (!_controller.canRetry) {
+    if (!_current || !_controller.canRetry) {
       setState(() {});
       return;
     }
-    final result = await _controller.retry();
-    if (mounted && _controller.current && result != null) _exit(true);
+    final result = await _controller.retry(stillAllowed: widget.hostIsCurrent);
+    if (mounted && _current && result != null) _exit(true);
   }
 
   Future<void> _abandon() async {
     final confirmed = await confirmCommand(
       context,
+      useRootNavigator: false,
       title: 'Bỏ yêu cầu chưa xác định?',
       description: 'Công việc có thể đã được tạo. Tạo yêu cầu mới có thể dẫn đến trùng công việc. Hãy kiểm tra danh sách trước.',
       confirmLabel: 'Tôi hiểu, bỏ yêu cầu',
       destructive: true,
     );
-    if (!mounted || !_controller.current || !confirmed) return;
+    if (!mounted || !_current || !confirmed) return;
     _controller.abandon(acknowledged: true);
     _exit(false);
   }
@@ -200,19 +217,26 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
     if (!mounted || _allowExit) return;
     setState(() => _allowExit = true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) Navigator.pop(context, saved);
+      if (!mounted) return;
+      final close = widget.onClose;
+      if (close != null) {
+        close(saved);
+      } else {
+        Navigator.pop(context, saved);
+      }
     });
   }
 
   Future<void> _requestExit() async {
     if (_controller.busy || _leaving) return;
-    if (!_controller.current || (!_dirty && !_unresolved)) {
+    if (!_current || (!_dirty && !_unresolved)) {
       _exit(false);
       return;
     }
     _leaving = true;
     final confirmed = await confirmCommand(
       context,
+      useRootNavigator: false,
       title: _unresolved ? 'Đóng biểu mẫu?' : 'Bỏ nội dung chưa lưu?',
       description: _unresolved
           ? 'Yêu cầu chưa xác định vẫn được giữ trong phiên đăng nhập này. Bạn có thể mở lại để kiểm tra hoặc thử lại.'
@@ -276,7 +300,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
 
   @override
   Widget build(BuildContext context) {
-    final current = _controller.current;
+    final current = _current;
     final busy = _controller.busy;
     final recovering =
         _unresolved || (_controller.unresolvedIntent != null && busy);
@@ -308,6 +332,11 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
                         )
                       else
                         _recovery()
+                    else if (widget.recoveryOnly)
+                      const MessagePanel(
+                        title: 'Yêu cầu trước không còn cần xử lý',
+                        description: 'Quay lại danh sách để tạo công việc mới.',
+                      )
                     else
                       Form(
                         key: _form,
@@ -321,13 +350,19 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
                             OutlinedButton.icon(
                               onPressed: busy || _checkingInitialMeeting
                                   ? null
-                                  : _pickMeeting,
+                                  : widget.initialMeetingId == null
+                                  ? _pickMeeting
+                                  : _meeting == null
+                                  ? _verifyInitialMeeting
+                                  : null,
                               icon: const Icon(
                                 Icons.video_camera_front_outlined,
                               ),
                               label: Text(
                                 _meeting == null
-                                    ? 'Chọn cuộc họp *'
+                                    ? widget.initialMeetingId == null
+                                        ? 'Chọn cuộc họp *'
+                                        : 'Kiểm tra lại cuộc họp'
                                     : actionItemMeetingLabel(
                                         _meeting!.id,
                                         _meeting!.title,

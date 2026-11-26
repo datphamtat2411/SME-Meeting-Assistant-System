@@ -11,8 +11,9 @@ import 'results_workspace_controller.dart';
 import 'transcript_evidence_navigation.dart';
 
 class MinutesPanel extends StatelessWidget {
-  const MinutesPanel({super.key, required this.workspace});
+  const MinutesPanel({super.key, required this.workspace, this.openActionItem});
   final ResultsWorkspaceController workspace;
+  final Future<void> Function(BuildContext, String)? openActionItem;
 
   String _availability(String value) => switch (value) {
     'AVAILABLE' => 'Có dữ liệu',
@@ -282,6 +283,12 @@ class MinutesPanel extends StatelessWidget {
                           'Chưa rõ tên',
                     ),
                     _label('Thời điểm xác nhận', dateLabel(action.confirmedAt)),
+                    if (openActionItem != null)
+                      TextButton.icon(
+                        onPressed: () => unawaited(openActionItem!(context, action.id)),
+                        icon: const Icon(Icons.chevron_right),
+                        label: const Text('Xem chi tiết công việc'),
+                      ),
                   ]);
                 },
               ),

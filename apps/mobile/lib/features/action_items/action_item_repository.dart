@@ -95,7 +95,15 @@ class ActionItemRepository {
     );
     return PagedCollection<ActionItemResource>.fromResult(
       response,
-      (raw) => ActionItemResource.fromJson(raw, response: response),
+      (raw) {
+        final item = ActionItemResource.fromJson(raw, response: response);
+        final meetingId = query.meetingId;
+        if (meetingId != null &&
+            !sameActionItemIdentity(item.meetingId, meetingId)) {
+          throw response.invalidDataFailure();
+        }
+        return item;
+      },
       requestedPage: query.page,
       requestedSize: query.size,
     );

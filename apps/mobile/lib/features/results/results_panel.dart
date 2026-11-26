@@ -2,9 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../core/app_dependencies.dart';
 import '../../core/widgets.dart';
+import '../action_items/action_item_presentation.dart';
+import '../action_items/action_items_page.dart';
 import 'decisions_review_panel.dart';
 import 'minutes_panel.dart';
+import 'results_action_item_routes.dart';
 import 'results_workspace_controller.dart';
 import 'results_invalidation.dart';
 import 'results_models.dart';
@@ -12,34 +16,66 @@ import 'speaker_mapping_panel.dart';
 import 'summary_history_panel.dart';
 import 'transcript_review_panel.dart';
 
+enum ResultsSection {
+  summary,
+  transcript,
+  decisions,
+  actionItems,
+  speakers,
+  minutes,
+}
+
 class ResultsPanel extends StatefulWidget {
-  const ResultsPanel({super.key, required this.workspace});
+  const ResultsPanel({
+    super.key,
+    required this.workspace,
+    this.dependencies,
+    this.initialSection = ResultsSection.summary,
+  });
 
   final ResultsWorkspaceController workspace;
+  final AppDependencies? dependencies;
+  final ResultsSection initialSection;
 
   @override
   State<ResultsPanel> createState() => _ResultsPanelState();
 }
 
 class _ResultsPanelState extends State<ResultsPanel> {
-  int selected = 0;
+  late ResultsSection selected;
   TranscriptFocusRequest? _handledFocus;
 
-  Set<ResultsResourceKind> _resourcesFor(int index) => switch (index) {
-    0 => {ResultsResourceKind.summary},
-    1 => {
-      ResultsResourceKind.transcript,
-      ResultsResourceKind.coverage,
-      ResultsResourceKind.speakers,
-    },
-    2 => {ResultsResourceKind.decisions},
-    3 => {ResultsResourceKind.speakers},
-    _ => {ResultsResourceKind.minutes},
-  };
+  Set<ResultsResourceKind> _resourcesFor(ResultsSection section) =>
+      switch (section) {
+        ResultsSection.summary => {ResultsResourceKind.summary},
+        ResultsSection.transcript => {
+          ResultsResourceKind.transcript,
+          ResultsResourceKind.coverage,
+          ResultsResourceKind.speakers,
+        },
+        ResultsSection.decisions => {ResultsResourceKind.decisions},
+        ResultsSection.actionItems => {},
+        ResultsSection.speakers => {ResultsResourceKind.speakers},
+        ResultsSection.minutes => {ResultsResourceKind.minutes},
+      };
+
+  ResultsSection get _initial =>
+      widget.dependencies == null &&
+          widget.initialSection == ResultsSection.actionItems
+      ? ResultsSection.summary
+      : widget.initialSection;
+
+  void _activate(ResultsWorkspaceController workspace) {
+    workspace.activateResources(
+      _resourcesFor(selected),
+      observeActionItems: selected == ResultsSection.actionItems,
+    );
+  }
 
   @override
   void initState() {
     super.initState();
+    selected = _initial;
     widget.workspace.addListener(_workspaceChanged);
     _workspaceChanged();
     _scheduleActivation(widget.workspace);
@@ -58,6 +94,7 @@ class _ResultsPanelState extends State<ResultsPanel> {
     if (!identical(oldWidget.workspace, widget.workspace)) {
       oldWidget.workspace.removeListener(_workspaceChanged);
       oldWidget.workspace.deactivate();
+      selected = _initial;
       _handledFocus = null;
       widget.workspace.addListener(_workspaceChanged);
       _workspaceChanged();
@@ -76,8 +113,8 @@ class _ResultsPanelState extends State<ResultsPanel> {
           !identical(workspace.transcriptFocus, request)) {
         return;
       }
-      setState(() => selected = 1);
-      workspace.activateResources(_resourcesFor(1));
+      setState(() => selected = ResultsSection.transcript);
+      _activate(workspace);
     });
     WidgetsBinding.instance.ensureVisualUpdate();
   }
@@ -85,27 +122,86 @@ class _ResultsPanelState extends State<ResultsPanel> {
   void _scheduleActivation(ResultsWorkspaceController workspace) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !identical(widget.workspace, workspace)) return;
-      workspace.activateResources(_resourcesFor(selected));
+      _activate(workspace);
     });
+  }
+
+  Widget _actionItems(
+    ResultsWorkspaceController current,
+    int epoch,
+    AppDependencies dependencies,
+  ) => ActionItemsPage(
+    dependencies: dependencies,
+    meetingId: current.meetingId,
+    hostIsCurrent: () => current.ownsRead(epoch),
+    openDetailRoute: (context, id) => openResultsActionItemDetail(
+      context: context,
+      workspace: current,
+      epoch: epoch,
+      dependencies: dependencies,
+      itemId: id,
+    ),
+    openCreateRoute: (context, meetingId) => openResultsActionItemCreation(
+      context: context,
+      workspace: current,
+      epoch: epoch,
+      dependencies: dependencies,
+      meetingId: meetingId,
+    ),
+    openAssigneeFilter: (context, readKnown, changes) => pickActionItemAssignee(
+      context,
+      dependencies.actionItems,
+      readKnown: readKnown,
+      knownChanges: changes,
+      allowKnownInactive: true,
+      forFilter: true,
+      hostIsCurrent: () => current.ownsRead(epoch),
+      openPicker: (context, picker) => openResultsOwnedPage(
+        context: context,
+        workspace: current,
+        epoch: epoch,
+        nested: false,
+        builder: (_, _) => picker,
+      ),
+    ),
+  );
+
+  Widget _page(ResultsWorkspaceController current) {
+    final dependencies = widget.dependencies;
+    final epoch = current.readEpoch;
+    return switch (selected) {
+      ResultsSection.summary => SummaryHistoryPanel(workspace: current),
+      ResultsSection.transcript => TranscriptReviewPanel(workspace: current),
+      ResultsSection.decisions => DecisionsReviewPanel(workspace: current),
+      ResultsSection.actionItems => _actionItems(current, epoch, dependencies!),
+      ResultsSection.speakers => SpeakerMappingPanel(workspace: current),
+      ResultsSection.minutes => MinutesPanel(
+        workspace: current,
+        openActionItem: dependencies == null
+            ? null
+            : (context, id) => openResultsActionItemDetail(
+                context: context,
+                workspace: current,
+                epoch: epoch,
+                dependencies: dependencies,
+                itemId: id,
+              ),
+      ),
+    };
   }
 
   @override
   Widget build(BuildContext context) {
     final current = widget.workspace;
-    final tabs = <(String, IconData)>[
-      ('Tóm tắt', Icons.auto_awesome_outlined),
-      ('Transcript', Icons.notes_outlined),
-      ('Quyết định', Icons.fact_check_outlined),
-      ('Người nói', Icons.record_voice_over_outlined),
-      ('Biên bản', Icons.article_outlined),
+    final tabs = <(ResultsSection, String, IconData)>[
+      (ResultsSection.summary, 'Tóm tắt', Icons.auto_awesome_outlined),
+      (ResultsSection.transcript, 'Transcript', Icons.notes_outlined),
+      (ResultsSection.decisions, 'Quyết định', Icons.fact_check_outlined),
+      if (widget.dependencies != null)
+        (ResultsSection.actionItems, 'Công việc', Icons.checklist),
+      (ResultsSection.speakers, 'Người nói', Icons.record_voice_over_outlined),
+      (ResultsSection.minutes, 'Biên bản', Icons.article_outlined),
     ];
-    final page = switch (selected) {
-      0 => SummaryHistoryPanel(workspace: current),
-      1 => TranscriptReviewPanel(workspace: current),
-      2 => DecisionsReviewPanel(workspace: current),
-      3 => SpeakerMappingPanel(workspace: current),
-      _ => MinutesPanel(workspace: current),
-    };
     return Column(
       children: [
         SingleChildScrollView(
@@ -113,16 +209,16 @@ class _ResultsPanelState extends State<ResultsPanel> {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           child: Row(
             children: [
-              for (var i = 0; i < tabs.length; i++)
+              for (final tab in tabs)
                 Padding(
                   padding: const EdgeInsets.only(right: 6),
                   child: ChoiceChip(
-                    avatar: Icon(tabs[i].$2, size: 17),
-                    label: Text(tabs[i].$1),
-                    selected: selected == i,
+                    avatar: Icon(tab.$3, size: 17),
+                    label: Text(tab.$2),
+                    selected: selected == tab.$1,
                     onSelected: (_) {
-                      setState(() => selected = i);
-                      current.activateResources(_resourcesFor(i));
+                      setState(() => selected = tab.$1);
+                      _activate(current);
                     },
                   ),
                 ),
@@ -133,7 +229,10 @@ class _ResultsPanelState extends State<ResultsPanel> {
           child: AnimatedBuilder(
             animation: current,
             builder: (context, _) => current.capabilities.canRead
-                ? KeyedSubtree(key: ObjectKey(current), child: page)
+                ? KeyedSubtree(
+                    key: ValueKey((current, current.readEpoch)),
+                    child: _page(current),
+                  )
                 : MessagePanel(
                     title:
                         'Không thể xác minh quyền truy cập kết quả cuộc họp.',

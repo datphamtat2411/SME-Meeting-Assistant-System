@@ -144,6 +144,13 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
 
   bool get hasActiveWork => _inFlight.isNotEmpty || _mutationFlights.isNotEmpty;
 
+  /// Read-only snapshots already observed by this manager; no new polling.
+  Iterable<ProcessingMeetingState> get currentStates =>
+      _states.values.where((state) {
+        final scope = state.sessionScope;
+        return scope != null && api.isCurrentAuthenticatedSession(scope);
+      });
+
   ProcessingMeetingState? stateFor(
     String meetingId, {
     AuthenticatedSessionScope? scope,

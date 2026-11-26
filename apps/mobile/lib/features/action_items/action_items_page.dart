@@ -22,11 +22,27 @@ class ActionItemsPage extends StatefulWidget {
     required this.dependencies,
     this.active = true,
     this.meetingId,
+    this.navigationIntent,
+    this.hostIsCurrent,
+    this.openDetailRoute,
+    this.openCreateRoute,
+    this.openAssigneeFilter,
+    this.openMeeting,
   });
 
   final AppDependencies dependencies;
   final bool active;
   final String? meetingId;
+  final ActionItemNavigationIntent? navigationIntent;
+  final bool Function()? hostIsCurrent;
+  final Future<void> Function(BuildContext, String)? openDetailRoute;
+  final Future<bool?> Function(BuildContext, String?)? openCreateRoute;
+  final Future<ActionItemAssignee?> Function(
+    BuildContext,
+    List<ActionItemAssignee> Function(),
+    Listenable,
+  )? openAssigneeFilter;
+  final Future<void> Function(BuildContext, String)? openMeeting;
 
   @override
   State<ActionItemsPage> createState() => _ActionItemsPageState();
@@ -51,7 +67,9 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
   int _eligibilityGeneration = 0;
 
   bool get _current =>
-      mounted && widget.dependencies.api.isCurrentAuthenticatedSession(_scope);
+      mounted &&
+      (widget.hostIsCurrent?.call() ?? true) &&
+      widget.dependencies.api.isCurrentAuthenticatedSession(_scope);
 
   @override
   void initState() {
@@ -60,12 +78,15 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
     _scope = repository.captureSession();
     if (widget.meetingId != null) {
       _mode = ActionItemCollectionMode.allAccessible;
+    } else if (widget.navigationIntent != null) {
+      _setNavigationCriteria(widget.navigationIntent!);
     }
     _collection = ActionItemCollectionController(
       repository: repository,
       criteria: _criteria(),
       fixedMeetingId: widget.meetingId,
       active: widget.active,
+      hostIsCurrent: widget.hostIsCurrent,
     );
     _creation = widget.dependencies.actionItemWorkflows.creation;
     _admission = widget.dependencies.actionItemWorkflows.admission;
@@ -80,9 +101,18 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
   @override
   void didUpdateWidget(covariant ActionItemsPage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.meetingId == null &&
+        widget.navigationIntent != null &&
+        !identical(widget.navigationIntent, oldWidget.navigationIntent)) {
+      _setNavigationCriteria(widget.navigationIntent!);
+      _apply();
+    }
     if (widget.active != oldWidget.active) {
       _collection.setActive(widget.active);
-      if (widget.active) unawaited(_checkEligibility());
+      if (widget.active) {
+        unawaited(_collection.refresh());
+        unawaited(_checkEligibility());
+      }
     }
   }
 
@@ -183,6 +213,18 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
     _apply();
   }
 
+  void _setNavigationCriteria(ActionItemNavigationIntent intent) {
+    final criteria = intent.criteria;
+    _mode = criteria.mode;
+    _search.clear();
+    _status = criteria.status;
+    _meetingId = null;
+    _assigneeId = null;
+    _overdue = criteria.overdue;
+    _sort = criteria.sortField;
+    _direction = criteria.sortDirection;
+  }
+
   void _clearFilters() {
     setState(() {
       _search.clear();
@@ -198,18 +240,26 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
 
   Future<void> _openCreate() async {
     if (!_current ||
+        _creation.busy ||
         (_eligible != true && _creation.unresolvedIntent == null)) {
       return;
     }
-    final saved = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute<bool>(
-        builder: (_) => ActionItemCreatePage(
-          controller: _creation,
-          initialMeetingId: widget.meetingId,
-        ),
-      ),
-    );
+    final unresolved = _creation.unresolvedIntent;
+    // Recovery belongs to its original meeting, not the new entry point.
+    final meetingId = unresolved != null ? null : widget.meetingId;
+    final opener = widget.openCreateRoute;
+    final saved = opener != null
+        ? await opener(context, meetingId)
+        : await Navigator.push<bool>(
+            context,
+            MaterialPageRoute<bool>(
+              builder: (_) => ActionItemCreatePage(
+                controller: _creation,
+                initialMeetingId: meetingId,
+                recoveryOnly: unresolved != null,
+              ),
+            ),
+          );
     if (mounted && _current && saved == true) {
       showSuccess(context, 'Đã tạo công việc.');
     }
@@ -217,6 +267,11 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
 
   Future<void> _openDetail(ActionItemResource item) async {
     if (!_current) return;
+    final opener = widget.openDetailRoute;
+    if (opener != null) {
+      await opener(context, item.id);
+      return;
+    }
     await Navigator.push<void>(
       context,
       MaterialPageRoute<void>(
@@ -224,6 +279,8 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
           repository: widget.dependencies.actionItems,
           admission: _admission,
           itemId: item.id,
+          expectedMeetingId: widget.meetingId,
+          openMeeting: widget.openMeeting,
         ),
       ),
     );
@@ -327,14 +384,17 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
 
   Future<void> _pickAssignee() async {
     if (!_current) return;
-    final selected = await pickActionItemAssignee(
-      context,
-      widget.dependencies.actionItems,
-      readKnown: () => _knownAssignees,
-      knownChanges: _collection,
-      allowKnownInactive: true,
-      forFilter: true,
-    );
+    final opener = widget.openAssigneeFilter;
+    final selected = opener == null
+        ? await pickActionItemAssignee(
+            context,
+            widget.dependencies.actionItems,
+            readKnown: () => _knownAssignees,
+            knownChanges: _collection,
+            allowKnownInactive: true,
+            forFilter: true,
+          )
+        : await opener(context, () => _knownAssignees, _collection);
     if (_current && selected != null) {
       setState(() => _assigneeId = selected.id);
       _apply();
@@ -354,14 +414,16 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SectionHeading(
-          'Công việc sau họp',
+          widget.meetingId == null
+              ? 'Công việc sau họp'
+              : 'Công việc của cuộc họp',
           subtitle: 'Theo dõi công việc chính thức và đề xuất AI',
           trailing: _eligible == true || _creation.unresolvedIntent != null
               ? IconButton(
                   tooltip: _creation.unresolvedIntent != null
                       ? 'Yêu cầu tạo chưa xác định'
                       : 'Tạo công việc',
-                  onPressed: _openCreate,
+                  onPressed: _creation.busy ? null : _openCreate,
                   icon: Icon(
                     _creation.unresolvedIntent != null
                         ? Icons.pending_actions
@@ -379,11 +441,20 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
             icon: const Icon(Icons.refresh),
             label: const Text('Kiểm tra lại quyền tạo công việc'),
           ),
-        if (_creation.unresolvedIntent != null)
+        if (_creation.unresolvedIntent != null) ...[
+          if (widget.meetingId != null &&
+              !sameActionItemIdentity(
+                widget.meetingId!,
+                _creation.unresolvedIntent!.input.meetingId,
+              ))
+            const Text(
+              'Có yêu cầu tạo công việc chưa xác định ở cuộc họp khác.',
+            ),
           OutlinedButton(
-            onPressed: _openCreate,
+            onPressed: _creation.busy ? null : _openCreate,
             child: const Text('Tiếp tục yêu cầu tạo chưa xác định'),
           ),
+        ],
         Wrap(
           spacing: 8,
           children: [
@@ -569,19 +640,18 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
           const SizedBox(height: 8),
           Text('Phụ trách: ${actionItemAssigneeLabel(item.assignee)}'),
           Text('Hạn: ${actionItemDueLabel(item.dueDate)}'),
-          TextButton.icon(
-            onPressed: widget.meetingId != null
-                ? null
-                : () {
-                    setState(() => _meetingId = item.meetingId);
-                    _apply();
-                  },
-            icon: const Icon(Icons.video_camera_front_outlined, size: 16),
-            label: Text(
-              actionItemMeetingLabel(item.meetingId, item.meetingContext.title),
-              textAlign: TextAlign.start,
+          if (widget.meetingId == null)
+            TextButton.icon(
+              onPressed: () {
+                setState(() => _meetingId = item.meetingId);
+                _apply();
+              },
+              icon: const Icon(Icons.video_camera_front_outlined, size: 16),
+              label: Text(
+                actionItemMeetingLabel(item.meetingId, item.meetingContext.title),
+                textAlign: TextAlign.start,
+              ),
             ),
-          ),
         ],
       ),
     ),

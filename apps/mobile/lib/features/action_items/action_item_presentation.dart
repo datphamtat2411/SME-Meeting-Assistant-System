@@ -134,6 +134,11 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
   Listenable? knownChanges,
   bool allowKnownInactive = false,
   bool forFilter = false,
+  bool Function()? hostIsCurrent,
+  Future<ActionItemAssignee?> Function(
+    BuildContext,
+    ActionItemPicker<ActionItemAssignee>,
+  )? openPicker,
 }) {
   final scope = repository.captureSession();
   final self = repository.selfCandidate(scope);
@@ -144,43 +149,45 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
       label: '${forFilter ? 'Tôi' : 'Giao cho tôi'} · ${self.displayName}',
     ),
   ];
-  return openActionItemPicker(
-    context,
-    ActionItemPicker<ActionItemAssignee>(
-      api: repository.api,
-      scope: scope,
-      title: forFilter ? 'Lọc theo người phụ trách' : 'Chọn người phụ trách',
-      minimumSearchLength: 2,
-      pinned: pinned,
-      pinnedChanges: knownChanges,
-      readPinned: () => [
-        for (final item in readKnown?.call() ?? const <ActionItemAssignee>[])
-          if (!sameActionItemIdentity(item.id, self.id) &&
-              (allowKnownInactive ||
-                  item.accountStatus == ActionItemAccountStatus.active))
-            ActionItemPickerOption(
-              value: item,
-              id: item.id,
-              label: actionItemAssigneeLabel(item),
-            ),
-      ],
-      load: (search, page) async => mapActionItemPickerPage(
-        await repository.assignmentCandidates(
-          MeetingCandidateQuery(search: search, page: page),
-          sessionScope: scope,
-        ),
-        (candidate) => ActionItemAssignee(
-          id: candidate.id,
-          displayName: candidate.displayName,
-          accountStatus: ActionItemAccountStatus.active,
-        ),
+  final picker = ActionItemPicker<ActionItemAssignee>(
+    api: repository.api,
+    scope: scope,
+    hostIsCurrent: hostIsCurrent,
+    title: forFilter ? 'Lọc theo người phụ trách' : 'Chọn người phụ trách',
+    minimumSearchLength: 2,
+    pinned: pinned,
+    pinnedChanges: knownChanges,
+    readPinned: () => [
+      for (final item in readKnown?.call() ?? const <ActionItemAssignee>[])
+        if (!sameActionItemIdentity(item.id, self.id) &&
+            (allowKnownInactive ||
+                item.accountStatus == ActionItemAccountStatus.active))
+          ActionItemPickerOption(
+            value: item,
+            id: item.id,
+            label: actionItemAssigneeLabel(item),
+          ),
+    ],
+    load: (search, page) async => mapActionItemPickerPage(
+      await repository.assignmentCandidates(
+        MeetingCandidateQuery(search: search, page: page),
+        sessionScope: scope,
       ),
-      describe: (assignee) => ActionItemPickerOption(
-        value: assignee,
-        id: assignee.id,
-        label: assignee.displayName,
+      (candidate) => ActionItemAssignee(
+        id: candidate.id,
+        displayName: candidate.displayName,
+        accountStatus: ActionItemAccountStatus.active,
       ),
     ),
+    describe: (assignee) => ActionItemPickerOption(
+      value: assignee,
+      id: assignee.id,
+      label: assignee.displayName,
+    ),
+  );
+  return (openPicker ?? openActionItemPicker<ActionItemAssignee>)(
+    context,
+    picker,
   );
 }
 
@@ -269,6 +276,7 @@ Future<String?> chooseActionItemDueDate(
   final initial = parseDateOnly(value) ?? DateTime.now();
   final selected = await showDatePicker(
     context: context,
+    useRootNavigator: false,
     initialDate: initial,
     firstDate: DateTime(initial.year < 1900 ? initial.year : 1900),
     lastDate: DateTime(initial.year > 2200 ? initial.year : 2200, 12, 31),

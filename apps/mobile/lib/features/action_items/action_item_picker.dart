@@ -39,6 +39,7 @@ class ActionItemPicker<T> extends StatefulWidget {
     this.pinned = const [],
     this.pinnedChanges,
     this.readPinned,
+    this.hostIsCurrent,
   });
 
   final ApiClient api;
@@ -50,6 +51,7 @@ class ActionItemPicker<T> extends StatefulWidget {
   final List<ActionItemPickerOption<T>> pinned;
   final Listenable? pinnedChanges;
   final List<ActionItemPickerOption<T>> Function()? readPinned;
+  final bool Function()? hostIsCurrent;
 
   @override
   State<ActionItemPicker<T>> createState() => _ActionItemPickerState<T>();
@@ -71,6 +73,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
   bool get _current =>
       mounted &&
       !_sessionLost &&
+      (widget.hostIsCurrent?.call() ?? true) &&
       widget.api.isCurrentAuthenticatedSession(widget.scope);
   bool get _searchable =>
       _search.text.trim().length >= widget.minimumSearchLength;

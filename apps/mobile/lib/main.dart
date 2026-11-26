@@ -11,7 +11,9 @@ import 'features/auth/auth_page.dart';
 import 'features/dashboard/dashboard_page.dart';
 import 'features/meetings/meetings_page.dart';
 import 'features/meetings/meeting_detail_page.dart';
+import 'features/results/results_panel.dart';
 import 'features/action_items/action_items_page.dart';
+import 'features/action_items/action_item_collection.dart';
 import 'features/assistant/assistant_page.dart';
 import 'features/profile/profile_page.dart';
 
@@ -452,6 +454,7 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int index = 0;
+  ActionItemNavigationIntent? _actionNavigation;
 
   @override
   Widget build(BuildContext context) {
@@ -485,11 +488,30 @@ class _AppShellState extends State<AppShell> {
     final pages = <Widget>[
       DashboardPage(
         api: widget.api,
+        invalidation: widget.dependencies.actionItemInvalidation,
+        active: index == 0,
         openMeetings: () => setState(() => index = 1),
-        openActions: () => setState(() => index = 2),
+        openActions: (destination) => setState(() {
+          _actionNavigation = ActionItemNavigationIntent(destination);
+          index = 2;
+        }),
       ),
       MeetingsPage(dependencies: widget.dependencies),
-      ActionItemsPage(dependencies: widget.dependencies, active: index == 2),
+      ActionItemsPage(
+        dependencies: widget.dependencies,
+        active: index == 2,
+        navigationIntent: _actionNavigation,
+        openMeeting: (context, meetingId) => Navigator.push<void>(
+          context,
+          MaterialPageRoute<void>(
+            builder: (_) => MeetingDetailPage(
+              dependencies: widget.dependencies,
+              meetingId: meetingId,
+              initialResultsSection: ResultsSection.actionItems,
+            ),
+          ),
+        ),
+      ),
       AssistantPage(api: widget.api),
       ProfilePage(
         api: widget.api,

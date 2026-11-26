@@ -66,8 +66,14 @@ class ActionItemDetailController extends ChangeNotifier {
     required this.repository,
     required this.admission,
     required this.itemId,
+    String? expectedMeetingId,
+    this.hostIsCurrent,
   }) : _scope = repository.captureSession() {
     requireActionItemUuid(itemId, 'actionItemId');
+    if (expectedMeetingId != null) {
+      requireActionItemUuid(expectedMeetingId, 'meetingId');
+      _meetingId = expectedMeetingId;
+    }
     _revision = repository.invalidation.revision;
     repository.invalidation.addListener(_onInvalidation);
     repository.api.sessionCoordinator.addListener(_sessionChanged);
@@ -76,6 +82,7 @@ class ActionItemDetailController extends ChangeNotifier {
   final ActionItemRepository repository;
   final ActionItemMutationAdmission admission;
   final String itemId;
+  final bool Function()? hostIsCurrent;
   final AuthenticatedSessionScope _scope;
 
   ActionItemSnapshot? _snapshot;
@@ -119,6 +126,7 @@ class ActionItemDetailController extends ChangeNotifier {
   bool get current =>
       !_disposed &&
       !_expiredSession &&
+      (hostIsCurrent?.call() ?? true) &&
       repository.api.isCurrentAuthenticatedSession(_scope);
   bool get hasChanges {
     final original = _baseline;
