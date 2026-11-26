@@ -58,8 +58,8 @@ void main() {
       '$origin/otp#token=a%C2%85',
       '$origin/otp#token=a#b',
       '$origin/meetings#token=a',
-      '$origin/otp#token=NaN',
-      '$origin/otp#token=NaN',
+      '$origin/otp#token=' + ('a' * 4097),
+      '$origin/otp#token=' + ('a' * 40001),
     ];
     for (final input in rejected) {
       expect(

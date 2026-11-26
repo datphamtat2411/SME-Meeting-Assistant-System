@@ -38,6 +38,7 @@ class AccountLinkParser {
     final labels = value.split('.');
     final label = RegExp(r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$');
     if (value.length > 253 ||
+        _unsafe.hasMatch(value) ||
         labels.length < 2 ||
         labels.any((part) => !label.hasMatch(part)) ||
         !RegExp(r'[A-Za-z]').hasMatch(labels.last)) {

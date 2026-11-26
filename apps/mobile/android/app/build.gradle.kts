@@ -1,4 +1,6 @@
 import java.util.Properties
+import java.util.Base64
+import java.util.Locale
 
 val releaseSigningProperties = Properties().apply {
     val propertiesFile = rootProject.file("key.properties")
@@ -39,7 +41,48 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 }
 
+// Flutter passes --dart-define values through the dart-defines Gradle property.
+// Use the same value in the manifest and Dart, never a second editable host.
+val accountLinkHosts = (findProperty("dart-defines") as String?)
+    .orEmpty().split(",").filter { it.isNotEmpty() }
+    .map { String(Base64.getDecoder().decode(it), Charsets.UTF_8) }
+    .filter { it.startsWith("ACCOUNT_LINK_HOST=") }
+    .map { it.substringAfter("=") }
+require(accountLinkHosts.size <= 1) { "Duplicate ACCOUNT_LINK_HOST configuration." }
+val rawAccountLinkHost = accountLinkHosts.singleOrNull().orEmpty()
+val accountLinkHost = rawAccountLinkHost.lowercase(Locale.ROOT)
+if (rawAccountLinkHost.isNotEmpty()) {
+    val labels = rawAccountLinkHost.split(".")
+    val label = Regex("[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+    require(rawAccountLinkHost.length <= 253 && labels.size >= 2 &&
+        labels.all { label.matches(it) } &&
+        labels.last().any { it in 'a'..'z' || it in 'A'..'Z' }) {
+        "Invalid ACCOUNT_LINK_HOST."
+    }
+}
+val accountLinkFilters = if (accountLinkHost.isEmpty()) "" else
+    listOf("/account-setup", "/reset-password", "/sign-up", "/otp").joinToString("\n") { path ->
+        """
+        <intent-filter android:autoVerify="true">
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" android:host="$accountLinkHost" android:path="$path" />
+        </intent-filter>
+        """.trimIndent()
+    }
+val accountLinkManifest = layout.buildDirectory.file("generated/accountLinks/AndroidManifest.xml").get().asFile
+val manifestTemplate = file("src/main/AndroidManifest.xml").readText()
+check(manifestTemplate.contains("<!-- ACCOUNT_LINK_FILTERS -->"))
+val effectiveManifest = manifestTemplate.replace("<!-- ACCOUNT_LINK_FILTERS -->", accountLinkFilters)
+// A generated main manifest avoids advertising a fake host in unconfigured builds.
+accountLinkManifest.parentFile.mkdirs()
+if (!accountLinkManifest.exists() || accountLinkManifest.readText() != effectiveManifest) {
+    accountLinkManifest.writeText(effectiveManifest)
+}
+
 android {
+    sourceSets.getByName("main").manifest.srcFile(accountLinkManifest)
     namespace = "vn.sme.meetingassistant.sme_meeting_assistant"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
