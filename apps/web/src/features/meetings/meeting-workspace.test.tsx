@@ -1310,7 +1310,9 @@ describe('MeetingWorkspacePage', () => {
     })
 
     try {
-      await userEvent.click(screen.getByRole('button', { name: 'Edit meeting' }))
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Edit meeting' })
+      )
       await userEvent.fill(
         screen.getByRole('textbox', { name: 'Date', exact: true }),
         '2026-09-01'
