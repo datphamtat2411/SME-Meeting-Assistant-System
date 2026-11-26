@@ -296,8 +296,10 @@ export async function readAssistantHistoryProtected(
   conversationId: string,
   read: () => Promise<AssistantConversationDetail>
 ): Promise<AssistantConversationDetail> {
+  const token = captureAssistantAccess(client, conversationId)
   const epoch = historyEpoch(client, conversationId)
   const detail = await readAssistantProtected(client, conversationId, read)
+  assertAssistantAccessCurrent(client, token)
   if (epoch !== historyEpoch(client, conversationId)) {
     throw new CoreApiError({
       code: 'ASSISTANT_OPERATION_OBSOLETE',

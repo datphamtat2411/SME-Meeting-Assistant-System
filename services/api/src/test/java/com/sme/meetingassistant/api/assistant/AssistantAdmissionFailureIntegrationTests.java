@@ -22,7 +22,6 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.web.server.ResponseStatusException;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import tools.jackson.databind.ObjectMapper;
 
@@ -47,7 +46,8 @@ class AssistantAdmissionFailureIntegrationTests {
         doThrow(new DataAccessResourceFailureException("database unavailable"))
             .when(admission).configureLockWaitTimeout();
         when(admission.databaseUnavailable()).thenReturn(
-            new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE));
+            new AssistantDomainException(HttpStatus.SERVICE_UNAVAILABLE,
+                "ASSISTANT_UNAVAILABLE", "Assistant admission is temporarily unavailable."));
 
         MvcResult result = mvc.perform(post("/api/v1/assistant/conversations/" + conversation + "/messages")
             .principal(principal(owner)).header("Idempotency-Key", "admission-db-failure")
@@ -56,7 +56,7 @@ class AssistantAdmissionFailureIntegrationTests {
 
         assertThat(result.getResponse().getStatus()).isEqualTo(503);
         assertThat(json.readTree(result.getResponse().getContentAsString()).path("code").asText())
-            .isEqualTo("INTERNAL_SERVICE_UNAVAILABLE");
+            .isEqualTo("ASSISTANT_UNAVAILABLE");
         assertThat(result.getResponse().getContentAsString()).doesNotContain("database unavailable", "SQL");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_turns WHERE conversation_id=?",
             Long.class, conversation)).isZero();

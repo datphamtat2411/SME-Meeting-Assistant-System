@@ -1,5 +1,5 @@
 import { RefreshCw, ShieldAlert } from 'lucide-react'
-import { CoreApiError, normalizeCoreApiError } from '@/lib/core-api'
+import { type CoreApiError, normalizeCoreApiError } from '@/lib/core-api'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 
