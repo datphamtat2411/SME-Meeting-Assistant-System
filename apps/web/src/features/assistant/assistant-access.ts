@@ -199,7 +199,8 @@ export function isAssistantAuthorizationDenial(error: unknown): boolean {
     failure.status === 403 ||
     (failure.status === 404 &&
       failure.code !== 'ASSISTANT_TURN_NOT_FOUND' &&
-      failure.code !== 'ASSISTANT_HISTORY_ANCHOR_NOT_FOUND')
+      failure.code !== 'ASSISTANT_HISTORY_ANCHOR_NOT_FOUND' &&
+      failure.code !== 'ASSISTANT_MESSAGE_NOT_FOUND')
   )
 }
 
