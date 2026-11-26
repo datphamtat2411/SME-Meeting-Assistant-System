@@ -857,7 +857,10 @@ export function createRequestRecoveryCoordinator(
               signInInProgress ||
               startingLifecycleGeneration !== authLifecycleGeneration
             ) {
-              result = { type: 'failed', failure: authLifecycleBlockedFailure() }
+              result = {
+                type: 'failed',
+                failure: authLifecycleBlockedFailure(),
+              }
               return
             }
             result = await performRenewal(operationId)

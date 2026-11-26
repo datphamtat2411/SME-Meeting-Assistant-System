@@ -141,8 +141,7 @@ export function useCurrentUserVerification(): CurrentUserVerificationState & {
       // not authorization evidence while mandatory verification is unresolved.
       identity: revalidation === 'denied' ? undefined : query.data,
       isVerified: false,
-      hasEstablishedIdentity:
-        revalidation !== 'denied' && Boolean(query.data),
+      hasEstablishedIdentity: revalidation !== 'denied' && Boolean(query.data),
       canReadProtectedData: false,
       query,
     }

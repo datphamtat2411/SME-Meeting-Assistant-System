@@ -178,7 +178,9 @@ export function MemberAdministrationDialog({
     mode: 'onSubmit',
   })
 
-  const initializedSession = useRef<MemberEditorSession | null | undefined>(undefined)
+  const initializedSession = useRef<MemberEditorSession | null | undefined>(
+    undefined
+  )
   useEffect(() => {
     if (session && session.phase !== 'ready') {
       initializedSession.current = undefined

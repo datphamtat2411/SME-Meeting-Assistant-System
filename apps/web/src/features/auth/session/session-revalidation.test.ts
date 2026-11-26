@@ -7,7 +7,10 @@ import {
   resetCsrfToken,
   setCsrfToken,
 } from '@/lib/core-api'
-import { isSessionRevalidationRequired, RECOVERY_LOCK_NAME } from '@/lib/request-recovery'
+import {
+  isSessionRevalidationRequired,
+  RECOVERY_LOCK_NAME,
+} from '@/lib/request-recovery'
 import { signIn } from '../sign-in/sign-in-api'
 import {
   beginAuthLifecycleLogout,
@@ -236,7 +239,10 @@ describe('mandatory browser-session revalidation', () => {
         return success(config, { csrfToken: 'login-proof' })
       }
       if (config.url === '/auth/login') {
-        return success(config, { sessionStatus: 'ACTIVE', csrfToken: 'new-proof' })
+        return success(config, {
+          sessionStatus: 'ACTIVE',
+          csrfToken: 'new-proof',
+        })
       }
       return success(config, other)
     })
@@ -262,7 +268,10 @@ describe('mandatory browser-session revalidation', () => {
         refreshEntered.resolve()
         await releaseRefresh.promise
         renewed = true
-        return success(config, { sessionStatus: 'ACTIVE', csrfToken: 'renewed-proof' })
+        return success(config, {
+          sessionStatus: 'ACTIVE',
+          csrfToken: 'renewed-proof',
+        })
       }
       if (config.url === '/auth/csrf') {
         expect(renewed).toBe(true)
@@ -270,7 +279,10 @@ describe('mandatory browser-session revalidation', () => {
       }
       if (config.url === '/auth/login') {
         loggedIn = true
-        return success(config, { sessionStatus: 'ACTIVE', csrfToken: 'new-proof' })
+        return success(config, {
+          sessionStatus: 'ACTIVE',
+          csrfToken: 'new-proof',
+        })
       }
       if (loggedIn) return success(config, other)
       return renewed ? success(config, identity) : reject(config, 401)
@@ -282,7 +294,9 @@ describe('mandatory browser-session revalidation', () => {
     try {
       await vi.waitFor(async () => {
         const locks = await navigator.locks.query()
-        expect(locks.pending?.some((lock) => lock.name === RECOVERY_LOCK_NAME)).toBe(true)
+        expect(
+          locks.pending?.some((lock) => lock.name === RECOVERY_LOCK_NAME)
+        ).toBe(true)
       })
       expect(requests).not.toContain('/auth/login')
       expect(requests).not.toContain('/auth/csrf')
@@ -290,7 +304,9 @@ describe('mandatory browser-session revalidation', () => {
       releaseRefresh.resolve()
       await Promise.all([checking, login])
     }
-    expect(requests.indexOf('/auth/refresh')).toBeLessThan(requests.indexOf('/auth/login'))
+    expect(requests.indexOf('/auth/refresh')).toBeLessThan(
+      requests.indexOf('/auth/login')
+    )
     expect(client.getQueryData(['meetings'])).toBeUndefined()
     expect(await coreApi.get('/auth/me')).toEqual(other)
   })
@@ -318,10 +334,12 @@ describe('mandatory browser-session revalidation', () => {
       status: 'session-revalidation',
     })
     for (let i = 0; i < 2; i++) {
-      window.dispatchEvent(new StorageEvent('storage', {
-        key: SESSION_REVALIDATION_STORAGE_KEY,
-        newValue: signal,
-      }))
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: SESSION_REVALIDATION_STORAGE_KEY,
+          newValue: signal,
+        })
+      )
     }
     await expect(waitForSessionRevalidation()).resolves.toBe('verified')
     expect(requests.filter((path) => path === '/auth/refresh')).toHaveLength(1)

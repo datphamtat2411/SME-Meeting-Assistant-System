@@ -100,7 +100,8 @@ function AuthenticatedRoute() {
   const verifiedIdentity =
     verification.isVerified &&
     verification.identity &&
-    getSessionContextKey(verification.identity) === getSessionContextKey(verifiedUser)
+    getSessionContextKey(verification.identity) ===
+      getSessionContextKey(verifiedUser)
       ? verification.identity
       : undefined
 
@@ -126,8 +127,7 @@ function AuthenticatedRoute() {
     )
   }
 
-  const shielded =
-    revalidation === 'checking' || revalidation === 'unavailable'
+  const shielded = revalidation === 'checking' || revalidation === 'unavailable'
   // Do not mount a stale route context if the cache has already been contained.
   if (shielded && !cachedUser) {
     return (
@@ -141,7 +141,9 @@ function AuthenticatedRoute() {
   return (
     <>
       <Activity
-        key={getSessionContextKey(shielded && cachedUser ? cachedUser : verifiedUser)}
+        key={getSessionContextKey(
+          shielded && cachedUser ? cachedUser : verifiedUser
+        )}
         mode={shielded ? 'hidden' : 'visible'}
       >
         <div

@@ -152,7 +152,10 @@ describe('password-token callback surfaces', () => {
   it('reconciles a dispatched reset even after the callback is abandoned', async () => {
     let finish!: () => void
     resetAccountPassword.mockImplementationOnce(
-      () => new Promise<void>((resolve) => { finish = resolve })
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve
+        })
     )
     window.history.replaceState({}, '', '/reset-password#token=abandoned')
     const screen = await render(<PasswordReset />)
@@ -165,7 +168,9 @@ describe('password-token callback surfaces', () => {
     await expect.poll(() => resetAccountPassword.mock.calls.length).toBe(1)
     await screen.unmount()
     finish()
-    await expect.poll(() => requestSessionRevalidation.mock.calls.length).toBe(1)
+    await expect
+      .poll(() => requestSessionRevalidation.mock.calls.length)
+      .toBe(1)
   })
 
   it('keeps confirmed reset completion when session verification is unavailable', async () => {
