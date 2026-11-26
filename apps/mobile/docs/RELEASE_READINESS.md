@@ -12,6 +12,7 @@ For M06 Action Items and its verification status, see
 [`M06_ACCEPTANCE.md`](M06_ACCEPTANCE.md).
 For M07 Assistant, see [`M07_ACCEPTANCE.md`](M07_ACCEPTANCE.md) and the
 [Assistant contract](M07_WAVE01_CONTRACT.md).
+For Profile & Preferences, see [account workspace acceptance](PROFILE_PREFERENCES_ACCEPTANCE.md).
 
 ## Verified foundation capabilities
 

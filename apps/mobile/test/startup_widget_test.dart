@@ -655,6 +655,71 @@ void main() {
     },
   );
 
+
+  for (final scenario in ['confirmed', 'unconfirmed', 'storage']) {
+    testWidgets('Account sign-out presents the $scenario outcome', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(600, 1000);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final credentials = scenario == 'storage'
+          ? _FailingDeleteStorage()
+          : InMemoryCredentialStorage();
+      await _writeRefreshCredential(credentials, 'refresh-0');
+      final client = _authClient(
+        logoutStatus: scenario == 'unconfirmed' ? 503 : null,
+      );
+      final harness = _Harness.create(client, credentials);
+      await tester.pumpWidget(
+        MeetingAssistantApp(dependencies: harness.dependencies),
+      );
+      await pumpUntil(
+        tester,
+        () => harness.api.signedIn &&
+            find.byType(NavigationBar).evaluate().isNotEmpty,
+        reason: 'authenticated Account navigation',
+      );
+      await tester.tap(find.text('Tài khoản'));
+      await pumpUntil(
+        tester,
+        () => find.text('Test User').evaluate().isNotEmpty,
+        reason: 'canonical profile to render',
+      );
+      final logout = find.widgetWithText(OutlinedButton, 'Đăng xuất');
+      await tester.scrollUntilVisible(
+        logout,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(logout);
+      await tester.tap(logout);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Đăng xuất'));
+      final message = switch (scenario) {
+        'confirmed' => 'Đã đăng xuất khỏi thiết bị.',
+        'unconfirmed' =>
+          'Thiết bị đã đăng xuất, nhưng máy chủ chưa xác nhận việc thu hồi phiên.',
+        _ => 'Không thể xác nhận xóa phiên bảo mật',
+      };
+      await pumpUntil(
+        tester,
+        () => find.text(message).evaluate().isNotEmpty,
+        reason: 'Account sign-out destination outcome',
+      );
+      expect(harness.api.signedIn, isFalse);
+      expect(find.byType(AppShell), findsNothing);
+      expect(
+        client.requests.where(
+          (request) => request.url.path.endsWith('/auth/logout'),
+        ),
+        hasLength(1),
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
   testWidgets('a fresh authenticated shell is created after logout and login', (
     tester,
   ) async {
@@ -843,6 +908,32 @@ RecordingHttpClient _authClient({
         );
       }
       return jsonResponse(200, successEnvelope(null));
+    }
+    if (path.endsWith('/me/profile')) {
+      final identity = _identity();
+      return streamedResponse(
+        200,
+        body: utf8.encode(jsonEncode(successEnvelope({
+          'id': identity['userId'],
+          'email': identity['email'],
+          'displayName': identity['displayName'],
+          'globalRole': identity['globalRole'],
+          'accountStatus': identity['accountStatus'],
+          'primaryOrgUnitId': identity['primaryOrgUnitId'],
+        }))),
+        headers: {'content-type': 'application/json', 'etag': '"v1"'},
+      );
+    }
+    if (path.endsWith('/me/preferences')) {
+      return jsonResponse(
+        200,
+        successEnvelope({
+          'timezone': null,
+          'locale': null,
+          'meetingEmailEnabled': true,
+          'actionItemEmailEnabled': true,
+        }),
+      );
     }
     return jsonResponse(200, successEnvelope(<String, dynamic>{}));
   });

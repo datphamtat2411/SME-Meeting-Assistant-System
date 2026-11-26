@@ -8,6 +8,7 @@ import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/appearance_controller.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/profile/account_resource_view.dart';
+import 'package:sme_meeting_assistant/features/profile/preferences_panel.dart';
 import 'package:sme_meeting_assistant/features/profile/profile_controllers.dart';
 import 'package:sme_meeting_assistant/features/profile/profile_edit_dialog.dart';
 import 'package:sme_meeting_assistant/features/profile/profile_models.dart';
@@ -1635,6 +1636,314 @@ void main() {
     );
     expect(patches, 1);
     expect(reloads, 2);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  test('workspace identity observation does not repeat failed reloads', () async {
+    var name = 'Test User';
+    var reloads = 0;
+    final api = await _authenticated(
+      (request) => _profileResponse(name, '"v1"'),
+      reloadIdentity: () {
+        if (++reloads == 1) {
+          return jsonResponse(
+            503,
+            errorEnvelope('SERVICE_UNAVAILABLE', 'Unavailable'),
+          );
+        }
+        return jsonResponse(200, successEnvelope(_identity(name: name)));
+      },
+    );
+    final controller = ProfileController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await controller.refreshWorkspace();
+    expect(reloads, 0);
+
+    name = 'Changed on Web';
+    await controller.refreshWorkspace();
+    await _waitForIdentity(controller);
+    expect(controller.snapshot!.profile.displayName, name);
+    expect(controller.identityRefreshFailed, isTrue);
+    expect(reloads, 1);
+    await controller.refreshWorkspace();
+    expect(reloads, 1);
+
+    name = 'Another external change';
+    await controller.refreshWorkspace();
+    await _waitForIdentity(controller);
+    expect(reloads, 2);
+    expect(api.displayName, name);
+    expect(controller.identityStatus, IdentitySyncStatus.synchronized);
+  });
+
+  testWidgets('workspace refresh follows activation and route visibility', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(800, 1400);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    var profileReads = 0;
+    var preferenceReads = 0;
+    final api = (await tester.runAsync(
+      () => _authenticated((request) async {
+        expect(request.method, 'GET');
+        if (request.url.path.endsWith('/me/profile')) {
+          profileReads++;
+          return _profileResponse('Test User', '"v1"');
+        }
+        preferenceReads++;
+        return jsonResponse(200, successEnvelope(_preferences()));
+      }),
+    ))!;
+    final repository = ProfileRepository(api: api);
+    final appearance = AppearanceController(
+      preferences: InMemoryAppearancePreferences(),
+    );
+    addTearDown(appearance.dispose);
+    final navigator = GlobalKey<NavigatorState>();
+    var active = false;
+    late StateSetter update;
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: navigator,
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) {
+              update = setState;
+              return ProfilePage(
+                api: api,
+                repository: repository,
+                appearance: appearance,
+                active: active,
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(profileReads, 0);
+    expect(preferenceReads, 0);
+    update(() => active = true);
+    await pumpUntil(
+      tester,
+      () => find.text('Test User').evaluate().isNotEmpty &&
+          find.text('fr-CA').evaluate().isNotEmpty,
+      reason: 'initial account activation',
+    );
+    expect(profileReads, 1);
+    expect(preferenceReads, 1);
+    final panel = find.byType(PreferencesPanel);
+    final owner = tester.widget<PreferencesPanel>(panel).controller;
+
+    update(() => active = false);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(profileReads, 1);
+    expect(preferenceReads, 1);
+
+    update(() => active = true);
+    await pumpUntil(
+      tester,
+      () => profileReads == 2 && preferenceReads == 2 && !owner.loading,
+      reason: 'account re-entry refresh',
+    );
+    expect(tester.widget<PreferencesPanel>(panel).controller, same(owner));
+
+    final cover = navigator.currentState!.push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => const Scaffold(body: Text('Covered')),
+      ),
+    );
+    await tester.pumpAndSettle();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(profileReads, 2);
+    expect(preferenceReads, 2);
+    navigator.currentState!.pop();
+    await tester.pumpAndSettle();
+    await cover;
+    await pumpUntil(
+      tester,
+      () => profileReads == 3 && preferenceReads == 3 && !owner.loading,
+      reason: 'deferred foreground refresh',
+    );
+    await tester.pump();
+    expect(profileReads, 3);
+    expect(preferenceReads, 3);
+
+    // Manual refresh uses the same independent resource operations.
+    final refresh = tester.widget<RefreshIndicator>(
+      find.byType(RefreshIndicator),
+    );
+    final manual = refresh.onRefresh();
+    await pumpUntil(
+      tester,
+      () => profileReads == 4 && preferenceReads == 4 && !owner.loading,
+      reason: 'manual account refresh',
+    );
+    await manual;
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('preferences intent survives scroll and tab changes', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(800, 1400);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    var patches = 0;
+    final api = (await tester.runAsync(
+      () => _authenticated((request) async {
+        if (request.url.path.endsWith('/me/profile')) {
+          return _profileResponse('Test User', '"v1"');
+        }
+        if (request.method == 'PATCH') {
+          patches++;
+          return jsonResponse(
+            503,
+            errorEnvelope('SERVICE_UNAVAILABLE', 'Unavailable'),
+          );
+        }
+        return jsonResponse(200, successEnvelope(_preferences()));
+      }),
+    ))!;
+    final repository = ProfileRepository(api: api);
+    final appearance = AppearanceController(
+      preferences: InMemoryAppearancePreferences(),
+    );
+    addTearDown(appearance.dispose);
+    var active = true;
+    late StateSetter update;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) {
+              update = setState;
+              return IndexedStack(
+                index: active ? 0 : 1,
+                children: [
+                  ProfilePage(
+                    api: api,
+                    repository: repository,
+                    appearance: appearance,
+                    active: active,
+                  ),
+                  const Text('Other destination'),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    final panel = find.byType(PreferencesPanel);
+    await pumpUntil(
+      tester,
+      () => panel.evaluate().isNotEmpty &&
+          tester.widget<PreferencesPanel>(panel).controller.snapshot != null,
+      reason: 'preferences to load',
+    );
+    final owner = tester.widget<PreferencesPanel>(panel).controller;
+    final saved = await tester.runAsync(() => owner.updateMeetingEmail(false));
+    expect(saved, isFalse);
+    expect(owner.needsReconciliation, isTrue);
+    expect(owner.pendingIntent?.value, false);
+    await tester.pump();
+
+    tester.view.physicalSize = const Size(400, 600);
+    await tester.pump();
+    final scroll = find.byType(Scrollable).first;
+    final heading = find.text('Tài khoản & cài đặt');
+    await tester.scrollUntilVisible(heading, -300, scrollable: scroll);
+    update(() => active = false);
+    await tester.pump();
+    expect(owner.current, isTrue);
+    expect(owner.pendingIntent?.value, false);
+    update(() => active = true);
+    await tester.pump();
+    final meetingEmail = find.widgetWithText(SwitchListTile, 'Email cuộc họp');
+    await tester.scrollUntilVisible(meetingEmail, 300, scrollable: scroll);
+    await pumpUntil(
+      tester,
+      () => !owner.loading && !owner.needsReconciliation,
+      reason: 're-entry to reconcile the retained intent',
+    );
+    expect(tester.widget<PreferencesPanel>(panel).controller, same(owner));
+    expect(owner.pendingIntent?.value, false);
+    expect(owner.snapshot!.preferences.meetingEmailEnabled, isTrue);
+    expect(patches, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('stale logout confirmation cannot end a replacement session', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(600, 1000);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final api = (await tester.runAsync(
+      () => _authenticated((request) async {
+        if (request.url.path.endsWith('/me/profile')) {
+          return _profileResponse('Test User', '"v1"');
+        }
+        return jsonResponse(200, successEnvelope(_preferences()));
+      }),
+    ))!;
+    final appearance = AppearanceController(
+      preferences: InMemoryAppearancePreferences(),
+    );
+    addTearDown(appearance.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ProfilePage(
+            api: api,
+            repository: ProfileRepository(api: api),
+            appearance: appearance,
+          ),
+        ),
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Test User').evaluate().isNotEmpty,
+      reason: 'profile to render',
+    );
+    final logout = find.widgetWithText(OutlinedButton, 'Đăng xuất');
+    await tester.scrollUntilVisible(
+      logout,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(logout);
+    await tester.tap(logout);
+    await tester.pumpAndSettle();
+    expect(find.text('Đăng xuất khỏi thiết bị?'), findsOneWidget);
+    await tester.tap(find.text('Quay lại'));
+    await tester.pumpAndSettle();
+    expect(api.signedIn, isTrue);
+
+    await tester.tap(logout);
+    await tester.pumpAndSettle();
+    final scope = api.requireAuthenticatedSessionScope();
+    await tester.runAsync(() async {
+      await api.signOut();
+      await api.signIn('user@example.test', 'password');
+    });
+    final replacement = api.requireAuthenticatedSessionScope();
+    expect(replacement, isNot(scope));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Đăng xuất'));
+    await tester.pumpAndSettle();
+    expect(api.authenticatedSessionScope, replacement);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }
