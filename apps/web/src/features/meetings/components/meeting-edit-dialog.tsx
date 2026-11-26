@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { compareInstants, instantCivilFields } from '@/lib/regional-time'
+import { formatMeetingSchedule } from '../data/meeting-schedule-format'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
@@ -213,6 +214,8 @@ type EditAction = 'save' | 'schedule'
 
 type PendingSchedule = {
   action: EditAction
+  base: MeetingDetailResponse
+  roomId: string | undefined
   fingerprint: string
   payload: MeetingEditPayload
   schedule: ScheduleValues
@@ -322,7 +325,6 @@ export function MeetingEditDialog(props: MeetingEditDialogProps) {
 function MeetingEditSession({
   open,
   onOpenChange,
-  meeting,
   currentUserId,
   onCommitted,
   session,
@@ -332,6 +334,7 @@ function MeetingEditSession({
   onDiscardSession: () => void
 }) {
   const queryClient = useQueryClient()
+  const { locale } = useRegionalPresentation()
   const form = useForm<MeetingEditFormValues>({
     resolver: zodResolver(meetingEditFormSchema),
     defaultValues: toMeetingEditFormValues(
@@ -365,9 +368,7 @@ function MeetingEditSession({
     'precondition' | 'uncertain' | null
   >(null)
   const operationInFlight = useRef(false)
-  const [originalSchedule, setOriginalSchedule] = useState<OriginalSchedule>(
-    () => createOriginalSchedule(session.meeting)
-  )
+  const originalSchedule = createOriginalSchedule(workingMeeting)
   const reportedCommitKeys = useRef(new Set<string>())
 
   const title = useWatch({ control: form.control, name: 'title' })
@@ -448,6 +449,11 @@ function MeetingEditSession({
   const selectedRoom =
     selectedRoomQuery.data ??
     roomsQuery.data?.options.find((room) => room.id === roomId)
+  const latestRoomId = latestDetail?.meeting.roomId ?? undefined
+  const latestRoomQuery = useQuery({
+    ...roomFilterOptionByIdQueryOptions(latestRoomId),
+    enabled: open && Boolean(latestRoomId),
+  })
   const roomUnavailable = Boolean(
     roomId && selectedRoomQuery.isError && !selectedRoom
   )
@@ -469,6 +475,7 @@ function MeetingEditSession({
     busy ||
     phase === 'version_unverified' ||
     editingBlocked ||
+    latestDetail !== null ||
     phase === 'confirmed'
 
   useEffect(() => {
@@ -623,21 +630,8 @@ function MeetingEditSession({
       invalidateRoomAvailability: intent.scheduleChanged,
     })
     setLatestDetail(latest)
-    setWorkingMeeting(latest.meeting)
-    setCurrentEtag(latest.etag)
-    setOriginalSchedule(createOriginalSchedule(latest.meeting))
-    const refreshed = toMeetingEditFormValues(latest.meeting, scheduleTimezone)
-    const dirty = form.formState.dirtyFields
-    if (!hasDirtyStart(dirty)) {
-      form.resetField('date', { defaultValue: refreshed.date })
-      form.resetField('startTime', { defaultValue: refreshed.startTime })
-      form.setValue('originalStartAt', refreshed.originalStartAt)
-    }
-    if (!hasDirtyEnd(dirty)) {
-      form.resetField('endDate', { defaultValue: refreshed.endDate })
-      form.resetField('endTime', { defaultValue: refreshed.endTime })
-      form.setValue('originalEndAt', refreshed.originalEndAt)
-    }
+    // Keep the reviewed version and its civil draft together until the user
+    // explicitly adopts the latest snapshot. Never advance only the ETag.
 
     const lifecycleEditable =
       latest.meeting.status === 'DRAFT' || latest.meeting.status === 'SCHEDULED'
@@ -653,6 +647,7 @@ function MeetingEditSession({
     intent: ReconciliationIntent,
     mode: 'precondition' | 'uncertain'
   ) => {
+    clearPreview()
     setReconciliationIntent(intent)
     setReconciliationMode(mode)
     setPhase('reconciling')
@@ -726,12 +721,22 @@ function MeetingEditSession({
     setFailure(error, intent.operation)
   }
 
-  const getVerifiedSnapshot = (): MeetingDetailResponse => {
-    return (
-      queryClient.getQueryData<MeetingDetailResponse>(
-        meetingDetailQueryKey(meeting.id)
-      ) ?? { meeting: workingMeeting, etag: currentEtag }
+  const getReviewedSnapshot = (): MeetingDetailResponse => ({
+    meeting: workingMeeting,
+    etag: currentEtag,
+  })
+
+  const reviewIfSnapshotChanged = async (
+    base: MeetingDetailResponse,
+    intent: ReconciliationIntent
+  ) => {
+    const cached = queryClient.getQueryData<MeetingDetailResponse>(
+      meetingDetailQueryKey(base.meeting.id)
     )
+    if (!cached || cached.etag === base.etag) return false
+
+    await reconcileMutation(intent, 'precondition')
+    return true
   }
 
   const buildValuesForMutation = (
@@ -775,6 +780,7 @@ function MeetingEditSession({
       scheduleChanged,
       outcome: 'saved',
     }
+    if (await reviewIfSnapshotChanged(base, intent)) return
     setPhase('saving')
     try {
       const result = await updateMeeting(
@@ -795,7 +801,7 @@ function MeetingEditSession({
     operationInFlight.current = true
     setErrorMessage(null)
     setShowWarningDetails(false)
-    const base = getVerifiedSnapshot()
+    const base = candidate.base
     let mutationEtag = base.etag
     let patchedResult: ConfirmedMutation | undefined
     let scheduleIntent: ReconciliationIntent = {
@@ -818,6 +824,17 @@ function MeetingEditSession({
             : 'saved',
     }
     try {
+      if (await reviewIfSnapshotChanged(base, scheduleIntent)) return
+      if (
+        getSchedulingFingerprint(form.getValues(), candidate.schedule) !==
+        candidate.fingerprint
+      ) {
+        clearPreview()
+        setErrorMessage('The schedule inputs changed. Review and save again.')
+        setPhase('idle')
+        operationInFlight.current = false
+        return
+      }
       if (hasMeetingEditChanges(candidate.payload)) {
         setPhase('saving')
         const patched = await updateMeeting(
@@ -850,6 +867,12 @@ function MeetingEditSession({
         return
       }
 
+      if (
+        patchedResult &&
+        (await reviewIfSnapshotChanged(patchedResult, scheduleIntent))
+      ) {
+        return
+      }
       setPhase('scheduling')
       const scheduled = await scheduleMeeting(base.meeting.id, mutationEtag, {
         scheduledStartAt: candidate.schedule.scheduledStartAt,
@@ -867,11 +890,17 @@ function MeetingEditSession({
     action: EditAction,
     payload: MeetingEditPayload,
     scheduleValues: ScheduleValues,
-    scheduleChanged: boolean
+    scheduleChanged: boolean,
+    base: MeetingDetailResponse
   ) => {
     const fingerprint = getSchedulingFingerprint(values, scheduleValues)
     const candidate: PendingSchedule = {
       action,
+      base,
+      roomId:
+        'roomId' in payload
+          ? (payload.roomId ?? undefined)
+          : (base.meeting.roomId ?? undefined),
       fingerprint,
       payload,
       schedule: scheduleValues,
@@ -882,21 +911,24 @@ function MeetingEditSession({
     setScheduleCheckFingerprint(fingerprint)
     setPhase('checking')
     try {
-      const base = getVerifiedSnapshot()
-      const effectiveRoomId = Object.prototype.hasOwnProperty.call(
+      const intent: ReconciliationIntent = {
+        operation: 'Checking the meeting schedule',
+        expectedStatus: base.meeting.status as 'DRAFT' | 'SCHEDULED',
         payload,
-        'roomId'
-      )
-        ? (payload.roomId ?? undefined)
-        : (base.meeting.roomId ?? undefined)
+        schedule: scheduleValues,
+        scheduleChanged,
+        outcome: action === 'schedule' ? 'scheduled' : 'rescheduled',
+      }
+      if (await reviewIfSnapshotChanged(base, intent)) return
       const preview = await checkMeetingSchedule(
         buildScheduleCheckPayload({
           meetingId: base.meeting.id,
           start: scheduleValues.start,
           end: scheduleValues.end,
-          roomId: effectiveRoomId,
+          roomId: candidate.roomId,
         })
       )
+      if (await reviewIfSnapshotChanged(base, intent)) return
       setScheduleCheck(preview)
       if (
         !preview.previewOnly ||
@@ -934,7 +966,7 @@ function MeetingEditSession({
       roomUnavailable
     )
       return
-    const base = getVerifiedSnapshot()
+    const base = getReviewedSnapshot()
     if (!isEditableMeeting(base.meeting)) {
       setEditingBlocked(true)
       setErrorMessage(
@@ -984,7 +1016,8 @@ function MeetingEditSession({
         'save',
         payload,
         scheduleValues as ScheduleValues,
-        scheduleChanged
+        scheduleChanged,
+        base
       )
       return
     }
@@ -1002,7 +1035,7 @@ function MeetingEditSession({
       roomUnavailable
     )
       return
-    const base = getVerifiedSnapshot()
+    const base = getReviewedSnapshot()
     if (!isEditableMeeting(base.meeting) || base.meeting.status !== 'DRAFT') {
       setEditingBlocked(true)
       setErrorMessage(
@@ -1029,7 +1062,7 @@ function MeetingEditSession({
     operationInFlight.current = true
     clearPreview()
     setErrorMessage(null)
-    await checkAndCommit(values, 'schedule', payload, scheduleValues, true)
+    await checkAndCommit(values, 'schedule', payload, scheduleValues, true, base)
   }
 
   const confirmScheduleWarnings = () => {
@@ -1060,7 +1093,7 @@ function MeetingEditSession({
     void reconcileMutation(reconciliationIntent, reconciliationMode)
   }
 
-  const reloadLatestMeeting = () => {
+  const adoptLatestMeeting = (keepEdits: boolean) => {
     if (!latestDetail) return
     if (
       latestDetail.meeting.status !== 'DRAFT' &&
@@ -1078,8 +1111,27 @@ function MeetingEditSession({
       form.getValues('fallbackRequired'),
       form.getValues('fallbackAcknowledged')
     )
+    const draft = form.getValues()
+    const dirty = form.formState.dirtyFields
+    const keepStart = keepEdits && hasDirtyStart(dirty)
+    const keepEnd = keepEdits && hasDirtyEnd(dirty)
+    const keepFields = (['title', 'description', 'roomId'] as const).filter(
+      (field) => keepEdits && dirty[field]
+    )
     form.reset(formValues)
-    setOriginalSchedule(createOriginalSchedule(latestDetail.meeting))
+    for (const field of keepFields) {
+      form.setValue(field, draft[field], { shouldDirty: true })
+    }
+    if (keepStart) {
+      for (const field of ['date', 'startTime', 'startOccurrence'] as const) {
+        form.setValue(field, draft[field], { shouldDirty: true })
+      }
+    }
+    if (keepEnd) {
+      for (const field of ['endDate', 'endTime', 'endOccurrence'] as const) {
+        form.setValue(field, draft[field], { shouldDirty: true })
+      }
+    }
     setWorkingMeeting(latestDetail.meeting as EditableMeetingView)
     setCurrentEtag(latestDetail.etag)
     setLatestDetail(null)
@@ -1135,79 +1187,83 @@ function MeetingEditSession({
 
           <Form {...form}>
             <form id='edit-meeting-form' className='space-y-4'>
-              <FormField
-                control={form.control}
-                name='title'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Title</FormLabel>
-                    <FormControl>
-                      <Input {...field} placeholder='Meeting title' />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              <fieldset disabled={busy} className='space-y-4'>
+                <FormField
+                  control={form.control}
+                  name='title'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Title</FormLabel>
+                      <FormControl>
+                        <Input {...field} placeholder='Meeting title' />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
 
-              <FormField
-                control={form.control}
-                name='description'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Description</FormLabel>
-                    <FormControl>
-                      <Textarea
-                        {...field}
-                        placeholder='What should the team accomplish?'
-                        rows={3}
+                <FormField
+                  control={form.control}
+                  name='description'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Description</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          {...field}
+                          placeholder='What should the team accomplish?'
+                          rows={3}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <MeetingScheduleFields />
+
+                <FormField
+                  control={form.control}
+                  name='roomId'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Meeting room</FormLabel>
+                      <MeetingRoomLookup
+                        value={field.value}
+                        onChange={(value) => {
+                          if (!operationInFlight.current) field.onChange(value)
+                        }}
+                        open={roomLookupOpen}
+                        onOpenChange={setRoomLookupOpen}
+                        searchValue={roomLookupSearch}
+                        onSearchChange={(value) => {
+                          setRoomLookupSearch(value)
+                          setRoomLookupPage(1)
+                        }}
+                        options={roomsQuery.data?.options ?? []}
+                        selectedOption={selectedRoom}
+                        pagination={roomsQuery.data?.pagination}
+                        page={roomLookupPage}
+                        isLoading={roomLookupOpen && roomsQuery.isPending}
+                        isFetching={roomLookupOpen && roomsQuery.isFetching}
+                        isError={roomsQuery.isError}
+                        onRetry={() => void roomsQuery.refetch()}
+                        onPageChange={setRoomLookupPage}
+                        selectedLoading={Boolean(
+                          roomId && !selectedRoom && selectedRoomQuery.isPending
+                        )}
+                        selectedUnavailable={roomUnavailable}
                       />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+                      <FormDescription>
+                        The selected-room preview is advisory. Core API rechecks
+                        the reservation when the change is committed.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
 
-              <MeetingScheduleFields />
-
-              <FormField
-                control={form.control}
-                name='roomId'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Meeting room</FormLabel>
-                    <MeetingRoomLookup
-                      value={field.value}
-                      onChange={field.onChange}
-                      open={roomLookupOpen}
-                      onOpenChange={setRoomLookupOpen}
-                      searchValue={roomLookupSearch}
-                      onSearchChange={(value) => {
-                        setRoomLookupSearch(value)
-                        setRoomLookupPage(1)
-                      }}
-                      options={roomsQuery.data?.options ?? []}
-                      selectedOption={selectedRoom}
-                      pagination={roomsQuery.data?.pagination}
-                      page={roomLookupPage}
-                      isLoading={roomLookupOpen && roomsQuery.isPending}
-                      isFetching={roomLookupOpen && roomsQuery.isFetching}
-                      isError={roomsQuery.isError}
-                      onRetry={() => void roomsQuery.refetch()}
-                      onPageChange={setRoomLookupPage}
-                      selectedLoading={Boolean(
-                        roomId && !selectedRoom && selectedRoomQuery.isPending
-                      )}
-                      selectedUnavailable={roomUnavailable}
-                    />
-                    <FormDescription>
-                      The selected-room preview is advisory. Core API rechecks
-                      the reservation when the change is committed.
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
+              </fieldset>
               <div className='flex items-center gap-2 text-sm text-muted-foreground'>
                 <CalendarDays className='size-4' />
                 <span>
@@ -1219,6 +1275,7 @@ function MeetingEditSession({
               {open &&
                 phase === 'idle' &&
                 !editingBlocked &&
+                !latestDetail &&
                 isEditableMeeting(workingMeeting) &&
                 schedule &&
                 roomId && (
@@ -1254,6 +1311,35 @@ function MeetingEditSession({
                       </span>
                       . Your local edits are still in the form.
                     </p>
+                    <p>
+                      Latest schedule:{' '}
+                      {formatMeetingSchedule(
+                        latestDetail.meeting.scheduledStartAt,
+                        latestDetail.meeting.scheduledEndAt,
+                        scheduleTimezone,
+                        locale
+                      )}{' '}
+                      ({scheduleTimezone})
+                    </p>
+                    <p>
+                      Latest room:{' '}
+                      {latestRoomId
+                        ? (latestRoomQuery.data?.name ?? 'Room details unavailable')
+                        : 'No room assigned'}
+                    </p>
+                    <p>
+                      Review the new version before saving. Keeping edits updates
+                      untouched fields and requires a new schedule check.
+                    </p>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      disabled={editingBlocked || busy}
+                      onClick={() => adoptLatestMeeting(true)}
+                    >
+                      Review and keep my edits
+                    </Button>
                     <Button
                       type='button'
                       variant='outline'
@@ -1379,7 +1465,7 @@ function MeetingEditSession({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Keep my edits</AlertDialogCancel>
-            <AlertDialogAction onClick={reloadLatestMeeting}>
+            <AlertDialogAction onClick={() => adoptLatestMeeting(false)}>
               Reload latest data
             </AlertDialogAction>
           </AlertDialogFooter>

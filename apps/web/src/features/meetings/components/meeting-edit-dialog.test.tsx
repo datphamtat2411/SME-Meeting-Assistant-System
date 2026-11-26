@@ -7,6 +7,7 @@ import { CoreApiError, coreApi } from '@/lib/core-api'
 import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { canonicalizeLocalDateTime } from '../data/meeting-creation-api'
+import { meetingDetailQueryKey } from '../data/meeting-cache'
 import { MeetingEditDialog } from './meeting-edit-dialog'
 
 const pagination = {
@@ -907,6 +908,108 @@ describe('MeetingEditDialog', () => {
       .toBeInTheDocument()
     expect(patchSpy).toHaveBeenCalledTimes(1)
   })
+
+
+  it.each(['before check', 'after warnings'] as const)(
+    'requires a new review when the schedule snapshot changes %s',
+    async (timing) => {
+      await setBrowserTimeZone(utcTimeZone)
+      mockRoomQueries()
+      const client = createQueryClient()
+      const latest = {
+        ...scheduledMeeting,
+        scheduledEndAt: '2026-09-01T11:00:00.123456Z',
+        roomId: 'room-2',
+      }
+      const preview = vi.spyOn(coreApi, 'post').mockResolvedValue({
+        previewOnly: true,
+        canSchedule: true,
+        roomConflict: false,
+        room: null,
+        warnings: [{ code: 'PARTICIPANT_OVERLAP', userId: 'user-2' }],
+      })
+      const patch = vi.spyOn(coreApi, 'patchWithMetaAndEtag').mockResolvedValue({
+        data: { ...latest, scheduledStartAt: '2026-09-01T08:30:00.000Z' },
+        meta: {},
+        etag: 'etag-final',
+      })
+      vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+        data: latest,
+        meta: {},
+        etag: 'etag-server',
+      })
+      const screen = await render(
+        <QueryClientProvider client={client}>
+          <RegionalPresentationProvider>
+            <MeetingEditDialog
+              open
+              onOpenChange={vi.fn()}
+              meeting={scheduledMeeting}
+              etag='etag-current'
+            />
+          </RegionalPresentationProvider>
+        </QueryClientProvider>
+      )
+      await userEvent.fill(screen.getByLabelText('Start time'), '08:30')
+      if (timing === 'after warnings') {
+        await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+        await expect
+          .element(screen.getByRole('button', { name: 'Schedule anyway' }))
+          .toBeVisible()
+      }
+      client.setQueryData(meetingDetailQueryKey(latest.id), {
+        meeting: latest,
+        etag: 'etag-server',
+      })
+      await userEvent.click(
+        screen.getByRole('button', {
+          name: timing === 'before check' ? 'Save changes' : 'Schedule anyway',
+        })
+      )
+      await expect
+        .element(screen.getByRole('button', { name: 'Review and keep my edits' }))
+        .toBeVisible()
+      expect(patch).not.toHaveBeenCalled()
+      await expect.element(screen.getByLabelText('Start time')).toHaveValue('08:30')
+      await expect
+        .element(screen.getByRole('button', { name: 'Save changes' }))
+        .toBeDisabled()
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Review and keep my edits' })
+      )
+      await expect.element(screen.getByLabelText('End time')).toHaveValue('11:00')
+      await expect
+        .element(screen.getByRole('combobox', { name: 'Meeting room' }))
+        .toHaveTextContent('Studio')
+      await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+      await expect
+        .element(screen.getByRole('button', { name: 'Schedule anyway' }))
+        .toBeVisible()
+      expect(preview.mock.calls).toContainEqual(
+        expect.arrayContaining([
+          '/meeting-schedule-checks',
+          expect.objectContaining({
+            start: '2026-09-01T08:30:00.000Z',
+            end: latest.scheduledEndAt,
+            roomId: 'room-2',
+          }),
+        ])
+      )
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Schedule anyway' })
+      )
+      await expect.element(screen.getByText('Meeting changes saved')).toBeVisible()
+      expect(patch).toHaveBeenCalledTimes(1)
+      expect(patch).toHaveBeenCalledWith(
+        '/meetings/meeting-1',
+        {
+          scheduledStartAt: '2026-09-01T08:30:00.000Z',
+          scheduledEndAt: latest.scheduledEndAt,
+        },
+        { headers: { 'If-Match': 'etag-server' } }
+      )
+    }
+  )
 
   it('keeps stale form values and offers explicit reload after a 412', async () => {
     const patchSpy = vi
