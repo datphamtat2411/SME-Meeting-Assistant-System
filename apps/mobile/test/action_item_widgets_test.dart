@@ -69,12 +69,13 @@ void main() {
       if (request.method == 'POST') {
         throw StateError('No creation submission expected.');
       }
-      return meetingApiSuccess(
-        [
-          {'id': testMeetingId, 'title': 'Eligible meeting', 'canReadMeetingContext': true},
-        ],
-        meta: _pageMeta(20, 1),
-      );
+      return meetingApiSuccess([
+        {
+          'id': testMeetingId,
+          'title': 'Eligible meeting',
+          'canReadMeetingContext': true,
+        },
+      ], meta: _pageMeta(20, 1));
     });
     final repository = (await tester.runAsync(() => repositoryFor(client)))!;
     final creation = ActionItemCreationController(repository: repository);
@@ -105,65 +106,70 @@ void main() {
     expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
     expect(tester.takeException(), isNull);
     expect(
-      client.requests.where((r) => r.url.path.endsWith('/action-items') && r.method == 'POST'),
+      client.requests.where(
+        (r) => r.url.path.endsWith('/action-items') && r.method == 'POST',
+      ),
       isEmpty,
     );
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('global collection switches server query to reviewable proposals', (
-    tester,
-  ) async {
-    final queries = <Map<String, String>>[];
-    final client = MeetingTestHttpClient((request) async {
-      if (request.url.path.endsWith('/creation-meetings')) {
-        return meetingApiSuccess([], meta: _pageMeta(1, 0));
-      }
-      queries.add(request.url.queryParameters);
-      final reviewing = request.url.queryParameters['reviewable'] == 'true';
-      return meetingApiSuccess(
-        [
+  testWidgets(
+    'global collection switches server query to reviewable proposals',
+    (tester) async {
+      final queries = <Map<String, String>>[];
+      final client = MeetingTestHttpClient((request) async {
+        if (request.url.path.endsWith('/creation-meetings')) {
+          return meetingApiSuccess([], meta: _pageMeta(1, 0));
+        }
+        queries.add(request.url.queryParameters);
+        final reviewing = request.url.queryParameters['reviewable'] == 'true';
+        return meetingApiSuccess([
           if (reviewing)
             {
-              ...itemJson(status: 'PROPOSED', source: 'AI_EXTRACTED', official: false, assigneeId: null),
+              ...itemJson(
+                status: 'PROPOSED',
+                source: 'AI_EXTRACTED',
+                official: false,
+                assigneeId: null,
+              ),
               'title': 'Unassigned proposal',
             }
           else
             itemJson(),
-        ],
-        meta: _pageMeta(20, 1),
+        ], meta: _pageMeta(20, 1));
+      });
+      final api = createMeetingTestApi(client);
+      await tester.runAsync(() => signInMeetingTestApi(api));
+      final dependencies = AppDependencies(
+        api: api,
+        appearancePreferences: InMemoryAppearancePreferences(),
+        httpClient: client,
       );
-    });
-    final api = createMeetingTestApi(client);
-    await tester.runAsync(() => signInMeetingTestApi(api));
-    final dependencies = AppDependencies(
-      api: api,
-      appearancePreferences: InMemoryAppearancePreferences(),
-      httpClient: client,
-    );
-    addTearDown(dependencies.dispose);
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: ActionItemsPage(dependencies: dependencies)),
-      ),
-    );
-    await pumpUntil(
-      tester,
-      () => find.text('Send report').evaluate().isNotEmpty,
-      reason: 'official work collection',
-    );
-    expect(queries.first['official'], 'true');
-    expect(queries.first['assignee'], 'me');
-    await tester.tap(find.text('Chờ duyệt'));
-    await pumpUntil(
-      tester,
-      () => find.text('Unassigned proposal').evaluate().isNotEmpty,
-      reason: 'reviewable proposal collection',
-    );
-    expect(queries.last['reviewable'], 'true');
-    expect(queries.last.containsKey('assignee'), isFalse);
-    expect(find.textContaining('Chưa phân công'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      addTearDown(dependencies.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ActionItemsPage(dependencies: dependencies)),
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () => find.text('Send report').evaluate().isNotEmpty,
+        reason: 'official work collection',
+      );
+      expect(queries.first['official'], 'true');
+      expect(queries.first['assignee'], 'me');
+      await tester.tap(find.text('Chờ duyệt'));
+      await pumpUntil(
+        tester,
+        () => find.text('Unassigned proposal').evaluate().isNotEmpty,
+        reason: 'reviewable proposal collection',
+      );
+      expect(queries.last['reviewable'], 'true');
+      expect(queries.last.containsKey('assignee'), isFalse);
+      expect(find.textContaining('Chưa phân công'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 }

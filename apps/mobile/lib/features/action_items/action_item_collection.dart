@@ -314,7 +314,8 @@ class ActionItemCollectionController extends ChangeNotifier {
       if (error is ActionItemFailure &&
           (error.category == ActionItemFailureCategory.authentication ||
               error.category == ActionItemFailureCategory.authorization ||
-              error.category == ActionItemFailureCategory.resourceUnavailable)) {
+              error.category ==
+                  ActionItemFailureCategory.resourceUnavailable)) {
         _items = const [];
         _total = null;
         _loaded = false;
@@ -351,11 +352,7 @@ class ActionItemCollectionController extends ChangeNotifier {
   }
 
   void _drainInvalidation() {
-    if (_current &&
-        _active &&
-        _dirty &&
-        _timer == null &&
-        _operation == null) {
+    if (_current && _active && _dirty && _timer == null && _operation == null) {
       unawaited(refresh());
     }
   }

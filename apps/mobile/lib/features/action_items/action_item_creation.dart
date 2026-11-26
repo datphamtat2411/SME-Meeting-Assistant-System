@@ -6,7 +6,13 @@ import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'action_item_models.dart';
 import 'action_item_repository.dart';
 
-enum ActionItemCreationPhase { idle, checking, submitting, unresolved, rejected }
+enum ActionItemCreationPhase {
+  idle,
+  checking,
+  submitting,
+  unresolved,
+  rejected,
+}
 
 /// A session-owned logical creation attempt. It must outlive individual forms
 /// but is deliberately not persisted across process or session termination.
@@ -71,7 +77,9 @@ class ActionItemCreationController extends ChangeNotifier {
     if (!sameActionItemIdentity(input.meetingId, meeting.id) ||
         !sameActionItemIdentity(input.assigneeUserId, assignee.id) ||
         assignee.accountStatus != ActionItemAccountStatus.active) {
-      throw ArgumentError('A verified meeting and active assignee are required.');
+      throw ArgumentError(
+        'A verified meeting and active assignee are required.',
+      );
     }
     _phase = ActionItemCreationPhase.checking;
     _error = null;

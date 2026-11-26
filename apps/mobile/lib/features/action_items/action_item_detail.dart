@@ -70,7 +70,8 @@ class ActionItemDetailController extends ChangeNotifier {
   bool get hasChanges {
     final original = _baseline;
     final draft = _draft;
-    final originalValues = _reconciliation?.originalValues ??
+    final originalValues =
+        _reconciliation?.originalValues ??
         (original == null ? null : ActionItemDraft.fromResource(original.item));
     return originalValues != null &&
         draft != null &&
@@ -112,7 +113,11 @@ class ActionItemDetailController extends ChangeNotifier {
   }
 
   void setDraft(ActionItemDraft value) {
-    if (!current || _busy || !editing || _reconciliation != null || _unresolved) {
+    if (!current ||
+        _busy ||
+        !editing ||
+        _reconciliation != null ||
+        _unresolved) {
       return;
     }
     _draft = value;
@@ -130,7 +135,10 @@ class ActionItemDetailController extends ChangeNotifier {
     Map<ActionItemEditField, ActionItemMergeChoice> choices,
   ) {
     final merge = _reconciliation;
-    if (!current || _busy || merge == null || !identical(_snapshot, merge.latest)) {
+    if (!current ||
+        _busy ||
+        merge == null ||
+        !identical(_snapshot, merge.latest)) {
       return;
     }
     final resolved = merge.resolve(choices);
@@ -201,6 +209,9 @@ class ActionItemDetailController extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+    final signal = repository.invalidation;
+    final revisionBefore = signal.revision;
+    final wasDirty = _dirty;
     _busy = true;
     _error = null;
     notifyListeners();
@@ -209,6 +220,14 @@ class ActionItemDetailController extends ChangeNotifier {
       final result = await operation();
       if (!current) return false;
       _snapshot = result;
+      // The verified response already represents our own mutation. A later
+      // or additional invalidation still requires a read.
+      if (!wasDirty &&
+          signal.revision == revisionBefore + 1 &&
+          signal.lastActionItemId != null &&
+          sameActionItemIdentity(signal.lastActionItemId!, itemId)) {
+        _dirty = false;
+      }
       _clearEdit();
       _unresolved = false;
       return true;
@@ -217,7 +236,8 @@ class ActionItemDetailController extends ChangeNotifier {
       _error = error;
       final failure = error is ActionItemFailure ? error : null;
       _unresolved =
-          failure == null || failure.outcome == ActionItemMutationOutcome.unknown;
+          failure == null ||
+          failure.outcome == ActionItemMutationOutcome.unknown;
       final needsRevalidation =
           _unresolved ||
           failure?.category == ActionItemFailureCategory.versionConflict ||
@@ -298,7 +318,8 @@ class ActionItemDetailController extends ChangeNotifier {
       if (error is ActionItemFailure &&
           (error.category == ActionItemFailureCategory.authentication ||
               error.category == ActionItemFailureCategory.authorization ||
-              error.category == ActionItemFailureCategory.resourceUnavailable)) {
+              error.category ==
+                  ActionItemFailureCategory.resourceUnavailable)) {
         _snapshot = null;
         _clearEdit();
         _unresolved = false;

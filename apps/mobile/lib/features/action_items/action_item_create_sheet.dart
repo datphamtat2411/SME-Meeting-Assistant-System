@@ -177,8 +177,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
     final confirmed = await confirmCommand(
       context,
       title: 'Bỏ yêu cầu chưa xác định?',
-      description:
-          'Công việc có thể đã được tạo. Tạo yêu cầu mới có thể dẫn đến trùng công việc. Hãy kiểm tra danh sách trước.',
+      description: 'Công việc có thể đã được tạo. Tạo yêu cầu mới có thể dẫn đến trùng công việc. Hãy kiểm tra danh sách trước.',
       confirmLabel: 'Tôi hiểu, bỏ yêu cầu',
       destructive: true,
     );
@@ -221,8 +220,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
       children: [
         const MessagePanel(
           title: 'Chưa xác định kết quả tạo công việc',
-          description:
-              'Máy chủ có thể đã lưu công việc. Chỉ thử lại cùng yêu cầu để tránh tạo trùng trong thời hạn cho phép.',
+          description: 'Máy chủ có thể đã lưu công việc. Chỉ thử lại cùng yêu cầu để tránh tạo trùng trong thời hạn cho phép.',
           icon: Icons.info_outline,
         ),
         if (input != null)
@@ -230,7 +228,10 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(input.title, style: Theme.of(context).textTheme.titleMedium),
+                Text(
+                  input.title,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
                 if (input.details != null) Text(input.details!),
                 Text('Hạn: ${actionItemDueLabel(input.dueDate)}'),
               ],
@@ -241,8 +242,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
         if (!_controller.canRetry)
           const MessagePanel(
             title: 'Không còn bảo đảm thử lại an toàn',
-            description:
-                'Hãy kiểm tra danh sách công việc. Không gửi lại bằng một khóa mới khi chưa biết kết quả.',
+            description: 'Hãy kiểm tra danh sách công việc. Không gửi lại bằng một khóa mới khi chưa biết kết quả.',
           ),
         FilledButton(
           onPressed: _controller.canRetry ? _retry : null,
@@ -260,8 +260,8 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
   Widget build(BuildContext context) {
     final current = _controller.current;
     final busy = _controller.busy;
-    final recovering = _unresolved ||
-        (_controller.unresolvedIntent != null && busy);
+    final recovering =
+        _unresolved || (_controller.unresolvedIntent != null && busy);
     return PopScope<bool>(
       canPop: _allowExit || (!busy && !current),
       onPopInvokedWithResult: (didPop, _) {
@@ -304,7 +304,9 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
                               onPressed: busy || _checkingInitialMeeting
                                   ? null
                                   : _pickMeeting,
-                              icon: const Icon(Icons.video_camera_front_outlined),
+                              icon: const Icon(
+                                Icons.video_camera_front_outlined,
+                              ),
                               label: Text(
                                 _meeting == null
                                     ? 'Chọn cuộc họp *'
@@ -333,7 +335,8 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
                                 setState(() => _dueDate = null);
                               },
                             ),
-                            if (_localError != null || _controller.error != null)
+                            if (_localError != null ||
+                                _controller.error != null)
                               MessagePanel(
                                 title: actionItemFailureLabel(
                                   _localError ?? _controller.error,
@@ -341,7 +344,8 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
                               ),
                             const SizedBox(height: 16),
                             FilledButton.icon(
-                              onPressed: busy ||
+                              onPressed:
+                                  busy ||
                                       _checkingInitialMeeting ||
                                       _meeting == null ||
                                       _assignee == null ||

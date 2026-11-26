@@ -116,7 +116,10 @@ class ActionItemReconciliation {
   ActionItemReconciliation withLatest(ActionItemSnapshot snapshot) {
     if (snapshot.sessionScope != latest.sessionScope ||
         !sameActionItemIdentity(snapshot.item.id, latest.item.id) ||
-        !sameActionItemIdentity(snapshot.item.meetingId, latest.item.meetingId)) {
+        !sameActionItemIdentity(
+          snapshot.item.meetingId,
+          latest.item.meetingId,
+        )) {
       throw ArgumentError('Reconciliation requires the same scoped resource.');
     }
     return ActionItemReconciliation._(
@@ -153,10 +156,9 @@ class ActionItemReconciliation {
     ...blockedFields,
   };
 
-  bool get intendedChangesReflected =>
-      local.changesFrom(_base).every(
-        (field) => local.value(field) == _server.value(field),
-      );
+  bool get intendedChangesReflected => local
+      .changesFrom(_base)
+      .every((field) => local.value(field) == _server.value(field));
 
   ActionItemDraft resolve(
     Map<ActionItemEditField, ActionItemMergeChoice> choices,

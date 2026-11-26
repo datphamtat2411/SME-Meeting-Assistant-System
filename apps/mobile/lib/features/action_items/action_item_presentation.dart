@@ -48,14 +48,21 @@ String actionItemFailureLabel(Object? failure) {
       return 'Chưa xác định kết quả thao tác. Vui lòng kiểm tra lại.';
     }
     return switch (failure.category) {
-      ActionItemFailureCategory.authentication => 'Phiên đăng nhập đã thay đổi.',
+      ActionItemFailureCategory.authentication =>
+        'Phiên đăng nhập đã thay đổi.',
       ActionItemFailureCategory.authorization => 'Bạn không có quyền thao tác.',
-      ActionItemFailureCategory.resourceUnavailable => 'Công việc không còn khả dụng.',
-      ActionItemFailureCategory.validation => 'Thông tin chưa hợp lệ. Kiểm tra các trường.',
-      ActionItemFailureCategory.versionConflict => 'Công việc đã được cập nhật ở nơi khác.',
-      ActionItemFailureCategory.businessConflict => 'Trạng thái hiện tại không cho phép thao tác.',
-      ActionItemFailureCategory.idempotencyConflict => 'Yêu cầu tạo công việc bị xung đột.',
-      ActionItemFailureCategory.rateLimited => 'Quá nhiều yêu cầu. Vui lòng thử lại sau.',
+      ActionItemFailureCategory.resourceUnavailable =>
+        'Công việc không còn khả dụng.',
+      ActionItemFailureCategory.validation =>
+        'Thông tin chưa hợp lệ. Kiểm tra các trường.',
+      ActionItemFailureCategory.versionConflict =>
+        'Công việc đã được cập nhật ở nơi khác.',
+      ActionItemFailureCategory.businessConflict =>
+        'Trạng thái hiện tại không cho phép thao tác.',
+      ActionItemFailureCategory.idempotencyConflict =>
+        'Yêu cầu tạo công việc bị xung đột.',
+      ActionItemFailureCategory.rateLimited =>
+        'Quá nhiều yêu cầu. Vui lòng thử lại sau.',
       _ => 'Không thể hoàn tất yêu cầu. Vui lòng thử lại.',
     };
   }
@@ -74,8 +81,7 @@ class ActionItemStatusIndicators extends StatelessWidget {
     crossAxisAlignment: WrapCrossAlignment.center,
     children: [
       StatePill(item.status.apiValue, label: actionItemStateLabel(item)),
-      if (!item.official)
-        const Chip(label: Text('Đề xuất AI')),
+      if (!item.official) const Chip(label: Text('Đề xuất AI')),
       if (item.overdue)
         Text(
           'Quá hạn',

@@ -9,6 +9,7 @@ import 'appearance_preferences.dart';
 
 import 'package:sme_meeting_assistant/features/action_items/action_item_invalidation.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_repository.dart';
+import 'package:sme_meeting_assistant/features/action_items/action_item_workflows.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_creation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart';
@@ -35,6 +36,7 @@ class AppDependencies {
   final http.Client httpClient;
   late final ActionItemInvalidationSignal actionItemInvalidation;
   late final ActionItemRepository actionItems;
+  late final ActionItemWorkflowOwner actionItemWorkflows;
   late final MeetingInvalidationSignal meetingInvalidation;
   late final MeetingRepository meetings;
   late final RoomSchedulingRepository roomScheduling;
@@ -77,6 +79,7 @@ class AppDependencies {
       invalidation: actionItemInvalidation,
       participantCandidates: participantCandidates,
     );
+    actionItemWorkflows = ActionItemWorkflowOwner(actionItems);
     meetingMembership = MeetingMembershipRepository(
       api: api,
       meetings: meetings,
@@ -189,6 +192,7 @@ class AppDependencies {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    actionItemWorkflows.dispose();
     actionItemInvalidation.dispose();
     // Fence every producer before releasing shared transport or local
     // persistence. If nothing is active, the close path runs synchronously

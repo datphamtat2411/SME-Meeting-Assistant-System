@@ -34,7 +34,7 @@ class ActionItemsPage extends StatefulWidget {
 
 class _ActionItemsPageState extends State<ActionItemsPage> {
   final _search = TextEditingController();
-  final _admission = ActionItemMutationAdmission();
+  late final ActionItemMutationAdmission _admission;
   late final ActionItemCollectionController _collection;
   late final ActionItemCreationController _creation;
   late final AuthenticatedSessionScope _scope;
@@ -67,7 +67,8 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
       fixedMeetingId: widget.meetingId,
       active: widget.active,
     );
-    _creation = ActionItemCreationController(repository: repository);
+    _creation = widget.dependencies.actionItemWorkflows.creation;
+    _admission = widget.dependencies.actionItemWorkflows.admission;
     _collection.addListener(_changed);
     _creation.addListener(_changed);
     if (widget.active) {
@@ -91,7 +92,6 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
     _collection.removeListener(_changed);
     _creation.removeListener(_changed);
     _collection.dispose();
-    _creation.dispose();
     _search.dispose();
     super.dispose();
   }
@@ -138,10 +138,7 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
     });
     try {
       final result = await widget.dependencies.actionItems.creationMeetings(
-        ActionItemCreationMeetingQuery(
-          search: widget.meetingId,
-          size: 1,
-        ),
+        ActionItemCreationMeetingQuery(search: widget.meetingId, size: 1),
         sessionScope: _scope,
       );
       if (!_current || generation != _eligibilityGeneration) return;
@@ -152,7 +149,8 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
         _eligible = widget.meetingId == null
             ? result.items.isNotEmpty
             : result.items.any(
-                (meeting) => sameActionItemIdentity(meeting.id, widget.meetingId!),
+                (meeting) =>
+                    sameActionItemIdentity(meeting.id, widget.meetingId!),
               );
       });
     } catch (error) {
@@ -394,7 +392,10 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
                   _apply();
                 },
                 itemBuilder: (_) => [
-                  const PopupMenuItem(value: 'all', child: Text('Mọi trạng thái')),
+                  const PopupMenuItem(
+                    value: 'all',
+                    child: Text('Mọi trạng thái'),
+                  ),
                   for (final status in ActionItemStatus.values)
                     if (_mode != ActionItemCollectionMode.myWork ||
                         status != ActionItemStatus.proposed)
@@ -405,7 +406,9 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
                 ],
                 child: Chip(
                   label: Text(
-                    _status == null ? 'Trạng thái' : actionItemStatusLabel(_status!),
+                    _status == null
+                        ? 'Trạng thái'
+                        : actionItemStatusLabel(_status!),
                   ),
                   avatar: const Icon(Icons.expand_more, size: 16),
                 ),
@@ -430,7 +433,9 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
             if (_mode != ActionItemCollectionMode.myWork)
               InputChip(
                 label: Text(
-                  _assignee == null ? 'Người phụ trách' : actionItemAssigneeLabel(_assignee),
+                  _assignee == null
+                      ? 'Người phụ trách'
+                      : actionItemAssigneeLabel(_assignee),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -490,8 +495,7 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
             ),
           ],
         ),
-        if (state.totalElements != null)
-          Text('${state.totalElements} kết quả'),
+        if (state.totalElements != null) Text('${state.totalElements} kết quả'),
         if (state.phase != ActionItemCollectionPhase.idle)
           const LinearProgressIndicator(),
       ],

@@ -61,10 +61,7 @@ void main() {
     final client = MeetingTestHttpClient((request) async {
       final page = int.parse(request.url.queryParameters['page']!);
       if (page == 0) {
-        return meetingApiSuccess(
-          List.generate(20, _item),
-          meta: _meta(0, 21),
-        );
+        return meetingApiSuccess(List.generate(20, _item), meta: _meta(0, 21));
       }
       if (attempts++ == 0) {
         return meetingApiFailure(503, 'INTERNAL_ERROR');
@@ -91,10 +88,7 @@ void main() {
     final client = MeetingTestHttpClient((request) async {
       final page = int.parse(request.url.queryParameters['page']!);
       return page == 0
-          ? meetingApiSuccess(
-              List.generate(20, _item),
-              meta: _meta(0, 21),
-            )
+          ? meetingApiSuccess(List.generate(20, _item), meta: _meta(0, 21))
           : meetingApiSuccess([_item(0)], meta: _meta(1, 21));
     });
     final repository = await repositoryFor(client);
@@ -231,7 +225,9 @@ void main() {
     await controller.refresh();
     expect(reads, 1);
     controller.setActive(false);
-    repository.invalidation.invalidate(sessionScope: repository.captureSession());
+    repository.invalidation.invalidate(
+      sessionScope: repository.captureSession(),
+    );
     expect(reads, 1);
     controller.setActive(true);
     await controller.refresh();

@@ -6,8 +6,10 @@ import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/paged_collection.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 
-typedef ActionItemPickerLoader<T> =
-    Future<PagedCollection<T>> Function(String search, int page);
+typedef ActionItemPickerLoader<T> = Future<PagedCollection<T>> Function(
+  String search,
+  int page,
+);
 
 class ActionItemPickerOption<T> {
   const ActionItemPickerOption({
@@ -101,6 +103,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
   void _reset({required bool debounce}) {
     if (!_current) return;
     _timer?.cancel();
+    _timer = null;
     setState(() {
       _generation++;
       _window = PageWindow<T>();
@@ -166,6 +169,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
           identity: (value) => widget.describe(value).id.toLowerCase(),
         )) {
           _loaded = true;
+          _accessDenied = false;
         }
       });
     } catch (error) {
@@ -173,7 +177,9 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
       setState(() {
         _error = error;
         if (error is ApiFailure &&
-            (error.status == 401 || error.status == 403 || error.status == 404)) {
+            (error.status == 401 ||
+                error.status == 403 ||
+                error.status == 404)) {
           _window = PageWindow<T>();
           _loaded = false;
           _accessDenied = true;
@@ -194,12 +200,14 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
         body: const MessagePanel(title: 'Phiên đăng nhập đã thay đổi'),
       );
     }
-    final pinnedIds = widget.pinned.map((option) => option.id.toLowerCase()).toSet();
+    final pinnedIds = widget.pinned
+        .map((option) => option.id.toLowerCase())
+        .toSet();
     final options = [
       if (!_accessDenied) ...widget.pinned,
-      ..._window.items.map(widget.describe).where(
-        (option) => !pinnedIds.contains(option.id.toLowerCase()),
-      ),
+      ..._window.items
+          .map(widget.describe)
+          .where((option) => !pinnedIds.contains(option.id.toLowerCase())),
     ];
     return Scaffold(
       appBar: AppBar(title: Text(widget.title)),
@@ -235,7 +243,8 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
             if (_busy) const LinearProgressIndicator(),
             Expanded(
               child: ListView.builder(
-                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 itemCount: options.length + 1,
                 itemBuilder: (context, index) {
@@ -270,7 +279,9 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
                     );
                   }
                   if (_loaded && _window.items.isEmpty && options.isEmpty) {
-                    return const MessagePanel(title: 'Không có kết quả phù hợp');
+                    return const MessagePanel(
+                      title: 'Không có kết quả phù hợp',
+                    );
                   }
                   if (_loaded && _window.hasMore) {
                     return OutlinedButton(
@@ -292,10 +303,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
 Future<T?> openActionItemPicker<T>(
   BuildContext context,
   ActionItemPicker<T> picker,
-) => Navigator.push<T>(
-  context,
-  MaterialPageRoute<T>(builder: (_) => picker),
-);
+) => Navigator.push<T>(context, MaterialPageRoute<T>(builder: (_) => picker));
 
 PagedCollection<R> mapActionItemPickerPage<T, R>(
   PagedCollection<T> page,

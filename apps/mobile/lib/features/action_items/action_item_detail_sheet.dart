@@ -154,7 +154,8 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     ActionItemCommand command,
   ) async {
     final destructive =
-        command == ActionItemCommand.cancel || command == ActionItemCommand.reject;
+        command == ActionItemCommand.cancel ||
+        command == ActionItemCommand.reject;
     if (destructive || command == ActionItemCommand.confirm) {
       final accepted = await confirmCommand(
         context,
@@ -167,7 +168,9 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     if (!mounted || !_controller.current) return;
     if (!identical(reviewed, _controller.snapshot)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Công việc đã thay đổi. Vui lòng xem lại.')),
+        const SnackBar(
+          content: Text('Công việc đã thay đổi. Vui lòng xem lại.'),
+        ),
       );
       return;
     }
@@ -234,7 +237,10 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
               _label('Người phụ trách', actionItemAssigneeLabel(item.assignee)),
               _label(
                 'Cuộc họp',
-                actionItemMeetingLabel(item.meetingId, item.meetingContext.title),
+                actionItemMeetingLabel(
+                  item.meetingId,
+                  item.meetingContext.title,
+                ),
               ),
               _label('Hạn hoàn thành', actionItemDueLabel(item.dueDate)),
               _label(
@@ -252,7 +258,10 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
               if (item.completedAt != null)
                 _label('Hoàn thành', localDateTimeLabel(item.completedAt)),
               if (item.cancelledAt != null)
-                _label('Hủy hoặc từ chối', localDateTimeLabel(item.cancelledAt)),
+                _label(
+                  'Hủy hoặc từ chối',
+                  localDateTimeLabel(item.cancelledAt),
+                ),
             ],
           ),
         ),
@@ -262,9 +271,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
                 ? null
                 : () => _controller.beginEdit(reviewed: snapshot),
             icon: const Icon(Icons.edit_outlined),
-            label: Text(
-              capabilities.canEdit ? 'Chỉnh sửa' : 'Phân công lại',
-            ),
+            label: Text(capabilities.canEdit ? 'Chỉnh sửa' : 'Phân công lại'),
           ),
         if (!capabilities.canEdit &&
             !capabilities.canAssign &&
@@ -319,7 +326,8 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
             onChanged: _changeDraft,
             onAssignee: _pickAssignee,
             onDueDate: _pickDate,
-            onClearAssignee: item.status == ActionItemStatus.proposed &&
+            onClearAssignee:
+                item.status == ActionItemStatus.proposed &&
                     draft.assigneeUserId != null
                 ? () => _changeDraft(replaceAssignee: true)
                 : null,
@@ -382,10 +390,22 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(_fieldLabel(field), style: Theme.of(context).textTheme.titleMedium),
-                _label('Ban đầu', _fieldValue(field, original.value(field), merge)),
-                _label('Của bạn', _fieldValue(field, merge.local.value(field), merge)),
-                _label('Máy chủ', _fieldValue(field, latest.value(field), merge)),
+                Text(
+                  _fieldLabel(field),
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                _label(
+                  'Ban đầu',
+                  _fieldValue(field, original.value(field), merge),
+                ),
+                _label(
+                  'Của bạn',
+                  _fieldValue(field, merge.local.value(field), merge),
+                ),
+                _label(
+                  'Máy chủ',
+                  _fieldValue(field, latest.value(field), merge),
+                ),
                 if (required.contains(field)) ...[
                   if (blocked.contains(field))
                     const Text('Giá trị cũ của bạn không còn được phép.'),
@@ -394,20 +414,24 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
                     children: [
                       ChoiceChip(
                         label: const Text('Giữ của tôi'),
-                        selected: _choices[field] == ActionItemMergeChoice.local,
+                        selected:
+                            _choices[field] == ActionItemMergeChoice.local,
                         onSelected: _controller.busy || blocked.contains(field)
                             ? null
                             : (_) => setState(
-                                () => _choices[field] = ActionItemMergeChoice.local,
+                                () => _choices[field] =
+                                    ActionItemMergeChoice.local,
                               ),
                       ),
                       ChoiceChip(
                         label: const Text('Dùng máy chủ'),
-                        selected: _choices[field] == ActionItemMergeChoice.server,
+                        selected:
+                            _choices[field] == ActionItemMergeChoice.server,
                         onSelected: _controller.busy
                             ? null
                             : (_) => setState(
-                                () => _choices[field] = ActionItemMergeChoice.server,
+                                () => _choices[field] =
+                                    ActionItemMergeChoice.server,
                               ),
                       ),
                     ],
@@ -417,8 +441,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
             ),
           ),
         FilledButton(
-          onPressed: _controller.busy ||
-                  !required.every(_choices.containsKey)
+          onPressed: _controller.busy || !required.every(_choices.containsKey)
               ? null
               : () {
                   try {
@@ -488,7 +511,9 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
                       ),
                     if (snapshot == null)
                       if (!_controller.busy && _controller.error == null)
-                        const MessagePanel(title: 'Công việc không còn khả dụng')
+                        const MessagePanel(
+                          title: 'Công việc không còn khả dụng',
+                        )
                       else
                         const SizedBox(height: 16)
                     else if (merge != null)
