@@ -3,7 +3,9 @@
 Account setup and password recovery request use the existing Core API and
 account lifecycle. Account setup is not public registration. The canonical
 setup route is /account-setup; /sign-up is an alias for previously issued
-links. The existing /otp reset callback remains supported pending Wave 02.
+links. Password reset is canonical at /reset-password; /otp remains a
+compatibility alias for previously issued reset links. These routes share their
+canonical workflows.
 
 All three account-flow mutations share a typed API boundary with a 30-second
 operation timeout and no automatic replay. Recovery acknowledgement is neutral;
@@ -29,6 +31,9 @@ ordinary access-token authentication, consistent with the endpoint's existing
 anonymous capability contract. Capability verification is unchanged. The
 transport regression test covers setup with an invalid access cookie and
 verifies that protected endpoints still reject that cookie.
+
+For final configuration, supported-browser requirements, and deferred
+integration acceptance, see the Wave 03 acceptance record and Web README.
 
 Recovery permits an explicit retry after an unavailable response. A credential
 mutation with an uncertain result remains blocked; setup guidance directs the

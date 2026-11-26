@@ -122,23 +122,46 @@ APP_AUTH_RECOVERY_RESET_URL=https://meet.example.com/reset-password
 The backend also requires separate purpose-specific signing keys
 (`APP_ACCOUNT_SETUP_SIGNING_KEY` and `APP_AUTH_RECOVERY_SIGNING_KEY`), a
 configured sender, the shared transactional email worker
-(`APP_EMAIL_DELIVERY_WORKER_ENABLED`), and approved SMTP settings. Account
-setup additionally requires `APP_ACCOUNT_SETUP_WORKER_ENABLED`; recovery is
-disabled unless `APP_AUTH_RECOVERY_ENABLED=true`. Consult the Core API
-deployment instructions for the complete SMTP and authentication-transport
-prerequisites. Do **not** embed signing keys, bearer capabilities, session
+(`APP_EMAIL_DELIVERY_WORKER_ENABLED`), and approved SMTP settings. The legacy
+`APP_ACCOUNT_SETUP_WORKER_ENABLED` setting is only the fallback value when the
+shared worker setting is unset; it is not a separate setup feature gate.
+Recovery is disabled unless `APP_AUTH_RECOVERY_ENABLED=true`. Consult the Core
+API deployment instructions for the complete SMTP and authentication-transport
+prerequisites. Live login/session acceptance additionally needs the Core API's
+existing authentication transport explicitly enabled in the isolated
+acceptance environment (`APP_AUTH_TRANSPORT_ENABLED=true`); it defaults to
+disabled. Provision its distinct CSRF and abuse-hashing secrets, JWT
+key/issuer/audience settings, approved origin, and required secure cookie/CSRF
+policy there. These are server-owned prerequisites, not Web settings or
+production rollout instructions. Do **not** embed signing keys, bearer capabilities, session
 tokens or email service credentials into any `VITE_*` variable. Both callback
-URLs must be HTTPS on the public Web origin. Backend emails append
-`#token=...`. Frontend removes that fragment from browser history and keeps the
-capability only in local React memory until use. Do not copy tokens into query
-parameters, storage, analytics, or diagnostic output. Account setup is not
-public self-registration.
+URLs must be approved HTTPS destinations on the public Web origin. Backend
+emails append `#token=...`. The frontend removes that fragment from browser
+history and retains the capability only in callback-scoped React memory until
+use. Do not copy capabilities or passwords into query parameters, browser
+storage, analytics, or diagnostic output. Account setup is not public
+self-registration.
 
 Password reset can be disabled by default (`APP_AUTH_RECOVERY_ENABLED=false`);
 the Web UI reports an unavailable endpoint instead of promising an email was
 sent. The recovery request must not reveal whether a user exists. Both account
 setup and reset share the server's stricter password policy; the 15–128
-character frontend length check is _not_ a replacement for server validation.
+Unicode code-point frontend length check is _not_ a replacement for server
+validation. Passwords are submitted exactly as entered; they are not trimmed.
+
+### Browser and security requirements
+
+Use a current, maintained release of Chromium, Firefox, or Safari on desktop or
+mobile. Required session-renewal coordination uses the Web Locks API and a
+secure context (HTTPS in deployment; browsers treat localhost as secure for
+local development). If Web Locks are missing or unavailable, protected session
+recovery fails closed; there is no unsafe lock fallback. `BroadcastChannel`
+provides optional cross-tab notification. When unavailable, the existing
+transient `storage` event is the coordination fallback; cross-tab notifications
+are advisory and each tab independently revalidates its session. Storage is not
+used for capabilities, passwords, or session tokens. Account callback pages
+declare `no-referrer`. The app currently loads Google Fonts as an external
+typography resource; account-flow forms make no third-party API calls.
 
 ## Meeting recordings and AI
 
@@ -179,6 +202,40 @@ cannot enable them. A missing public endpoint may appear as HTTP 404 and
 does not prove the meeting is authorized or export is enabled. Web reports
 that ambiguity, rejects stale download links, and re-reads Minutes after
 admission conflicts.
+
+## Deferred account-flow integration acceptance
+
+These checks are for the later system-integration/deployment phase, not Web
+module closure. Use an isolated Core API/database environment, disposable test
+accounts and recipient, approved HTTPS callback origin, and controlled SMTP
+capture. Enable the existing Core authentication transport only in that
+approved isolated environment and provision its transport prerequisites above.
+Keep credentials and raw email bodies out of logs and evidence.
+
+1. Configure distinct setup/recovery signing keys, approved canonical callback
+   URLs, recovery opt-in, sender and shared transactional worker; verify
+   effective configuration before starting Core. Do not set SMTP secrets in
+   Web configuration. Verify the existing CSRF, cookie, origin and
+   authentication-transport prerequisites.
+2. Create an organization-issued setup invitation and request recovery for a
+   disposable account. Confirm neutral recovery acknowledgement, capture both
+   generated messages, and verify links target `/account-setup` and
+   `/reset-password` with a fragment capability (never a query parameter).
+3. Open each link in the Web app; activate the account and reset the password.
+   Verify the intended credentials work, capabilities cannot be reused, and no
+   capability/password appears in browser history, storage, diagnostics or
+   acceptance evidence.
+4. With two authorized sessions/tabs, reset one account password. Verify the
+   affected browser sessions are revalidated/revoked as designed while an
+   unrelated account/session remains usable; verify multi-tab reconciliation
+   independently in each tab.
+5. Exercise controlled SMTP capture first, then separately verify approved
+   provider delivery if authorized. On a trusted HTTPS deployment, verify
+   Secure/HttpOnly/SameSite cookie behavior, CSRF enforcement, origin checks,
+   callback allowlisting and absence of mixed content.
+
+Record observed API, email-worker, browser and deployment evidence without
+claiming mocked/local HTTP checks as live acceptance.
 
 ## Integration verification and known limits
 

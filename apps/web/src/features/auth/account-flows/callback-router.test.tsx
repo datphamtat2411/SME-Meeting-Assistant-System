@@ -22,6 +22,15 @@ describe('account setup browser routing', () => {
   it('preserves the router entry on sanitization and isolates a new callback', async () => {
     const originalUrl = window.location.href
     const originalState: unknown = window.history.state
+    const storageSnapshot = (storage: Storage) =>
+      Object.fromEntries(
+        Array.from({ length: storage.length }, (_, index) => {
+          const key = storage.key(index)!
+          return [key, storage.getItem(key)]
+        })
+      )
+    const localStorageBefore = storageSnapshot(window.localStorage)
+    const sessionStorageBefore = storageSnapshot(window.sessionStorage)
     window.history.replaceState(
       null,
       '',
@@ -57,6 +66,11 @@ describe('account setup browser routing', () => {
       await expect.poll(() => history.location.hash).toBe('')
       expect(history.location.state.__TSR_key).toBe(initialKey)
       expect(history.location.search).toBe('?source=email')
+      expect(JSON.stringify(history.location.state)).not.toContain('first')
+      expect(storageSnapshot(window.localStorage)).toEqual(localStorageBefore)
+      expect(storageSnapshot(window.sessionStorage)).toEqual(
+        sessionStorageBefore
+      )
       let finishFirst!: () => void
       vi.mocked(completeAccountSetup).mockImplementationOnce(
         () =>
@@ -101,6 +115,9 @@ describe('account setup browser routing', () => {
       await expect
         .element(screen.getByRole('status'))
         .toHaveTextContent(/account is ready/i)
+      expect(document.body.textContent).not.toContain('second')
+      expect(document.body.textContent).not.toContain(newPassword)
+      expect(window.location.href).not.toContain('second')
       expect(completeAccountSetup).toHaveBeenCalledTimes(2)
       expect(completeAccountSetup).toHaveBeenLastCalledWith(
         'second',

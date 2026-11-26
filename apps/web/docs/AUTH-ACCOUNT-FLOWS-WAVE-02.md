@@ -3,7 +3,7 @@
 Password reset is implemented at `/reset-password`. The existing `/otp` route
 is a compatibility alias for previously issued links; it is not an OTP
 authentication mechanism. Configure `APP_AUTH_RECOVERY_RESET_URL` to the
-trusted HTTPS Web origin plus `/reset-password` for new recovery emails. Do
+approved HTTPS Web origin plus `/reset-password` for new recovery emails. Do
 not alter production configuration without the deployment owner's approval.
 Existing fragment-based links remain supported.
 
@@ -46,3 +46,7 @@ and request-recovery tests, auth lifecycle and session routing regression tests,
 then the Web CI static checks. Backend-generated recovery links and real
 revocation, SMTP delivery, and deployment acceptance require an enabled Core API
 test environment; mocked browser tests do not establish those results.
+
+This Wave 02 note describes implementation history. The Wave 03 acceptance
+record and Web README are authoritative for current configuration, browser
+requirements, verification evidence, and deferred integration/deployment gates.
