@@ -311,7 +311,7 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
             type='submit'
             disabled={
               busy ||
-              recovery ||
+              recovery !== null ||
               conflict ||
               !isDirty ||
               !isValid ||
