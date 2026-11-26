@@ -35,6 +35,7 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
   bool _visible = false;
   bool _dirty = false;
   bool _running = false;
+  bool _scheduled = false;
   int _generation = 0;
 
   bool get _active =>
@@ -121,7 +122,12 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
       _failure = null;
       _dirty = _active;
     });
-    if (_active && !_running) unawaited(_verify());
+    if (!_active || _running || _scheduled) return;
+    _scheduled = true;
+    scheduleMicrotask(() {
+      _scheduled = false;
+      if (_active) unawaited(_verify());
+    });
   }
 
   Future<void> _verify() async {

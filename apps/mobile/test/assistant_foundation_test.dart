@@ -5,11 +5,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
+import 'package:sme_meeting_assistant/core/app_dependencies.dart';
+import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
+import 'package:sme_meeting_assistant/features/assistant/assistant_evidence_resolver.dart';
+import 'package:sme_meeting_assistant/features/assistant/assistant_page.dart';
+import 'package:sme_meeting_assistant/core/meeting_models.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_message_view.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_repository.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_workspace_controller.dart';
 
+import 'action_item_foundation_test.dart' show itemJson;
 import 'support/meeting_test_support.dart';
+import 'support/widget_test_support.dart';
 
 const _conversationId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const _userMessageId = '11111111-1111-4111-8111-111111111111';
@@ -798,6 +805,311 @@ void main() {
         expect(find.text('Đã thống nhất.'), findsNothing);
       },
     );
+  });
+
+  group('Verified Assistant evidence', () {
+    for (final type in ['TRANSCRIPT', 'SUMMARY', 'DECISION', 'ACTION_ITEM']) {
+      test('verifies canonical $type identity and type-specific revision', () async {
+        var revision = 2;
+        var redact = false;
+        var deny = false;
+        var artifactReads = 0;
+        final citationJson = _citation()
+          ..['sourceType'] = type
+          ..['sourceRevision'] = 2;
+        final rawMessage = _message()..['citations'] = [citationJson];
+        Map<String, dynamic> decision(String id) => {
+          'id': id,
+          'meetingId': testMeetingId,
+          'content': 'Canonical decision',
+          'status': 'CONFIRMED',
+          'version': revision,
+          'isStale': false,
+          'createdAt': _timestamp,
+        };
+        final client = MeetingTestHttpClient((request) async {
+          final path = request.url.path;
+          if (path.endsWith('/meetings/$testMeetingId')) {
+            if (deny) return meetingApiFailure(403, 'AUTHZ_FORBIDDEN');
+            return meetingApiSuccess(
+              meetingTestJson(),
+              headers: {'etag': testMeetingEtag},
+            );
+          }
+          if (path.endsWith('/conversations/$_conversationId')) {
+            return meetingApiSuccess(
+              _detail(messages: [
+                if (redact)
+                  _message(visibility: 'SOURCE_UNAVAILABLE')
+                else
+                  rawMessage,
+              ]),
+            );
+          }
+          artifactReads++;
+          if (path.endsWith('/transcript')) {
+            return meetingApiSuccess({
+              'id': _sourceId,
+              'meetingId': testMeetingId,
+              'versionNumber': 1,
+              'languageCode': 'vi',
+              'status': 'READY',
+              'contentRevision': revision,
+              'finalizedAt': _timestamp,
+              'segments': [
+                {
+                  'id': _assistantMessageId,
+                  'ordinal': 0,
+                  'text': 'Canonical transcript',
+                  'startMs': 0,
+                  'endMs': 1000,
+                  'qualityStatus': 'ACCEPTED',
+                  'version': 0,
+                },
+              ],
+            }, headers: {'etag': '"transcript"'});
+          }
+          if (path.endsWith('/summary')) {
+            return meetingApiSuccess({
+              'id': _sourceId,
+              'meetingId': testMeetingId,
+              'versionNumber': revision,
+              'sourceType': 'AI_GENERATED',
+              'qualityStatus': 'READY',
+              'content': 'Canonical summary',
+              'isStale': false,
+              'createdAt': _timestamp,
+              'aiWarnings': [],
+            }, headers: {'etag': '"summary"'});
+          }
+          if (path.endsWith('/decisions')) {
+            final page = int.parse(request.url.queryParameters['page']!);
+            final size = int.parse(request.url.queryParameters['size']!);
+            return meetingApiSuccess(
+              page == 0
+                  ? List.generate(
+                      size,
+                      (index) => decision(
+                        'aaaaaaaa-aaaa-4aaa-8aaa-${index.toRadixString(16).padLeft(12, '0')}',
+                      ),
+                    )
+                  : [decision(_sourceId)],
+              meta: {
+                ...meetingTestMeta,
+                'pagination': {
+                  'page': page,
+                  'size': size,
+                  'totalElements': size + 1,
+                  'totalPages': 2,
+                  'hasNext': page == 0,
+                  'hasPrevious': page > 0,
+                },
+              },
+            );
+          }
+          if (path.endsWith('/action-items/$_sourceId')) {
+            return meetingApiSuccess(
+              itemJson(version: revision)..['id'] = _sourceId,
+              headers: {'etag': '"action"'},
+            );
+          }
+          throw StateError('Unexpected request: $path');
+        });
+        final api = createMeetingTestApi(client);
+        await signInMeetingTestApi(api);
+        final dependencies = AppDependencies(
+          api: api,
+          appearancePreferences: InMemoryAppearancePreferences(),
+          httpClient: client,
+        );
+        addTearDown(dependencies.dispose);
+        final message = AssistantMessage.fromJson(
+          rawMessage,
+          response: _result(rawMessage),
+          meetingId: testMeetingId,
+        );
+        final target = AssistantEvidenceTarget(
+          scope: dependencies.assistant.captureSession(),
+          conversationId: _conversationId,
+          messageId: _assistantMessageId,
+          citation: message.citations.single,
+        );
+        final resolver = AssistantEvidenceResolver(
+          assistant: dependencies.assistant,
+          results: dependencies.results,
+          actionItems: dependencies.actionItems,
+        );
+        final artifact = await resolver.verify(target, stillCurrent: () => true);
+        expect(artifact, switch (type) {
+          'TRANSCRIPT' => isA<TranscriptEvidence>(),
+          'SUMMARY' => isA<SummaryEvidence>(),
+          'DECISION' => isA<DecisionEvidence>(),
+          _ => isA<ActionItemEvidence>(),
+        });
+        expect(artifactReads, type == 'DECISION' ? 2 : 1);
+        revision++;
+        await expectLater(
+          resolver.verify(target, stillCurrent: () => true),
+          throwsA(isA<AssistantEvidenceFailure>().having(
+            (error) => error.issue, 'issue', AssistantEvidenceIssue.obsolete,
+          )),
+        );
+        revision--;
+        final before = artifactReads;
+        redact = true;
+        await expectLater(
+          resolver.verify(target, stillCurrent: () => true),
+          throwsA(isA<AssistantEvidenceFailure>()),
+        );
+        expect(artifactReads, before);
+        redact = false;
+        deny = true;
+        await expectLater(
+          resolver.verify(target, stillCurrent: () => true),
+          throwsA(isA<ApiFailure>()),
+        );
+        expect(artifactReads, before);
+      });
+    }
+  });
+
+  testWidgets('contextual entry shares workspace and fixes meeting scope', (tester) async {
+    final other = _conversation()
+      ..['id'] = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+      ..['meetingId'] = testRoomId
+      ..['title'] = 'Other meeting conversation';
+    final local = _conversation()..['title'] = 'This meeting conversation';
+    var writes = 0;
+    final client = MeetingTestHttpClient((request) async {
+      final path = request.url.path;
+      if (request.method == 'POST') {
+        writes++;
+        return meetingApiSuccess(local, status: 201);
+      }
+      if (path.endsWith('/meetings/$testMeetingId')) {
+        return meetingApiSuccess(
+          meetingTestJson(),
+          headers: {'etag': testMeetingEtag},
+        );
+      }
+      if (path.endsWith('/assistant/conversations')) {
+        return meetingApiSuccess([other, local]);
+      }
+      if (path.endsWith('/conversations/$_conversationId')) {
+        return meetingApiSuccess(_detail(messages: [])..['conversation'] = local);
+      }
+      throw StateError('Unexpected request: $path');
+    });
+    final api = createMeetingTestApi(client);
+    await tester.runAsync(() => signInMeetingTestApi(api));
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+    );
+    addTearDown(dependencies.dispose);
+    final meeting = Meeting.fromJson(meetingTestJson());
+    final owner = dependencies.assistantWorkspace;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: AssistantPage(
+        dependencies: dependencies,
+        active: true,
+        contextualMeeting: meeting,
+      )),
+    ));
+    await pumpUntil(
+      tester,
+      () => find.text('This meeting conversation').evaluate().isNotEmpty,
+      reason: 'verified scoped conversation collection',
+    );
+    expect(find.text('Other meeting conversation'), findsNothing);
+    expect(dependencies.assistantWorkspace, same(owner));
+    expect(writes, 0);
+    await tester.tap(find.text('This meeting conversation'));
+    await pumpUntil(
+      tester,
+      () => find.byType(TextField).evaluate().isNotEmpty,
+      reason: 'canonical scoped history',
+    );
+    await tester.enterText(find.byType(TextField), 'Draft in scoped workspace');
+    expect(owner.draftFor(_conversationId), 'Draft in scoped workspace');
+    expect(writes, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
+  group('Assistant workspace ownership', () {
+    test('stale host cannot release the new active presentation', () async {
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          if (request.url.path.endsWith('/conversations')) {
+            return meetingApiSuccess([]);
+          }
+          return meetingApiSuccess(_detail(messages: []));
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      final first = Object();
+      final second = Object();
+      controller.setPresentationActive(first, true);
+      await controller.open(_typedConversation());
+      controller.saveDraft(_conversationId, 'Shared draft');
+      controller.setPresentationActive(second, true);
+      controller.setPresentationActive(first, false);
+      expect(controller.ownsPresentation(second), isTrue);
+      expect(controller.ownsPresentation(first), isFalse);
+      expect(controller.draftFor(_conversationId), 'Shared draft');
+      controller.forgetMeeting(testMeetingId);
+      expect(controller.draftFor(_conversationId), isEmpty);
+      expect(controller.conversation, isNull);
+    });
+
+    test('new relevant invalidation fences an in-flight read', () async {
+      final entered = Completer<void>();
+      final held = Completer<http.StreamedResponse>();
+      final settled = Completer<void>();
+      var invalidated = false;
+      var reads = 0;
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          if (request.url.path.endsWith('/conversations')) {
+            return meetingApiSuccess([]);
+          }
+          if (!invalidated) return meetingApiSuccess(_detail());
+          reads++;
+          if (reads == 1) {
+            entered.complete();
+            return held.future;
+          }
+          return meetingApiSuccess(_detail(messages: [
+            _message(visibility: 'SOURCE_UNAVAILABLE'),
+          ]));
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      controller.setActive(true);
+      await controller.open(_typedConversation());
+      controller.invalidateMeeting(testRoomId);
+      expect(controller.historyVerified, isTrue);
+      invalidated = true;
+      controller.addListener(() {
+        if (!controller.historyVerified) return;
+        expect(controller.messages.single.visibility,
+            AssistantMessageVisibility.sourceUnavailable);
+        if (!settled.isCompleted) settled.complete();
+      });
+      controller.invalidateMeeting(testMeetingId);
+      controller.invalidateMeeting(testMeetingId);
+      expect(controller.messages, isEmpty);
+      await entered.future;
+      controller.invalidateMeeting(testMeetingId);
+      held.complete(await meetingApiSuccess(_detail()));
+      await settled.future.timeout(const Duration(seconds: 5));
+      expect(reads, 2);
+      expect(controller.messages.single.content, isNull);
+    });
   });
 
   group('Assistant workspace recovery', () {

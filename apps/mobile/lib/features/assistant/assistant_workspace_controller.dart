@@ -104,6 +104,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
   final List<AssistantMessage> _messages = [];
   final Map<String, AssistantPendingTurn> _pending = {};
   final Map<String, String> _drafts = {};
+  final Map<String, String> _draftMeetings = {};
   AssistantConversation? conversation;
   AssistantCreateConversationRequest? creation;
   AssistantFailure? creationFailure;
@@ -190,12 +191,55 @@ class AssistantWorkspaceController extends ChangeNotifier {
   String draftFor(String conversationId) => _drafts[conversationId] ?? '';
 
   void saveDraft(String conversationId, String text) {
-    if (!current) return;
+    final selected = conversation;
+    if (!current || selected?.id != conversationId) return;
     if (text.isEmpty) {
       _drafts.remove(conversationId);
+      _draftMeetings.remove(conversationId);
     } else {
       _drafts[conversationId] = text;
+      _draftMeetings[conversationId] = selected!.meetingId;
     }
+  }
+
+  /// Called only after an authoritative loss of meeting-content access.
+  void forgetMeeting(String meetingId) {
+    if (!current) return;
+    bool matches(String id) => sameAssistantIdentity(id, meetingId);
+    final draftIds = _draftMeetings.entries
+        .where((entry) => matches(entry.value))
+        .map((entry) => entry.key)
+        .toList();
+    for (final id in draftIds) {
+      _drafts.remove(id);
+      _draftMeetings.remove(id);
+    }
+    _pending.removeWhere(
+      (_, command) => matches(command.request.conversation.meetingId),
+    );
+    _listGeneration++;
+    listLoading = false;
+    _conversations.clear();
+    _nextPage = 0;
+    listHasMore = true;
+    if (creation != null && matches(creation!.meetingId)) {
+      // Release inaccessible local context, not the possibly durable server
+      // creation. An in-flight attempt still owns its dispatch lock.
+      creation = null;
+      creationFailure = null;
+      _creationUncertain = false;
+    }
+    if (conversation != null && matches(conversation!.meetingId)) {
+      _historyGeneration++;
+      _stopStatusMonitoring();
+      conversation = null;
+      _messages.clear();
+      _historyDepth = 0;
+      historyVerified = false;
+      historyHasMore = false;
+      historyLoading = false;
+    }
+    _publish();
   }
 
   void invalidateMeeting(String? meetingId) {
@@ -561,6 +605,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         historyHasMore = false;
         _pending.remove(selected.id);
         _drafts.remove(selected.id);
+        _draftMeetings.remove(selected.id);
         _conversations.clear();
         listFailure = error;
         conversation = null;
@@ -962,6 +1007,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
     _messages.clear();
     _pending.clear();
     _drafts.clear();
+    _draftMeetings.clear();
     _presentationOwner = null;
     _invalidationDirty = false;
     conversation = null;
@@ -990,6 +1036,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
     repository.api.sessionCoordinator.removeListener(_sessionChanged);
     _pending.clear();
     _drafts.clear();
+    _draftMeetings.clear();
     _presentationOwner = null;
     _invalidationDirty = false;
     _messages.clear();

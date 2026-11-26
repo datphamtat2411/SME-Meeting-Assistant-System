@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
@@ -130,10 +131,16 @@ class _AssistantPageState extends State<AssistantPage>
             generation != _contextGeneration) {
           return;
         }
-        if (!allowed) throw StateError('Meeting content unavailable.');
+        if (!allowed) {
+          _controller.forgetMeeting(contextual.id);
+          throw StateError('Meeting content unavailable.');
+        }
         _contextVerified = true;
       } on Object catch (error) {
         if (_eligible && generation == _contextGeneration) {
+          if (error is ApiFailure && (error.status == 403 || error.status == 404)) {
+            _controller.forgetMeeting(contextual.id);
+          }
           _contextFailure = error;
         }
       } finally {
@@ -193,7 +200,9 @@ class _AssistantPageState extends State<AssistantPage>
 
   void _saveDraft() {
     final owner = _draftOwner;
-    if (owner != null && _controller.ownsPresentation(this)) {
+    if (owner != null &&
+        _controller.ownsPresentation(this) &&
+        _controller.conversation?.id == owner) {
       _controller.saveDraft(owner, _input.text);
     }
   }
@@ -359,7 +368,7 @@ class _AssistantPageState extends State<AssistantPage>
     setState(() => _openingEvidence = true);
     try {
       await resolver.verify(target, stillCurrent: owns);
-      if (!owns()) return;
+      if (!mounted || !owns()) return;
       // The destination performs its own verification; never pass a protected
       // preflight snapshot across the navigation boundary as current evidence.
       await Navigator.push<void>(
@@ -373,13 +382,17 @@ class _AssistantPageState extends State<AssistantPage>
         ),
       );
     } on Object catch (error) {
-      if (!owns()) return;
+      if (!mounted || !owns()) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(assistantEvidenceFailureLabel(error))),
       );
-      if (error is AssistantEvidenceFailure &&
-          (error.issue == AssistantEvidenceIssue.obsolete ||
-              error.issue == AssistantEvidenceIssue.unavailable)) {
+      if ((error is AssistantEvidenceFailure &&
+              (error.issue == AssistantEvidenceIssue.obsolete ||
+                  error.issue == AssistantEvidenceIssue.unavailable)) ||
+          (error is ApiFailure &&
+              (error.status == 401 ||
+                  error.status == 403 ||
+                  error.status == 404))) {
         await _controller.refreshHistory();
       }
     } finally {
