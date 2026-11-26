@@ -416,7 +416,9 @@ describe('settings navigation and cleanup', () => {
   it('reconciles notification drafts with confirmed preference changes', async () => {
     mockSettingsReads()
     const patch = vi.spyOn(coreApi, 'patch')
-    const { screen, queryClient } = await renderApiSettings(<NotificationsForm />)
+    const { screen, queryClient } = await renderApiSettings(
+      <NotificationsForm />
+    )
     const meeting = screen.getByRole('switch', { name: 'Meeting emails' })
     const action = screen.getByRole('switch', { name: 'Action item emails' })
     const save = screen.getByRole('button', { name: 'Save notifications' })

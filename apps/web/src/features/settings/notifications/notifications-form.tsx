@@ -215,9 +215,9 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
           />
         ))}
         <p className='text-sm text-muted-foreground'>
-          Turning off optional emails does not affect your meeting
-          participation or assigned work. Preferences control email eligibility
-          and do not guarantee delivery.
+          Turning off optional emails does not affect your meeting participation
+          or assigned work. Preferences control email eligibility and do not
+          guarantee delivery.
         </p>
         <section className='space-y-3 border-t pt-6'>
           <h3 className='font-medium'>Required communications</h3>
