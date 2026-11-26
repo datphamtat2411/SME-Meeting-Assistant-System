@@ -5,10 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
+import 'package:sme_meeting_assistant/core/appearance_controller.dart';
+import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/profile/account_resource_view.dart';
 import 'package:sme_meeting_assistant/features/profile/profile_controllers.dart';
 import 'package:sme_meeting_assistant/features/profile/profile_edit_dialog.dart';
 import 'package:sme_meeting_assistant/features/profile/profile_models.dart';
+import 'package:sme_meeting_assistant/features/profile/profile_page.dart';
 import 'package:sme_meeting_assistant/features/profile/profile_repository.dart';
 import 'package:sme_meeting_assistant/features/profile/regional_preference_dialog.dart';
 
@@ -1266,9 +1269,13 @@ void main() {
     await tester.tap(find.text('Open editor'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Lưu'));
-    // Do not settle an indefinitely animating progress indicator on regression.
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
+    // Settle the route transition, not the pending identity request.
+    // A bounded settle fails if the editor still waits on that request.
+    await tester.pumpAndSettle(
+      const Duration(milliseconds: 16),
+      EnginePhase.sendSemanticsUpdate,
+      const Duration(seconds: 3),
+    );
     expect(find.byType(ProfileEditDialog), findsNothing);
     expect(controller.snapshot!.etag, '"v2"');
     expect(controller.outcome, ProfileMutationOutcome.confirmed);
@@ -1449,9 +1456,23 @@ void main() {
   ) async {
     var reloads = 0;
     var patches = 0;
+    var preferencePatches = 0;
     final api = (await tester.runAsync(
       () => _authenticated(
         (request) async {
+          if (request.url.path.endsWith('/me/preferences')) {
+            if (request.method == 'GET') {
+              return jsonResponse(200, successEnvelope(_preferences()));
+            }
+            preferencePatches++;
+            expect(jsonDecode((request as http.Request).body), {
+              'meetingEmailEnabled': false,
+            });
+            return jsonResponse(
+              200,
+              successEnvelope(_preferences(meeting: false)),
+            );
+          }
           if (request.method == 'GET') {
             return _profileResponse('Original', '"v1"');
           }
@@ -1467,28 +1488,66 @@ void main() {
         },
       ),
     ))!;
-    final controller = ProfileController(ProfileRepository(api: api));
-    addTearDown(controller.dispose);
-    await tester.runAsync(controller.refresh);
-    final save = controller.updateName(controller.snapshot!, 'New name');
-    await tester.pump();
-    expect(await save, isTrue);
-    await tester.pump();
-    expect(controller.identityRefreshFailed, isTrue);
-    expect(controller.identityRetryNotBefore, isNotNull);
-    expect(controller.canRetryIdentity, isFalse);
-    expect(controller.canMutate, isTrue);
-    expect(controller.canRefresh, isTrue);
-    await controller.retryIdentity();
+    final appearance = AppearanceController(
+      preferences: InMemoryAppearancePreferences(),
+    );
+    addTearDown(appearance.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ProfilePage(
+            api: api,
+            repository: ProfileRepository(api: api),
+            appearance: appearance,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final edit = find.byTooltip('Chỉnh sửa tên hiển thị');
+    await tester.tap(edit);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'New name');
+    await tester.tap(find.text('Lưu'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ProfileEditDialog), findsNothing);
+    expect(find.text('New name'), findsOneWidget);
+    expect(api.displayName, 'Test User');
+    expect(patches, 1);
     expect(reloads, 1);
-    await tester.pump(const Duration(seconds: 31));
-    expect(controller.canRetryIdentity, isTrue);
+    expect(find.byType(AccountRetryNotice), findsOneWidget);
+
+    final retry = find.widgetWithText(TextButton, 'Thử đồng bộ lại');
+    expect(tester.widget<TextButton>(retry).onPressed, isNull);
+    expect(tester.widget<IconButton>(edit).onPressed, isNotNull);
+
+    // Drive the real account surface instead of awaiting HTTP futures in the
+    // widget test body. The binding advances fake time only through pumps.
+    final meetingEmail = find.widgetWithText(SwitchListTile, 'Email cuộc họp');
+    await tester.ensureVisible(meetingEmail);
+    expect(tester.widget<SwitchListTile>(meetingEmail).onChanged, isNotNull);
+    await tester.tap(meetingEmail);
+    await tester.pumpAndSettle();
+    expect(preferencePatches, 1);
+    expect(tester.widget<SwitchListTile>(meetingEmail).value, isFalse);
+
+    await tester.ensureVisible(retry);
+    await tester.tap(retry);
+    await tester.pumpAndSettle();
     expect(reloads, 1);
-    final retry = controller.retryIdentity();
-    await tester.pump();
-    await retry;
-    expect(controller.identityStatus, IdentitySyncStatus.synchronized);
+    await tester.pump(const Duration(seconds: 20));
+    expect(tester.widget<TextButton>(retry).onPressed, isNull);
+    await tester.pump(const Duration(seconds: 11));
+    expect(find.byType(AccountRetryNotice), findsNothing);
+    expect(tester.widget<TextButton>(retry).onPressed, isNotNull);
+    expect(reloads, 1);
+
+    await tester.tap(retry);
+    await tester.pumpAndSettle();
+    expect(api.displayName, 'New name');
+    expect(retry, findsNothing);
     expect(patches, 1);
     expect(reloads, 2);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 }
