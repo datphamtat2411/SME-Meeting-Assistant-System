@@ -512,7 +512,10 @@ class _AppShellState extends State<AppShell> {
           ),
         ),
       ),
-      AssistantPage(api: widget.api),
+      AssistantPage(
+        dependencies: widget.dependencies,
+        active: index == 3,
+      ),
       ProfilePage(
         api: widget.api,
         themeMode: widget.themeMode,

@@ -1,331 +1,600 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
-import '../../core/api_client.dart';
-import '../../core/app_theme.dart';
-import '../../core/models.dart';
-import '../../core/widgets.dart';
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:sme_meeting_assistant/core/app_dependencies.dart';
+import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/core/widgets.dart';
+
+import 'assistant_meeting_picker.dart';
+import 'assistant_message_view.dart';
+import 'assistant_repository.dart';
+import 'assistant_workspace_controller.dart';
 
 class AssistantPage extends StatefulWidget {
-  final ApiClient api;
-  const AssistantPage({super.key, required this.api});
+  const AssistantPage({
+    super.key,
+    required this.dependencies,
+    required this.active,
+  });
+
+  final AppDependencies dependencies;
+  final bool active;
 
   @override
   State<AssistantPage> createState() => _AssistantPageState();
 }
 
-class _AssistantPageState extends State<AssistantPage> {
-  final input = TextEditingController();
-  final scroll = ScrollController();
-  late Future<List<Map<String, dynamic>>> future;
-  String? conversationId;
-  List<Map<String, dynamic>> messages = [];
-  bool sending = false;
-  String? unsupported;
+class _AssistantPageState extends State<AssistantPage>
+    with WidgetsBindingObserver {
+  late final AssistantWorkspaceController _controller;
+  final _input = TextEditingController();
+  String? _meetingTitle;
+  int _selection = 0;
+  bool _choosingMeeting = false;
+  bool _foreground = true;
 
   @override
   void initState() {
     super.initState();
-    loadConversations();
+    _controller = AssistantWorkspaceController(widget.dependencies.assistant);
+    WidgetsBinding.instance.addObserver(this);
+    widget.dependencies.meetingInvalidation.addListener(_invalidate);
+    widget.dependencies.resultsInvalidation.addListener(_invalidate);
+    widget.dependencies.actionItemInvalidation.addListener(_invalidate);
+    _controller.setActive(widget.active);
   }
 
-  void loadConversations() => setState(() {
-    future = widget.api
-        .get('/assistant/conversations', query: {'page': '0', 'size': '20'})
-        .then((response) {
-          unsupported = null;
-          return response.objectArrayData();
-        })
-        .catchError((Object error) {
-          if (error is ApiFailure && error.missing) {
-            unsupported =
-                'Core API chưa cung cấp endpoint Assistant conversations.';
-            return <Map<String, dynamic>>[];
-          }
-          throw error;
-        });
-  });
+  @override
+  void didUpdateWidget(covariant AssistantPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.active != widget.active) {
+      _controller.setActive(widget.active && _foreground);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final foreground = state == AppLifecycleState.resumed;
+    if (foreground == _foreground) return;
+    _foreground = foreground;
+    _controller.setActive(widget.active && foreground);
+  }
+
+  void _invalidate() {
+    if (widget.active && _foreground) unawaited(_controller.revalidate());
+  }
 
   @override
   void dispose() {
-    input.dispose();
-    scroll.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    widget.dependencies.meetingInvalidation.removeListener(_invalidate);
+    widget.dependencies.resultsInvalidation.removeListener(_invalidate);
+    widget.dependencies.actionItemInvalidation.removeListener(_invalidate);
+    _controller.dispose();
+    _input.dispose();
     super.dispose();
   }
 
-  Future<void> openConversation(String id) async {
+  Future<void> _chooseMeeting() async {
+    if (_choosingMeeting || _controller.creating) return;
+    setState(() => _choosingMeeting = true);
     try {
-      final result = await widget.api.get('/assistant/conversations/' + id);
-      final data = result.objectData();
-      if (mounted)
-        setState(() {
-          conversationId = id;
-          messages = objectsOf(data['messages']);
-        });
-    } catch (error) {
-      if (mounted) showFailure(context, error);
-    }
-  }
-
-  Future<void> createConversation() async {
-    try {
-      final result = await widget.api.post('/assistant/conversations', {});
-      final data = result.objectData();
-      if (textValue(data['id']).isEmpty) {
-        throw const ApiFailure(
-          0,
-          'INVALID_RESPONSE',
-          'Không nhận được hội thoại mới.',
-        );
-      }
-      if (mounted) {
-        setState(() {
-          conversationId = textValue(data['id']);
-          messages.clear();
-        });
-        loadConversations();
-      }
-    } catch (error) {
-      if (mounted) showFailure(context, error);
-    }
-  }
-
-  Future<void> ask() async {
-    final text = input.text.trim();
-    if (text.isEmpty || conversationId == null || sending) return;
-    setState(() => sending = true);
-    try {
-      // Request/response detail must be finalized with the Assistant OpenAPI.
-      // Never fabricate an answer if the service cannot return source-backed data.
-      await widget.api.post(
-        '/assistant/conversations/' + conversationId! + '/messages',
-        {'content': text},
-      );
-      input.clear();
-      await openConversation(conversationId!);
-      if (mounted && scroll.hasClients) {
-        scroll.animateTo(
-          scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOut,
-        );
-      }
-    } catch (error) {
-      if (mounted) showFailure(context, error);
-    } finally {
-      if (mounted) setState(() => sending = false);
-    }
-  }
-
-  Widget messageTile(Map<String, dynamic> item) {
-    final role = textValue(item['role']);
-    final mine = role == 'USER' || role.toLowerCase() == 'user';
-    final sourceItems = objectsOf(item['sources']);
-    return Align(
-      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 560),
-        child: ContentCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                mine ? 'Bạn' : 'AI Assistant',
-                style: const TextStyle(
-                  color: Palette.muted,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 8),
-              SelectableText(
-                textValue(
-                  item['content'],
-                  textValue(item['answer'], 'Không có nội dung trả lời.'),
-                ),
-              ),
-              if (sourceItems.isNotEmpty) ...[
-                const Divider(),
-                const Text(
-                  'Nguồn tham chiếu',
-                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
-                ),
-                ...sourceItems.map(
-                  (source) => Padding(
-                    padding: const EdgeInsets.only(top: 5),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.link, size: 14, color: Palette.blue),
-                        const SizedBox(width: 5),
-                        Expanded(
-                          child: Text(
-                            textValue(
-                              source['meetingTitle'],
-                              textValue(source['excerpt'], 'Meeting source'),
-                            ),
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Palette.muted,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ],
+      final meeting = await Navigator.push<Meeting>(
+        context,
+        MaterialPageRoute<Meeting>(
+          builder: (_) => AssistantMeetingPicker(
+            dependencies: widget.dependencies,
           ),
         ),
-      ),
-    );
+      );
+      if (!mounted ||
+          meeting == null ||
+          !widget.active ||
+          !_controller.current) {
+        return;
+      }
+      final created = await _controller.create(meeting.id, meeting.title);
+      if (!mounted || created == null || !widget.active) return;
+      await _open(created, meetingTitle: meeting.title);
+    } finally {
+      if (mounted) setState(() => _choosingMeeting = false);
+    }
+  }
+
+  Future<void> _retryCreation() async {
+    final created = await _controller.retryCreation();
+    if (!mounted || created == null || !widget.active) return;
+    await _open(created);
+  }
+
+  Future<void> _open(
+    AssistantConversation conversation, {
+    String? meetingTitle,
+  }) async {
+    final selection = ++_selection;
+    _input.clear();
+    setState(() => _meetingTitle = meetingTitle);
+    await _controller.open(conversation);
+    if (!mounted ||
+        selection != _selection ||
+        _controller.conversation?.id != conversation.id ||
+        !_controller.historyVerified ||
+        meetingTitle != null) {
+      return;
+    }
+    try {
+      final meeting = await widget.dependencies.meetings.detail(
+        conversation.meetingId,
+      );
+      if (!mounted ||
+          !_controller.current ||
+          selection != _selection ||
+          _controller.conversation?.id != conversation.id ||
+          !_controller.historyVerified ||
+          meeting.sessionScope != _controller.scope) {
+        return;
+      }
+      setState(() => _meetingTitle = meeting.meeting.title);
+    } on Object {
+      // A missing metadata label cannot grant access to conversation history.
+    }
+  }
+
+  Future<void> _close() async {
+    _selection++;
+    _input.clear();
+    setState(() => _meetingTitle = null);
+    await _controller.closeConversation();
+  }
+
+  void _send() {
+    final question = _input.text.trim();
+    if (!_controller.canSend || question.isEmpty || question.length > 4096) {
+      return;
+    }
+    _input.clear();
+    unawaited(_controller.submit(question));
   }
 
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(18, 18, 18, 4),
-        child: SectionHeading(
-          'AI Assistant',
-          subtitle: 'Hỏi đáp dựa trên tri thức cuộc họp bạn được phép xem',
-          trailing: IconButton(
-            onPressed: loadConversations,
-            icon: const Icon(Icons.refresh),
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _controller,
+    builder: (context, _) {
+      final selected = _controller.conversation;
+      return PopScope<Object?>(
+        canPop: !widget.active || selected == null,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop && selected != null) unawaited(_close());
+        },
+        child: selected == null ? _list(context) : _chat(context, selected),
+      );
+    },
+  );
+
+  Widget _list(BuildContext context) {
+    final state = _controller;
+    final colors = Theme.of(context).colorScheme;
+    final items = state.conversations;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+          child: SectionHeading(
+            'Trợ lý AI',
+            subtitle: 'Khám phá lại tri thức từ các cuộc họp của bạn.',
+            trailing: IconButton(
+              tooltip: 'Làm mới hội thoại',
+              onPressed: state.refreshList,
+              icon: const Icon(Icons.refresh),
+            ),
           ),
         ),
-      ),
-      Expanded(
-        child: AsyncContent<List<Map<String, dynamic>>>(
-          future: future,
-          retry: loadConversations,
-          builder: (conversations) {
-            if (unsupported != null) {
-              return Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: MessagePanel(
-                    title: 'Assistant chưa sẵn sàng',
-                    icon: Icons.cloud_off_outlined,
-                    description:
-                        'Giao diện hội thoại đã có, nhưng backend hiện không '
-                        'trả về endpoint được định nghĩa trong API contract. '
-                        'Ứng dụng không thể tạo câu trả lời AI giả.',
-                    onRetry: loadConversations,
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Card(
+            color: colors.primaryContainer,
+            margin: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.auto_awesome, color: colors.onPrimaryContainer),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Hỏi đáp có nguồn tham chiếu',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: colors.onPrimaryContainer,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                ),
-              );
-            }
-            return Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 18),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          conversationId == null
-                              ? 'Chọn hoặc tạo hội thoại'
-                              : 'Hội thoại hiện tại',
-                          style: const TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                      ),
-                      TextButton.icon(
-                        onPressed: createConversation,
-                        icon: const Icon(Icons.add),
-                        label: const Text('Tạo mới'),
-                      ),
-                    ],
+                  const SizedBox(height: 6),
+                  Text(
+                    'Chọn một cuộc họp để tìm quyết định, công việc '
+                    'và những thông tin đã thảo luận.',
+                    style: TextStyle(color: colors.onPrimaryContainer),
                   ),
-                ),
-                if (conversationId == null && conversations.isNotEmpty)
-                  Expanded(
-                    child: ListView(
-                      padding: const EdgeInsets.all(18),
-                      children: conversations
-                          .map(
-                            (c) => ContentCard(
-                              child: ListTile(
-                                leading: const Icon(Icons.chat_bubble_outline),
-                                title: Text(textValue(c['title'], 'Hội thoại')),
-                                subtitle: Text(dateLabel(c['createdAt'])),
-                                trailing: const Icon(Icons.chevron_right),
-                                onTap: () =>
-                                    openConversation(textValue(c['id'])),
-                              ),
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  )
-                else if (conversationId == null)
-                  const Expanded(
-                    child: Center(
-                      child: MessagePanel(
-                        title: 'Chưa có hội thoại',
-                        description:
-                            'Tạo một cuộc trò chuyện để bắt đầu truy vấn.',
-                      ),
-                    ),
-                  )
-                else ...[
-                  Expanded(
-                    child: messages.isEmpty
-                        ? const Center(
-                            child: MessagePanel(
-                              title: 'Hãy đặt câu hỏi đầu tiên',
-                              description:
-                                  'AI chỉ sử dụng nguồn họp được cấp quyền.',
-                            ),
-                          )
-                        : ListView(
-                            controller: scroll,
-                            padding: const EdgeInsets.all(18),
-                            children: messages.map(messageTile).toList(),
-                          ),
-                  ),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      12,
-                      4,
-                      12,
-                      MediaQuery.viewInsetsOf(context).bottom + 10,
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: input,
-                            maxLines: 4,
-                            minLines: 1,
-                            textInputAction: TextInputAction.send,
-                            onSubmitted: (_) => ask(),
-                            decoration: const InputDecoration(
-                              hintText: 'Hỏi về cuộc họp của bạn...',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton.filled(
-                          onPressed: sending ? null : ask,
-                          icon: sending
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.arrow_upward),
-                        ),
-                      ],
-                    ),
+                  const SizedBox(height: 14),
+                  FilledButton.icon(
+                    onPressed:
+                        state.creating ||
+                            state.creation != null ||
+                            _choosingMeeting
+                        ? null
+                        : _chooseMeeting,
+                    icon: const Icon(Icons.add_comment_outlined),
+                    label: const Text('Hội thoại mới'),
                   ),
                 ],
-              ],
-            );
-          },
+              ),
+            ),
+          ),
         ),
+        if (state.creation != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+            child: ContentCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    state.creating
+                        ? 'Đang tạo hội thoại…'
+                        : 'Chưa xác nhận được hội thoại mới',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  if (state.creationFailure != null)
+                    Text(assistantFailureLabel(state.creationFailure!)),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      TextButton(
+                        onPressed: state.creating ? null : _retryCreation,
+                        child: const Text('Thử lại cùng yêu cầu'),
+                      ),
+                      if (state.canDiscardCreation)
+                        TextButton(
+                          onPressed: state.discardRejectedCreation,
+                          child: const Text('Bỏ yêu cầu'),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: state.refreshList,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+              children: [
+                Text(
+                  'Hội thoại gần đây',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                if (state.listLoading && items.isEmpty)
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: CircularProgressIndicator(),
+                    ),
+                  )
+                else if (state.listFailure != null && items.isEmpty)
+                  MessagePanel(
+                    title: 'Không thể tải hội thoại',
+                    description: assistantFailureLabel(state.listFailure!),
+                    onRetry: state.refreshList,
+                  )
+                else if (items.isEmpty)
+                  const MessagePanel(
+                    title: 'Chưa có hội thoại',
+                    icon: Icons.chat_bubble_outline,
+                    description: 'Bắt đầu từ một cuộc họp bạn được phép đọc.',
+                  ),
+                for (final item in items)
+                  Card(
+                    child: ListTile(
+                      leading: const CircleAvatar(
+                        child: Icon(Icons.chat_bubble_outline),
+                      ),
+                      title: Text(
+                        item.title ?? 'Hội thoại cuộc họp',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        DateFormat('dd/MM/yyyy · HH:mm').format(
+                          item.updatedAt.toLocal(),
+                        ),
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => _open(item),
+                    ),
+                  ),
+                if (state.listFailure != null && items.isNotEmpty)
+                  MessagePanel(
+                    title: 'Danh sách cần đồng bộ lại',
+                    description: assistantFailureLabel(state.listFailure!),
+                    onRetry: state.refreshList,
+                  ),
+                if (state.listHasMore && items.isNotEmpty)
+                  TextButton.icon(
+                    onPressed: state.listLoading
+                        ? null
+                        : state.loadMoreConversations,
+                    icon: const Icon(Icons.expand_more),
+                    label: Text(
+                      state.listLoading ? 'Đang tải…' : 'Xem thêm hội thoại',
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _chat(BuildContext context, AssistantConversation selected) {
+    final state = _controller;
+    final messages = state.messages;
+    final pending = state.pending;
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: 'Danh sách hội thoại',
+                onPressed: _close,
+                icon: const Icon(Icons.arrow_back),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      state.historyVerified
+                          ? selected.title ?? 'Trợ lý cuộc họp'
+                          : 'Trợ lý cuộc họp',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    Text(
+                      state.historyVerified && _meetingTitle != null
+                          ? 'Phạm vi: $_meetingTitle'
+                          : 'Phạm vi: một cuộc họp',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'Đồng bộ lịch sử',
+                onPressed: state.historyLoading ? null : state.revalidate,
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: !state.historyVerified
+              ? Center(
+                  child: state.historyLoading
+                      ? const CircularProgressIndicator()
+                      : Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: MessagePanel(
+                            title: 'Không thể xác nhận lịch sử',
+                            description: state.historyFailure == null
+                                ? 'Hãy đồng bộ lại hội thoại.'
+                                : assistantFailureLabel(state.historyFailure!),
+                            onRetry: state.revalidate,
+                          ),
+                        ),
+                )
+              : messages.isEmpty && pending == null
+              ? _suggestions(context)
+              : ListView.builder(
+                  key: ValueKey(selected.id),
+                  reverse: true,
+                  padding: const EdgeInsets.all(16),
+                  itemCount: messages.length + 1,
+                  itemBuilder: (context, index) {
+                    if (index == messages.length) {
+                      return Column(
+                        children: [
+                          if (state.historyFailure != null)
+                            Text(
+                              assistantFailureLabel(state.historyFailure!),
+                              style: TextStyle(color: colors.error),
+                            ),
+                          if (state.historyHasMore)
+                            TextButton.icon(
+                              onPressed: state.historyLoading
+                                  ? null
+                                  : state.loadOlder,
+                              icon: const Icon(Icons.history),
+                              label: Text(
+                                state.historyLoading
+                                    ? 'Đang tải…'
+                                    : 'Xem tin nhắn cũ hơn',
+                              ),
+                            ),
+                        ],
+                      );
+                    }
+                    return AssistantMessageView(
+                      key: ValueKey(messages[messages.length - 1 - index].id),
+                      message: messages[messages.length - 1 - index],
+                    );
+                  },
+                ),
+        ),
+        if (state.historyVerified && pending != null) _pendingPanel(pending),
+        if (selected.status == AssistantConversationStatus.archived)
+          const Padding(
+            padding: EdgeInsets.all(12),
+            child: Text('Hội thoại đã lưu trữ · Chỉ đọc'),
+          )
+        else
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _input,
+                    enabled: state.canSend,
+                    minLines: 1,
+                    maxLines: 4,
+                    maxLength: 4096,
+                    onChanged: (_) => setState(() {}),
+                    textInputAction: TextInputAction.newline,
+                    decoration: const InputDecoration(
+                      hintText: 'Hỏi về cuộc họp này…',
+                      counterText: '',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filled(
+                  tooltip: 'Gửi câu hỏi',
+                  onPressed: state.canSend && _input.text.trim().isNotEmpty
+                      ? _send
+                      : null,
+                  icon: const Icon(Icons.arrow_upward),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _suggestions(BuildContext context) => ListView(
+    padding: const EdgeInsets.all(20),
+    children: [
+      const SizedBox(height: 24),
+      Icon(
+        Icons.auto_awesome,
+        size: 40,
+        color: Theme.of(context).colorScheme.primary,
       ),
+      const SizedBox(height: 16),
+      Text(
+        'Bạn muốn tìm hiểu điều gì?',
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.titleLarge,
+      ),
+      const SizedBox(height: 8),
+      const Text(
+        'Trợ lý chỉ truy vấn nội dung thuộc cuộc họp đã chọn.',
+        textAlign: TextAlign.center,
+      ),
+      const SizedBox(height: 20),
+      for (final question in [
+        'Cuộc họp đã thống nhất những quyết định nào?',
+        'Những công việc nào được giao và ai phụ trách?',
+        'Các thời hạn quan trọng là gì?',
+      ])
+        Card(
+          child: ListTile(
+            title: Text(question),
+            trailing: const Icon(Icons.arrow_upward),
+            onTap: _controller.canSend
+                ? () => setState(() => _input.text = question)
+                : null,
+          ),
+        ),
     ],
   );
+
+  Widget _pendingPanel(AssistantPendingTurn pending) => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+    child: ContentCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            pending.busy
+                ? 'Đang xử lý yêu cầu…'
+                : pending.terminal
+                ? 'Đang chờ đồng bộ kết quả'
+                : pending.turn?.state == AssistantTurnState.processing
+                ? 'AI đang xử lý câu hỏi'
+                : 'Chưa xác nhận được kết quả',
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          if (pending.busy) const LinearProgressIndicator(),
+          if (pending.failure != null)
+            Text(assistantFailureLabel(pending.failure!)),
+          if (!pending.busy)
+            Wrap(
+              spacing: 8,
+              children: [
+                TextButton(
+                  onPressed: pending.terminal
+                      ? _controller.refreshHistory
+                      : _controller.checkPending,
+                  child: const Text('Kiểm tra trạng thái'),
+                ),
+                if (pending.retryAllowed)
+                  TextButton(
+                    onPressed: _controller.retryPending,
+                    child: const Text('Thử lại cùng câu hỏi'),
+                  ),
+                if (pending.canEdit)
+                  TextButton(
+                    onPressed: () {
+                      final question = _controller.editRejectedQuestion();
+                      if (question != null) {
+                        setState(() => _input.text = question);
+                      }
+                    },
+                    child: const Text('Sửa câu hỏi'),
+                  ),
+              ],
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
+String assistantFailureLabel(Object error) {
+  if (error is AssistantFailure) {
+    return switch (error.category) {
+      AssistantFailureCategory.authentication => 'Phiên đăng nhập đã thay đổi.',
+      AssistantFailureCategory.authorization ||
+      AssistantFailureCategory.resourceUnavailable =>
+        'Hội thoại hoặc nguồn không còn khả dụng.',
+      AssistantFailureCategory.validation => 'Yêu cầu không hợp lệ.',
+      AssistantFailureCategory.conflict => 'Yêu cầu đang xung đột.',
+      AssistantFailureCategory.sourceStale => 'Nguồn đã thay đổi.',
+      AssistantFailureCategory.rateLimited =>
+        'Tạm thời bị giới hạn lượt hỏi. Hãy chờ và thử lại.',
+      AssistantFailureCategory.serviceUnavailable =>
+        'Trợ lý tạm thời không khả dụng.',
+      AssistantFailureCategory.timeout ||
+      AssistantFailureCategory.transport =>
+        'Kết nối gián đoạn. Kết quả có thể chưa được xác nhận.',
+      AssistantFailureCategory.invalidResponse =>
+        'Không thể xác nhận dữ liệu trả về.',
+      AssistantFailureCategory.unknown => 'Không thể hoàn thành yêu cầu.',
+    };
+  }
+  return 'Không thể đồng bộ dữ liệu. Hãy thử lại.';
 }
