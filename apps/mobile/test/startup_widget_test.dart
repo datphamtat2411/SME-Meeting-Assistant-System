@@ -1126,6 +1126,149 @@ void main() {
     );
     expect(find.text('Đăng nhập hệ thống'), findsNothing);
   });
+
+  testWidgets(
+    'reset outcome survives application navigator replacement and verification retry',
+    (tester) async {
+      final credentials = InMemoryCredentialStorage();
+      await _writeRefreshCredential(credentials, 'refresh-0');
+      final reconciliationRequested = Completer<void>();
+      final reconciliationResponse = Completer<http.StreamedResponse>();
+      final harness = _Harness.create(
+        _authClient(
+          reconciliationRequested: reconciliationRequested,
+          reconciliationResponse: reconciliationResponse,
+        ),
+        credentials,
+      );
+      final owner = CredentialWorkflowOwner(harness.api);
+      final attempt = owner.begin(AccountOperation.reset);
+      final submission = AccountSubmissionController(AccountOperation.reset);
+      addTearDown(owner.dispose);
+      addTearDown(submission.dispose);
+
+      await tester.pumpWidget(
+        MeetingAssistantApp(
+          dependencies: harness.dependencies,
+          credentialWorkflowOwner: owner,
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () =>
+            harness.api.sessionState.isAuthenticated &&
+            find.text('Tổng quan').evaluate().isNotEmpty,
+        reason: 'the existing session to be verified before password reset',
+      );
+
+      final oldNavigator = tester.state<NavigatorState>(
+        find.byType(Navigator).first,
+      );
+      unawaited(
+        oldNavigator.push<void>(
+          MaterialPageRoute<void>(
+            builder: (_) =>
+                const Scaffold(body: Text('Protected route before reset')),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('Protected route before reset'), findsOneWidget);
+
+      await tester.runAsync(() async {
+        await owner.submit(attempt, submission, 'opaque', 'new password 123');
+      });
+      await pumpUntil(
+        tester,
+        () => reconciliationRequested.isCompleted,
+        reason: 'password reset to trigger mandatory identity reconciliation',
+      );
+      await tester.pump();
+      expect(
+        find.text('Protected route before reset', skipOffstage: false),
+        findsNothing,
+      );
+      expect(find.text('Tổng quan'), findsNothing);
+      expect(
+        tester.state<NavigatorState>(find.byType(Navigator).first).canPop(),
+        isFalse,
+      );
+
+      reconciliationResponse.complete(
+        await jsonResponse(
+          503,
+          errorEnvelope('SERVICE_UNAVAILABLE', 'Private identity failure.'),
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () => find.text('Thử xác minh lại').evaluate().isNotEmpty,
+        reason: 'unavailable verification to remain fail-closed',
+      );
+      expect(owner.outcome?.kind, CredentialOutcomeKind.completed);
+      expect(
+        find.textContaining('Mật khẩu đã được cập nhật.'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Không gửi lại yêu cầu này'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('Thử xác minh lại'));
+      await pumpUntil(
+        tester,
+        () =>
+            harness.api.sessionState.isAuthenticated &&
+            find.byType(CredentialOutcomeView).evaluate().isNotEmpty,
+        reason: 'successful verification to restore the original mutation outcome',
+      );
+      expect(owner.outcome?.kind, CredentialOutcomeKind.completed);
+      expect(find.text('Đặt lại mật khẩu thành công'), findsOneWidget);
+      expect(find.text('Tiếp tục phiên hiện tại'), findsOneWidget);
+      expect(
+        find.textContaining('Phiên đăng nhập hiện tại đã được xác minh'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Protected route before reset', skipOffstage: false),
+        findsNothing,
+      );
+
+      await tester.ensureVisible(find.text('Tiếp tục phiên hiện tại'));
+      await tester.tap(find.text('Tiếp tục phiên hiện tại'));
+      await pumpUntil(
+        tester,
+        () => find.text('Tổng quan').evaluate().isNotEmpty,
+        reason: 'continuing to return to the verified authenticated shell',
+      );
+      expect(find.byType(CredentialOutcomeView), findsNothing);
+      expect(
+        tester.state<NavigatorState>(find.byType(Navigator).first).canPop(),
+        isFalse,
+      );
+      expect(
+        harness.client.requests.where(
+          (request) => request.url.path.endsWith('/auth/password-reset'),
+        ),
+        hasLength(1),
+      );
+      expect(
+        harness.client.requests.where(
+          (request) => request.url.path.endsWith('/auth/login'),
+        ),
+        isEmpty,
+      );
+      expect(
+        harness.client.requests.where(
+          (request) => request.url.path.endsWith('/auth/me'),
+        ),
+        hasLength(3),
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 }
 
 class _Harness {
@@ -1360,146 +1503,5 @@ class _FailingDeleteStorage extends InMemoryCredentialStorage {
     return super.delete(key: key);
   }
 
-  testWidgets(
-    'reset outcome survives application navigator replacement and verification retry',
-    (tester) async {
-      final credentials = InMemoryCredentialStorage();
-      await _writeRefreshCredential(credentials, 'refresh-0');
-      final reconciliationRequested = Completer<void>();
-      final reconciliationResponse = Completer<http.StreamedResponse>();
-      final harness = _Harness.create(
-        _authClient(
-          reconciliationRequested: reconciliationRequested,
-          reconciliationResponse: reconciliationResponse,
-        ),
-        credentials,
-      );
-      final owner = CredentialWorkflowOwner(harness.api);
-      final attempt = owner.begin(AccountOperation.reset);
-      final submission = AccountSubmissionController(AccountOperation.reset);
-      addTearDown(owner.dispose);
-      addTearDown(submission.dispose);
 
-      await tester.pumpWidget(
-        MeetingAssistantApp(
-          dependencies: harness.dependencies,
-          credentialWorkflowOwner: owner,
-        ),
-      );
-      await pumpUntil(
-        tester,
-        () =>
-            harness.api.sessionState.isAuthenticated &&
-            find.text('Tổng quan').evaluate().isNotEmpty,
-        reason: 'the existing session to be verified before password reset',
-      );
-
-      final oldNavigator = tester.state<NavigatorState>(
-        find.byType(Navigator).first,
-      );
-      unawaited(
-        oldNavigator.push<void>(
-          MaterialPageRoute<void>(
-            builder: (_) =>
-                const Scaffold(body: Text('Protected route before reset')),
-          ),
-        ),
-      );
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(find.text('Protected route before reset'), findsOneWidget);
-
-      await tester.runAsync(() async {
-        await owner.submit(attempt, submission, 'opaque', 'new password 123');
-      });
-      await pumpUntil(
-        tester,
-        () => reconciliationRequested.isCompleted,
-        reason: 'password reset to trigger mandatory identity reconciliation',
-      );
-      await tester.pump();
-      expect(
-        find.text('Protected route before reset', skipOffstage: false),
-        findsNothing,
-      );
-      expect(find.text('Tổng quan'), findsNothing);
-      expect(
-        tester.state<NavigatorState>(find.byType(Navigator).first).canPop(),
-        isFalse,
-      );
-
-      reconciliationResponse.complete(
-        await jsonResponse(
-          503,
-          errorEnvelope('SERVICE_UNAVAILABLE', 'Private identity failure.'),
-        ),
-      );
-      await pumpUntil(
-        tester,
-        () => find.text('Thử xác minh lại').evaluate().isNotEmpty,
-        reason: 'unavailable verification to remain fail-closed',
-      );
-      expect(owner.outcome?.kind, CredentialOutcomeKind.completed);
-      expect(
-        find.textContaining('Mật khẩu đã được cập nhật.'),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('Không gửi lại yêu cầu này'),
-        findsOneWidget,
-      );
-
-      await tester.tap(find.text('Thử xác minh lại'));
-      await pumpUntil(
-        tester,
-        () =>
-            harness.api.sessionState.isAuthenticated &&
-            find.byType(CredentialOutcomeView).evaluate().isNotEmpty,
-        reason: 'successful verification to restore the original mutation outcome',
-      );
-      expect(owner.outcome?.kind, CredentialOutcomeKind.completed);
-      expect(find.text('Đặt lại mật khẩu thành công'), findsOneWidget);
-      expect(find.text('Tiếp tục phiên hiện tại'), findsOneWidget);
-      expect(
-        find.textContaining('Phiên đăng nhập hiện tại đã được xác minh'),
-        findsOneWidget,
-      );
-      expect(
-        find.text('Protected route before reset', skipOffstage: false),
-        findsNothing,
-      );
-
-      await tester.ensureVisible(find.text('Tiếp tục phiên hiện tại'));
-      await tester.tap(find.text('Tiếp tục phiên hiện tại'));
-      await pumpUntil(
-        tester,
-        () => find.text('Tổng quan').evaluate().isNotEmpty,
-        reason: 'continuing to return to the verified authenticated shell',
-      );
-      expect(find.byType(CredentialOutcomeView), findsNothing);
-      expect(
-        tester.state<NavigatorState>(find.byType(Navigator).first).canPop(),
-        isFalse,
-      );
-      expect(
-        harness.client.requests.where(
-          (request) => request.url.path.endsWith('/auth/password-reset'),
-        ),
-        hasLength(1),
-      );
-      expect(
-        harness.client.requests.where(
-          (request) => request.url.path.endsWith('/auth/login'),
-        ),
-        isEmpty,
-      );
-      expect(
-        harness.client.requests.where(
-          (request) => request.url.path.endsWith('/auth/me'),
-        ),
-        hasLength(3),
-      );
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
 }
