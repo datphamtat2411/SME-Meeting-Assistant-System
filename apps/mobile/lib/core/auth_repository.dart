@@ -12,23 +12,54 @@ class AuthRepository {
 
   final CoreApiRequestExecutor _requests;
 
-  Future<ApiResult> requestPasswordRecovery(String email) =>
-      _requests.sendPublicAuthentication(
+  Future<void> requestPasswordRecovery(String email) =>
+      _completePublicOperation(
         PublicAuthenticationOperation.passwordRecovery,
         body: <String, dynamic>{'email': email.trim()},
       );
 
-  Future<ApiResult> resetPassword(String token, String password) =>
-      _requests.sendPublicAuthentication(
+  Future<void> resetPassword(String token, String password) =>
+      _completePublicOperation(
         PublicAuthenticationOperation.passwordReset,
-        body: <String, dynamic>{'token': token.trim(), 'password': password},
+        body: <String, dynamic>{'token': token, 'password': password},
       );
 
-  Future<ApiResult> completeAccountSetup(String token, String password) =>
-      _requests.sendPublicAuthentication(
+  Future<void> completeAccountSetup(String token, String password) =>
+      _completePublicOperation(
         PublicAuthenticationOperation.accountSetup,
-        body: <String, dynamic>{'token': token.trim(), 'password': password},
+        body: <String, dynamic>{'token': token, 'password': password},
       );
+
+  Future<void> _completePublicOperation(
+    PublicAuthenticationOperation operation, {
+    required Map<String, dynamic> body,
+  }) async {
+    final response = await _requests.sendPublicAuthentication(
+      operation,
+      body: body,
+    );
+    final data = response.data;
+    final valid = switch (operation) {
+      PublicAuthenticationOperation.accountSetup => data == null,
+      PublicAuthenticationOperation.passwordRecovery ||
+      PublicAuthenticationOperation.passwordReset =>
+        data is Map<String, dynamic> &&
+            data['message'] is String &&
+            (data['message'] as String).trim().isNotEmpty,
+    };
+    if (!valid) {
+      throw ApiFailure(
+        response.statusCode,
+        ApiFailure.invalidResponseCode,
+        'The server returned an invalid account operation response.',
+        requestId: response.requestId,
+        responseRequestId: response.responseRequestId,
+        timestamp: response.timestamp,
+        headers: response.headers,
+        remoteOutcomeAmbiguous: true,
+      );
+    }
+  }
 
   Future<AuthTokenResponse> login(String email, String password) async {
     final response = await _requests.send(
