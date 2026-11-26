@@ -7,6 +7,7 @@ import 'package:sme_meeting_assistant/features/action_items/action_item_collecti
 import 'package:sme_meeting_assistant/features/action_items/action_item_invalidation.dart';
 import 'package:sme_meeting_assistant/features/dashboard/dashboard_controller.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
+import 'package:sme_meeting_assistant/core/appearance_controller.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_items_page.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
@@ -87,7 +88,25 @@ void main() {
         return meetingApiSuccess([]);
       }
       if (path.endsWith('/me/profile')) {
-        return meetingApiSuccess(meetingTestIdentity());
+        return meetingApiSuccess(
+          {
+            'id': testUserId,
+            'email': 'user@example.test',
+            'displayName': 'Test User',
+            'globalRole': 'ADMINISTRATOR',
+            'accountStatus': 'ACTIVE',
+            'primaryOrgUnitId': null,
+          },
+          headers: {'etag': '"profile-v1"'},
+        );
+      }
+      if (path.endsWith('/me/preferences')) {
+        return meetingApiSuccess({
+          'timezone': null,
+          'locale': null,
+          'meetingEmailEnabled': true,
+          'actionItemEmailEnabled': true,
+        });
       }
       return meetingApiFailure(404, 'NOT_FOUND');
     });
@@ -95,17 +114,23 @@ void main() {
     await tester.runAsync(() => signInMeetingTestApi(api));
     final dependencies = AppDependencies(
       api: api,
-      appearancePreferences: InMemoryAppearancePreferences(),
+      appearancePreferences: InMemoryAppearancePreferences(
+        initialMode: ThemeMode.light,
+      ),
       httpClient: client,
     );
     addTearDown(dependencies.dispose);
+    final appearance = AppearanceController(
+      preferences: dependencies.appearancePreferences,
+    );
+    addTearDown(appearance.dispose);
+    appearance.initialize();
     await tester.pumpWidget(
       MaterialApp(
         home: AppShell(
           dependencies: dependencies,
           api: api,
-          themeMode: ThemeMode.light,
-          onThemeChanged: (_) {},
+          appearance: appearance,
         ),
       ),
     );
