@@ -60,6 +60,9 @@ class ExportHttpIntegrationTests {
     @Autowired ObjectMapper json;
     @Autowired ExportGenerationStateMachine generation;
     @MockitoBean MinutesAssembler minutes;
+    // Keep the feature enabled while preventing scheduled dispatch from racing
+    // the deterministic HTTP status fixtures. Real workers have separate tests.
+    @MockitoBean ExportJobScheduler scheduler;
 
     @Test
     void authorizedPostCreatesDurableJobAndScopedStatusNeverLeaksStorageKeys()
@@ -104,28 +107,33 @@ class ExportHttpIntegrationTests {
         UUID id=UUID.fromString(json.readTree(admission.getResponse().getContentAsString())
                 .path("data").path("exportId").asText());
 
-        // Isolated durable-state fixtures, scoped to this admitted export only.
-        // Worker execution and storage integrity are covered by the worker tests.
-        setFailedAttempt(id,1);
+        assertRetryDisposition(actor,id,"PENDING",0,false);
+        failClaimedAttempt(actor,id,1);
         assertRetryDisposition(actor,id,"FAILED",1,true);
         assertThat(generation.requeueFailed(id)).isTrue();
         assertRetryDisposition(actor,id,"PENDING",1,false);
 
-        setFailedAttempt(id,2);
+        failClaimedAttempt(actor,id,2);
         assertRetryDisposition(actor,id,"FAILED",2,false);
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM meeting_exports WHERE meeting_id=?",
                 Long.class,target)).isEqualTo(1L);
     }
 
-    private void setFailedAttempt(UUID id,int attempt) {
+    private void failClaimedAttempt(UUID actor,UUID id,int attempt) throws Exception {
+        // Claim only this test's admitted row, not the shared FIFO queue:
+        // other HTTP tests deliberately leave pending export intents behind.
+        // Mirror the production claim transition with the database guards active.
+        UUID token=UUID.randomUUID();
         assertThat(jdbc.update("""
             UPDATE meeting_exports
-               SET status='FAILED',generation_attempt=?,
-                   last_error_code='EXPORT_STORAGE_UNAVAILABLE',
-                   claim_token=NULL,lease_expires_at=NULL,row_version=row_version+1
-             WHERE id=? AND status='PENDING'
-            """,attempt,id)).isEqualTo(1);
+               SET status='GENERATING',generation_attempt=generation_attempt+1,
+                   claim_token=?,lease_expires_at=clock_timestamp()+INTERVAL '120 seconds',
+                   row_version=row_version+1
+             WHERE id=? AND status='PENDING' AND generation_attempt=?
+            """,token,id,attempt-1)).isEqualTo(1);
+        assertRetryDisposition(actor,id,"GENERATING",attempt,false);
+        assertThat(generation.fail(id,token,"EXPORT_STORAGE_UNAVAILABLE")).isTrue();
     }
 
     private void assertRetryDisposition(UUID actor,UUID id,String state,
