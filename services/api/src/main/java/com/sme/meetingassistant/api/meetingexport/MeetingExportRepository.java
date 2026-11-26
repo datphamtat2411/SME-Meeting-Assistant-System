@@ -93,6 +93,39 @@ public class MeetingExportRepository {
         return require(exportId);
     }
 
+    /**
+     * Recovery is lookup-only. A missing/expired receipt is not permission to
+     * enqueue again. Use the same actor, meeting and request digest as admission.
+     */
+    @Transactional(propagation = Propagation.MANDATORY, readOnly = true)
+    public Optional<ExportRecord> recover(UUID actorId, UUID meetingId,
+            ExportFormat format, String rawKey) {
+        String keyDigest = ExportDigests.keyDigest(meetingId, rawKey);
+        String requestDigest = ExportDigests.requestDigest(meetingId, format);
+        List<Receipt> receipts = jdbc.query("""
+            SELECT request_digest,export_id FROM meeting_export_idempotency
+             WHERE actor_user_id=? AND meeting_id=? AND key_digest=?
+               AND expires_at>clock_timestamp()
+            """, (rs, ignored) -> new Receipt(rs.getString(1).trim(),
+                    rs.getObject(2, UUID.class)), actorId, meetingId, keyDigest);
+        if (receipts.isEmpty()) return Optional.empty();
+        if (receipts.size() != 1) throw new IllegalStateException("Duplicate export receipt");
+        Receipt receipt = receipts.getFirst();
+        if (!requestDigest.equals(receipt.requestDigest())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Idempotency-Key belongs to a different export intent");
+        }
+        if (receipt.exportId() == null) {
+            throw new IllegalStateException("Incomplete committed export receipt");
+        }
+        ExportRecord record = require(receipt.exportId());
+        if (!actorId.equals(record.requestedByUserId())
+                || !meetingId.equals(record.meetingId()) || format != record.format()) {
+            throw new IllegalStateException("Export receipt identity mismatch");
+        }
+        return Optional.of(record);
+    }
+
     /** One DB-clock bounded cleanup pass; caller supplies the transaction. */
     @Transactional(propagation = Propagation.MANDATORY)
     public int deleteExpiredIdempotencyReceipts(int limit) {

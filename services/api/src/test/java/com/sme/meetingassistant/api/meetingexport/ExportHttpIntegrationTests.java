@@ -132,6 +132,78 @@ class ExportHttpIntegrationTests {
                 Long.class,target)).isZero();
     }
 
+    @Test
+    void recoveryIsReadOnlyAndDoesNotRequireCurrentCompleteMinutes() throws Exception {
+        UUID actor=user("EMPLOYEE"), outsider=user("EMPLOYEE"), target=meeting(actor);
+        when(minutes.current(target)).thenReturn(snapshot(target,actor,"COMPLETE"));
+        String url="/api/v1/meetings/"+target+"/exports";
+        String recover=url+"/recover";
+        String body="{\"format\":\"PDF\"}";
+        MvcResult original=mvc.perform(post(url).principal(principal(actor))
+                .header("Idempotency-Key","recover-only")
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isAccepted()).andReturn();
+        String exportId=json.readTree(original.getResponse().getContentAsString())
+                .path("data").path("exportId").asText();
+
+        when(minutes.current(target)).thenThrow(new IllegalStateException("Minutes unavailable"));
+        MvcResult replay=mvc.perform(post(recover).principal(principal(actor))
+                .header("Idempotency-Key","recover-only")
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andReturn();
+        var recovered=json.readTree(replay.getResponse().getContentAsString()).path("data");
+        assertThat(recovered.path("outcome").asText()).isEqualTo("RECOVERED");
+        assertThat(recovered.path("admission").path("exportId").asText()).isEqualTo(exportId);
+
+        mvc.perform(post(recover).principal(principal(outsider))
+                .header("Idempotency-Key","recover-only")
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isNotFound());
+        mvc.perform(post(recover).principal(principal(actor))
+                .header("Idempotency-Key","recover-only")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"format\":\"MARKDOWN\"}"))
+                .andExpect(status().isConflict());
+
+        jdbc.update("""
+            UPDATE meeting_export_idempotency
+               SET created_at=clock_timestamp()-INTERVAL '48 hours',
+                   expires_at=clock_timestamp()-INTERVAL '1 hour'
+             WHERE export_id=?
+            """,UUID.fromString(exportId));
+        for (String key: List.of("recover-only","never-admitted")) {
+            MvcResult missing=mvc.perform(post(recover).principal(principal(actor))
+                    .header("Idempotency-Key",key)
+                    .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isOk()).andReturn();
+            assertThat(json.readTree(missing.getResponse().getContentAsString())
+                    .path("data").path("outcome").asText()).isEqualTo("UNAVAILABLE");
+        }
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM meeting_exports WHERE meeting_id=?",
+                Long.class,target)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM meeting_export_intakes WHERE meeting_id=?",
+                Long.class,target)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM meeting_export_idempotency WHERE meeting_id=?",
+                Long.class,target)).isLessThanOrEqualTo(1L);
+    }
+
+    @Test
+    void capabilityReadIsMeetingAuthorizedAndReflectsEnabledRoutes() throws Exception {
+        UUID actor=user("EMPLOYEE"), other=user("EMPLOYEE"), target=meeting(actor);
+        String url="/api/v1/meetings/"+target+"/exports/capabilities";
+        MvcResult response=mvc.perform(get(url).principal(principal(actor)))
+                .andExpect(status().isOk()).andReturn();
+        var data=json.readTree(response.getResponse().getContentAsString()).path("data");
+        assertThat(data.path("meetingId").asText()).isEqualTo(target.toString());
+        for (String field: List.of("admission","recovery","status","access")) {
+            assertThat(data.path(field).asBoolean()).isTrue();
+        }
+        assertThat(response.getResponse().getHeader(HttpHeaders.CACHE_CONTROL)).contains("no-store");
+        mvc.perform(get(url).principal(principal(other))).andExpect(status().isNotFound());
+    }
+
     private MinutesSnapshot snapshot(UUID id,UUID owner,String completeness) throws Exception {
         OffsetDateTime now=OffsetDateTime.parse("2026-11-07T12:00:00Z");
         var meeting=new MinutesSnapshot.Meeting(id,"Thảo luận sprint",null,owner,

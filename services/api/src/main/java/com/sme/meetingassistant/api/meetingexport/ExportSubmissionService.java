@@ -2,6 +2,7 @@ package com.sme.meetingassistant.api.meetingexport;
 
 import com.sme.meetingassistant.api.meetingminutes.MinutesSnapshot;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,6 +33,12 @@ public class ExportSubmissionService {
         this.storage = storage;
         this.audit = audit;
         this.budget = budget;
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<ExportRecord> recover(UUID meetingId, ExportFormat format, String key) {
+        return intent.recover(meetingId, format, key)
+                .filter(record -> intakes.find(record.id()).isPresent());
     }
 
     @Transactional
