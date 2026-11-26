@@ -106,9 +106,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     appearance.initialize();
   }
 
-  void changeTheme(ThemeMode next) => appearance.setMode(next);
-
-  @override
+   @override
   void dispose() {
     appearance.dispose();
     widget.dependencies.dispose();
@@ -226,8 +224,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         key: ValueKey(api.authenticatedSessionScope),
         dependencies: widget.dependencies,
         api: api,
-        themeMode: appearance.mode,
-        onThemeChanged: changeTheme,
+        appearance: appearance,
       ),
     };
   }
@@ -438,14 +435,12 @@ String _recoveryMessage(AuthSessionState state) {
 class AppShell extends StatefulWidget {
   final AppDependencies dependencies;
   final ApiClient api;
-  final ThemeMode themeMode;
-  final ValueChanged<ThemeMode> onThemeChanged;
+  final AppearanceController appearance;
   const AppShell({
     super.key,
     required this.dependencies,
     required this.api,
-    required this.themeMode,
-    required this.onThemeChanged,
+    required this.appearance,
   });
 
   @override
@@ -515,8 +510,7 @@ class _AppShellState extends State<AppShell> {
       AssistantPage(dependencies: widget.dependencies, active: index == 3),
       ProfilePage(
         api: widget.api,
-        themeMode: widget.themeMode,
-        onThemeChanged: widget.onThemeChanged,
+        appearance: widget.appearance,
       ),
     ];
     final wide = MediaQuery.sizeOf(context).width >= 700;

@@ -13,8 +13,15 @@ class SharedPreferencesAppearancePreferences implements AppearancePreferences {
 
   SharedPreferencesAppearancePreferences({this.key = 'theme'});
 
-  Future<SharedPreferences> get _store =>
-      _preferences ??= SharedPreferences.getInstance();
+  Future<SharedPreferences> get _store async {
+    final pending = _preferences ??= SharedPreferences.getInstance();
+    try {
+      return await pending;
+    } catch (_) {
+      if (identical(_preferences, pending)) _preferences = null;
+      rethrow;
+    }
+  }
 
   @override
   Future<ThemeMode?> loadThemeMode() async {
@@ -24,7 +31,10 @@ class SharedPreferencesAppearancePreferences implements AppearancePreferences {
 
   @override
   Future<void> saveThemeMode(ThemeMode mode) async {
-    await (await _store).setString(key, mode.name);
+    final stored = await (await _store).setString(key, mode.name);
+    if (!stored) {
+      throw StateError('Appearance preference was not persisted.');
+    }
   }
 
   static ThemeMode? _modeFromName(String? value) => switch (value) {

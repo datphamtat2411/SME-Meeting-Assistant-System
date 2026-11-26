@@ -1,21 +1,21 @@
 import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
+import '../../core/appearance_controller.dart';
 import '../../core/app_theme.dart';
 import '../../core/command_actions.dart';
 import '../../core/widgets.dart';
+import 'appearance_panel.dart';
 import 'preferences_panel.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({
     super.key,
     required this.api,
-    required this.themeMode,
-    required this.onThemeChanged,
+    required this.appearance,
   });
   final ApiClient api;
-  final ThemeMode themeMode;
-  final ValueChanged<ThemeMode> onThemeChanged;
+  final AppearanceController appearance;
   @override
   State<ProfilePage> createState() => _ProfilePageState();
 }
@@ -168,28 +168,7 @@ class _ProfilePageState extends State<ProfilePage> {
       PreferencesPanel(api: widget.api),
       const SizedBox(height: 12),
       const SectionHeading('Giao diện'),
-      ContentCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Chế độ màu',
-              style: TextStyle(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 12),
-            SegmentedButton<ThemeMode>(
-              segments: const [
-                ButtonSegment(value: ThemeMode.system, label: Text('Tự động')),
-                ButtonSegment(value: ThemeMode.light, label: Text('Sáng')),
-                ButtonSegment(value: ThemeMode.dark, label: Text('Tối')),
-              ],
-              selected: {widget.themeMode},
-              onSelectionChanged: (values) =>
-                  widget.onThemeChanged(values.first),
-            ),
-          ],
-        ),
-      ),
+      AppearancePanel(controller: widget.appearance),
       const SizedBox(height: 12),
       OutlinedButton.icon(
         onPressed: busy ? null : signOut,
