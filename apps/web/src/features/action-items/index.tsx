@@ -1,4 +1,3 @@
-import { RegionalCivilDate } from '@/components/regional-timestamp'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useBlocker } from '@tanstack/react-router'
@@ -34,6 +33,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { RegionalCivilDate } from '@/components/regional-timestamp'
 import {
   RequestEmpty,
   RequestError,
@@ -503,7 +503,9 @@ function ActionTable({
                     <span className='text-muted-foreground'>Unassigned</span>
                   )}
                 </TableCell>
-                <TableCell><RegionalCivilDate value={item.dueDate} fallback='—' /></TableCell>
+                <TableCell>
+                  <RegionalCivilDate value={item.dueDate} fallback='—' />
+                </TableCell>
                 <TableCell>
                   <Badge
                     variant={

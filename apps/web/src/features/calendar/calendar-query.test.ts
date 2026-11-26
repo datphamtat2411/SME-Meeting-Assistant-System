@@ -87,12 +87,25 @@ describe('Calendar meeting query', () => {
   })
 
   it('keys the Calendar query by the actual timezone-dependent interval', () => {
-    const input = { month: '2026-12', filters: { relationship: 'all' as const } }
-    const tokyo = calendarMeetingsInfiniteQueryOptions({ ...input, timezone: 'Asia/Tokyo' })
-    const newYork = calendarMeetingsInfiniteQueryOptions({ ...input, timezone: 'America/New_York' })
+    const input = {
+      month: '2026-12',
+      filters: { relationship: 'all' as const },
+    }
+    const tokyo = calendarMeetingsInfiniteQueryOptions({
+      ...input,
+      timezone: 'Asia/Tokyo',
+    })
+    const newYork = calendarMeetingsInfiniteQueryOptions({
+      ...input,
+      timezone: 'America/New_York',
+    })
     expect(tokyo.queryKey).not.toEqual(newYork.queryKey)
-    expect(tokyo.queryKey[3]).toMatchObject({ from: '2026-11-30T15:00:00.000Z' })
-    expect(newYork.queryKey[3]).toMatchObject({ from: '2026-12-01T05:00:00.000Z' })
+    expect(tokyo.queryKey[3]).toMatchObject({
+      from: '2026-11-30T15:00:00.000Z',
+    })
+    expect(newYork.queryKey[3]).toMatchObject({
+      from: '2026-12-01T05:00:00.000Z',
+    })
   })
 
   it('sends selected-month boundaries and canonical server filters with cancellation', async () => {

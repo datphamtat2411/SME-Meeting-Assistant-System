@@ -269,7 +269,13 @@ describe('integrated Calendar route', () => {
     const listCalls: Array<Record<string, string>> = []
     vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
       if (url === '/auth/me') return user
-      if (url === '/me/preferences') return { timezone: null, locale: null, meetingEmailEnabled: true, actionItemEmailEnabled: true }
+      if (url === '/me/preferences')
+        return {
+          timezone: null,
+          locale: null,
+          meetingEmailEnabled: true,
+          actionItemEmailEnabled: true,
+        }
       throw new Error(`Unexpected Core API read ${url}`)
     })
     vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) => {
@@ -429,7 +435,13 @@ describe('integrated Calendar route', () => {
     const listCalls: Array<Record<string, string>> = []
     vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
       if (url === '/auth/me') return user
-      if (url === '/me/preferences') return { timezone: null, locale: null, meetingEmailEnabled: true, actionItemEmailEnabled: true }
+      if (url === '/me/preferences')
+        return {
+          timezone: null,
+          locale: null,
+          meetingEmailEnabled: true,
+          actionItemEmailEnabled: true,
+        }
       throw new Error(`Unexpected Core API read ${url}`)
     })
     vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) => {
@@ -554,7 +566,13 @@ describe('integrated Calendar route', () => {
       })
       vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
         if (url === '/auth/me') return user
-      if (url === '/me/preferences') return { timezone: null, locale: null, meetingEmailEnabled: true, actionItemEmailEnabled: true }
+        if (url === '/me/preferences')
+          return {
+            timezone: null,
+            locale: null,
+            meetingEmailEnabled: true,
+            actionItemEmailEnabled: true,
+          }
         throw new Error(`Unexpected Core API read ${url}`)
       })
       vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
@@ -581,7 +599,13 @@ describe('integrated Calendar route', () => {
   it('shows the session-specific Calendar state after a 401 response', async () => {
     vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
       if (url === '/auth/me') return user
-      if (url === '/me/preferences') return { timezone: null, locale: null, meetingEmailEnabled: true, actionItemEmailEnabled: true }
+      if (url === '/me/preferences')
+        return {
+          timezone: null,
+          locale: null,
+          meetingEmailEnabled: true,
+          actionItemEmailEnabled: true,
+        }
       throw new Error(`Unexpected Core API read ${url}`)
     })
     vi.spyOn(coreApi, 'getWithMeta').mockRejectedValue(
@@ -620,7 +644,13 @@ describe('integrated Calendar route', () => {
       const listCalls: Array<Record<string, string>> = []
       vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
         if (url === '/auth/me') return user
-      if (url === '/me/preferences') return { timezone: null, locale: null, meetingEmailEnabled: true, actionItemEmailEnabled: true }
+        if (url === '/me/preferences')
+          return {
+            timezone: null,
+            locale: null,
+            meetingEmailEnabled: true,
+            actionItemEmailEnabled: true,
+          }
         throw new Error(`Unexpected Core API read ${url}`)
       })
       vi.spyOn(coreApi, 'getWithMeta').mockImplementation(
@@ -781,7 +811,13 @@ describe('integrated Calendar route', () => {
     const meetings = populatedCalendarMeetings()
     vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
       if (url === '/auth/me') return user
-      if (url === '/me/preferences') return { timezone: null, locale: null, meetingEmailEnabled: true, actionItemEmailEnabled: true }
+      if (url === '/me/preferences')
+        return {
+          timezone: null,
+          locale: null,
+          meetingEmailEnabled: true,
+          actionItemEmailEnabled: true,
+        }
       throw new Error(`Unexpected Core API read ${url}`)
     })
     vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
@@ -859,7 +895,13 @@ describe('integrated Calendar route', () => {
   it('opens New Meeting and navigates and closes its shared dialog by keyboard', async () => {
     vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
       if (url === '/auth/me') return user
-      if (url === '/me/preferences') return { timezone: null, locale: null, meetingEmailEnabled: true, actionItemEmailEnabled: true }
+      if (url === '/me/preferences')
+        return {
+          timezone: null,
+          locale: null,
+          meetingEmailEnabled: true,
+          actionItemEmailEnabled: true,
+        }
       throw new Error(`Unexpected Core API read ${url}`)
     })
     vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(meetingListResponse([]))
@@ -909,7 +951,13 @@ describe('integrated Calendar route', () => {
     await page.viewport(1440, 900)
     vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
       if (url === '/auth/me') return user
-      if (url === '/me/preferences') return { timezone: null, locale: null, meetingEmailEnabled: true, actionItemEmailEnabled: true }
+      if (url === '/me/preferences')
+        return {
+          timezone: null,
+          locale: null,
+          meetingEmailEnabled: true,
+          actionItemEmailEnabled: true,
+        }
       throw new Error(`Unexpected Core API read ${url}`)
     })
     vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(meetingListResponse([]))
@@ -971,7 +1019,13 @@ describe('integrated Calendar route', () => {
     const listCalls: Array<Record<string, string>> = []
     vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
       if (url === '/auth/me') return user
-      if (url === '/me/preferences') return { timezone: null, locale: null, meetingEmailEnabled: true, actionItemEmailEnabled: true }
+      if (url === '/me/preferences')
+        return {
+          timezone: null,
+          locale: null,
+          meetingEmailEnabled: true,
+          actionItemEmailEnabled: true,
+        }
       throw new Error(`Unexpected Core API read ${url}`)
     })
     vi.spyOn(coreApi, 'getWithMeta').mockImplementation(

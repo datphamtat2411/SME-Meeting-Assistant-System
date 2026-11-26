@@ -4,8 +4,8 @@ import {
   useQueryClient,
   type QueryClient,
 } from '@tanstack/react-query'
-import { useRegionalPresentation } from '@/context/regional-presentation'
 import { compareInstants } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { dateInputToOffsetDateTime } from '@/features/meetings/data/date-filters'
 import {
   fetchMeetingDetail,

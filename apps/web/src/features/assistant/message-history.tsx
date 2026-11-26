@@ -1,9 +1,9 @@
-import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { LoaderCircle, ShieldAlert } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import {
   assistantHistoryEpoch,
   captureAssistantAccess,

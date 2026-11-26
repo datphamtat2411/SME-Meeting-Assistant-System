@@ -1,5 +1,9 @@
 import { Temporal } from '@js-temporal/polyfill'
-import { civilDayInterval, civilMonthInterval, compareInstants } from '@/lib/regional-time'
+import {
+  civilDayInterval,
+  civilMonthInterval,
+  compareInstants,
+} from '@/lib/regional-time'
 import {
   isValidOffsetDateTime,
   type MeetingListItem,
@@ -51,7 +55,9 @@ function monthKey(month: Date | string) {
 // Preserve microsecond/nanosecond precision while retaining the existing
 // millisecond serialization for exactly representable instants.
 function instantString(value: Temporal.Instant) {
-  return value.equals(Temporal.Instant.fromEpochMilliseconds(value.epochMilliseconds))
+  return value.equals(
+    Temporal.Instant.fromEpochMilliseconds(value.epochMilliseconds)
+  )
     ? value.toString({ fractionalSecondDigits: 3 })
     : value.toString()
 }
@@ -78,8 +84,16 @@ export function projectCalendarMonth(
 ): CalendarMonthProjection {
   const first = Temporal.PlainDate.from(monthKey(month) + '-01')
   const nextMonth = first.add({ months: 1 })
-  const days: { dayKey: string; from: Temporal.Instant; to: Temporal.Instant }[] = []
-  for (let day = first; Temporal.PlainDate.compare(day, nextMonth) < 0; day = day.add({ days: 1 })) {
+  const days: {
+    dayKey: string
+    from: Temporal.Instant
+    to: Temporal.Instant
+  }[] = []
+  for (
+    let day = first;
+    Temporal.PlainDate.compare(day, nextMonth) < 0;
+    day = day.add({ days: 1 })
+  ) {
     const interval = civilDayInterval(day, timezone)
     const from = Temporal.Instant.from(interval.from)
     const to = Temporal.Instant.from(interval.to)
@@ -132,12 +146,10 @@ export function projectCalendarMonth(
     }
 
     for (const day of days) {
-      const segmentStart = Temporal.Instant.compare(start, day.from) > 0
-        ? start
-        : day.from
-      const segmentEnd = Temporal.Instant.compare(end, day.to) < 0
-        ? end
-        : day.to
+      const segmentStart =
+        Temporal.Instant.compare(start, day.from) > 0 ? start : day.from
+      const segmentEnd =
+        Temporal.Instant.compare(end, day.to) < 0 ? end : day.to
 
       if (Temporal.Instant.compare(segmentStart, segmentEnd) < 0) {
         segments.push(
@@ -148,7 +160,8 @@ export function projectCalendarMonth(
             originalEndAt: endValue,
             segmentStartAt: instantString(segmentStart),
             segmentEndAt: instantString(segmentEnd),
-            continuesFromPreviousDay: Temporal.Instant.compare(start, day.from) < 0,
+            continuesFromPreviousDay:
+              Temporal.Instant.compare(start, day.from) < 0,
             continuesIntoNextDay: Temporal.Instant.compare(end, day.to) > 0,
           })
         )
@@ -188,7 +201,10 @@ function compareCalendarSegments(
   if (first.dayKey !== second.dayKey) {
     return first.dayKey < second.dayKey ? -1 : 1
   }
-  const startDifference = compareInstants(first.segmentStartAt, second.segmentStartAt)
+  const startDifference = compareInstants(
+    first.segmentStartAt,
+    second.segmentStartAt
+  )
   if (startDifference !== 0) return startDifference
   if (first.meeting.id === second.meeting.id) return 0
   return first.meeting.id < second.meeting.id ? -1 : 1

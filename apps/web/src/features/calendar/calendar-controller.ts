@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
-import { useRegionalPresentation } from '@/context/regional-presentation'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { groupCalendarDaySegments, projectCalendarMonth } from './calendar-api'
 import {
   aggregateCalendarPages,
@@ -162,7 +162,9 @@ export function useCalendarController() {
   )
   const goToToday = useCallback(() => {
     updateSearch({
-      month: calendarMonthKey(currentCalendarMonth(new Date(), regional.timezone)),
+      month: calendarMonthKey(
+        currentCalendarMonth(new Date(), regional.timezone)
+      ),
     })
   }, [regional.timezone, updateSearch])
   const setView = useCallback(

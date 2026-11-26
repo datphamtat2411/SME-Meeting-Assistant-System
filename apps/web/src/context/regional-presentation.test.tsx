@@ -1,7 +1,7 @@
+import { act } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
-import { act } from 'react'
 import { coreApi } from '@/lib/core-api'
 import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { resolveRegionalPreferences } from '@/features/settings/regional-preferences'
@@ -66,7 +66,10 @@ describe('regional presentation', () => {
         </RegionalPresentationProvider>
       </QueryClientProvider>
     )
-    const fallback = resolveRegionalPreferences({ timezone: null, locale: null })
+    const fallback = resolveRegionalPreferences({
+      timezone: null,
+      locale: null,
+    })
     await expect
       .element(screen.getByLabelText('Regional context'))
       .toHaveTextContent(`unavailable ${fallback.timezone} ${fallback.locale}`)

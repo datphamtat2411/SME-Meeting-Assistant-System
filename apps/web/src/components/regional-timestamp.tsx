@@ -1,5 +1,5 @@
-import { useRegionalPresentation } from '@/context/regional-presentation'
 import { formatCivilDate, formatRegionalInstant } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 
 type DatePresentationProps = {
   value?: string | null
@@ -11,7 +11,9 @@ export function RegionalTimestamp({
   fallback = 'Time unavailable',
 }: DatePresentationProps) {
   const { timezone, locale } = useRegionalPresentation()
-  return value ? (formatRegionalInstant(value, timezone, locale) ?? fallback) : fallback
+  return value
+    ? (formatRegionalInstant(value, timezone, locale) ?? fallback)
+    : fallback
 }
 
 /** Date-only business fields are formatted without a timezone conversion. */

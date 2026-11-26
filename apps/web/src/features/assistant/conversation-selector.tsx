@@ -1,4 +1,3 @@
-import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { useState } from 'react'
 import { LoaderCircle, Plus } from 'lucide-react'
 import type { CoreApiError } from '@/lib/core-api'
@@ -13,6 +12,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { RequestEmpty, RequestLoading } from '@/components/request-state'
 import type { AssistantConversation } from './assistant-api'
 import { AssistantError } from './assistant-error'
