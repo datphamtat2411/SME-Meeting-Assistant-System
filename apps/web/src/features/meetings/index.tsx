@@ -66,6 +66,7 @@ import { formatMeetingSchedule as formatSchedule } from './data/meeting-schedule
 const route = getRouteApi('/_authenticated/meetings/')
 
 export function MeetingsPage() {
+  const regional = useRegionalPresentation()
   const search = route.useSearch()
   const navigate = route.useNavigate()
   const queryClient = useQueryClient()
@@ -132,9 +133,12 @@ export function MeetingsPage() {
   }
 
   const setDateFilter = (key: 'from' | 'to', value: string) => {
-    updateSearch({
-      [key]: value ? dateInputToOffsetDateTime(value, key === 'to') : undefined,
-    })
+    if (regional.status === 'loading') return
+    const boundary = value
+      ? dateInputToOffsetDateTime(value, key === 'to', regional.timezone)
+      : undefined
+    if (value && !boundary) return
+    updateSearch({ [key]: boundary })
   }
 
   useEffect(() => {

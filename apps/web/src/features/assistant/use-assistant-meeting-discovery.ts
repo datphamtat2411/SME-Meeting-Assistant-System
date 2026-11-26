@@ -4,6 +4,8 @@ import {
   useQueryClient,
   type QueryClient,
 } from '@tanstack/react-query'
+import { useRegionalPresentation } from '@/context/regional-presentation'
+import { compareInstants } from '@/lib/regional-time'
 import { dateInputToOffsetDateTime } from '@/features/meetings/data/date-filters'
 import {
   fetchMeetingDetail,
@@ -20,12 +22,13 @@ import {
 } from './assistant-access'
 
 export function useAssistantMeetingDiscovery() {
+  const regional = useRegionalPresentation()
   const [criteria, setCriteria] = useState<MeetingListSearch>({})
   const [page, setPage] = useState(1)
   const invalidRange = Boolean(
     criteria.from &&
     criteria.to &&
-    Date.parse(criteria.from) >= Date.parse(criteria.to)
+    compareInstants(criteria.from, criteria.to) >= 0
   )
   const meetingsQuery = useQuery({
     ...meetingListQueryOptions({ ...criteria, page, pageSize: 20 }),
@@ -38,9 +41,12 @@ export function useAssistantMeetingDiscovery() {
   }
 
   function setDate(key: 'from' | 'to', value: string) {
-    updateCriteria({
-      [key]: value ? dateInputToOffsetDateTime(value, key === 'to') : undefined,
-    })
+    if (regional.status === 'loading') return
+    const boundary = value
+      ? dateInputToOffsetDateTime(value, key === 'to', regional.timezone)
+      : undefined
+    if (value && !boundary) return
+    updateCriteria({ [key]: boundary })
   }
 
   function reset() {

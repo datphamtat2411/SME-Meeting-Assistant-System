@@ -633,13 +633,13 @@ describe('MeetingsPage', () => {
   })
 
   it('keeps inclusive date inputs across month and year boundaries', () => {
-    const januaryEnd = dateInputToOffsetDateTime('2026-01-31', true)
-    const decemberEnd = dateInputToOffsetDateTime('2026-12-31', true)
+    const januaryEnd = dateInputToOffsetDateTime('2026-01-31', true, 'UTC')
+    const decemberEnd = dateInputToOffsetDateTime('2026-12-31', true, 'UTC')
 
-    expect(januaryEnd).toContain('2026-02-01T00:00:00')
-    expect(decemberEnd).toContain('2027-01-01T00:00:00')
-    expect(dateInputValue(januaryEnd, true)).toBe('2026-01-31')
-    expect(dateInputValue(decemberEnd, true)).toBe('2026-12-31')
+    expect(januaryEnd).toBe('2026-02-01T00:00:00Z')
+    expect(decemberEnd).toBe('2027-01-01T00:00:00Z')
+    expect(dateInputValue(januaryEnd, true, 'UTC')).toBe('2026-01-31')
+    expect(dateInputValue(decemberEnd, true, 'UTC')).toBe('2026-12-31')
   })
 
   it('searches organizers through the paginated API and binds selection to URL state', async () => {
