@@ -1256,13 +1256,21 @@ describe('MeetingWorkspacePage', () => {
   })
 
   it('shows Meeting scheduled only after the DRAFT schedule endpoint confirms', async () => {
-    const scheduledMeeting = {
-      ...unscheduledDraftMeeting,
+    const interval = {
       scheduledStartAt: '2026-09-01T02:00:00.000Z',
       scheduledEndAt: '2026-09-01T03:00:00.000Z',
+    }
+    const patchedMeeting = { ...unscheduledDraftMeeting, ...interval }
+    const scheduledMeeting = {
+      ...patchedMeeting,
       status: 'SCHEDULED' as const,
     }
-    vi.spyOn(coreApi, 'post').mockResolvedValue({
+    // GET must observe the persisted version, including during cache refetches
+    // between PATCH and POST /schedule.
+    const detailResponses: Array<{ data: MeetingView; etag: string }> = [
+      { data: unscheduledDraftMeeting, etag: 'etag-current' },
+    ]
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
       previewOnly: true,
       canSchedule: true,
       roomConflict: false,
@@ -1271,50 +1279,93 @@ describe('MeetingWorkspacePage', () => {
     })
     const patchSpy = vi
       .spyOn(coreApi, 'patchWithMetaAndEtag')
-      .mockResolvedValue({
-        data: {
-          ...unscheduledDraftMeeting,
-          scheduledStartAt: '2026-09-01T02:00:00.000Z',
-          scheduledEndAt: '2026-09-01T03:00:00.000Z',
-        },
-        meta: {},
-        etag: 'etag-after-patch',
+      .mockImplementation(async () => {
+        const response = { data: patchedMeeting, etag: 'etag-after-patch' }
+        detailResponses[0] = response
+        return { ...response, meta: {} }
       })
+    let confirmSchedule!: () => void
+    const pendingSchedule = new Promise<void>((resolve) => {
+      confirmSchedule = resolve
+    })
     const scheduleSpy = vi
       .spyOn(coreApi, 'postWithMetaAndEtag')
-      .mockResolvedValue({
-        data: scheduledMeeting,
-        meta: {},
-        etag: 'etag-next',
+      .mockImplementation(async () => {
+        await pendingSchedule
+        const response = { data: scheduledMeeting, etag: 'etag-next' }
+        detailResponses[0] = response
+        return { ...response, meta: {} }
       })
-    const { screen } = await renderEditableWorkspace(unscheduledDraftMeeting)
+    const { screen, queryClient } = await renderEditableWorkspace(
+      unscheduledDraftMeeting,
+      activeOrganizerAndParticipants,
+      undefined,
+      detailResponses
+    )
+    queryClient.setQueryData(preferencesQueryKey, {
+      timezone: 'Asia/Ho_Chi_Minh',
+      locale: 'en-US',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit meeting' }))
-    await userEvent.fill(
-      screen.getByRole('textbox', { name: 'Date', exact: true }),
-      '2026-09-01'
-    )
-    await userEvent.fill(
-      screen.getByRole('textbox', { name: 'Start time' }),
-      '09:00'
-    )
-    await userEvent.fill(
-      screen.getByRole('textbox', { name: 'End time' }),
-      '10:00'
-    )
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Save & Schedule' })
-    )
+    try {
+      await userEvent.click(screen.getByRole('button', { name: 'Edit meeting' }))
+      await userEvent.fill(
+        screen.getByRole('textbox', { name: 'Date', exact: true }),
+        '2026-09-01'
+      )
+      await userEvent.fill(
+        screen.getByRole('textbox', { name: 'Start time' }),
+        '09:00'
+      )
+      await userEvent.fill(
+        screen.getByRole('textbox', { name: 'End time' }),
+        '10:00'
+      )
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Save & Schedule' })
+      )
 
-    await expect.poll(() => toastSuccess.mock.calls.length).toBe(1)
-    expect(toastSuccess).toHaveBeenCalledWith(
-      'Meeting scheduled',
-      expect.objectContaining({
-        description: 'The meeting was successfully scheduled.',
+      await expect.poll(() => scheduleSpy.mock.calls.length).toBe(1)
+      expect(previewSpy).toHaveBeenCalledWith(
+        '/meeting-schedule-checks',
+        {
+          meetingId: 'meeting-1',
+          start: interval.scheduledStartAt,
+          end: interval.scheduledEndAt,
+        },
+        undefined
+      )
+      expect(patchSpy).toHaveBeenCalledTimes(1)
+      expect(patchSpy).toHaveBeenCalledWith('/meetings/meeting-1', interval, {
+        headers: { 'If-Match': 'etag-current' },
       })
-    )
-    expect(patchSpy).toHaveBeenCalledTimes(1)
-    expect(scheduleSpy).toHaveBeenCalledTimes(1)
+      expect(scheduleSpy).toHaveBeenCalledWith(
+        '/meetings/meeting-1/schedule',
+        interval,
+        { headers: { 'If-Match': 'etag-after-patch' } }
+      )
+      expect(toastSuccess).not.toHaveBeenCalled()
+      expect(
+        queryClient.getQueryData(['meetings', 'detail', 'meeting-1'])
+      ).toEqual({ meeting: patchedMeeting, etag: 'etag-after-patch' })
+
+      confirmSchedule()
+      await expect.poll(() => toastSuccess.mock.calls.length).toBe(1)
+      expect(toastSuccess).toHaveBeenCalledWith(
+        'Meeting scheduled',
+        expect.objectContaining({
+          description: 'The meeting was successfully scheduled.',
+        })
+      )
+      expect(scheduleSpy).toHaveBeenCalledTimes(1)
+      expect(
+        queryClient.getQueryData(['meetings', 'detail', 'meeting-1'])
+      ).toEqual({ meeting: scheduledMeeting, etag: 'etag-next' })
+    } finally {
+      confirmSchedule()
+    }
   })
 
   it('shows Meeting changes saved for a confirmed SCHEDULED metadata edit', async () => {
