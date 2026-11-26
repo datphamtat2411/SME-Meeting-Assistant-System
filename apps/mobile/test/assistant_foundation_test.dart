@@ -1030,75 +1030,67 @@ void main() {
       expect(writes, 1);
     });
 
-    test(
-      'terminal status during older history loading is reconciled afterwards',
-      () async {
-        final statusEntered = Completer<void>();
-        final statusResponse = Completer<http.StreamedResponse>();
-        final olderEntered = Completer<void>();
-        final olderResponse = Completer<http.StreamedResponse>();
-        var terminal = false;
-        var writes = 0;
-        Map<String, dynamic> userAt(int index) => _userMessage()
-          ..['id'] =
-              'aaaaaaaa-aaaa-4aaa-8aaa-${index.toRadixString(16).padLeft(12, '0')}';
-        final initial = List.generate(50, (index) => userAt(index + 2));
-        final older = [userAt(0), userAt(1)];
-        final repository = await _repository(
-          MeetingTestHttpClient((request) async {
-            final path = request.url.path;
-            if (path.endsWith('/conversations')) {
-              return meetingApiSuccess([]);
-            }
-            if (path.endsWith('/turns/by-key')) {
-              statusEntered.complete();
-              return statusResponse.future;
-            }
-            if (request.method == 'POST') {
-              writes++;
-              return meetingApiSuccess(_turn(processing: true), status: 202);
-            }
-            if (request.url.queryParameters.containsKey('beforeMessageId')) {
-              olderEntered.complete();
-              return olderResponse.future;
-            }
-            return meetingApiSuccess(
-              _detail(
-                hasMore: true,
-                messages: terminal
-                    ? [...initial.skip(2), _userMessage(), _message()]
-                    : initial,
-              ),
-            );
-          }),
-        );
-        final controller = AssistantWorkspaceController(repository);
-        addTearDown(controller.dispose);
-        controller.setActive(true);
-        await controller.open(_typedConversation());
-        final submission = controller.submit('Câu hỏi');
-        await statusEntered.future;
-        final loading = controller.loadOlder();
-        await olderEntered.future;
-        terminal = true;
-        statusResponse.complete(
-          await meetingApiSuccess({
-            'turn': _turn(),
-            'recoveryEligible': false,
-          }),
-        );
-        await submission;
-        expect(controller.pending?.terminal, isTrue);
-        olderResponse.complete(
-          await meetingApiSuccess(_detail(messages: older)),
-        );
-        await loading;
-        expect(controller.pending, isNull);
-        expect(controller.messages.length, 54);
-        expect(controller.messages.last.id, _assistantMessageId);
-        expect(writes, 1);
-      },
-    );
+    test('terminal status during older history loading is reconciled afterwards', () async {
+      final statusEntered = Completer<void>();
+      final statusResponse = Completer<http.StreamedResponse>();
+      final olderEntered = Completer<void>();
+      final olderResponse = Completer<http.StreamedResponse>();
+      var terminal = false;
+      var writes = 0;
+      Map<String, dynamic> userAt(int index) => _userMessage()
+        ..['id'] =
+            'aaaaaaaa-aaaa-4aaa-8aaa-${index.toRadixString(16).padLeft(12, '0')}';
+      final initial = List.generate(50, (index) => userAt(index + 2));
+      final older = [userAt(0), userAt(1)];
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          final path = request.url.path;
+          if (path.endsWith('/conversations')) {
+            return meetingApiSuccess([]);
+          }
+          if (path.endsWith('/turns/by-key')) {
+            statusEntered.complete();
+            return statusResponse.future;
+          }
+          if (request.method == 'POST') {
+            writes++;
+            return meetingApiSuccess(_turn(processing: true), status: 202);
+          }
+          if (request.url.queryParameters.containsKey('beforeMessageId')) {
+            olderEntered.complete();
+            return olderResponse.future;
+          }
+          return meetingApiSuccess(
+            _detail(
+              hasMore: true,
+              messages: terminal
+                  ? [...initial.skip(2), _userMessage(), _message()]
+                  : initial,
+            ),
+          );
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      controller.setActive(true);
+      await controller.open(_typedConversation());
+      final submission = controller.submit('Câu hỏi');
+      await statusEntered.future;
+      final loading = controller.loadOlder();
+      await olderEntered.future;
+      terminal = true;
+      statusResponse.complete(
+        await meetingApiSuccess({'turn': _turn(), 'recoveryEligible': false}),
+      );
+      await submission;
+      expect(controller.pending?.terminal, isTrue);
+      olderResponse.complete(await meetingApiSuccess(_detail(messages: older)));
+      await loading;
+      expect(controller.pending, isNull);
+      expect(controller.messages.length, 54);
+      expect(controller.messages.last.id, _assistantMessageId);
+      expect(writes, 1);
+    });
 
     test('archived conversation prevents pending retry mutations', () async {
       var archived = false;
@@ -1141,55 +1133,58 @@ void main() {
       expect(controller.pending?.turn?.turnId, _turnId);
     });
 
-    test('ambiguous reclaim retains identity and permits local release', () async {
-      final keys = <String?>[];
-      var statusAvailable = true;
-      final repository = await _repository(
-        MeetingTestHttpClient((request) async {
-          final path = request.url.path;
-          if (path.endsWith('/conversations')) {
-            return meetingApiSuccess([]);
-          }
-          if (path.endsWith('/turns/by-key')) {
-            if (!statusAvailable) {
-              return meetingApiFailure(503, 'ASSISTANT_UNAVAILABLE');
+    test(
+      'ambiguous reclaim retains identity and permits local release',
+      () async {
+        final keys = <String?>[];
+        var statusAvailable = true;
+        final repository = await _repository(
+          MeetingTestHttpClient((request) async {
+            final path = request.url.path;
+            if (path.endsWith('/conversations')) {
+              return meetingApiSuccess([]);
             }
-            return meetingApiSuccess({
-              'turn': _turn(processing: true),
-              'recoveryEligible': keys.length == 1,
-            });
-          }
-          if (request.method == 'POST') {
-            keys.add(request.headers['idempotency-key']);
-            if (keys.length > 1) throw TimeoutException('lost reclaim');
-            return meetingApiSuccess(_turn(processing: true), status: 202);
-          }
-          return meetingApiSuccess(_detail(messages: [_userMessage()]));
-        }),
-      );
-      final controller = AssistantWorkspaceController(repository);
-      addTearDown(controller.dispose);
-      controller.setActive(true);
-      await controller.open(_typedConversation());
-      await controller.submit('Câu hỏi');
-      final command = controller.pending!;
-      command.automaticChecks = 12;
-      statusAvailable = false;
-      await controller.retryPending();
-      await controller.checkPending();
-      expect(command.turn?.turnId, _turnId);
-      expect(command.reclaimUncertain, isTrue);
-      expect(command.canAbandon, isTrue);
-      statusAvailable = true;
-      await controller.checkPending();
-      expect(command.reclaimUncertain, isFalse);
-      expect(command.canAbandon, isFalse);
-      // A fresh authoritative live lease must not be locally abandoned.
-      await controller.abandonPending();
-      expect(controller.pending, same(command));
-      expect(keys.length, 2);
-      expect(keys.first, keys.last);
-    });
+            if (path.endsWith('/turns/by-key')) {
+              if (!statusAvailable) {
+                return meetingApiFailure(503, 'ASSISTANT_UNAVAILABLE');
+              }
+              return meetingApiSuccess({
+                'turn': _turn(processing: true),
+                'recoveryEligible': keys.length == 1,
+              });
+            }
+            if (request.method == 'POST') {
+              keys.add(request.headers['idempotency-key']);
+              if (keys.length > 1) throw TimeoutException('lost reclaim');
+              return meetingApiSuccess(_turn(processing: true), status: 202);
+            }
+            return meetingApiSuccess(_detail(messages: [_userMessage()]));
+          }),
+        );
+        final controller = AssistantWorkspaceController(repository);
+        addTearDown(controller.dispose);
+        controller.setActive(true);
+        await controller.open(_typedConversation());
+        await controller.submit('Câu hỏi');
+        final command = controller.pending!;
+        command.automaticChecks = 12;
+        statusAvailable = false;
+        await controller.retryPending();
+        await controller.checkPending();
+        expect(command.turn?.turnId, _turnId);
+        expect(command.reclaimUncertain, isTrue);
+        expect(command.canAbandon, isTrue);
+        statusAvailable = true;
+        await controller.checkPending();
+        expect(command.reclaimUncertain, isFalse);
+        expect(command.canAbandon, isFalse);
+        // A fresh authoritative live lease must not be locally abandoned.
+        await controller.abandonPending();
+        expect(controller.pending, same(command));
+        expect(keys.length, 2);
+        expect(keys.first, keys.last);
+      },
+    );
 
     test('definitively rejected questions can be edited', () async {
       final repository = await _repository(
