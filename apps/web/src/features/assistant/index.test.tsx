@@ -1336,6 +1336,31 @@ describe('AssistantPage', () => {
       .not.toBeInTheDocument()
   })
 
+  it('revalidates an already-open conversation instead of restoring cached history', async () => {
+    let revoked = false
+    const blocked = deferred<unknown>()
+    setupReads({
+      onDetail: () => (revoked ? blocked.promise : undefined),
+    })
+    const screen = await renderPage()
+    await openConversation(screen)
+    await expect
+      .element(screen.getByText('The launch is planned for Friday.').first())
+      .toBeVisible()
+    revoked = true
+    await userEvent.click(screen.getByRole('button', { name: 'Opened' }))
+    await expect
+      .element(screen.getByText('The launch is planned for Friday.').first())
+      .not.toBeInTheDocument()
+    blocked.resolve(coreError(404, 'Conversation no longer available'))
+    await expect
+      .element(screen.getByText('Conversation unavailable'))
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Assistant question' }))
+      .not.toBeInTheDocument()
+  })
+
   it('reports stale-source outcomes without fabricating success', async () => {
     setupReads()
     const post = vi.spyOn(coreApi, 'post').mockRejectedValueOnce(

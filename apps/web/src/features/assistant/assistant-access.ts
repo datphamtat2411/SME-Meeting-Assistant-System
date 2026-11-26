@@ -205,6 +205,76 @@ export function isAssistantAuthorizationDenial(error: unknown): boolean {
 
 const listKey = ['assistant', 'conversations'] as const
 
+function conversationsForMeeting(
+  client: QueryClient,
+  meetingId: string
+): Set<string> {
+  const ids = new Set<string>()
+  const include = (conversation: AssistantConversation | undefined) => {
+    if (conversation?.meetingId === meetingId) ids.add(conversation.id)
+  }
+  for (const [, cached] of client.getQueriesData<
+    AssistantConversation[] | InfiniteData<AssistantConversation[]>
+  >({ queryKey: listKey })) {
+    if (Array.isArray(cached)) cached.forEach(include)
+    else cached?.pages.flat().forEach(include)
+  }
+  for (const [key, cached] of client.getQueriesData<
+    | AssistantConversation
+    | AssistantConversationDetail
+    | InfiniteData<AssistantConversationDetail>
+  >({ queryKey: ['assistant', 'conversation'] })) {
+    if (!cached) continue
+    if (key[3] === 'summary' && 'meetingId' in cached) include(cached)
+    if (key[3] === 'page' && 'conversation' in cached) {
+      include(cached.conversation)
+    }
+    if (key[3] === 'history' && 'pages' in cached) {
+      cached.pages.forEach((page) => include(page.conversation))
+    }
+  }
+  return ids
+}
+
+function containConversationResources(
+  client: QueryClient,
+  state: AccessState,
+  ids: Set<string>,
+  failure: CoreApiError,
+  meetingId?: string
+): void {
+  state.listEpoch += 1
+  for (const id of ids) {
+    state.resourceEpochs.set(id, (state.resourceEpochs.get(id) ?? 0) + 1)
+    state.denied.set(id, failure)
+  }
+  notify(state)
+  for (const id of ids) {
+    for (const queryKey of [
+      ['assistant', 'conversation', id],
+      ['assistant', 'turn', id],
+    ]) {
+      void client.cancelQueries({ queryKey }, { revert: false })
+      client.removeQueries({ queryKey })
+    }
+  }
+  void client.cancelQueries({ queryKey: listKey }, { revert: false })
+  client.setQueriesData<
+    AssistantConversation[] | InfiniteData<AssistantConversation[]>
+  >({ queryKey: listKey }, (cached) => {
+    if (!cached) return cached
+    const withoutDenied = (items: AssistantConversation[]) =>
+      items.filter(
+        (conversation) =>
+          !ids.has(conversation.id) && conversation.meetingId !== meetingId
+      )
+    return Array.isArray(cached)
+      ? withoutDenied(cached)
+      : { ...cached, pages: cached.pages.map(withoutDenied) }
+  })
+  void client.invalidateQueries({ queryKey: listKey })
+}
+
 export function containAssistantAccessFailure(
   client: QueryClient,
   token: AssistantAccessToken,
@@ -218,40 +288,23 @@ export function containAssistantAccessFailure(
   const id = token.conversationId
   if (failure.status !== 401 && token.meetingId) {
     state.meetingEpochs.set(token.meetingId, token.resourceEpoch + 1)
-    notify(state)
+    containConversationResources(
+      client,
+      state,
+      conversationsForMeeting(client, token.meetingId),
+      failure,
+      token.meetingId
+    )
   } else if (failure.status === 401 || !id) {
     state.epoch += 1
     state.listEpoch += 1
     state.denied.clear()
     state.listError = failure
     notify(state)
-    void client.cancelQueries({ queryKey: ['assistant'] })
+    void client.cancelQueries({ queryKey: ['assistant'] }, { revert: false })
     client.removeQueries({ queryKey: ['assistant'] })
   } else {
-    state.resourceEpochs.set(id, token.resourceEpoch + 1)
-    state.listEpoch += 1
-    state.denied.set(id, failure)
-    notify(state)
-    const resourceKeys = [
-      ['assistant', 'conversation', id],
-      ['assistant', 'turn', id],
-    ]
-    for (const queryKey of resourceKeys) {
-      void client.cancelQueries({ queryKey })
-      client.removeQueries({ queryKey })
-    }
-    void client.cancelQueries({ queryKey: listKey })
-    client.setQueriesData<
-      AssistantConversation[] | InfiniteData<AssistantConversation[]>
-    >({ queryKey: listKey }, (cached) => {
-      if (!cached) return cached
-      const withoutDenied = (items: AssistantConversation[]) =>
-        items.filter((conversation) => conversation.id !== id)
-      return Array.isArray(cached)
-        ? withoutDenied(cached)
-        : { ...cached, pages: cached.pages.map(withoutDenied) }
-    })
-    void client.invalidateQueries({ queryKey: listKey })
+    containConversationResources(client, state, new Set([id]), failure)
   }
   return true
 }
@@ -456,16 +509,33 @@ export async function readAssistantHistoryProtected(
 
 // A stale-source outcome does not identify every affected cached message.
 // Discard the conversation's cached history and revalidate through Core.
-export function invalidateAssistantHistory(
+function resetAssistantHistory(
   client: QueryClient,
-  conversationId: string
-): void {
+  conversationId: string,
+  throwOnError: boolean
+): Promise<void> {
   advanceHistoryEpoch(client, conversationId)
   stateFor(client).redactedIds.delete(conversationId)
   const pageKey = ['assistant', 'conversation', conversationId, 'page']
   const historyKey = ['assistant', 'conversation', conversationId, 'history']
-  void client.cancelQueries({ queryKey: pageKey })
+  void client.cancelQueries({ queryKey: pageKey }, { revert: false })
   client.removeQueries({ queryKey: pageKey })
-  void client.cancelQueries({ queryKey: historyKey })
-  void client.resetQueries({ queryKey: historyKey })
+  void client.cancelQueries({ queryKey: historyKey }, { revert: false })
+  return client.resetQueries({ queryKey: historyKey }, { throwOnError })
+}
+
+export function invalidateAssistantHistory(
+  client: QueryClient,
+  conversationId: string
+): void {
+  void resetAssistantHistory(client, conversationId, false)
+}
+
+// Explicit refresh is a fresh authorization boundary, not an overlay on
+// unverified older pages. An unsuccessful read leaves no old history to merge.
+export function revalidateAssistantHistory(
+  client: QueryClient,
+  conversationId: string
+): Promise<void> {
+  return resetAssistantHistory(client, conversationId, true)
 }

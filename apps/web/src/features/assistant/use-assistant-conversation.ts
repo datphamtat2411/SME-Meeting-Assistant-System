@@ -17,6 +17,7 @@ import {
   invalidateAssistantHistory,
   isAssistantAccessCurrent,
   retryAssistantAccess,
+  revalidateAssistantHistory,
   useAssistantAccessRevision,
   type AssistantAccessToken,
 } from './assistant-access'
@@ -188,7 +189,14 @@ export function useAssistantConversation() {
     onError: (error, operation) => {
       const wasCurrent = isAssistantAccessCurrent(queryClient, operation.access)
       containAssistantAccessFailure(queryClient, operation.access, error)
-      if (wasCurrent && isCurrentScope(operation.scope)) setCreateError(error)
+      if (
+        wasCurrent &&
+        operation.scope.generation === scopeRef.current.generation &&
+        operation.scope.session === getRequestRecoveryGeneration() &&
+        !assistantAccessError(queryClient)
+      ) {
+        setCreateError(error)
+      }
     },
     onSettled: (_data, _error, operation) => {
       if (operation.scope.session !== getRequestRecoveryGeneration()) return
@@ -526,7 +534,7 @@ export function useAssistantConversation() {
         queryClient,
         currentScope.conversationId
       )
-      const refreshed = await detailQuery.refetch({ throwOnError: true })
+      await revalidateAssistantHistory(queryClient, currentScope.conversationId)
       assertAssistantAccessCurrent(queryClient, access)
       if (
         !isCurrentScope(currentScope) ||
@@ -546,9 +554,7 @@ export function useAssistantConversation() {
         >(
           assistantConversationHistoryQueryOptions(currentScope.conversationId)
             .queryKey
-        )?.pages ??
-        refreshed.data?.pages ??
-        []
+        )?.pages ?? []
       if (
         accepted &&
         pages.some((detail) => findAssistantTurnMessage(detail, accepted.turn))

@@ -16,6 +16,7 @@ import {
   parseAssistantConversationDetailResponse,
   parseAssistantConversationsResponse,
   parseAssistantTurnResponse,
+  recoverAssistantTurn,
   submitAssistantQuestion,
   type AssistantConversationDetail,
 } from './assistant-api'
@@ -116,6 +117,33 @@ describe('Assistant Core API adapter', () => {
       state: 'COMPLETED',
       answerStatus: 'GROUNDED',
     })
+  })
+
+  it('recovers an accepted turn by ID without sending the original question or key', async () => {
+    const turnId = '66666666-6666-4666-8666-666666666666'
+    const result = {
+      turnId,
+      state: 'PROCESSING',
+      userMessageId,
+      assistantMessageId: null,
+      answerStatus: null,
+      answer: null,
+      claims: [],
+      citations: [],
+    }
+    const post = vi.spyOn(coreApi, 'post').mockResolvedValue(result)
+    await expect(recoverAssistantTurn(conversationId, turnId)).resolves.toEqual(
+      result
+    )
+    expect(post).toHaveBeenCalledWith(
+      `/assistant/conversations/${conversationId}/turns/${turnId}/recover`,
+      undefined,
+      {}
+    )
+    post.mockResolvedValue({ ...result, turnId: sourceId })
+    await expect(recoverAssistantTurn(conversationId, turnId)).rejects.toThrow(
+      CoreApiError
+    )
   })
 
   it('rejects malformed envelopes and nested Assistant DTOs', () => {

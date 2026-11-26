@@ -1,6 +1,6 @@
 # Assistant conversation reliability — Wave 01
 
-This package-level note documents the additive v1 Assistant read contracts.
+This package-level note documents the additive v1 Assistant conversation contracts.
 Core API continues to own conversation authorization, durable turn identity,
 admission, lease ownership, and canonical result persistence. AI inference
 remains synchronous and outside the database transaction.
@@ -45,8 +45,26 @@ fingerprint, execution token or key is returned. Missing turn lookup returns
 that a prior uncertain submission cannot be accepted.
 
 Observation never executes inference, extends/reclaims a lease, consumes
-submission quota, or changes durable business state. Explicit same-key POST
-remains the only reclaim path under existing admission rules.
+submission quota, or changes durable business state.
+
+## Explicit recovery
+
+`POST /api/v1/assistant/conversations/{conversationId}/turns/{turnId}/recover`
+
+An authorized client can explicitly recover a known durable turn even if its
+original browser request state was lost. No request body or Idempotency-Key
+header is required. Core resolves the original stored question and request
+identity, verifies their integrity and reuses the existing reservation,
+admission and lease fencing path. The reservation must still find the exact
+turn; recovery never inserts a replacement turn or user message.
+
+The response uses the existing message-submission outcome contract: 202 for
+an active processing turn, 200 for an eligible completed result, 503 with
+ASSISTANT_TURN_FAILED for terminal failure, or the existing stale-source and
+authorization outcomes. Only an expired processing turn may be reclaimed.
+Concurrent recovery attempts cannot execute another inference while the
+reclaimed lease remains active. GET observations remain strictly read-only.
+The explicit recovery command does not expose stored request keys or tokens.
 
 ## Error semantics
 

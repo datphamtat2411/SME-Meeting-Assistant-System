@@ -171,9 +171,15 @@ describe('Assistant protected operation ownership', () => {
     const existing = captureAssistantAccess(client, 'a')
     const deniedCreation = captureAssistantCreationAccess(client, 'meeting-a')
     const otherCreation = captureAssistantCreationAccess(client, 'meeting-b')
+    const related = { id: 'related', meetingId: 'meeting-a' }
+    const unrelated = { id: 'a', meetingId: 'meeting-b' }
+    const listKey = ['assistant', 'conversations', 0, 20]
+    client.setQueryData(listKey, [related, unrelated])
+    client.setQueryData(['assistant', 'conversation', 'related', 'summary'], related)
     client.setQueryData(['assistant', 'conversation', 'a', 'history'], {
       content: 'authorized',
     })
+    const relatedOperation = captureAssistantAccess(client, 'related')
     const denied = new CoreApiError({
       status: 403,
       kind: 'http',
@@ -184,8 +190,13 @@ describe('Assistant protected operation ownership', () => {
     )
     expect(isAssistantAccessCurrent(client, deniedCreation)).toBe(false)
     expect(isAssistantAccessCurrent(client, otherCreation)).toBe(true)
-    expect(isAssistantAccessCurrent(client, list)).toBe(true)
+    expect(isAssistantAccessCurrent(client, list)).toBe(false)
     expect(isAssistantAccessCurrent(client, existing)).toBe(true)
+    expect(isAssistantAccessCurrent(client, relatedOperation)).toBe(false)
+    expect(client.getQueryData(listKey)).toEqual([unrelated])
+    expect(
+      client.getQueryData(['assistant', 'conversation', 'related', 'summary'])
+    ).toBeUndefined()
     expect(
       client.getQueryData(['assistant', 'conversation', 'a', 'history'])
     ).toEqual({ content: 'authorized' })
