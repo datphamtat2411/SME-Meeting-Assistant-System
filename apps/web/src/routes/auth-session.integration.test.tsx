@@ -958,8 +958,9 @@ describe('session restoration and protected routing', () => {
     }
     getCurrentUser
       .mockRejectedValueOnce(apiError(0, 'network'))
-      .mockImplementation(async (url: string) =>
-        (url === '/me/preferences' ? preferences : identity) as never
+      .mockImplementation(
+        async (url: string) =>
+          (url === '/me/preferences' ? preferences : identity) as never
       )
 
     const { screen } = await renderRoute('/calendar')
