@@ -5,7 +5,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
+import 'package:sme_meeting_assistant/features/action_items/action_item_create_sheet.dart';
+import 'package:sme_meeting_assistant/features/action_items/action_item_creation.dart';
+import 'package:sme_meeting_assistant/features/action_items/action_item_models.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
+import 'package:sme_meeting_assistant/features/results/minutes_panel.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_timeline_panel.dart';
 import 'package:sme_meeting_assistant/features/results/summary_history_controller.dart';
 import 'package:sme_meeting_assistant/features/results/transcript_evidence_navigation.dart';
@@ -32,6 +36,7 @@ class _Repository extends ResultsRepository {
   _Repository(super.api);
   int reads = 0;
   int minutesReads = 0;
+  List<MinutesAction> minutesActions = [];
   ApiFailure? historyFailure;
   int historyReads = 0;
   final List<PagedCollection<SummaryVersion>> historyPages = [];
@@ -225,7 +230,7 @@ class _Repository extends ResultsRepository {
         aiWarnings: [],
       ),
       confirmedDecisions: <MinutesDecision>[],
-      officialActionItems: <MinutesAction>[],
+      officialActionItems: minutesActions,
       transcript: const MinutesTranscript(
         availability: 'AVAILABLE',
         id: 'transcript-1',
@@ -406,7 +411,369 @@ PagedCollection<MeetingDecision> _decisionPage(MeetingDecision decision) =>
       hasPrevious: false,
     );
 
+Future<
+  ({
+    AppDependencies dependencies,
+    ResultsWorkspaceController workspace,
+    _Repository repository,
+  })
+>
+_mountActionResults(
+  WidgetTester tester,
+  MeetingTestHttpClient client, {
+  ResultsSection section = ResultsSection.actionItems,
+  List<MinutesAction> minutesActions = const [],
+}) async {
+  tester.view.physicalSize = const Size(1000, 1400);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  final api = createMeetingTestApi(client);
+  await tester.runAsync(() => signInMeetingTestApi(api));
+  final dependencies = AppDependencies(
+    api: api,
+    appearancePreferences: InMemoryAppearancePreferences(),
+    httpClient: client,
+  );
+  final repository = _Repository(api)..minutesActions = minutesActions;
+  final workspace = ResultsWorkspaceController(
+    api: api,
+    repository: repository,
+    meetingId: testMeetingId,
+    meeting: Meeting.fromJson(meetingTestJson()),
+    capabilities: const ResultsCapabilities(canRead: true, canMutate: true),
+    invalidation: dependencies.resultsInvalidation,
+  );
+  addTearDown(() async {
+    workspace.dispose();
+    await dependencies.shutdown();
+  });
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: ResultsPanel(
+          workspace: workspace,
+          dependencies: dependencies,
+          initialSection: section,
+        ),
+      ),
+    ),
+  );
+  return (
+    dependencies: dependencies,
+    workspace: workspace,
+    repository: repository,
+  );
+}
+
+Map<String, dynamic> _creationMeeting(String id) => {
+  'id': id,
+  'title': id == testMeetingId ? 'Current meeting' : 'Other meeting',
+  'canReadMeetingContext': true,
+};
+
+Future<void> _fillContextualCreation(WidgetTester tester) async {
+  await pumpUntil(
+    tester,
+    () => find.byType(ActionItemCreatePage).evaluate().isNotEmpty,
+    reason: 'contextual creation route',
+  );
+  await pumpUntil(
+    tester,
+    () => find.widgetWithText(OutlinedButton, 'Current meeting')
+        .evaluate()
+        .isNotEmpty,
+    reason: 'verified contextual meeting',
+  );
+  final meeting = find.widgetWithText(OutlinedButton, 'Current meeting');
+  expect(tester.widget<OutlinedButton>(meeting).onPressed, isNull);
+  await tester.enterText(find.byType(TextFormField).first, 'Contextual task');
+  tester.testTextInput.receiveAction(TextInputAction.done);
+  await tester.pumpAndSettle();
+  final assignee = find.text('Chọn người phụ trách *');
+  await tester.ensureVisible(assignee);
+  await tester.tap(assignee);
+  await tester.pumpAndSettle();
+  await tester.tap(find.textContaining('Giao cho tôi'));
+  await tester.pumpAndSettle();
+}
+
 void main() {
+  testWidgets('Results creates work only in the verified locked meeting', (
+    tester,
+  ) async {
+    final writes = <Map<String, dynamic>>[];
+    final pages = <int>[];
+    final client = MeetingTestHttpClient((request) async {
+      if (request.url.path.endsWith('/creation-meetings')) {
+        expect(request.url.queryParameters['q'], testMeetingId);
+        final page = int.parse(request.url.queryParameters['page']!);
+        pages.add(page);
+        return meetingApiSuccess(
+          page == 0
+              ? List.generate(
+                  20,
+                  (index) => _creationMeeting(
+                    '00000000-0000-4000-8000-${index.toString().padLeft(12, '0')}',
+                  ),
+                )
+              : [_creationMeeting(testMeetingId)],
+          meta: {
+            ...meetingTestMeta,
+            'pagination': {
+              'page': page,
+              'size': 20,
+              'totalElements': 21,
+              'totalPages': 2,
+              'hasNext': page == 0,
+              'hasPrevious': page > 0,
+            },
+          },
+        );
+      }
+      if (request.method == 'POST') {
+        writes.add(decodeRequestBody(request));
+        expect(request.headers['Idempotency-Key'], isNotNull);
+        return meetingApiSuccess(
+          {...itemJson(), 'title': 'Contextual task'},
+          headers: {'etag': '"created"'},
+          status: 201,
+        );
+      }
+      expect(request.url.path, endsWith('/action-items'));
+      expect(request.url.queryParameters['meetingId'], testMeetingId);
+      return meetingApiSuccess(
+        [
+          if (writes.isNotEmpty) {...itemJson(), 'title': 'Contextual task'},
+        ],
+        meta: pageMeta(total: writes.isEmpty ? 0 : 1),
+      );
+    });
+    await _mountActionResults(tester, client);
+    final create = find.byTooltip('Tạo công việc');
+    await pumpUntil(
+      tester,
+      () => create.evaluate().isNotEmpty,
+      reason: 'eligible contextual creation',
+    );
+    await tester.tap(create);
+    await _fillContextualCreation(tester);
+    final submit = find.widgetWithText(FilledButton, 'Tạo công việc');
+    await tester.ensureVisible(submit);
+    await tester.tap(submit);
+    await pumpUntil(tester, () => writes.length == 1, reason: 'creation POST');
+    await pumpUntil(
+      tester,
+      () => find.byType(ActionItemCreatePage).evaluate().isEmpty,
+      reason: 'return to Results',
+    );
+    expect(writes.single['meetingId'], testMeetingId);
+    expect(writes.single['assigneeUserId'], testUserId);
+    expect(pages, [0, 1, 0, 1, 0, 1]);
+    await pumpUntil(
+      tester,
+      () => find.text('Contextual task').evaluate().isNotEmpty,
+      reason: 'canonical collection revalidation',
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Results revocation fences pending creation verification', (
+    tester,
+  ) async {
+    final pending = Completer<http.StreamedResponse>();
+    var reads = 0;
+    var writes = 0;
+    final client = MeetingTestHttpClient((request) async {
+      if (request.url.path.endsWith('/creation-meetings')) {
+        reads++;
+        if (reads == 3) return pending.future;
+        return meetingApiSuccess(
+          [_creationMeeting(testMeetingId)],
+          meta: pageMeta(),
+        );
+      }
+      if (request.method == 'POST') {
+        writes++;
+        return meetingApiFailure(500, 'UNEXPECTED_WRITE');
+      }
+      return meetingApiSuccess([], meta: pageMeta(total: 0));
+    });
+    final (:dependencies, :workspace, repository: _) =
+        await _mountActionResults(tester, client);
+    final create = find.byTooltip('Tạo công việc');
+    await pumpUntil(
+      tester,
+      () => create.evaluate().isNotEmpty,
+      reason: 'creation eligibility',
+    );
+    await tester.tap(create);
+    await _fillContextualCreation(tester);
+    final submit = find.widgetWithText(FilledButton, 'Tạo công việc');
+    await tester.ensureVisible(submit);
+    await tester.tap(submit);
+    await pumpUntil(tester, () => reads == 3, reason: 'pending verification');
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: false, canMutate: false),
+    );
+    pending.complete(
+      await meetingApiSuccess(
+        [_creationMeeting(testMeetingId)],
+        meta: pageMeta(),
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          !dependencies.actionItemWorkflows.creation.busy &&
+          find.byType(ActionItemCreatePage).evaluate().isEmpty,
+      reason: 'revoked creation disposed without dispatch',
+    );
+    expect(writes, 0);
+    expect(dependencies.actionItemWorkflows.creation.unresolvedIntent, isNull);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Results recovers the original request from another meeting', (
+    tester,
+  ) async {
+    final writes = <Map<String, dynamic>>[];
+    final keys = <String?>[];
+    final client = MeetingTestHttpClient((request) async {
+      if (request.url.path.endsWith('/creation-meetings')) {
+        final id = request.url.queryParameters['q']!;
+        return meetingApiSuccess([_creationMeeting(id)], meta: pageMeta());
+      }
+      if (request.method == 'POST') {
+        writes.add(decodeRequestBody(request));
+        keys.add(request.headers['Idempotency-Key']);
+        if (writes.length == 1) {
+          return meetingApiFailure(500, 'INTERNAL_ERROR');
+        }
+        return meetingApiSuccess(
+          {
+            ...itemJson(),
+            'meetingId': testRoomId,
+            'meetingContext': {'id': testRoomId, 'title': 'Other meeting'},
+          },
+          headers: {'etag': '"recovered"'},
+          status: 201,
+        );
+      }
+      return meetingApiSuccess([], meta: pageMeta(total: 0));
+    });
+    final (:dependencies, workspace: _, repository: _) =
+        await _mountActionResults(tester, client);
+    final creation = dependencies.actionItemWorkflows.creation;
+    await tester.runAsync(() async {
+      await creation.submit(
+        input: ActionItemCreateInput(
+          meetingId: testRoomId,
+          title: 'Other pending task',
+          assigneeUserId: testUserId,
+        ),
+        meeting: ActionItemCreationMeeting.fromJson(
+          _creationMeeting(testRoomId),
+        ),
+        assignee: dependencies.actionItems.selfCandidate(
+          dependencies.actionItems.captureSession(),
+        ),
+      );
+    });
+    expect(creation.phase, ActionItemCreationPhase.unresolved);
+    await pumpUntil(
+      tester,
+      () => find
+          .text('Có yêu cầu tạo công việc chưa xác định ở cuộc họp khác.')
+          .evaluate()
+          .isNotEmpty,
+      reason: 'cross-meeting recovery warning',
+    );
+    await tester.tap(find.text('Tiếp tục yêu cầu tạo chưa xác định'));
+    await pumpUntil(
+      tester,
+      () => find.text('Cuộc họp: Other meeting').evaluate().isNotEmpty,
+      reason: 'original meeting recovery context',
+    );
+    expect(find.byType(TextFormField), findsNothing);
+    expect(writes.length, 1);
+    await tester.tap(find.text('Thử lại cùng yêu cầu'));
+    await pumpUntil(
+      tester,
+      () => creation.unresolvedIntent == null && writes.length == 2,
+      reason: 'verified recovery of the original request',
+    );
+    expect(writes.first, writes.last);
+    expect(writes.last['meetingId'], testRoomId);
+    expect(keys.first, isNotNull);
+    expect(keys.first, keys.last);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Minutes opens a fresh meeting-owned Action Item snapshot', (
+    tester,
+  ) async {
+    var reads = 0;
+    final client = MeetingTestHttpClient((request) async {
+      expect(request.method, 'GET');
+      expect(request.url.path, endsWith('/action-items/$itemId'));
+      reads++;
+      return meetingApiSuccess(
+        {...itemJson(), 'title': 'Current Action Item'},
+        headers: {'etag': '"fresh"'},
+      );
+    });
+    await _mountActionResults(
+      tester,
+      client,
+      section: ResultsSection.minutes,
+      minutesActions: [
+        MinutesAction(
+          id: itemId,
+          title: 'Older Minutes title',
+          details: null,
+          status: 'OPEN',
+          sourceType: 'MANUAL',
+          assigneeUserId: testUserId,
+          dueDate: null,
+          version: 0,
+          createdAt: _createdAt,
+          confirmedByUserId: null,
+          confirmedAt: null,
+        ),
+      ],
+    );
+    await pumpUntil(
+      tester,
+      () => find.byType(CustomScrollView).evaluate().isNotEmpty,
+      reason: 'Minutes projection',
+    );
+    final detail = find.text('Xem chi tiết công việc');
+    await tester.scrollUntilVisible(
+      detail,
+      250,
+      scrollable: find
+          .descendant(
+            of: find.byType(MinutesPanel),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.tap(detail);
+    await pumpUntil(
+      tester,
+      () => find.text('Current Action Item').evaluate().isNotEmpty,
+      reason: 'fresh Action Item detail',
+    );
+    expect(reads, 1);
+    expect(find.text('Older Minutes title'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('Results Action Items use meeting scope and revoke the route', (
     tester,
   ) async {
@@ -475,11 +842,106 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Send report'), findsWidgets);
     expect(find.text('Mở cuộc họp'), findsNothing);
+    final complete = find.widgetWithText(OutlinedButton, 'Hoàn thành');
+    await tester.ensureVisible(complete);
+    await tester.tap(complete);
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
 
     workspace.updateCapabilities(
       const ResultsCapabilities(canRead: false, canMutate: false),
     );
     await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('Send report'), findsNothing);
+    expect(find.text('Công việc'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Results revocation removes the nested assignment picker', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    var listReads = 0;
+    var detailReads = 0;
+    final client = MeetingTestHttpClient((request) async {
+      expect(request.method, 'GET');
+      if (request.url.path.endsWith('/action-items/creation-meetings')) {
+        return meetingApiSuccess([], meta: pageMeta(total: 0));
+      }
+      if (request.url.path.endsWith('/action-items/$itemId')) {
+        detailReads++;
+        return meetingApiSuccess(itemJson(), headers: {'etag': '"v1"'});
+      }
+      if (request.url.path.endsWith('/action-items')) {
+        listReads++;
+        expect(request.url.queryParameters['meetingId'], testMeetingId);
+        expect(request.url.queryParameters.containsKey('assignee'), isFalse);
+        return meetingApiSuccess([itemJson()], meta: pageMeta());
+      }
+      throw StateError('Unexpected request ${request.url.path}');
+    });
+    final api = createMeetingTestApi(client);
+    await tester.runAsync(() => signInMeetingTestApi(api));
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+    );
+    final workspace = ResultsWorkspaceController(
+      api: api,
+      repository: _Repository(api),
+      meetingId: testMeetingId,
+      meeting: Meeting.fromJson(meetingTestJson()),
+      capabilities: const ResultsCapabilities(canRead: true, canMutate: true),
+      invalidation: dependencies.resultsInvalidation,
+    );
+    addTearDown(() async {
+      workspace.dispose();
+      await dependencies.shutdown();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResultsPanel(
+            workspace: workspace,
+            dependencies: dependencies,
+            initialSection: ResultsSection.actionItems,
+          ),
+        ),
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Send report').evaluate().isNotEmpty,
+      reason: 'meeting-scoped Action Item',
+    );
+    expect(listReads, greaterThanOrEqualTo(1));
+    await tester.tap(find.text('Send report').first);
+    await pumpUntil(tester, () => detailReads == 1, reason: 'detail read');
+    await tester.pumpAndSettle();
+    expect(find.text('Send report'), findsWidgets);
+    expect(find.text('Mở cuộc họp'), findsNothing);
+    final edit = find.widgetWithText(OutlinedButton, 'Chỉnh sửa');
+    await tester.ensureVisible(edit);
+    await tester.tap(edit);
+    await tester.pumpAndSettle();
+    final assignee = find.widgetWithText(OutlinedButton, 'Test User');
+    await tester.ensureVisible(assignee);
+    await tester.tap(assignee);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Giao cho tôi'), findsOneWidget);
+
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: false, canMutate: false),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Giao cho tôi'), findsNothing);
     expect(find.text('Send report'), findsNothing);
     expect(find.text('Công việc'), findsOneWidget);
     expect(tester.takeException(), isNull);

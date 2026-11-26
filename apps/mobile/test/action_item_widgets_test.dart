@@ -229,12 +229,16 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    var meetingNavigations = 0;
     await tester.pumpWidget(
       MaterialApp(
         home: ActionItemDetailPage(
           repository: repository,
           admission: ActionItemMutationAdmission(),
           itemId: itemId,
+          openMeeting: (_, _) async {
+            meetingNavigations++;
+          },
         ),
       ),
     );
@@ -244,6 +248,8 @@ void main() {
       reason: 'verified action item detail',
     );
     expect(find.text('Chỉnh sửa'), findsNothing);
+    expect(find.text('Mở cuộc họp'), findsNothing);
+    expect(meetingNavigations, 0);
     expect(find.byType(TextFormField), findsNothing);
     expect(find.text('Weekly review'), findsNothing);
     expect(find.textContaining('Cuộc họp giới hạn quyền'), findsOneWidget);
