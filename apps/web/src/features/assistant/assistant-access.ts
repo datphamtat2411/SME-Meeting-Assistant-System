@@ -69,15 +69,17 @@ function notify(state: AccessState) {
   for (const listener of state.listeners) listener()
 }
 
+export function subscribeAssistantAccess(client: QueryClient, listener: () => void): () => void {
+  const state = stateFor(client)
+  state.listeners.add(listener)
+  return () => {
+    state.listeners.delete(listener)
+  }
+}
+
 export function useAssistantAccessRevision(client: QueryClient): number {
   const subscribe = useCallback(
-    (listener: () => void) => {
-      const state = stateFor(client)
-      state.listeners.add(listener)
-      return () => {
-        state.listeners.delete(listener)
-      }
-    },
+    (listener: () => void) => subscribeAssistantAccess(client, listener),
     [client]
   )
   const snapshot = useCallback(() => stateFor(client).revision, [client])

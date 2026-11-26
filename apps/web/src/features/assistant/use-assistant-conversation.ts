@@ -34,6 +34,7 @@ export function useAssistantConversation(
   useAssistantAccessRevision(client)
   const { meetingId: selectedMeetingId, conversationId: selectedConversationId } = selection
   const [openedId, setOpenedId] = useState<string>()
+  const [previousId, setPreviousId] = useState(selectedConversationId)
   const [conversationTitle, setConversationTitle] = useState('')
   const [question, setQuestion] = useState('')
   const [questionValidationError, setQuestionValidationError] = useState<string>()
@@ -45,22 +46,38 @@ export function useAssistantConversation(
   const selectionGeneration = useRef(0)
   const [historyRefreshing, setHistoryRefreshing] = useState(false)
   const [historyError, setHistoryError] = useState<unknown>()
+  const refreshGeneration = useRef(0)
 
   useEffect(() => {
     selectionRef.current = { conversationId: selectedConversationId, meetingId: selectedMeetingId }
     selectionGeneration.current += 1
   }, [selectedConversationId, selectedMeetingId])
 
-  useEffect(() => {
+  // Reset conversation-local presentation state during a selection transition
+  // before React commits the new conversation, not in a cascading effect.
+  if (previousId !== selectedConversationId) {
+    setPreviousId(selectedConversationId)
+    setOpenedId(undefined)
     setQuestion('')
     setQuestionValidationError(undefined)
     setHistoryError(undefined)
     setHistoryRefreshing(false)
-    if (selectedConversationId) {
-      retryAssistantAccess(client, selectedConversationId)
-      invalidateAssistantHistory(client, selectedConversationId)
+  }
+
+  useEffect(() => {
+    if (!selectedConversationId) return
+    let current = true
+    retryAssistantAccess(client, selectedConversationId)
+    // Await the reset itself. The new query remains disabled until all old
+    // pages and in-flight reads have been invalidated by the security boundary.
+    void revalidateAssistantHistory(client, selectedConversationId)
+      .catch(() => { /* The enabled detail query will surface its own read failure. */ })
+      .then(() => {
+        if (current) setOpenedId(selectedConversationId)
+      })
+    return () => {
+      current = false
     }
-    setOpenedId(selectedConversationId)
   }, [client, selectedConversationId])
 
   const listAccessError = assistantAccessError(client)
@@ -146,14 +163,15 @@ export function useAssistantConversation(
   async function refreshConversation() {
     const id = selectedConversationId
     if (!id) return
+    const generation = ++refreshGeneration.current
     setHistoryRefreshing(true)
     setHistoryError(undefined)
     try {
       await revalidateAssistantHistory(client, id)
     } catch (error) {
-      if (selectionRef.current.conversationId === id) setHistoryError(error)
+      if (selectionRef.current.conversationId === id && refreshGeneration.current === generation) setHistoryError(error)
     } finally {
-      if (selectionRef.current.conversationId === id) setHistoryRefreshing(false)
+      if (selectionRef.current.conversationId === id && refreshGeneration.current === generation) setHistoryRefreshing(false)
     }
   }
 

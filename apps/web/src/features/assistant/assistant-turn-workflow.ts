@@ -9,6 +9,7 @@ import {
   isAssistantAccessCurrent,
   readAssistantProtected,
   revalidateAssistantHistory,
+  subscribeAssistantAccess,
   type AssistantAccessToken,
 } from './assistant-access'
 import {
@@ -96,17 +97,25 @@ export function useAssistantTurnWorkflow(
     records.current.get(key) === operation &&
     isAssistantAccessCurrent(client, operation.access), [client])
 
-  // A denied resource must not retain a recoverable question or turn locally.
-  useEffect(() => {
-    let changed = false
+  // Subscribe to the existing containment boundary. Remove retained intent
+  // immediately on denial, not on an unrelated React rendering pass.
+  useEffect(() => subscribeAssistantAccess(client, () => {
+    const removed: string[] = []
     for (const [key, value] of records.current) {
       if (!isAssistantAccessCurrent(client, value.access)) {
         records.current.delete(key)
-        changed = true
+        removed.push(key)
       }
     }
-    if (changed) setWorkflows(new Map(records.current))
-  })
+    if (removed.length) {
+      setWorkflows(new Map(records.current))
+      setRefreshErrors((previous) => {
+        const next = new Map(previous)
+        for (const key of removed) next.delete(key)
+        return next
+      })
+    }
+  }), [client])
 
   const refresh = useCallback(async (key: string, operation: TurnWorkflow, reset = false) => {
     if (!owns(key, operation)) return
@@ -168,7 +177,17 @@ export function useAssistantTurnWorkflow(
       const turn = await readAssistantProtected(client, key, () =>
         lookupAssistantTurn(key, operation.submission.idempotencyKey)
       )
-      adopt(key, next, turn)
+      if (normalizeCoreApiError(operation.error).code === 'ASSISTANT_IDEMPOTENCY_CONFLICT') {
+        // The lookup identifies the conflicting durable operation, not proof
+        // that this question was accepted. Keep the conflict visible.
+        if (turn.state === 'PROCESSING') {
+          write(key, { phase: turn.leaseStatus === 'EXPIRED' ? 'recoverable' : 'observing', access: next.access, turnId: turn.turnId, error: operation.error })
+        } else {
+          const settled: Settled = { phase: 'settled', access: next.access, turnId: turn.turnId, error: operation.error }
+          write(key, settled)
+          void refresh(key, settled, true)
+        }
+      } else adopt(key, next, turn)
     } catch (error) {
       if (!owns(key, next)) return
       // Absence is not proof of rejection; preserve the original intent.
@@ -180,7 +199,7 @@ export function useAssistantTurnWorkflow(
         retryAt: Math.max(operation.retryAt ?? 0, retryAt(error)),
       })
     }
-  }, [adopt, client, owns, write])
+  }, [adopt, client, owns, refresh, write])
 
   const submit = useCallback(async (submission: Submission, previous?: Intent) => {
     const key = submission.conversationId
@@ -246,7 +265,7 @@ export function useAssistantTurnWorkflow(
       try {
         const status = await client.fetchQuery({
           queryKey: key,
-          queryFn: ({ signal }) => readAssistantProtected(client, id, () =>
+          queryFn: ({ signal, client: queryClient }) => readAssistantProtected(queryClient, id, () =>
             fetchAssistantTurnStatus(id, operation.turnId, signal)
           ),
           staleTime: 0,

@@ -143,6 +143,9 @@ export function ConversationPanel({
           onRetry={workflow.phase === 'uncertain' && canRetryAssistantSubmission(workflow.error) ? onQuestionRetry : undefined}
         />
       )}
+      {workflow && 'retryAt' in workflow && workflow.retryAt != null && workflow.retryAt > Date.now() && (
+        <p className='text-sm text-muted-foreground'>Retry is available after {new Date(workflow.retryAt).toLocaleTimeString()}.</p>
+      )}
       {inactive && <p className='text-sm text-muted-foreground'>This conversation is not active.</p>}
 
       <form className='space-y-3' onSubmit={onQuestionSubmit}>
