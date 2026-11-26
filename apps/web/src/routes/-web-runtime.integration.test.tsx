@@ -1075,9 +1075,12 @@ describe('integrated generated Web runtime', () => {
     await expect
       .element(minutes.getByText('Open', { exact: true }))
       .toBeVisible()
-    await expect
-      .element(screen.getByText('No pending assigned work'))
-      .not.toBeInTheDocument()
+    const preview = () =>
+      screen
+        .getByText('My action items', { exact: true })
+        .element()
+        .closest('[data-slot="card"]')?.textContent
+    await expect.poll(preview).toContain(item.title)
     const reads = () => [
       get.mock.calls.filter(([url]) => url === '/dashboard/me').length,
       get.mock.calls.filter(([url]) => url === '/dashboard/management')
@@ -1094,6 +1097,7 @@ describe('integrated generated Web runtime', () => {
     await expect
       .element(screen.getByText('No pending assigned work'))
       .toBeVisible()
+    await expect.poll(preview).not.toContain(item.title)
     await expect
       .element(minutes.getByText('Done', { exact: true }))
       .toBeVisible()
