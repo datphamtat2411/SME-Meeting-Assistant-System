@@ -27,8 +27,7 @@ class _RecoveryRequestFormState extends State<RecoveryRequestForm> {
   final _submission = AccountSubmissionController(AccountOperation.recovery);
 
   Future<void> _submit() async {
-    if (!_submission.canSubmit ||
-        !(_form.currentState?.validate() ?? false)) {
+    if (!_submission.canSubmit || !(_form.currentState?.validate() ?? false)) {
       return;
     }
     final email = _email.text.trim();
@@ -79,7 +78,8 @@ class _RecoveryRequestFormState extends State<RecoveryRequestForm> {
                 AuthFeedback(message: failure.message, isError: true),
               if (_submission.isCompleted)
                 const AuthFeedback(
-                  message: 'Nếu tài khoản đủ điều kiện, hướng dẫn khôi phục '
+                  message:
+                      'Nếu tài khoản đủ điều kiện, hướng dẫn khôi phục '
                       'sẽ được gửi qua email.',
                 ),
               if (_submission.isCompleted)
@@ -149,8 +149,7 @@ class _CredentialEstablishmentFormState
   }
 
   Future<void> _submit() async {
-    if (!_submission.canSubmit ||
-        !(_form.currentState?.validate() ?? false)) {
+    if (!_submission.canSubmit || !(_form.currentState?.validate() ?? false)) {
       return;
     }
     final capability = _token.text;
@@ -190,7 +189,8 @@ class _CredentialEstablishmentFormState
     listenable: _submission,
     builder: (context, _) {
       final failure = _submission.failure;
-      final editable = !_submission.isSubmitting &&
+      final editable =
+          !_submission.isSubmitting &&
           !_submission.isCompleted &&
           failure?.kind != AccountFailureKind.uncertain &&
           failure?.kind != AccountFailureKind.unavailable;

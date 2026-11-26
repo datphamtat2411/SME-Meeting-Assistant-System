@@ -219,49 +219,64 @@ void main() {
     expect(find.text('Email hoặc mật khẩu không chính xác.'), findsOneWidget);
     expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
     expect(
-      tester.widget<TextFormField>(find.byType(TextFormField).first)
-          .controller!.text,
+      tester
+          .widget<TextFormField>(find.byType(TextFormField).first)
+          .controller!
+          .text,
       'user@example.test',
     );
   });
 
-  testWidgets('interactive login stays on the form through identity verification', (
-    tester,
-  ) async {
-    final identityRequested = Completer<void>();
-    final identityResponse = Completer<http.StreamedResponse>();
-    final client = _authClient(
-      identityRequested: identityRequested,
-      identityResponse: identityResponse,
-    );
-    final harness = _Harness.create(client, InMemoryCredentialStorage());
-    await tester.pumpWidget(
-      MeetingAssistantApp(dependencies: harness.dependencies),
-    );
-    await pumpUntil(
-      tester,
-      () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
-    );
-    await tester.enterText(
-      find.byType(TextFormField).first,
-      'user@example.test',
-    );
-    await tester.enterText(find.byType(TextFormField).at(1), 'password');
-    await tester.tap(find.widgetWithText(FilledButton, 'Đăng nhập'));
-    await pumpUntil(tester, () => identityRequested.isCompleted);
-    expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
-    expect(find.byType(StartupProgressView), findsNothing);
-    expect(find.text('Tổng quan'), findsNothing);
-    expect(tester.widget<FilledButton>(find.byType(FilledButton).first).onPressed,
-        isNull);
-    identityResponse.complete(await jsonResponse(200, successEnvelope(_identity())));
-    await pumpUntil(
-      tester,
-      () => harness.api.sessionState.isAuthenticated &&
-          find.text('Tổng quan').evaluate().isNotEmpty,
-    );
-    expect(find.text('Đăng nhập hệ thống'), findsNothing);
-  });
+  testWidgets(
+    'interactive login stays on the form through identity verification',
+    (tester) async {
+      final identityRequested = Completer<void>();
+      final identityResponse = Completer<http.StreamedResponse>();
+      final client = _authClient(
+        identityRequested: identityRequested,
+        identityResponse: identityResponse,
+      );
+      final harness = _Harness.create(client, InMemoryCredentialStorage());
+      await tester.pumpWidget(
+        MeetingAssistantApp(dependencies: harness.dependencies),
+      );
+      await pumpUntil(
+        tester,
+        () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+        reason: 'interactive login to become available',
+      );
+      await tester.enterText(
+        find.byType(TextFormField).first,
+        'user@example.test',
+      );
+      await tester.enterText(find.byType(TextFormField).at(1), 'password');
+      await tester.tap(find.widgetWithText(FilledButton, 'Đăng nhập'));
+      await pumpUntil(
+        tester,
+        () => identityRequested.isCompleted,
+        reason: 'interactive identity request to start',
+      );
+      await tester.pump();
+      expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
+      expect(find.byType(StartupProgressView), findsNothing);
+      expect(find.text('Tổng quan'), findsNothing);
+      expect(
+        tester.widget<FilledButton>(find.byType(FilledButton).first).onPressed,
+        isNull,
+      );
+      identityResponse.complete(
+        await jsonResponse(200, successEnvelope(_identity())),
+      );
+      await pumpUntil(
+        tester,
+        () =>
+            harness.api.sessionState.isAuthenticated &&
+            find.text('Tổng quan').evaluate().isNotEmpty,
+        reason: 'verified interactive login to open protected application',
+      );
+      expect(find.text('Đăng nhập hệ thống'), findsNothing);
+    },
+  );
 
   testWidgets('routes an invalidated stored session to reauthentication', (
     tester,

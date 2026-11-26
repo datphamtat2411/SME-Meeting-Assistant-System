@@ -44,21 +44,24 @@ class AccountFlowFailure {
     required DateTime now,
   }) {
     final api = error is ApiFailure ? error : null;
-    final kind = switch (api) {
-      null => AccountFailureKind.uncertain,
-      _ when api.invalidResponse ||
-          api.remoteOutcomeAmbiguous ||
-          api.transportFailure ||
-          api.status == 408 ||
-          api.status == 425 ||
-          api.serverFailure =>
-        AccountFailureKind.uncertain,
-      _ when api.status == 429 => AccountFailureKind.throttled,
-      _ when api.status == 404 => AccountFailureKind.unavailable,
-      _ when api.status >= 400 && api.status < 500 =>
-        AccountFailureKind.rejected,
-      _ => AccountFailureKind.uncertain,
-    };
+    final AccountFailureKind kind;
+    if (api == null ||
+        api.invalidResponse ||
+        api.remoteOutcomeAmbiguous ||
+        api.transportFailure ||
+        api.status == 408 ||
+        api.status == 425 ||
+        api.serverFailure) {
+      kind = AccountFailureKind.uncertain;
+    } else if (api.status == 429) {
+      kind = AccountFailureKind.throttled;
+    } else if (api.status == 404) {
+      kind = AccountFailureKind.unavailable;
+    } else if (api.status >= 400 && api.status < 500) {
+      kind = AccountFailureKind.rejected;
+    } else {
+      kind = AccountFailureKind.uncertain;
+    }
     AccountFailureField? field;
     if (kind == AccountFailureKind.rejected &&
         (api?.status == 400 || api?.status == 422)) {
@@ -79,8 +82,7 @@ class AccountFlowFailure {
     final message = switch (kind) {
       AccountFailureKind.throttled =>
         'Máy chủ đang giới hạn yêu cầu. Vui lòng chờ trước khi thử lại.',
-      AccountFailureKind.unavailable =>
-        'Tính năng hiện không khả dụng. Vui lòng thử lại sau hoặc liên hệ quản trị viên.',
+      AccountFailureKind.unavailable => 'Tính năng hiện không khả dụng. Vui lòng thử lại sau hoặc liên hệ quản trị viên.',
       AccountFailureKind.uncertain =>
         operation == AccountOperation.recovery
             ? 'Không thể xác nhận yêu cầu. Hãy kiểm tra email trước khi gửi lại.'
@@ -90,10 +92,11 @@ class AccountFlowFailure {
         AccountFailureField.email => 'Email không hợp lệ.',
         AccountFailureField.password =>
           'Mật khẩu không đáp ứng chính sách của tổ chức.',
-        null => operation.establishesPassword
-            ? 'Liên kết có thể không hợp lệ, đã hết hạn hoặc mật khẩu '
-                  'không đáp ứng chính sách của tổ chức.'
-            : 'Yêu cầu không được chấp nhận. Vui lòng kiểm tra thông tin.',
+        null =>
+          operation.establishesPassword
+              ? 'Liên kết có thể không hợp lệ, đã hết hạn hoặc mật khẩu '
+                    'không đáp ứng chính sách của tổ chức.'
+              : 'Yêu cầu không được chấp nhận. Vui lòng kiểm tra thông tin.',
       },
     };
     return AccountFlowFailure._(
@@ -193,8 +196,7 @@ class AuthValidators {
 
   static String? email(String? value) {
     final email = value?.trim() ?? '';
-    if (email.length > 320 ||
-        !RegExp(r'^[^\s@]+@[^\s@]+$').hasMatch(email)) {
+    if (email.length > 320 || !RegExp(r'^[^\s@]+@[^\s@]+$').hasMatch(email)) {
       return 'Email không hợp lệ.';
     }
     return null;

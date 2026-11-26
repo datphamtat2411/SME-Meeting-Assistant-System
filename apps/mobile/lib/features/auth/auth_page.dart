@@ -43,17 +43,17 @@ class _AuthPageState extends State<AuthPage> {
         api: widget.api,
         onBack: () => _select(_AuthDestination.login),
       ),
-      _AuthDestination.reset || _AuthDestination.setup =>
-        CredentialEstablishmentForm(
-          key: ValueKey(_destination),
-          api: widget.api,
-          operation: _destination == _AuthDestination.reset
-              ? AccountOperation.reset
-              : AccountOperation.setup,
-          onBack: () => _select(_AuthDestination.login),
-          onCompleted: (notice) =>
-              _select(_AuthDestination.login, notice: notice),
-        ),
+      _AuthDestination.reset ||
+      _AuthDestination.setup => CredentialEstablishmentForm(
+        key: ValueKey(_destination),
+        api: widget.api,
+        operation: _destination == _AuthDestination.reset
+            ? AccountOperation.reset
+            : AccountOperation.setup,
+        onBack: () => _select(_AuthDestination.login),
+        onCompleted: (notice) =>
+            _select(_AuthDestination.login, notice: notice),
+      ),
     },
   );
 }

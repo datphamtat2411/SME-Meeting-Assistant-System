@@ -210,8 +210,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     final session = api.sessionState;
     return switch (session.phase) {
       AuthSessionPhase.initializing => const StartupProgressView(),
-      AuthSessionPhase.verifyingIdentity ||
-      AuthSessionPhase.signingIn =>
+      AuthSessionPhase.verifyingIdentity || AuthSessionPhase.signingIn =>
         api.sessionCoordinator.isInteractiveSignIn
             ? AuthPage(api: api)
             : const StartupProgressView(message: 'Đang xác minh danh tính...'),

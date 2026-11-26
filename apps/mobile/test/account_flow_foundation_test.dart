@@ -5,19 +5,22 @@ import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/features/auth/account_flow.dart';
 
 void main() {
-  test('validates new passwords by Unicode code points without normalization', () {
-    expect(AuthValidators.newPassword('🔐' * 14), isNotNull);
-    expect(AuthValidators.newPassword('🔐' * 15), isNull);
-    expect(AuthValidators.newPassword('🔐' * 128), isNull);
-    expect(AuthValidators.newPassword('🔐' * 129), isNotNull);
-    expect(AuthValidators.newPassword(' ' * 15), isNull);
-    expect(AuthValidators.loginPassword('short'), isNull);
-    expect(AuthValidators.confirmation(' pass ', ' pass '), isNull);
-    expect(AuthValidators.confirmation('pass', ' pass '), isNotNull);
-    expect(AuthValidators.email(' user@example.test '), isNull);
-    expect(AuthValidators.email('user@@example.test'), isNotNull);
-    expect(AuthValidators.email('${'a' * 320}@example.test'), isNotNull);
-  });
+  test(
+    'validates new passwords by Unicode code points without normalization',
+    () {
+      expect(AuthValidators.newPassword('🔐' * 14), isNotNull);
+      expect(AuthValidators.newPassword('🔐' * 15), isNull);
+      expect(AuthValidators.newPassword('🔐' * 128), isNull);
+      expect(AuthValidators.newPassword('🔐' * 129), isNotNull);
+      expect(AuthValidators.newPassword(' ' * 15), isNull);
+      expect(AuthValidators.loginPassword('short'), isNull);
+      expect(AuthValidators.confirmation(' pass ', ' pass '), isNull);
+      expect(AuthValidators.confirmation('pass', ' pass '), isNotNull);
+      expect(AuthValidators.email(' user@example.test '), isNull);
+      expect(AuthValidators.email('user@@example.test'), isNotNull);
+      expect(AuthValidators.email('${'a' * 320}@example.test'), isNotNull);
+    },
+  );
 
   test('classifies safe feedback without exposing the server message', () {
     final now = DateTime.utc(2026, 11, 26);
@@ -113,7 +116,12 @@ void main() {
     for (final retryAfter in ['45', 'Thu, 26 Nov 2026 00:01:30 GMT']) {
       await submission.submit(() async {
         calls++;
-        throw ApiFailure(429, 'RATE_LIMIT_EXCEEDED', 'wait', retryAfter: retryAfter);
+        throw ApiFailure(
+          429,
+          'RATE_LIMIT_EXCEEDED',
+          'wait',
+          retryAfter: retryAfter,
+        );
       });
       expect(submission.failure?.kind, AccountFailureKind.throttled);
       expect(submission.canSubmit, isFalse);
