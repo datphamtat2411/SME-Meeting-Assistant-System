@@ -148,7 +148,9 @@ class ActionItemCollectionController extends ChangeNotifier {
       repository.api.isCurrentAuthenticatedSession(_scope);
 
   Future<void> initialize() {
-    if (!_current || !_active || _loaded) return Future<void>.value();
+    if (!_current || !_active || _loaded || _timer != null) {
+      return Future<void>.value();
+    }
     return _operation ?? _start();
   }
 
