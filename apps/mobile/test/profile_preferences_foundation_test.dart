@@ -1225,27 +1225,45 @@ void main() {
   testWidgets('confirmed save closes editor during pending identity reload', (
     tester,
   ) async {
+    final patch = Completer<http.StreamedResponse>();
     final identity = Completer<http.StreamedResponse>();
     var reloads = 0;
     var patches = 0;
-    final api = (await tester.runAsync(
-      () => _authenticated(
-        (request) async {
+
+    // This fixture uses only in-memory credentials and controlled HTTP.
+    // Keep its futures in the widget binding's fake-async zone, so pumping
+    // frames also drives the transport and controller continuations.
+    ApiClient? initialized;
+    unawaited(
+      _authenticated(
+        (request) {
           if (request.method == 'GET') {
             return _profileResponse('Original', '"v1"');
           }
           patches++;
-          return _profileResponse('New name', '"v2"');
+          expect(request.method, 'PATCH');
+          expect(request.headers['if-match'], '"v1"');
+          expect(jsonDecode((request as http.Request).body), {
+            'displayName': 'New name',
+          });
+          return patch.future;
         },
         reloadIdentity: () {
           reloads++;
           return identity.future;
         },
-      ),
-    ))!;
+      ).then<void>((api) {
+        initialized = api;
+      }),
+    );
+    await tester.pump();
+    expect(initialized, isNotNull, reason: 'Authentication must finish');
+    final api = initialized!;
     final controller = ProfileController(ProfileRepository(api: api));
     addTearDown(controller.dispose);
-    await tester.runAsync(controller.refresh);
+    unawaited(controller.refresh());
+    await tester.pump();
+    expect(controller.snapshot!.profile.displayName, 'Original');
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -1257,7 +1275,7 @@ void main() {
                 builder: (_) => ProfileEditDialog(
                   controller: controller,
                   original: controller.snapshot!,
-                  initialName: 'New name',
+                  initialName: controller.snapshot!.profile.displayName,
                 ),
               ),
               child: const Text('Open editor'),
@@ -1268,29 +1286,46 @@ void main() {
     );
     await tester.tap(find.text('Open editor'));
     await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'New name');
     await tester.tap(find.text('Lưu'));
-    // Settle the route transition, not the pending identity request.
-    // A bounded settle fails if the editor still waits on that request.
+    await tester.pump();
+    expect(patches, 1, reason: 'The save must dispatch exactly one PATCH');
+    expect(controller.saving, isTrue);
+    expect(reloads, 0);
+    expect(find.byType(ProfileEditDialog), findsOneWidget);
+
+    patch.complete(await _profileResponse('New name', '"v2"'));
+    await tester.pump();
+    expect(controller.snapshot!.etag, '"v2"');
+    expect(controller.outcome, ProfileMutationOutcome.confirmed);
+    expect(controller.saving, isFalse);
+    expect(controller.identityStatus, IdentitySyncStatus.synchronizing);
+    expect(controller.canMutate, isFalse);
+    expect(reloads, 1);
+    expect(identity.isCompleted, isFalse);
+    expect(api.displayName, 'Test User');
+
+    // Only the dialog's exit animation should remain. The identity response
+    // must stay withheld until the route is gone.
     await tester.pumpAndSettle(
       const Duration(milliseconds: 16),
       EnginePhase.sendSemanticsUpdate,
       const Duration(seconds: 3),
     );
     expect(find.byType(ProfileEditDialog), findsNothing);
-    expect(controller.snapshot!.etag, '"v2"');
-    expect(controller.outcome, ProfileMutationOutcome.confirmed);
     expect(controller.identityStatus, IdentitySyncStatus.synchronizing);
-    expect(controller.saving, isFalse);
-    expect(controller.canMutate, isFalse);
-    expect(reloads, 1);
+    expect(identity.isCompleted, isFalse);
     expect(patches, 1);
+
     identity.complete(
       await jsonResponse(200, successEnvelope(_identity(name: 'New name'))),
     );
     await tester.pumpAndSettle();
     expect(controller.identityStatus, IdentitySyncStatus.synchronized);
     expect(controller.canMutate, isTrue);
+    expect(api.displayName, 'New name');
     expect(patches, 1);
+    expect(reloads, 1);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -1504,7 +1539,10 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    final edit = find.byTooltip('Chỉnh sửa tên hiển thị');
+    final edit = find.byWidgetPredicate(
+      (widget) =>
+          widget is IconButton && widget.tooltip == 'Chỉnh sửa tên hiển thị',
+    );
     await tester.tap(edit);
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'New name');
@@ -1524,14 +1562,15 @@ void main() {
     // Drive the real account surface instead of awaiting HTTP futures in the
     // widget test body. The binding advances fake time only through pumps.
     final meetingEmail = find.widgetWithText(SwitchListTile, 'Email cuộc họp');
-    await tester.ensureVisible(meetingEmail);
+    final scrollable = find.byType(Scrollable).first;
+    await tester.scrollUntilVisible(meetingEmail, 160, scrollable: scrollable);
     expect(tester.widget<SwitchListTile>(meetingEmail).onChanged, isNotNull);
     await tester.tap(meetingEmail);
     await tester.pumpAndSettle();
     expect(preferencePatches, 1);
     expect(tester.widget<SwitchListTile>(meetingEmail).value, isFalse);
 
-    await tester.ensureVisible(retry);
+    await tester.scrollUntilVisible(retry, -160, scrollable: scrollable);
     await tester.tap(retry);
     await tester.pumpAndSettle();
     expect(reloads, 1);
