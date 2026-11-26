@@ -35,7 +35,10 @@ export function chronologicalHistoryMessages(
   const newestCopyById = new Map<string, AssistantMessage>()
   for (const page of pages) {
     for (const message of page.messages) {
-      if (!newestCopyById.has(message.id) || message.visibility === 'SOURCE_UNAVAILABLE') {
+      if (
+        !newestCopyById.has(message.id) ||
+        message.visibility === 'SOURCE_UNAVAILABLE'
+      ) {
         newestCopyById.set(message.id, message)
       }
     }

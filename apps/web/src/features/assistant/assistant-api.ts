@@ -236,7 +236,13 @@ export function assistantConversationsQueryOptions(
   const size = options.size ?? ASSISTANT_PAGE_SIZE
   return queryOptions({
     queryKey: ['assistant', 'conversations', page, size] as const,
-    queryFn: ({ signal, client }: { signal: AbortSignal; client: QueryClient }) =>
+    queryFn: ({
+      signal,
+      client,
+    }: {
+      signal: AbortSignal
+      client: QueryClient
+    }) =>
       readAssistantProtected(client, undefined, () =>
         fetchAssistantConversations({ page, size, signal })
       ),
@@ -349,7 +355,13 @@ export function assistantConversationDetailQueryOptions(
       page,
       size,
     ] as const,
-    queryFn: ({ signal, client }: { signal: AbortSignal; client: QueryClient }) =>
+    queryFn: ({
+      signal,
+      client,
+    }: {
+      signal: AbortSignal
+      client: QueryClient
+    }) =>
       readAssistantHistoryProtected(client, conversationId as string, () =>
         fetchAssistantConversationDetail(conversationId as string, {
           page,

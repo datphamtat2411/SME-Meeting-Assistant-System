@@ -20,7 +20,8 @@ export function MeetingSearchCard({
   selectedMeetingId?: string
   onMeetingSelect: (meetingId: string) => void
 }) {
-  const { input, setInput, page, setPage, meetingsQuery, submitSearch } = discovery
+  const { input, setInput, page, setPage, meetingsQuery, submitSearch } =
+    discovery
 
   return (
     <Card>
@@ -83,9 +84,7 @@ export function MeetingSearchCard({
         )}
         {meetingsQuery.data && (
           <div className='flex items-center justify-between text-sm text-muted-foreground'>
-            <span>
-              {meetingsQuery.data.pagination.totalElements} result(s)
-            </span>
+            <span>{meetingsQuery.data.pagination.totalElements} result(s)</span>
             <div className='flex items-center gap-2'>
               <Button
                 size='sm'

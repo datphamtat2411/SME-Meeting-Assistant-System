@@ -132,7 +132,10 @@ export function beginAssistantQuestion(
   return { ...captureAssistantAccess(client, conversationId), questionEpoch }
 }
 
-function matchesEpoch(client: QueryClient, token: AssistantAccessToken): boolean {
+function matchesEpoch(
+  client: QueryClient,
+  token: AssistantAccessToken
+): boolean {
   const current = captureAssistantAccess(client, token.conversationId)
   return (
     current.session === token.session &&
@@ -324,7 +327,9 @@ export async function readAssistantHistoryProtected(
       (cached) =>
         cached && {
           ...cached,
-          pages: cached.pages.map((page) => replaceRedactions(page, redactions)),
+          pages: cached.pages.map((page) =>
+            replaceRedactions(page, redactions)
+          ),
         }
     )
   }

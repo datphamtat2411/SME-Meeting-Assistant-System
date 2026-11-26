@@ -78,9 +78,7 @@ export function ConversationSelector({
             aria-label='Conversation title'
             maxLength={255}
             value={conversationTitle}
-            onChange={(event) =>
-              onConversationTitleChange(event.target.value)
-            }
+            onChange={(event) => onConversationTitleChange(event.target.value)}
             placeholder='Questions about this meeting'
             disabled={!selectedMeetingId || createPending}
           />
@@ -99,9 +97,7 @@ export function ConversationSelector({
             onClick={onCreate}
             disabled={!selectedMeetingId || createPending}
           >
-            {createPending && (
-              <LoaderCircle className='size-4 animate-spin' />
-            )}
+            {createPending && <LoaderCircle className='size-4 animate-spin' />}
             Create conversation
           </Button>
         </div>

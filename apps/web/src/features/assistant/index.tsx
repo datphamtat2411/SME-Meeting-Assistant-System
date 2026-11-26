@@ -12,8 +12,8 @@ import {
 import { ConversationPanel } from './conversation-panel'
 import { ConversationSelector } from './conversation-selector'
 import { MeetingSearchCard } from './meeting-discovery'
-import { useAssistantMeetingDiscovery } from './use-assistant-meeting-discovery'
 import { useAssistantConversation } from './use-assistant-conversation'
+import { useAssistantMeetingDiscovery } from './use-assistant-meeting-discovery'
 
 export function AssistantPage() {
   const generation = useSyncExternalStore(

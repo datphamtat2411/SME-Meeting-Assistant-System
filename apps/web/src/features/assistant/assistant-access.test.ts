@@ -2,7 +2,6 @@ import { QueryClient } from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
 import { CoreApiError } from '@/lib/core-api'
 import { resetRequestRecoveryState } from '@/lib/request-recovery'
-import type { AssistantConversationDetail } from './assistant-api'
 import {
   beginAssistantQuestion,
   captureAssistantAccess,
@@ -12,6 +11,7 @@ import {
   readAssistantProtected,
   retryAssistantAccess,
 } from './assistant-access'
+import type { AssistantConversationDetail } from './assistant-api'
 
 describe('Assistant protected operation ownership', () => {
   it('clears a denied resource and fences a previously started read and mutation', async () => {
@@ -27,24 +27,35 @@ describe('Assistant protected operation ownership', () => {
     const delayed = readAssistantProtected(
       client,
       'a',
-      () => new Promise<string>((resolve) => { complete = resolve })
+      () =>
+        new Promise<string>((resolve) => {
+          complete = resolve
+        })
     )
     const denied = new CoreApiError({
       status: 403,
       kind: 'http',
       message: 'Denied',
     })
-    expect(containAssistantAccessFailure(
-      client,
-      captureAssistantAccess(client, 'a'),
-      denied
-    )).toBe(true)
-    expect(client.getQueryData(['assistant', 'conversation', 'a', 'history'])).toBeUndefined()
-    expect(client.getQueryData(['assistant', 'turn', 'a', 'latest-accepted'])).toBeUndefined()
+    expect(
+      containAssistantAccessFailure(
+        client,
+        captureAssistantAccess(client, 'a'),
+        denied
+      )
+    ).toBe(true)
+    expect(
+      client.getQueryData(['assistant', 'conversation', 'a', 'history'])
+    ).toBeUndefined()
+    expect(
+      client.getQueryData(['assistant', 'turn', 'a', 'latest-accepted'])
+    ).toBeUndefined()
     expect(isAssistantAccessCurrent(client, operation)).toBe(false)
     retryAssistantAccess(client, 'a')
     complete('old protected response')
-    await expect(delayed).rejects.toMatchObject({ code: 'ASSISTANT_OPERATION_OBSOLETE' })
+    await expect(delayed).rejects.toMatchObject({
+      code: 'ASSISTANT_OPERATION_OBSOLETE',
+    })
     expect(isAssistantAccessCurrent(client, operation)).toBe(false)
   })
 
@@ -55,11 +66,16 @@ describe('Assistant protected operation ownership', () => {
     const pending = readAssistantProtected(
       client,
       'a',
-      () => new Promise<string>((resolve) => { complete = resolve })
+      () =>
+        new Promise<string>((resolve) => {
+          complete = resolve
+        })
     )
     resetRequestRecoveryState()
     complete('previous session')
-    await expect(pending).rejects.toMatchObject({ code: 'ASSISTANT_OPERATION_OBSOLETE' })
+    await expect(pending).rejects.toMatchObject({
+      code: 'ASSISTANT_OPERATION_OBSOLETE',
+    })
     expect(isAssistantAccessCurrent(client, operation)).toBe(false)
   })
 
@@ -78,16 +94,18 @@ describe('Assistant protected operation ownership', () => {
       page: 0,
       size: 50,
       hasMore: false,
-      messages: [{
-        id: 'message',
-        role: 'ASSISTANT',
-        content: 'old confidential answer',
-        answerStatus: 'GROUNDED',
-        visibility: 'VISIBLE',
-        claims: [],
-        citations: [],
-        createdAt: conversation.createdAt,
-      }],
+      messages: [
+        {
+          id: 'message',
+          role: 'ASSISTANT',
+          content: 'old confidential answer',
+          answerStatus: 'GROUNDED',
+          visibility: 'VISIBLE',
+          claims: [],
+          citations: [],
+          createdAt: conversation.createdAt,
+        },
+      ],
     }
     const redacted: AssistantConversationDetail = {
       ...visible,
@@ -102,8 +120,13 @@ describe('Assistant protected operation ownership', () => {
     client.setQueryData(pageKey, visible)
     client.setQueryData(historyKey, { pages: [visible], pageParams: [0] })
     let complete!: (value: AssistantConversationDetail) => void
-    const pending = readAssistantHistoryProtected(client, 'a', () =>
-      new Promise((resolve) => { complete = resolve })
+    const pending = readAssistantHistoryProtected(
+      client,
+      'a',
+      () =>
+        new Promise((resolve) => {
+          complete = resolve
+        })
     )
     await readAssistantHistoryProtected(client, 'a', async () => redacted)
     expect(client.getQueryData(pageKey)).toEqual(redacted)

@@ -316,12 +316,12 @@ describe('Assistant Core API adapter', () => {
       .spyOn(coreApi, 'getWithMeta')
       .mockResolvedValue(success(status))
     const post = vi.spyOn(coreApi, 'post')
-    await expect(fetchAssistantTurnStatus(conversationId, turnId)).resolves.toEqual(
-      status
-    )
-    await expect(lookupAssistantTurn(conversationId, 'request-1')).resolves.toEqual(
-      status
-    )
+    await expect(
+      fetchAssistantTurnStatus(conversationId, turnId)
+    ).resolves.toEqual(status)
+    await expect(
+      lookupAssistantTurn(conversationId, 'request-1')
+    ).resolves.toEqual(status)
     expect(get).toHaveBeenNthCalledWith(
       2,
       `/assistant/conversations/${conversationId}/turns`,
@@ -329,13 +329,15 @@ describe('Assistant Core API adapter', () => {
     )
     expect(post).not.toHaveBeenCalled()
     get.mockResolvedValueOnce(success({ ...status, conversationId: meetingId }))
-    await expect(fetchAssistantTurnStatus(conversationId, turnId)).rejects.toMatchObject(
-      { code: 'MALFORMED_RESPONSE' }
-    )
+    await expect(
+      fetchAssistantTurnStatus(conversationId, turnId)
+    ).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
   })
 
   it('uses an exclusive message anchor without sending an offset page', async () => {
-    const get = vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(success(detail))
+    const get = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockResolvedValue(success(detail))
     await fetchAssistantConversationDetail(conversationId, {
       beforeMessageId: assistantMessageId,
       size: 50,
@@ -401,7 +403,11 @@ describe('Assistant Core API adapter', () => {
       citations: [],
     })
     const question = '😀'.repeat(4096)
-    await submitAssistantQuestion(conversationId, `  ${question}  `, 'unicode-key')
+    await submitAssistantQuestion(
+      conversationId,
+      `  ${question}  `,
+      'unicode-key'
+    )
     expect(post).toHaveBeenCalledWith(
       `/assistant/conversations/${conversationId}/messages`,
       { question },

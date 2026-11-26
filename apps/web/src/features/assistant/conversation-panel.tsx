@@ -13,12 +13,12 @@ import {
 import { AssistantError } from './assistant-error'
 import { canRetryAssistantSubmission } from './assistant-error-policy'
 import { chronologicalHistoryMessages } from './assistant-history'
-import { ConversationHistory } from './message-history'
 import type {
   ConversationHistoryQuery,
   ProcessingTurn,
   Submission,
 } from './assistant-types'
+import { ConversationHistory } from './message-history'
 
 export function ConversationPanel({
   listAccessError,
@@ -102,7 +102,8 @@ export function ConversationPanel({
           <RefreshCw className='size-4' /> Refresh history
         </Button>
       </div>
-      {(detailQuery.isPending || (detailQuery.isFetching && !detailQuery.isFetchingNextPage)) ? (
+      {detailQuery.isPending ||
+      (detailQuery.isFetching && !detailQuery.isFetchingNextPage) ? (
         <RequestLoading label='Loading conversation history…' />
       ) : detailQuery.isError && !detailQuery.data ? (
         <AssistantError
@@ -115,17 +116,14 @@ export function ConversationPanel({
           hasMore={Boolean(detailQuery.hasNextPage)}
           loadingOlder={detailQuery.isFetchingNextPage}
           olderPageError={
-            detailQuery.isFetchNextPageError
-              ? detailQuery.error
-              : undefined
+            detailQuery.isFetchNextPageError ? detailQuery.error : undefined
           }
           onLoadOlder={onLoadOlderMessages}
         />
       ) : null}
-      {historyRefreshError !== undefined &&
-        historyRefreshError !== null && (
-          <AssistantError error={historyRefreshError} />
-        )}
+      {historyRefreshError !== undefined && historyRefreshError !== null && (
+        <AssistantError error={historyRefreshError} />
+      )}
 
       {(processingTurn || pollingStopped) && (
         <Alert>
@@ -152,16 +150,17 @@ export function ConversationPanel({
       {submissionError !== undefined && submissionError !== null && (
         <AssistantError
           error={submissionError}
-          onRetry={submission && canRetryAssistantSubmission(submissionError) ? onQuestionRetry : undefined}
+          onRetry={
+            submission && canRetryAssistantSubmission(submissionError)
+              ? onQuestionRetry
+              : undefined
+          }
         />
       )}
       {pollingError !== undefined &&
         pollingError !== null &&
         submissionError === undefined && (
-          <AssistantError
-            error={pollingError}
-            onRetry={onResumePolling}
-          />
+          <AssistantError error={pollingError} onRetry={onResumePolling} />
         )}
 
       <form className='space-y-3' onSubmit={onQuestionSubmit}>
@@ -186,7 +185,11 @@ export function ConversationPanel({
           )}
           <Button
             type='submit'
-            disabled={questionBusy || isBlankAssistantQuestion(question) || questionCount > ASSISTANT_QUESTION_LIMIT}
+            disabled={
+              questionBusy ||
+              isBlankAssistantQuestion(question) ||
+              questionCount > ASSISTANT_QUESTION_LIMIT
+            }
           >
             {questionMutationLabel(questionBusy, processingTurn)}
           </Button>

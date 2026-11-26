@@ -31,12 +31,17 @@ function assistantErrorTitle(error: CoreApiError): string {
   if (error.status === 401) return 'Authentication required'
   if (error.status === 403) return 'Assistant access denied'
   if (error.status === 404) return 'Conversation unavailable'
-  if (error.code === 'ASSISTANT_SOURCE_STALE') return 'Assistant evidence is stale'
-  if (error.code === 'ASSISTANT_TURN_IN_PROGRESS') return 'An Assistant turn is already processing'
-  if (error.code === 'ASSISTANT_IDEMPOTENCY_CONFLICT') return 'Assistant request identity conflicts'
-  if (error.code === 'ASSISTANT_CONVERSATION_INACTIVE') return 'Conversation is inactive'
+  if (error.code === 'ASSISTANT_SOURCE_STALE')
+    return 'Assistant evidence is stale'
+  if (error.code === 'ASSISTANT_TURN_IN_PROGRESS')
+    return 'An Assistant turn is already processing'
+  if (error.code === 'ASSISTANT_IDEMPOTENCY_CONFLICT')
+    return 'Assistant request identity conflicts'
+  if (error.code === 'ASSISTANT_CONVERSATION_INACTIVE')
+    return 'Conversation is inactive'
   if (error.code === 'ASSISTANT_TURN_FAILED') return 'Assistant turn failed'
-  if (error.status === 409) return 'Assistant operation conflicts with current state'
+  if (error.status === 409)
+    return 'Assistant operation conflicts with current state'
   if (error.status === 429) return 'Assistant admission is limited'
   if (error.status === 503) return 'Assistant is currently unavailable.'
   if (error.kind === 'malformed') return 'Assistant response was invalid.'

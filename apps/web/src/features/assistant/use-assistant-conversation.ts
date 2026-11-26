@@ -34,12 +34,12 @@ import {
   type AssistantConversationDetail,
   type AssistantTurn,
 } from './assistant-api'
+import { canRetryAssistantSubmission } from './assistant-error-policy'
 import {
   uniqueConversations,
   useAssistantHistory,
   useAssistantHistoryPolling,
 } from './assistant-history'
-import { canRetryAssistantSubmission } from './assistant-error-policy'
 import type {
   AssistantUiScope,
   ProcessingTurn,
@@ -118,7 +118,10 @@ export function useAssistantConversation() {
   })
 
   const allConversations = useMemo(
-    () => listAccessError ? [] : uniqueConversations(conversationsQuery.data?.pages ?? []),
+    () =>
+      listAccessError
+        ? []
+        : uniqueConversations(conversationsQuery.data?.pages ?? []),
     [conversationsQuery.data, listAccessError]
   )
   const selectedConversations = useMemo(
@@ -176,7 +179,8 @@ export function useAssistantConversation() {
       setCreateError(undefined)
     },
     onError: (error, operation) => {
-      if (containAssistantAccessFailure(queryClient, operation.access, error)) return
+      if (containAssistantAccessFailure(queryClient, operation.access, error))
+        return
       if (isCurrentScope(operation.scope)) setCreateError(error)
     },
     onSettled: (_data, _error, operation) => {
@@ -196,9 +200,11 @@ export function useAssistantConversation() {
         operation.submission.idempotencyKey
       )
       assertAssistantAccessCurrent(queryClient, operation.access)
-      if (turn.citations.some((citation) =>
-        citation.meetingId !== operation.submission.meetingId
-      )) {
+      if (
+        turn.citations.some(
+          (citation) => citation.meetingId !== operation.submission.meetingId
+        )
+      ) {
         throw new CoreApiError({
           code: 'MALFORMED_RESPONSE',
           kind: 'malformed',
@@ -209,17 +215,20 @@ export function useAssistantConversation() {
     },
   })
 
-  const isCurrentScope = useCallback((expected: AssistantUiScope) => {
-    const current = scopeRef.current
-    return (
-      current.generation === expected.generation &&
-      current.session === expected.session &&
-      expected.session === getRequestRecoveryGeneration() &&
-      !assistantAccessError(queryClient, expected.conversationId) &&
-      current.meetingId === expected.meetingId &&
-      current.conversationId === expected.conversationId
-    )
-  }, [queryClient])
+  const isCurrentScope = useCallback(
+    (expected: AssistantUiScope) => {
+      const current = scopeRef.current
+      return (
+        current.generation === expected.generation &&
+        current.session === expected.session &&
+        expected.session === getRequestRecoveryGeneration() &&
+        !assistantAccessError(queryClient, expected.conversationId) &&
+        current.meetingId === expected.meetingId &&
+        current.conversationId === expected.conversationId
+      )
+    },
+    [queryClient]
+  )
 
   const { cacheHistoryPages, fetchNewestHistory } = useAssistantHistory()
 
@@ -359,7 +368,10 @@ export function useAssistantConversation() {
       setQuestionValidationError('Enter a question before submitting.')
       return
     }
-    if (!retrySameQuestion && assistantQuestionLength(normalizedQuestion) > ASSISTANT_QUESTION_LIMIT) {
+    if (
+      !retrySameQuestion &&
+      assistantQuestionLength(normalizedQuestion) > ASSISTANT_QUESTION_LIMIT
+    ) {
       setQuestionValidationError(
         'Questions must be at most 4096 Unicode code points.'
       )
@@ -404,7 +416,12 @@ export function useAssistantConversation() {
     try {
       const turn = await questionMutation.mutateAsync(operation)
       if (!isAssistantAccessCurrent(queryClient, operation.access)) return
-      const latestKey = ['assistant', 'turn', current.conversationId, 'latest-accepted']
+      const latestKey = [
+        'assistant',
+        'turn',
+        current.conversationId,
+        'latest-accepted',
+      ]
       if (turn.state === 'PROCESSING') {
         // Only the accepted processing identity is needed when reopening.
         queryClient.setQueryData<AcceptedTurnCache>(latestKey, {
@@ -476,8 +493,10 @@ export function useAssistantConversation() {
       }
       if (isCurrentScope(operation.scope)) setSubmissionError(error)
     } finally {
-      if (operation.scope.session === getRequestRecoveryGeneration() &&
-        questionOperationRef.current === operation.operationId) {
+      if (
+        operation.scope.session === getRequestRecoveryGeneration() &&
+        questionOperationRef.current === operation.operationId
+      ) {
         questionOperationRef.current = undefined
         setIsSubmitting(false)
       }
@@ -492,7 +511,10 @@ export function useAssistantConversation() {
     setHistoryRefreshError(undefined)
     setIsRefreshingHistory(true)
     try {
-      const access = captureAssistantAccess(queryClient, currentScope.conversationId)
+      const access = captureAssistantAccess(
+        queryClient,
+        currentScope.conversationId
+      )
       const refreshed = await detailQuery.refetch({ throwOnError: true })
       assertAssistantAccessCurrent(queryClient, access)
       if (
@@ -507,12 +529,15 @@ export function useAssistantConversation() {
         processingTurn.conversationId === currentScope.conversationId
           ? processingTurn
           : undefined
-      const pages = queryClient.getQueryData<
-        InfiniteData<AssistantConversationDetail, number>
-      >(
-        assistantConversationHistoryQueryOptions(currentScope.conversationId)
-          .queryKey
-      )?.pages ?? refreshed.data?.pages ?? []
+      const pages =
+        queryClient.getQueryData<
+          InfiniteData<AssistantConversationDetail, number>
+        >(
+          assistantConversationHistoryQueryOptions(currentScope.conversationId)
+            .queryKey
+        )?.pages ??
+        refreshed.data?.pages ??
+        []
       if (
         accepted &&
         pages.some((detail) => findAssistantTurnMessage(detail, accepted.turn))
@@ -522,8 +547,10 @@ export function useAssistantConversation() {
     } catch (error) {
       if (isCurrentScope(currentScope)) setHistoryRefreshError(error)
     } finally {
-      if (currentScope.session === getRequestRecoveryGeneration() &&
-        refreshOperationRef.current === operationId) {
+      if (
+        currentScope.session === getRequestRecoveryGeneration() &&
+        refreshOperationRef.current === operationId
+      ) {
         refreshOperationRef.current = undefined
         setIsRefreshingHistory(false)
       }
