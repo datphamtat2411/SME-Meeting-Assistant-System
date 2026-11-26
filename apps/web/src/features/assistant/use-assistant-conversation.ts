@@ -47,9 +47,9 @@ export function useAssistantConversation(
   const [historyError, setHistoryError] = useState<unknown>()
 
   useEffect(() => {
-    selectionRef.current = selection
+    selectionRef.current = { conversationId: selectedConversationId, meetingId: selectedMeetingId }
     selectionGeneration.current += 1
-  }, [selectedConversationId, selectedMeetingId, selection])
+  }, [selectedConversationId, selectedMeetingId])
 
   useEffect(() => {
     setQuestion('')
@@ -83,7 +83,7 @@ export function useAssistantConversation(
     (!detailQuery.isFetching || detailQuery.isFetchingNextPage)
   const detail = historyAccessReady ? detailQuery.data?.pages[0] : undefined
   const selectedConversation = detail?.conversation
-  const turns = useAssistantTurnWorkflow(detail, historyAccessReady)
+  const turns = useAssistantTurnWorkflow(detail, historyAccessReady, selectedConversationId)
 
   const allConversations = useMemo(() =>
     listAccessError ? [] : uniqueConversations(conversationsQuery.data?.pages ?? []),

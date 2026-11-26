@@ -11,7 +11,6 @@ import {
   fetchAssistantConversations,
   fetchAssistantConversationDetail,
   fetchAssistantTurnStatus,
-  findAssistantTurnMessage,
   lookupAssistantTurn,
   parseAssistantConversationDetailResponse,
   parseAssistantConversationsResponse,
@@ -310,21 +309,17 @@ describe('Assistant Core API adapter', () => {
       conversationId,
       2
     )
-    expect(historyOptions.initialPageParam).toBe(0)
+    expect(historyOptions.initialPageParam).toBeNull()
+    const anchored = { ...olderPage, nextBeforeMessageId: olderUserMessage.id }
+    expect(
+      historyOptions.getNextPageParam?.(anchored, [anchored], null, [null])
+    ).toBe(olderUserMessage.id)
     expect(
       historyOptions.getNextPageParam?.(
-        olderPage,
-        [detail, olderPage],
-        1,
-        [0, 1]
-      )
-    ).toBe(2)
-    expect(
-      historyOptions.getNextPageParam?.(
-        { ...olderPage, hasMore: false },
-        [detail, { ...olderPage, hasMore: false }],
-        1,
-        [0, 1]
+        { ...anchored, hasMore: false, nextBeforeMessageId: null },
+        [anchored],
+        null,
+        [null]
       )
     ).toBeUndefined()
   })
@@ -445,84 +440,6 @@ describe('Assistant Core API adapter', () => {
       submitAssistantQuestion(conversationId, question + 'x', 'too-long')
     ).rejects.toMatchObject({ status: 422 })
     expect(post).toHaveBeenCalledTimes(1)
-  })
-
-  it('matches the exact assistant message ID without substituting a different response', () => {
-    const laterAssistant = {
-      ...groundedMessage,
-      id: '77777777-7777-4777-8777-777777777777',
-    }
-    const withUnrelatedAnswer = {
-      ...detail,
-      messages: [detail.messages[0]!, laterAssistant],
-    }
-
-    expect(
-      findAssistantTurnMessage(withUnrelatedAnswer, {
-        userMessageId,
-        assistantMessageId,
-      })
-    ).toBeUndefined()
-    expect(
-      findAssistantTurnMessage(detail, { userMessageId, assistantMessageId })
-    ).toEqual(groundedMessage)
-  })
-
-  it('uses only an immediate Assistant response after the accepted user message', () => {
-    const processingDetail = {
-      ...detail,
-      messages: detail.messages.slice(0, 1),
-    }
-    const processingTurn = {
-      turnId: '66666666-6666-4666-8666-666666666666',
-      state: 'PROCESSING',
-      userMessageId,
-      assistantMessageId: null,
-      answerStatus: null,
-      answer: null,
-      claims: [],
-      citations: [],
-    } as const
-
-    expect(
-      findAssistantTurnMessage(processingDetail, processingTurn)
-    ).toBeUndefined()
-    expect(findAssistantTurnMessage(detail, processingTurn)).toEqual(
-      groundedMessage
-    )
-
-    const laterTurnUser = {
-      ...detail.messages[0]!,
-      id: '77777777-7777-4777-8777-777777777777',
-      content: 'A different user turn',
-      createdAt: '2026-11-22T10:00:45Z',
-    }
-    const unrelatedLaterAnswer = {
-      ...groundedMessage,
-      id: '88888888-8888-4888-8888-888888888888',
-      createdAt: '2026-11-22T10:01:00Z',
-    }
-    expect(
-      findAssistantTurnMessage(
-        {
-          ...detail,
-          messages: [detail.messages[0]!, laterTurnUser, unrelatedLaterAnswer],
-        },
-        processingTurn
-      )
-    ).toBeUndefined()
-    expect(
-      findAssistantTurnMessage(
-        { ...detail, messages: [laterTurnUser, unrelatedLaterAnswer] },
-        processingTurn
-      )
-    ).toBeUndefined()
-    expect(
-      findAssistantTurnMessage(
-        { ...detail, page: 1, messages: [detail.messages[0]!] },
-        processingTurn
-      )
-    ).toBeUndefined()
   })
 
   it('rejects malformed paginated list and history DTOs', () => {

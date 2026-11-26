@@ -68,7 +68,8 @@ function terminalError(state: AssistantTurn['state']) {
 // authenticated feature's memory. Canonical history stays in TanStack Query.
 export function useAssistantTurnWorkflow(
   detail: AssistantConversationDetail | undefined,
-  historyReady: boolean
+  historyReady: boolean,
+  selectedId?: string
 ) {
   const client = useQueryClient()
   const records = useRef(new Map<string, TurnWorkflow>())
@@ -82,7 +83,7 @@ export function useAssistantTurnWorkflow(
     }
   }, [])
   const conversation = historyReady ? detail?.conversation : undefined
-  const id = conversation?.id
+  const id = selectedId
   const pending = historyReady ? detail?.pendingTurn : undefined
 
   const write = useCallback((key: string, next: TurnWorkflow) => {
@@ -147,7 +148,7 @@ export function useAssistantTurnWorkflow(
   }, [owns, refresh, write])
 
   useEffect(() => {
-    if (!id || !pending) return
+    if (!id || !pending || pending.conversationId !== id) return
     const previous = records.current.get(id)
     if (previous && isAssistantAccessCurrent(client, previous.access)) {
       if (previous.phase !== 'settled' || previous.turnId === pending.turnId) return
@@ -279,7 +280,7 @@ export function useAssistantTurnWorkflow(
   }, [adopt, client, id, observing, owns, write])
 
   const recover = async () => {
-    if (!id || !active || active.phase !== 'recoverable' || !owns(id, active)) return
+    if (!historyReady || !id || !active || active.phase !== 'recoverable' || !owns(id, active)) return
     if (Date.now() < (active.retryAt ?? 0)) return
     const operation: KnownTurn = { ...active, phase: 'recovering', access: beginAssistantQuestion(client, id) }
     write(id, operation)
