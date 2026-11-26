@@ -8,6 +8,7 @@ on:
       - 'integration/**'
       - 'web/module-meeting-intelligence'
       - 'web/module-assistant-search'
+      - 'web/module-authentication-account-flows'
   pull_request:
     branches:
       - develop
