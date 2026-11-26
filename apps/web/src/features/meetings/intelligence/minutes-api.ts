@@ -215,6 +215,7 @@ export function minutesQuery(meetingId: string) {
         ),
         meetingId
       ),
+    meta: { featureErrorBoundary: true },
     retry: false,
   })
 }

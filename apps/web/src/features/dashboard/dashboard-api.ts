@@ -133,6 +133,7 @@ export const personalDashboardQuery = (scope: string) =>
       parsePersonalDashboard(
         await coreApi.get<unknown>('/dashboard/me', { signal })
       ),
+    meta: { featureErrorBoundary: true },
     retry: false,
   })
 export type ManagementSelection = {
@@ -250,6 +251,7 @@ export function managementDashboardQuery(
         selection,
         authorizedUnitIds
       ),
+    meta: { featureErrorBoundary: true },
     retry: false,
   })
 }

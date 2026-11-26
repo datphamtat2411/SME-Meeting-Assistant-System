@@ -232,6 +232,7 @@ export function actionItemsQuery(
         })(),
       }
     },
+    meta: owner ? { featureErrorBoundary: true } : undefined,
     retry: false,
   })
 }

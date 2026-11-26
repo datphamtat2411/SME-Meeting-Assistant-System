@@ -10,6 +10,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
+import { containProtectedState } from '@/protected-state-containment'
 import { routeTree } from '@/routeTree.gen'
 import '@/styles/index.css'
 import { beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
@@ -457,7 +458,7 @@ describe('session restoration and protected routing', () => {
     const { queryClient, screen } = await renderRoute('/')
     const dispose = configureSessionRevalidation({
       queryClient,
-      onContainment: () => queryClient.clear(),
+      onContainment: () => containProtectedState(queryClient),
       onChanged: () => undefined,
     })
     try {
@@ -470,8 +471,14 @@ describe('session restoration and protected routing', () => {
         .toBeVisible()
       await expect.poll(() => Boolean(oldSignal)).toBe(true)
 
+      const previousExportKey = 'sme:meeting-minutes-export:previous-session'
+      sessionStorage.setItem(previousExportKey, '{}')
+      const previousReportKey = ['dashboard', 'management', getSessionContextKey(identity)]
+      queryClient.setQueryData(previousReportKey, { protected: true })
       verifiedIdentity = replacement
       await revalidateBrowserSession()
+      expect(sessionStorage.getItem(previousExportKey)).toBeNull()
+      expect(queryClient.getQueryData(previousReportKey)).toBeUndefined()
       await expect
         .element(
           screen.getByRole('heading', {
@@ -601,7 +608,7 @@ describe('session restoration and protected routing', () => {
     const { queryClient, screen } = await renderRoute('/members')
     const dispose = configureSessionRevalidation({
       queryClient,
-      onContainment: () => queryClient.clear(),
+      onContainment: () => containProtectedState(queryClient),
       onChanged: () => undefined,
     })
 

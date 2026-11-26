@@ -223,21 +223,22 @@ function MyActionItems({ identity }: { identity: AuthContext }) {
 export function PersonalDashboard({ identity }: { identity: AuthContext }) {
   const scope = getSessionContextKey(identity)
   const personal = useQuery(personalDashboardQuery(scope))
-  const preferences = useQuery(preferencesQuery())
+  const preferences = useQuery({ ...preferencesQuery(), meta: { featureErrorBoundary: true } })
   const data = personal.isSuccess ? personal.data : undefined
   const upcoming = data ? orderedUpcoming(data) : []
   const next = upcoming[0]
-  const detail = useQuery(meetingDetailQueryOptions(next?.id))
+  const detail = useQuery({ ...meetingDetailQueryOptions(next?.id), meta: { featureErrorBoundary: true } })
   const meeting =
     detail.isSuccess && detail.data.meeting.id === next?.id
       ? detail.data.meeting
       : undefined
   const participants = useQuery(
-    meetingParticipantsQueryOptions(next?.id, Boolean(meeting))
+    { ...meetingParticipantsQueryOptions(next?.id, Boolean(meeting)), meta: { featureErrorBoundary: true } }
   )
   const roomId = meeting?.roomId
   const room = useQuery({
     queryKey: ['rooms', 'dashboard-featured', scope, roomId],
+    meta: { featureErrorBoundary: true },
     queryFn: roomId ? ({ signal }) => roomDetail(roomId, signal) : skipToken,
     retry: false,
   })

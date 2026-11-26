@@ -150,11 +150,63 @@ const participant = {
   displayName: identity.displayName,
 }
 
+function assignedWork(status: 'OPEN' | 'IN_PROGRESS') {
+  return {
+    id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    meetingId,
+    title: 'Authorized assigned work',
+    details: null,
+    status,
+    assigneeUserId: userId,
+    dueDate: '2026-11-24',
+    overdue: true,
+    sourceType: 'MANUAL',
+    processingJobId: null,
+    transcriptId: null,
+    contentRevision: null,
+    createdByUserId: userId,
+    confirmedByUserId: null,
+    confirmedAt: null,
+    completedByUserId: null,
+    completedAt: null,
+    cancelledByUserId: null,
+    cancelledAt: null,
+    version: 1,
+    createdAt: dashboardAsOf,
+    updatedAt: dashboardAsOf,
+    isOfficial: true,
+    capabilities: {
+      canEdit: false,
+      canAssign: false,
+      canConfirm: false,
+      canReject: false,
+      canStart: true,
+      canComplete: true,
+      canCancel: false,
+      canReopen: false,
+      canAccessMeeting: false,
+      canAccessEvidence: false,
+    },
+    assignee: { id: userId, displayName: identity.displayName, active: true },
+    meeting: { id: meetingId, label: 'Restricted meeting', restricted: true },
+    evidence: {
+      availability: 'RESTRICTED',
+      transcriptId: null,
+      contentRevision: null,
+      freshness: 'RESTRICTED',
+      references: [],
+      limitation: null,
+    },
+  }
+}
+
 type FixtureOptions = {
   identity?: unknown
   dashboard?: unknown
   actionItemsError?: unknown
+  actionItemsFailureStatus?: 'OPEN' | 'IN_PROGRESS'
   actionItemsOpen?: unknown
+  actionItemsInProgress?: unknown
   meetingList?: unknown
   meetingListError?: unknown
   meetingDetail?: unknown
@@ -197,13 +249,16 @@ function installCoreFixtures(options: FixtureOptions = {}) {
       }
       if (url === '/action-items') {
         if (
-          config?.params?.status === 'IN_PROGRESS' &&
+          config?.params?.status === (options.actionItemsFailureStatus ?? 'IN_PROGRESS') &&
           options.actionItemsError
         ) {
           throw options.actionItemsError
         }
         if (config?.params?.status === 'OPEN' && options.actionItemsOpen) {
           return options.actionItemsOpen as never
+        }
+        if (config?.params?.status === 'IN_PROGRESS' && options.actionItemsInProgress) {
+          return options.actionItemsInProgress as never
         }
         return emptyActionItemList as never
       }
@@ -537,67 +592,41 @@ describe('integrated generated Web runtime', () => {
       .not.toBeInTheDocument()
   })
 
-  it('contains a failed assigned-work query without masking canonical metrics', async () => {
-    installCoreFixtures({ actionItemsError: apiError(503, 'Work unavailable') })
-    const { screen } = await renderGeneratedRoute('/')
-    await expect.element(screen.getByText('Work unavailable')).toBeVisible()
-    await expect.element(screen.getByText('Pending action items')).toBeVisible()
-    await expect
-      .element(screen.getByText('No pending assigned work'))
-      .not.toBeInTheDocument()
-    await expect
-      .element(screen.getByRole('button', { name: 'Retry' }))
-      .toBeVisible()
-  })
+  it.each(['OPEN', 'IN_PROGRESS'] as const)(
+    'contains a failed %s query and recovers the bounded assigned-work preview',
+    async (failedStatus) => {
+      const successfulStatus = failedStatus === 'OPEN' ? 'IN_PROGRESS' : 'OPEN'
+      const assigned = assignedWork(successfulStatus)
+      const successPage = {
+        data: [assigned],
+        meta: {
+          pagination: { ...pagination, size: 5, totalElements: 1, totalPages: 1 },
+        },
+      }
+      const options: FixtureOptions = {
+        actionItemsError: apiError(503, 'Work unavailable'),
+        actionItemsFailureStatus: failedStatus,
+        actionItemsOpen: successfulStatus === 'OPEN' ? successPage : undefined,
+        actionItemsInProgress: successfulStatus === 'IN_PROGRESS' ? successPage : undefined,
+      }
+      const { getWithMeta } = installCoreFixtures(options)
+      const { screen } = await renderGeneratedRoute('/')
+      await expect.element(screen.getByText('Work unavailable')).toBeVisible()
+      await expect.element(screen.getByText('Pending action items')).toBeVisible()
+      await expect.element(screen.getByText('No pending assigned work')).not.toBeInTheDocument()
+      await expect.element(screen.getByText(assigned.title)).not.toBeInTheDocument()
+      for (const status of ['OPEN', 'IN_PROGRESS']) {
+        expect(getWithMeta).toHaveBeenCalledWith('/action-items', expect.objectContaining({ params: expect.objectContaining({ status, size: '5' }) }))
+      }
+      options.actionItemsError = undefined
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      await expect.element(screen.getByText(assigned.title)).toBeVisible()
+      await expect.element(screen.getByText('Work unavailable')).not.toBeInTheDocument()
+    }
+  )
 
   it('keeps restricted assigned work visible without linking protected meeting context', async () => {
-    const assigned = {
-      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-      meetingId,
-      title: 'Authorized assigned work',
-      details: null,
-      status: 'OPEN',
-      assigneeUserId: userId,
-      dueDate: '2026-11-24',
-      overdue: true,
-      sourceType: 'MANUAL',
-      processingJobId: null,
-      transcriptId: null,
-      contentRevision: null,
-      createdByUserId: userId,
-      confirmedByUserId: null,
-      confirmedAt: null,
-      completedByUserId: null,
-      completedAt: null,
-      cancelledByUserId: null,
-      cancelledAt: null,
-      version: 1,
-      createdAt: dashboardAsOf,
-      updatedAt: dashboardAsOf,
-      isOfficial: true,
-      capabilities: {
-        canEdit: false,
-        canAssign: false,
-        canConfirm: false,
-        canReject: false,
-        canStart: true,
-        canComplete: true,
-        canCancel: false,
-        canReopen: false,
-        canAccessMeeting: false,
-        canAccessEvidence: false,
-      },
-      assignee: { id: userId, displayName: identity.displayName, active: true },
-      meeting: { id: meetingId, label: 'Restricted meeting', restricted: true },
-      evidence: {
-        availability: 'RESTRICTED',
-        transcriptId: null,
-        contentRevision: null,
-        freshness: 'RESTRICTED',
-        references: [],
-        limitation: null,
-      },
-    }
+    const assigned = assignedWork('OPEN')
     const { getWithMeta } = installCoreFixtures({
       actionItemsOpen: {
         data: [assigned],

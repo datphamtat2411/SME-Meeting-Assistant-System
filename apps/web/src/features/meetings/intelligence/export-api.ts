@@ -145,6 +145,7 @@ export function exportCapabilitiesQuery(meetingId: string, scope: string) {
       }
       return result.data
     },
+    meta: { featureErrorBoundary: true },
     retry: false,
   })
 }
@@ -224,6 +225,7 @@ export function exportStatusQuery(
           format: expectedFormat,
         }
       ),
+    meta: { featureErrorBoundary: true },
     retry: false,
   })
 }

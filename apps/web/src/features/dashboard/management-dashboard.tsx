@@ -41,7 +41,7 @@ const reasonLabels: Record<string, string> = {
 export function ManagementDashboard({ identity }: { identity: AuthContext }) {
   if (identity.globalRole !== 'DEPARTMENT_MANAGER') return null
   const access = getMemberDirectoryAccess(identity)
-  if (access.type !== 'authorized') {
+  if (access.type !== 'authorized' || identity.directoryManagementScope.allUnits) {
     return (
       <Card>
         <CardHeader>
@@ -77,7 +77,7 @@ function ManagementReport({
       applied
     )
   )
-  const units = useQuery(organizationalUnitsQuery(access))
+  const units = useQuery({ ...organizationalUnitsQuery(access), meta: { featureErrorBoundary: true } })
   const availableUnits = (units.isError ? [] : (units.data ?? [])).filter(
     (unit) => access.unitIds.includes(unit.id)
   )
