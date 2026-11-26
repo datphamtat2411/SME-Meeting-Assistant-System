@@ -8,6 +8,9 @@ export const RECOVERY_MARKER = '__smeSessionRecovered'
 export const RECOVERY_DISABLED_MARKER = '__smeRecoveryDisabled'
 export const RECOVERY_REPLAY_SAFE_MARKER = '__smeReplaySafe'
 export const AUTH_LIFECYCLE_GENERATION_MARKER = '__smeAuthLifecycleGeneration'
+export const SESSION_REVALIDATION_GENERATION_MARKER =
+  '__smeSessionRevalidationGeneration'
+export const SESSION_REVALIDATION_PROBE_MARKER = '__smeSessionRevalidationProbe'
 export const AUTH_LIFECYCLE_BLOCKED_CODE = 'AUTH_LIFECYCLE_BLOCKED'
 export const AUTH_LIFECYCLE_STALE_RESPONSE_CODE =
   'AUTH_LIFECYCLE_STALE_RESPONSE'
@@ -27,6 +30,8 @@ export interface RecoveryRequestFlags {
   [RECOVERY_DISABLED_MARKER]?: boolean
   [RECOVERY_REPLAY_SAFE_MARKER]?: boolean
   [AUTH_LIFECYCLE_GENERATION_MARKER]?: number
+  [SESSION_REVALIDATION_GENERATION_MARKER]?: number
+  [SESSION_REVALIDATION_PROBE_MARKER]?: boolean
 }
 
 export type RecoveryRequestConfig = AxiosRequestConfig & RecoveryRequestFlags
@@ -169,6 +174,13 @@ export interface RequestRecoveryCoordinator {
   prepareForRetry(): void
   resetAfterSignIn(): void
   beginAuthLifecycleLogout(): AuthLifecycleLockBarrier
+  beginSessionRevalidation(): AuthLifecycleLockBarrier
+  finishSessionRevalidation(
+    generation: number,
+    outcome: 'verified' | 'lost' | 'anonymous'
+  ): boolean
+  isSessionRevalidationRequired(): boolean
+  getSessionRevalidationGeneration(): number
   isAuthLifecycleBlocked(): boolean
   getAuthLifecycleGeneration(): number
   isStaleAuthLifecycleResponse(config: RecoveryRequestConfig): boolean
@@ -302,6 +314,21 @@ export function isAuthLifecycleExemptRequest(
   const path = getRequestPath(config)
   return AUTH_LIFECYCLE_EXEMPT_PATHS.some((exemptPath) =>
     path.endsWith(exemptPath)
+  )
+}
+
+/** Ordinary protected work must not cross a mandatory verification boundary. */
+export function requiresRevalidatedSession(
+  config: RecoveryRequestConfig
+): boolean {
+  const path = getRequestPath(config)
+  return (
+    !isExcludedRequest(config) &&
+    !(
+      path.endsWith('/auth/me') &&
+      (isRecoveryDisabled(config) ||
+        config[SESSION_REVALIDATION_PROBE_MARKER] === true)
+    )
   )
 }
 
@@ -468,6 +495,8 @@ export function createRequestRecoveryCoordinator(
   let probeOnly = false
   let renewalPromise: Promise<RenewalResult> | undefined
   let authLifecycleGeneration = 0
+  let revalidationGeneration = 0
+  let revalidationRequired = false
   let authLifecycleBarrier: AuthLifecycleLockBarrier | undefined
   let coordinationOperationId: string | undefined
   let sessionLossHandler = dependencies.onConfirmedSessionLoss
@@ -504,7 +533,9 @@ export function createRequestRecoveryCoordinator(
       return
     }
 
-    if (message.status === 'lost') confirmSessionLoss()
+    if (message.status === 'lost' && !revalidationRequired) {
+      confirmSessionLoss()
+    }
   }
 
   const onStorageEvent = (event: {
@@ -548,7 +579,9 @@ export function createRequestRecoveryCoordinator(
   }
 
   function confirmSessionLoss(): void {
-    if (circuit === 'lost') return
+    // The mandatory probe owns the loss decision while revalidation is active.
+    // Do not publish or contain from an older recovery request.
+    if (circuit === 'lost' || revalidationRequired) return
 
     circuit = 'lost'
     probeOnly = false
@@ -624,6 +657,7 @@ export function createRequestRecoveryCoordinator(
       probeResponse = await dependencies.request({
         method: 'GET',
         url: '/auth/me',
+        timeout: revalidationRequired ? 30_000 : undefined,
         withCredentials: true,
         [RECOVERY_DISABLED_MARKER]: true,
       })
@@ -733,6 +767,7 @@ export function createRequestRecoveryCoordinator(
       const refreshResponse = await dependencies.request({
         method: 'POST',
         url: '/auth/refresh',
+        timeout: revalidationRequired ? 30_000 : undefined,
         data: undefined,
         withCredentials: true,
         headers: { 'X-CSRF-Token': csrfToken },
@@ -853,6 +888,8 @@ export function createRequestRecoveryCoordinator(
     if (authLifecycleBarrier) return authLifecycleBarrier
 
     authLifecycleGeneration += 1
+    revalidationGeneration += 1
+    revalidationRequired = false
     const activeRenewal = renewalPromise
     const barrier: AuthLifecycleLockBarrier = {
       generation: authLifecycleGeneration,
@@ -862,6 +899,45 @@ export function createRequestRecoveryCoordinator(
     }
     authLifecycleBarrier = barrier
     return barrier
+  }
+
+  function beginSessionRevalidation(): AuthLifecycleLockBarrier {
+    revalidationRequired = true
+    revalidationGeneration += 1
+    const activeRenewal = renewalPromise
+    // A new browser context may have been established since a previous loss.
+    // A prior uncertain refresh must still not be retried blindly.
+    if (circuit === 'lost') circuit = 'ready'
+    return {
+      generation: revalidationGeneration,
+      waitForRecovery: async () => {
+        await activeRenewal
+      },
+    }
+  }
+
+  function finishSessionRevalidation(
+    expectedGeneration: number,
+    outcome: 'verified' | 'lost' | 'anonymous'
+  ): boolean {
+    if (
+      authLifecycleBarrier ||
+      !revalidationRequired ||
+      expectedGeneration !== revalidationGeneration
+    ) {
+      return false
+    }
+    // Confirmed anonymous/lost state stays fenced until sign-in or a new
+    // authoritative verification establishes a valid context.
+    revalidationRequired = outcome !== 'verified'
+    if (outcome === 'lost') {
+      circuit = 'lost'
+      dependencies.resetCsrfToken()
+    } else {
+      circuit = 'ready'
+    }
+    probeOnly = false
+    return true
   }
 
   function withRecoveryLock<T>(callback: () => Promise<T> | T): Promise<T> {
@@ -885,6 +961,15 @@ export function createRequestRecoveryCoordinator(
   function isStaleLifecycleResponse(config: RecoveryRequestConfig): boolean {
     if (isAuthLifecycleExemptRequest(config)) return false
     const requestGeneration = config[AUTH_LIFECYCLE_GENERATION_MARKER]
+    const verificationGeneration = config[SESSION_REVALIDATION_GENERATION_MARKER]
+    if (
+      requiresRevalidatedSession(config) &&
+      (revalidationRequired ||
+        (typeof verificationGeneration === 'number' &&
+          verificationGeneration < revalidationGeneration))
+    ) {
+      return true
+    }
     return (
       authLifecycleBarrier !== undefined ||
       (typeof requestGeneration === 'number' &&
@@ -897,7 +982,10 @@ export function createRequestRecoveryCoordinator(
       const config = getRequestConfig(error)
       const normalized = asTransportError(dependencies, error)
 
-      if (!config || normalized.status !== 401) return { type: 'pass' }
+      if (!config) return { type: 'pass' }
+      if (normalized.status !== 401 && !isStaleLifecycleResponse(config)) {
+        return { type: 'pass' }
+      }
 
       if (authLifecycleBarrier && !isAuthLifecycleExemptRequest(config)) {
         return {
@@ -909,6 +997,8 @@ export function createRequestRecoveryCoordinator(
       if (isStaleLifecycleResponse(config)) {
         return { type: 'failure', failure: authLifecycleStaleResponseFailure() }
       }
+
+      if (normalized.status !== 401) return { type: 'pass' }
 
       if (isRecoveredRequest(config)) {
         confirmSessionLoss()
@@ -934,6 +1024,12 @@ export function createRequestRecoveryCoordinator(
       }
 
       if (probeOnly) {
+        if (revalidationRequired) {
+          return {
+            type: 'failure',
+            failure: createFailure('uncertain', normalized),
+          }
+        }
         confirmSessionLoss()
         return {
           type: 'failure',
@@ -951,6 +1047,9 @@ export function createRequestRecoveryCoordinator(
       }
 
       const renewal = await startRenewal()
+      if (isStaleLifecycleResponse(config)) {
+        return { type: 'failure', failure: authLifecycleStaleResponseFailure() }
+      }
       if (renewal.type === 'failed') {
         return { type: 'failure', failure: renewal.failure }
       }
@@ -1008,6 +1107,8 @@ export function createRequestRecoveryCoordinator(
     resetAfterSignIn() {
       authLifecycleBarrier = undefined
       authLifecycleGeneration += 1
+      revalidationGeneration += 1
+      revalidationRequired = false
       circuit = 'ready'
       probeOnly = false
       generation += 1
@@ -1015,6 +1116,16 @@ export function createRequestRecoveryCoordinator(
     },
 
     beginAuthLifecycleLogout,
+    beginSessionRevalidation,
+    finishSessionRevalidation,
+
+    isSessionRevalidationRequired() {
+      return revalidationRequired
+    },
+
+    getSessionRevalidationGeneration() {
+      return revalidationGeneration
+    },
 
     isAuthLifecycleBlocked() {
       return authLifecycleBarrier !== undefined
@@ -1066,6 +1177,30 @@ export function beginRequestRecoveryLogout(): AuthLifecycleLockBarrier {
     }
   }
   return defaultCoordinator.beginAuthLifecycleLogout()
+}
+
+export function beginRequestRecoveryRevalidation(): AuthLifecycleLockBarrier {
+  if (!defaultCoordinator) {
+    throw new Error('Session recovery coordinator is unavailable.')
+  }
+  return defaultCoordinator.beginSessionRevalidation()
+}
+
+export function finishRequestRecoveryRevalidation(
+  generation: number,
+  outcome: 'verified' | 'lost' | 'anonymous'
+): boolean {
+  return (
+    defaultCoordinator?.finishSessionRevalidation(generation, outcome) ?? false
+  )
+}
+
+export function isSessionRevalidationRequired(): boolean {
+  return defaultCoordinator?.isSessionRevalidationRequired() ?? false
+}
+
+export function getSessionRevalidationGeneration(): number {
+  return defaultCoordinator?.getSessionRevalidationGeneration() ?? 0
 }
 
 export function isRequestRecoveryBlocked(): boolean {

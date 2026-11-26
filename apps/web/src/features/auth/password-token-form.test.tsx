@@ -4,10 +4,18 @@ import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { AccountSetup } from './account-setup'
 import { Otp } from './otp'
+import { PasswordReset } from './reset-password'
 import { SignUp } from './sign-up'
 
 const completeAccountSetup = vi.hoisted(() => vi.fn())
 const resetAccountPassword = vi.hoisted(() => vi.fn())
+const requestSessionRevalidation = vi.hoisted(() => vi.fn())
+
+vi.mock('./session/session-revalidation', () => ({
+  requestSessionRevalidation,
+  retrySessionRevalidation: vi.fn(),
+  useSessionRevalidation: () => 'unauthenticated',
+}))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
@@ -112,10 +120,13 @@ describe('password-token callback surfaces', () => {
     expect(completeAccountSetup).not.toHaveBeenCalled()
   })
 
-  it('keeps the otp callback on the Core single-use password-reset operation', async () => {
+  it.each([
+    ['/reset-password', PasswordReset],
+    ['/otp', Otp],
+  ] as const)('resets through the same workflow at %s', async (path, Page) => {
     const token = 'single-use-reset-capability'
-    window.history.replaceState({}, '', '/otp#token=' + token)
-    const screen = await render(<Otp />)
+    window.history.replaceState({}, '', path + '#token=' + token)
+    const screen = await render(<Page />)
     const password = 'a sufficiently long reset password'
 
     await userEvent.fill(screen.getByLabelText('New password'), password)
@@ -131,6 +142,27 @@ describe('password-token callback surfaces', () => {
       password
     )
     expect(completeAccountSetup).not.toHaveBeenCalled()
+    expect(requestSessionRevalidation).toHaveBeenCalledOnce()
     expect(window.location.hash).toBe('')
+  })
+
+  it('revalidates after an uncertain reset without permitting another submission', async () => {
+    resetAccountPassword.mockRejectedValueOnce(new Error('network'))
+    window.history.replaceState({}, '', '/reset-password#token=uncertain')
+    const screen = await render(<PasswordReset />)
+    const password = 'a sufficiently long reset password'
+    await userEvent.fill(screen.getByLabelText('New password'), password)
+    await userEvent.fill(screen.getByLabelText('Confirm password'), password)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reset password' })
+    )
+    await expect
+      .element(screen.getByRole('alert'))
+      .toHaveTextContent(/may already have/i)
+    expect(requestSessionRevalidation).toHaveBeenCalledOnce()
+    expect(resetAccountPassword).toHaveBeenCalledOnce()
+    await expect
+      .element(screen.getByRole('button', { name: 'Reset password' }))
+      .not.toBeInTheDocument()
   })
 })

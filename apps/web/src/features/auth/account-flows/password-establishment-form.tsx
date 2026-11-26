@@ -20,12 +20,14 @@ interface PasswordEstablishmentFormProps {
   kind: 'setup' | 'reset'
   onSubmit: (password: string) => Promise<void>
   onCompleted: () => void
+  onUncertain?: () => void
 }
 
 export function PasswordEstablishmentForm({
   kind,
   onSubmit,
   onCompleted,
+  onUncertain,
 }: PasswordEstablishmentFormProps) {
   const submission = useAccountFlowSubmission(kind)
   const form = useForm<CredentialFields>({
@@ -40,6 +42,7 @@ export function PasswordEstablishmentForm({
       onCompleted()
     } else if (result?.kind === 'uncertain' || result?.kind === 'unavailable') {
       form.reset()
+      if (result.kind === 'uncertain') onUncertain?.()
     } else if (result?.field === 'password') {
       form.setError('password', { type: 'server', message: result.message })
     }

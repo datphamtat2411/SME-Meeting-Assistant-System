@@ -17,7 +17,9 @@ export const Route = createRootRouteWithContext<{
   component: function RootComponent() {
     const sensitiveCallback = useLocation({
       select: (location) =>
-        ['/account-setup', '/sign-up', '/otp'].includes(location.pathname),
+        ['/account-setup', '/sign-up', '/otp', '/reset-password'].includes(
+          location.pathname
+        ),
     })
     return (
       <>
@@ -26,9 +28,11 @@ export const Route = createRootRouteWithContext<{
         <Toaster duration={5000} />
         {import.meta.env.MODE === 'development' && (
           <>
-            <ReactQueryDevtools buttonPosition='bottom-left' />
             {!sensitiveCallback && (
-              <TanStackRouterDevtools position='bottom-right' />
+              <>
+                <ReactQueryDevtools buttonPosition='bottom-left' />
+                <TanStackRouterDevtools position='bottom-right' />
+              </>
             )}
           </>
         )}

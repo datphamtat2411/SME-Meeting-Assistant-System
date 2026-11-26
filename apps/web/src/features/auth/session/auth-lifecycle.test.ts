@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   AUTH_LIFECYCLE_CHANNEL_NAME,
   AUTH_LIFECYCLE_STORAGE_KEY,
+  SESSION_REVALIDATION_STORAGE_KEY,
   createAuthLifecycleCoordinator,
   type AuthLifecycleBroadcast,
   type AuthLifecycleLockBarrier,
@@ -315,5 +316,59 @@ describe('auth lifecycle coordinator', () => {
     })
     expect(logout).not.toHaveBeenCalled()
     coordinator.dispose()
+  })
+})
+
+describe('session revalidation coordination', () => {
+  it('notifies peers without invoking logout or leaving a durable marker', () => {
+    const firstChannel = new TestBroadcast()
+    const secondChannel = new TestBroadcast([firstChannel])
+    firstChannel.peers.push(secondChannel)
+    const storage = memoryStorage()
+    const firstCheck = vi.fn()
+    const secondCheck = vi.fn()
+    const logout = vi.fn(async () => undefined)
+    const dependencies = {
+      logout,
+      beginRecoveryBarrier: () => immediateBarrier(),
+      withRecoveryLock: async <T>(callback: () => Promise<T> | T) => callback(),
+    }
+    const first = createAuthLifecycleCoordinator(dependencies, {
+      sourceId: 'revalidation-a',
+      broadcast: firstChannel,
+      storage,
+      storageEventTarget: null,
+      onRevalidation: firstCheck,
+    })
+    const second = createAuthLifecycleCoordinator(dependencies, {
+      sourceId: 'revalidation-b',
+      broadcast: secondChannel,
+      storage: null,
+      storageEventTarget: null,
+      onRevalidation: secondCheck,
+    })
+    try {
+      first.requestRevalidation()
+      expect(firstCheck).toHaveBeenCalledOnce()
+      expect(secondCheck).toHaveBeenCalledOnce()
+      expect(first.getState()).toBe('idle')
+      expect(second.getState()).toBe('idle')
+      expect(logout).not.toHaveBeenCalled()
+      expect(storage.removeItem).toHaveBeenCalledWith(
+        SESSION_REVALIDATION_STORAGE_KEY
+      )
+      const message = {
+        sourceId: 'revalidation-a',
+        operationId: 'duplicate-signal',
+        status: 'session-revalidation',
+      }
+      second.receiveMessage(message)
+      second.receiveMessage(message)
+      expect(secondCheck).toHaveBeenCalledTimes(2)
+      expect(logout).not.toHaveBeenCalled()
+    } finally {
+      first.dispose()
+      second.dispose()
+    }
   })
 })

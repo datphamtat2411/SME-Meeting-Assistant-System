@@ -5,6 +5,10 @@ import {
   type AuthContext,
   type SessionFailure,
 } from './current-user'
+import {
+  isSessionVerificationPendingOrBlocked,
+  useSessionRevalidation,
+} from './session-revalidation'
 
 type CurrentUserVerificationStatus =
   | 'initial-loading'
@@ -113,6 +117,7 @@ export function deriveCurrentUserVerification(
 export function useCurrentUserVerification(): CurrentUserVerificationState & {
   query: ReturnType<typeof useQuery>
 } {
+  const revalidation = useSessionRevalidation()
   const query = useQuery({
     ...currentUserQueryOptions(),
     // The authenticated route already verifies /auth/me before mounting its
@@ -120,7 +125,30 @@ export function useCurrentUserVerification(): CurrentUserVerificationState & {
     // request during the same mount; route revalidation and explicit query
     // invalidation still update this reactive boundary.
     refetchOnMount: false,
+    enabled:
+      !isSessionVerificationPendingOrBlocked(revalidation) &&
+      revalidation !== 'unauthenticated',
   })
+  if (isSessionVerificationPendingOrBlocked(revalidation)) {
+    return {
+      status:
+        revalidation === 'checking' ? 'initial-loading' : 'transient-failure',
+      isVerified: false,
+      hasEstablishedIdentity: Boolean(query.data),
+      canReadProtectedData: false,
+      query,
+    }
+  }
+  if (revalidation === 'unauthenticated') {
+    return {
+      status: 'confirmed-authentication-loss',
+      failure: 'unauthenticated',
+      isVerified: false,
+      hasEstablishedIdentity: false,
+      canReadProtectedData: false,
+      query,
+    }
+  }
   return {
     ...deriveCurrentUserVerification({
       data: query.data,

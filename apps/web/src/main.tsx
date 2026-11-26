@@ -15,6 +15,11 @@ import {
   clearCurrentUserCache,
   getSafeSessionRedirect,
 } from '@/features/auth/session/current-user'
+import {
+  configureSessionRevalidation,
+  noteBrowserSessionLoss,
+  revalidateBrowserSession,
+} from '@/features/auth/session/session-revalidation'
 import { clearPersistedExportOperations } from '@/features/meetings/media/use-export-operation-owner'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
@@ -91,7 +96,18 @@ function containProtectedState(): void {
   clearPersistedExportOperations()
 }
 
+configureSessionRevalidation({
+  queryClient,
+  onContainment: containProtectedState,
+  onChanged: () => {
+    void router.invalidate()
+  },
+})
+
 configureAuthLifecycle({
+  onRevalidation: () => {
+    void revalidateBrowserSession()
+  },
   onContainment: () => {
     containProtectedState()
     void router.invalidate()
@@ -106,6 +122,7 @@ configureAuthLifecycle({
 })
 
 setRequestRecoverySessionLossHandler(() => {
+  noteBrowserSessionLoss()
   containProtectedState()
   void router.invalidate()
 })
