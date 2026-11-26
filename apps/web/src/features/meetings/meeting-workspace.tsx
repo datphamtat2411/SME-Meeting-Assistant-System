@@ -54,6 +54,7 @@ import {
 } from './data/list-api'
 import {
   meetingListQueryKey,
+  synchronizeMeetingCaches,
   updateMeetingListCacheData,
   type MeetingListCacheData,
 } from './data/meeting-cache'
@@ -362,14 +363,12 @@ function SharedMeetingWorkspaceIdentityBoundary({
     refresh: MeetingParticipantRefresh,
     _confirmed: boolean
   ) => {
-    queryClient.setQueryData(['meetings', 'detail', meetingId], refresh.detail)
     queryClient.setQueryData(
       ['meetings', 'participants', meetingId],
       refresh.participants
     )
-    void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
-    void queryClient.invalidateQueries({
-      queryKey: ['rooms', 'availability'],
+    synchronizeMeetingCaches(queryClient, refresh.detail, undefined, {
+      invalidateRoomAvailability: true,
     })
   }
 
@@ -485,14 +484,12 @@ function MeetingWorkspaceIdentityBoundary({
     refresh: MeetingParticipantRefresh,
     _confirmed: boolean
   ) => {
-    queryClient.setQueryData(['meetings', 'detail', meetingId], refresh.detail)
     queryClient.setQueryData(
       ['meetings', 'participants', meetingId],
       refresh.participants
     )
-    void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
-    void queryClient.invalidateQueries({
-      queryKey: ['rooms', 'availability'],
+    synchronizeMeetingCaches(queryClient, refresh.detail, undefined, {
+      invalidateRoomAvailability: true,
     })
   }
   const roomQuery = useQuery({

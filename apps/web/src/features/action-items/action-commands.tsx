@@ -165,6 +165,12 @@ export function ActionCommands({
             })
           }
         } finally {
+          if (variables.owns()) {
+            invalidateMeetingArtifacts(qc, variables.review.item.meetingId, {
+              actions: true,
+              intelligence: 'none',
+            })
+          }
           setPendingReview((pending) =>
             pending?.owns === variables.owns ? null : pending
           )

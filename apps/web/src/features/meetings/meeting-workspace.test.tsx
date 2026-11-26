@@ -1700,6 +1700,15 @@ describe('MeetingWorkspacePage', () => {
     await userEvent.click(
       screen.getByRole('option', { name: /New participant/ })
     )
+    const dependentKeys = [
+      ['dashboard', 'me', 'actor-scope'],
+      ['dashboard', 'management', 'manager-scope'],
+      ['export', 'pdf-a', 'meeting-1', 'PDF', 'actor-scope'],
+    ]
+    const unrelatedExport = ['export', 'pdf-b', 'meeting-2', 'PDF', 'actor-scope']
+    for (const key of [...dependentKeys, unrelatedExport]) {
+      queryClient.setQueryData(key, { observed: true })
+    }
     await userEvent.click(
       screen.getByRole('button', { name: 'Add participant' })
     )
@@ -1716,6 +1725,10 @@ describe('MeetingWorkspacePage', () => {
     expect(
       queryClient.getQueryData(['meetings', 'participants', 'meeting-1'])
     ).toEqual(refreshedParticipants)
+    for (const key of dependentKeys) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+    }
+    expect(queryClient.getQueryState(unrelatedExport)?.isInvalidated).toBe(false)
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ['meetings', 'list'],
     })

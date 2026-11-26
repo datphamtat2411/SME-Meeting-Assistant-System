@@ -1,5 +1,5 @@
-import { QueryClient } from '@tanstack/react-query'
-import { describe, expect, it } from 'vitest'
+import { QueryClient, QueryObserver } from '@tanstack/react-query'
+import { describe, expect, it, vi } from 'vitest'
 import { invalidateMeetingArtifacts } from './query-invalidation'
 
 describe('meeting artifact reconciliation', () => {
@@ -7,6 +7,9 @@ describe('meeting artifact reconciliation', () => {
     const client = new QueryClient()
     const affected = [
       ['minutes', 'a'],
+      ['dashboard', 'me', 'actor-scope'],
+      ['dashboard', 'management', 'manager-scope'],
+      ['action-items', 'list', { assignee: 'me' }, undefined, 'actor-scope'],
       ['export', 'pdf-a', 'a', 'PDF'],
       ['action-items', 'list', {}, 'a'],
       ['action-items', 'list', {}, undefined],
@@ -23,6 +26,50 @@ describe('meeting artifact reconciliation', () => {
     for (const key of unrelated)
       expect(client.getQueryState(key)?.isInvalidated).toBe(false)
     client.clear()
+  })
+
+  it('reobserves active reporting and Minutes reads started before a canonical mutation', async () => {
+    const client = new QueryClient()
+    const keys = [
+      ['dashboard', 'me', 'actor-scope'],
+      ['dashboard', 'management', 'manager-scope'],
+      ['minutes', 'a'],
+      ['action-items', 'list', { assignee: 'me' }, undefined, 'actor-scope'],
+    ]
+    let resolveOld!: (value: string) => void
+    const old = new Promise<string>((resolve) => {
+      resolveOld = resolve
+    })
+    const reads = keys.map(() =>
+      vi.fn().mockReturnValueOnce(old).mockResolvedValue('reconciled')
+    )
+    const subscriptions = keys.map((queryKey, index) =>
+      new QueryObserver(client, {
+        queryKey,
+        queryFn: reads[index],
+      }).subscribe(() => {})
+    )
+    try {
+      await expect
+        .poll(() => reads.map((read) => read.mock.calls.length))
+        .toEqual([1, 1, 1, 1])
+      invalidateMeetingArtifacts(client, 'a', {
+        actions: true,
+        intelligence: 'none',
+      })
+      await expect
+        .poll(() => keys.map((key) => client.getQueryData(key)))
+        .toEqual(keys.map(() => 'reconciled'))
+      resolveOld('obsolete')
+      await old
+      expect(keys.map((key) => client.getQueryData(key))).toEqual(
+        keys.map(() => 'reconciled')
+      )
+      expect(reads.map((read) => read.mock.calls.length)).toEqual([2, 2, 2, 2])
+    } finally {
+      subscriptions.forEach((unsubscribe) => unsubscribe())
+      client.clear()
+    }
   })
 
   it('reconciles a Summary mutation without invalidating Decisions', () => {
