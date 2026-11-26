@@ -34,6 +34,9 @@ class CredentialWorkflowOwner extends ChangeNotifier {
   CredentialOutcome? get outcome => _outcome;
 
   CredentialAttempt begin(AccountOperation operation) {
+    if (!operation.establishesPassword) {
+      throw ArgumentError.value(operation, 'operation', 'Invalid purpose.');
+    }
     if (_disposed || _outcome != null) {
       throw StateError('Credential workflow is not ready.');
     }

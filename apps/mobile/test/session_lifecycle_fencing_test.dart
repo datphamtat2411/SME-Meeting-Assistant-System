@@ -119,6 +119,37 @@ void main() {
     expect(client.resetCount, 1);
   });
 
+  test('a stale reset cannot replace a newer credential outcome', () async {
+    final client = _SessionRaceClient()..delayReset = true;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await api.initialize();
+    final owner = CredentialWorkflowOwner(api);
+    addTearDown(owner.dispose);
+    final reset = owner.begin(AccountOperation.reset);
+    final resetSubmission = AccountSubmissionController(AccountOperation.reset);
+    final pending = owner.submit(reset, resetSubmission, 'old', 'password');
+    await client.resetStarted.future;
+    owner.abandon(reset);
+    resetSubmission.dispose();
+
+    final setup = owner.begin(AccountOperation.setup);
+    final setupSubmission = AccountSubmissionController(AccountOperation.setup);
+    addTearDown(setupSubmission.dispose);
+    await owner.submit(setup, setupSubmission, 'new', 'password');
+    final current = owner.outcome;
+    expect(current?.operation, AccountOperation.setup);
+    expect(current?.kind, CredentialOutcomeKind.completed);
+
+    client.resetResponse.complete(
+      jsonResponse(200, successEnvelope({'message': 'acknowledged'})),
+    );
+    await pending;
+    expect(owner.outcome, same(current));
+    expect(api.sessionState.phase, AuthSessionPhase.unauthenticated);
+    expect(client.resetCount, 1);
+  });
+
   test(
     'setup and rejected reset do not reconcile an unrelated session',
     () async {

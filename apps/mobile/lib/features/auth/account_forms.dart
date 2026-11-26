@@ -14,11 +14,13 @@ class RecoveryRequestForm extends StatefulWidget {
     required this.api,
     required this.onBack,
     required this.retryDeadlines,
+    this.now,
   });
 
   final ApiClient api;
   final VoidCallback onBack;
   final AccountRetryDeadlines retryDeadlines;
+  final DateTime Function()? now;
 
   @override
   State<RecoveryRequestForm> createState() => _RecoveryRequestFormState();
@@ -29,6 +31,7 @@ class _RecoveryRequestFormState extends State<RecoveryRequestForm> {
   final _email = TextEditingController();
   late final _submission = AccountSubmissionController(
     AccountOperation.recovery,
+    now: widget.now,
     retryDeadlines: widget.retryDeadlines,
   );
 
@@ -37,7 +40,7 @@ class _RecoveryRequestFormState extends State<RecoveryRequestForm> {
 
   Future<void> _resend() async {
     final email = _acknowledgedEmail;
-    if (email == null || _submission.isSubmitting) return;
+    if (email == null || _editingEmail || _submission.isSubmitting) return;
     _submission.startNewRecoveryRequest();
     if (!_submission.canSubmit) return;
     await _request(email);
@@ -46,7 +49,10 @@ class _RecoveryRequestFormState extends State<RecoveryRequestForm> {
   void _changeEmail() {
     _submission.startNewRecoveryRequest();
     _submission.clearRejectedFeedback();
-    setState(() => _editingEmail = true);
+    setState(() {
+      _acknowledgedEmail = null;
+      _editingEmail = true;
+    });
   }
 
   Future<void> _request(String email) async {

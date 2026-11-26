@@ -39,7 +39,9 @@ point is introduced in Wave 02.
 
 Automated regression tests cover acknowledgement cooldown, retry deadlines,
 credential completion and mutation/session outcome independence, including
-late settlement of an abandoned reset. The Mobile CI workflow must verify
+late settlement of an abandoned reset. Widget tests exercise explicit resend
+after expiry and externally supplied opaque capabilities; a stale reset
+cannot replace a newer setup outcome. The Mobile CI workflow must verify
 formatting, analysis, tests and Android debug build on the final revision.
 Live Core API, SMTP, physical-device and verified HTTPS acceptance are not
 established by these mocked tests or by source review.
