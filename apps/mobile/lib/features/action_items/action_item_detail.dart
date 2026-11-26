@@ -465,6 +465,14 @@ class ActionItemDetailController extends ChangeNotifier {
     _revision = signal.revision;
     final affected = signal.lastActionItemId;
     if (affected != null && !sameActionItemIdentity(affected, itemId)) return;
+    final meeting = signal.lastMeetingId;
+    final ownedMeeting = _meetingId;
+    if (affected == null &&
+        meeting != null &&
+        ownedMeeting != null &&
+        !sameActionItemIdentity(meeting, ownedMeeting)) {
+      return;
+    }
     _dirty = true;
     _requiresRevalidation = true;
     if (!_busy) unawaited(refresh());

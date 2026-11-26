@@ -287,6 +287,20 @@ class ActionItemResource {
         (!capabilities.canReadMeetingContext && context.title != null)) {
       invalidApiData(response: response);
     }
+    // Restricted projections cannot carry meeting provenance or attribution.
+    if (!capabilities.canReadMeetingContext &&
+        const [
+          'processingJobId',
+          'createdByUserId',
+          'confirmedByUserId',
+          'confirmedAt',
+          'completedByUserId',
+          'completedAt',
+          'cancelledByUserId',
+          'cancelledAt',
+        ].any((field) => raw[field] != null)) {
+      invalidApiData(response: response);
+    }
     final status = _enumValue(
       ActionItemStatus.values,
       raw['status'],
