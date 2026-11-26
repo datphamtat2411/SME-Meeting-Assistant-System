@@ -2,6 +2,8 @@ import {
   Activity,
   createContext,
   useContext,
+  useLayoutEffect,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -24,15 +26,29 @@ export function WorkspaceVisibilityBoundary({
   hidden: boolean
   children: ReactNode
 }) {
+  const hostRef = useRef<HTMLDivElement>(null)
   const [container, setContainer] = useState<HTMLDivElement | null>(null)
+
+  // Publish the committed host once. Detaching refs must not enqueue state
+  // updates, and visibility changes must never replace the portal target.
+  useLayoutEffect(() => {
+    setContainer(hostRef.current)
+  }, [])
 
   return (
     <div
-      className={hidden ? 'hidden' : 'contents'}
+      data-slot='workspace-visibility-boundary'
+      hidden={hidden}
+      style={{ display: hidden ? 'none' : 'contents' }}
       inert={hidden}
       aria-hidden={hidden || undefined}
     >
-      <div ref={setContainer} className='contents' />
+      {/* The host is outside Activity, but inside the same DOM shield. */}
+      <div
+        ref={hostRef}
+        data-slot='workspace-portal-host'
+        style={{ display: 'contents' }}
+      />
       {container && (
         <PortalContainerContext value={container}>
           <Activity mode={hidden ? 'hidden' : 'visible'}>{children}</Activity>

@@ -498,6 +498,10 @@ describe('session restoration and protected routing', () => {
       await userEvent.fill(name, 'Private unsaved draft')
       const dialog = screen.getByRole('dialog', { name: 'Create account' })
       await expect.element(dialog).toBeVisible()
+      const portalHost = dialog
+        .element()
+        .closest('[data-slot="workspace-portal-host"]')
+      expect(portalHost).not.toBeNull()
       getCurrentUser.mockImplementationOnce(async () => {
         await pending
         return administrator as never
@@ -518,6 +522,9 @@ describe('session restoration and protected routing', () => {
           )
           .toBe(false)
         await expect.poll(() => headingElement.checkVisibility()).toBe(false)
+        expect(
+          document.querySelector('[data-slot="workspace-portal-host"]')
+        ).toBe(portalHost)
         await expect.element(dialog).not.toBeInTheDocument()
         await expect.element(heading).not.toBeInTheDocument()
       } finally {
@@ -527,6 +534,9 @@ describe('session restoration and protected routing', () => {
       await expect.element(dialog).toBeVisible()
       await expect.element(name).toBeVisible()
       await expect.element(name).toHaveValue('Private unsaved draft')
+      expect(
+        dialog.element().closest('[data-slot="workspace-portal-host"]')
+      ).toBe(portalHost)
 
       getCurrentUser.mockResolvedValue(identity as never)
       await revalidateBrowserSession()
