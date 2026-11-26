@@ -186,9 +186,10 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
       body: SafeArea(
         child: artifact == null
             ? Center(
-                child: !widget.dependencies.api.isCurrentAuthenticatedSession(
-                  widget.target.scope,
-                )
+                child:
+                    !widget.dependencies.api.isCurrentAuthenticatedSession(
+                      widget.target.scope,
+                    )
                     ? const Text('Phiên đăng nhập không còn khả dụng.')
                     : failure == null
                     ? const CircularProgressIndicator()

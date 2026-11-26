@@ -53,7 +53,10 @@ class AppDependencies {
   }
 
   /// Purge a known inaccessible meeting without creating a new workspace.
-  void forgetAssistantMeeting(AuthenticatedSessionScope scope, String meetingId) {
+  void forgetAssistantMeeting(
+    AuthenticatedSessionScope scope,
+    String meetingId,
+  ) {
     final owner = _assistantWorkspace;
     if (owner != null && owner.scope == scope && owner.current) {
       owner.forgetMeeting(meetingId);

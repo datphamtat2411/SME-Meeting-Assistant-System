@@ -89,7 +89,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
   final Future<bool> Function({
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
-  })? verifyMeetingReadAccess;
+  })?
+  verifyMeetingReadAccess;
   final AuthenticatedSessionScope scope;
   bool _disposed = false;
   bool _active = false;
@@ -806,7 +807,9 @@ class AssistantWorkspaceController extends ChangeNotifier {
         _hideSelectedHistory(command);
         if (_accessLost(error) &&
             (!_active || conversation?.id != command.request.conversation.id)) {
-          await _confirmMeetingAccessLoss(command.request.conversation.meetingId);
+          await _confirmMeetingAccessLoss(
+            command.request.conversation.meetingId,
+          );
         }
       }
     } finally {
@@ -898,7 +901,9 @@ class AssistantWorkspaceController extends ChangeNotifier {
         _hideSelectedHistory(command);
         if (_accessLost(error) &&
             (!_active || conversation?.id != command.request.conversation.id)) {
-          await _confirmMeetingAccessLoss(command.request.conversation.meetingId);
+          await _confirmMeetingAccessLoss(
+            command.request.conversation.meetingId,
+          );
         }
       }
     } finally {

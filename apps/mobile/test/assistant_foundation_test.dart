@@ -1139,7 +1139,8 @@ void main() {
       reason: 'canonical Assistant message',
     );
     final owner = dependencies.assistantWorkspace;
-    owner.saveDraft(_conversationId, 'Private draft');
+    await tester.enterText(find.byType(TextField), 'Private draft');
+    expect(owner.draftFor(_conversationId), 'Private draft');
     await tester.ensureVisible(evidence);
     await tester.tap(evidence);
     await tester.pumpAndSettle();
@@ -1154,6 +1155,7 @@ void main() {
       reason: 'destination owns verification while source read is pending',
     );
     expect(find.text('Canonical summary'), findsNothing);
+    expect(owner.draftFor(_conversationId), 'Private draft');
     held.complete(
       await meetingApiSuccess(
         {
@@ -1186,8 +1188,10 @@ void main() {
     expect(find.text('Canonical summary'), findsNothing);
     await pumpUntil(
       tester,
-      () =>
-          find.text('Không thể truy cập nội dung cuộc họp này.').evaluate().isNotEmpty,
+      () => find
+          .text('Không thể truy cập nội dung cuộc họp này.')
+          .evaluate()
+          .isNotEmpty,
       reason: 'meeting access revoked',
     );
     expect(owner.draftFor(_conversationId), isEmpty);
@@ -1245,15 +1249,26 @@ void main() {
       ),
     );
     final entry = find.text('Hỏi trợ lý về cuộc họp này');
+    final entryButton = find.ancestor(
+      of: entry,
+      matching: find.byWidgetPredicate((widget) => widget is FilledButton),
+    );
+    bool entryEnabled() => entryButton.evaluate().any(
+      (element) => (element.widget as FilledButton).onPressed != null,
+    );
     await pumpUntil(
       tester,
-      () => entry.evaluate().isNotEmpty,
+      entryEnabled,
       reason: 'meeting overview ready',
     );
     await tester.ensureVisible(entry);
     holdNext = true;
     await tester.tap(entry);
-    await pumpUntil(tester, () => entered, reason: 'entry verification pending');
+    await pumpUntil(
+      tester,
+      () => entered,
+      reason: 'entry verification pending',
+    );
     await tester.tap(find.text('Thành viên'));
     await tester.pump();
     await tester.tap(find.text('Tổng quan'));
@@ -1266,10 +1281,7 @@ void main() {
     );
     await pumpUntil(
       tester,
-      () =>
-          find.widgetWithText(FilledButton, 'Hỏi trợ lý về cuộc họp này')
-              .evaluate()
-              .any((element) => (element.widget as FilledButton).onPressed != null),
+      entryEnabled,
       reason: 'old entry intent released',
     );
     expect(find.byType(AssistantPage), findsNothing);
@@ -1356,80 +1368,90 @@ void main() {
 
   group('Assistant workspace recovery', () {
     for (final meetingDenied in [true, false]) {
-      test('conversation denial checks meeting access: $meetingDenied', () async {
-        const siblingId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
-        const unrelatedId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-        final sibling = _conversation()..['id'] = siblingId;
-        final unrelated = _conversation(meetingId: testRoomId)
-          ..['id'] = unrelatedId;
-        var denied = false;
-        var accessChecks = 0;
-        final repository = await _repository(
-          MeetingTestHttpClient((request) async {
-            final path = request.url.path;
-            if (path.endsWith('/conversations')) {
-              return meetingApiSuccess([]);
-            }
-            if (path.endsWith('/turns/by-key')) {
-              return meetingApiSuccess({
-                'turn': _turn(processing: true),
-                'recoveryEligible': true,
-              });
-            }
-            if (request.method == 'POST') {
-              return meetingApiSuccess(_turn(processing: true), status: 202);
-            }
-            if (path.endsWith(siblingId)) {
-              return meetingApiSuccess(
-                _detail(messages: [])..['conversation'] = sibling,
-              );
-            }
-            if (path.endsWith(unrelatedId)) {
-              return meetingApiSuccess(
-                _detail(messages: [])..['conversation'] = unrelated,
-              );
-            }
-            if (denied) return meetingApiFailure(404, 'RESOURCE_NOT_FOUND');
-            return meetingApiSuccess(_detail(messages: []));
-          }),
-        );
-        final controller = AssistantWorkspaceController(
-          repository,
-          verifyMeetingReadAccess: ({required sessionScope, required meetingId}) async {
-            accessChecks++;
-            expect(sessionScope, repository.captureSession());
-            expect(meetingId, testMeetingId);
-            return !meetingDenied;
-          },
-        );
-        addTearDown(controller.dispose);
-        controller.setActive(true);
-        await controller.open(
-          AssistantConversation.fromJson(sibling, response: _result(sibling)),
-        );
-        await controller.submit('Pending sibling question');
-        expect(controller.pending?.turn?.turnId, _turnId);
-        controller.saveDraft(siblingId, 'Sibling draft');
-        await controller.open(
-          AssistantConversation.fromJson(unrelated, response: _result(unrelated)),
-        );
-        controller.saveDraft(unrelatedId, 'Unrelated draft');
-        denied = true;
-        await controller.open(_typedConversation());
-        expect(accessChecks, 1);
-        expect(controller.conversation, isNull);
-        expect(controller.messages, isEmpty);
-        expect(controller.draftFor(siblingId), meetingDenied ? '' : 'Sibling draft');
-        expect(controller.draftFor(unrelatedId), 'Unrelated draft');
-        await controller.open(
-          AssistantConversation.fromJson(sibling, response: _result(sibling)),
-        );
-        if (meetingDenied) {
-          expect(controller.pending, isNull);
-        } else {
+      test(
+        'conversation denial checks meeting access: $meetingDenied',
+        () async {
+          const siblingId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+          const unrelatedId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+          final sibling = _conversation()..['id'] = siblingId;
+          final unrelated = _conversation(meetingId: testRoomId)
+            ..['id'] = unrelatedId;
+          var denied = false;
+          var accessChecks = 0;
+          final repository = await _repository(
+            MeetingTestHttpClient((request) async {
+              final path = request.url.path;
+              if (path.endsWith('/conversations')) {
+                return meetingApiSuccess([]);
+              }
+              if (path.endsWith('/turns/by-key')) {
+                return meetingApiSuccess({
+                  'turn': _turn(processing: true),
+                  'recoveryEligible': true,
+                });
+              }
+              if (request.method == 'POST') {
+                return meetingApiSuccess(_turn(processing: true), status: 202);
+              }
+              if (path.endsWith(siblingId)) {
+                return meetingApiSuccess(
+                  _detail(messages: [])..['conversation'] = sibling,
+                );
+              }
+              if (path.endsWith(unrelatedId)) {
+                return meetingApiSuccess(
+                  _detail(messages: [])..['conversation'] = unrelated,
+                );
+              }
+              if (denied) return meetingApiFailure(404, 'RESOURCE_NOT_FOUND');
+              return meetingApiSuccess(_detail(messages: []));
+            }),
+          );
+          final controller = AssistantWorkspaceController(
+            repository,
+            verifyMeetingReadAccess:
+                ({required sessionScope, required meetingId}) async {
+                  accessChecks++;
+                  expect(sessionScope, repository.captureSession());
+                  expect(meetingId, testMeetingId);
+                  return !meetingDenied;
+                },
+          );
+          addTearDown(controller.dispose);
+          controller.setActive(true);
+          await controller.open(
+            AssistantConversation.fromJson(sibling, response: _result(sibling)),
+          );
+          await controller.submit('Pending sibling question');
           expect(controller.pending?.turn?.turnId, _turnId);
-        }
-      });
+          controller.saveDraft(siblingId, 'Sibling draft');
+          await controller.open(
+            AssistantConversation.fromJson(
+              unrelated,
+              response: _result(unrelated),
+            ),
+          );
+          controller.saveDraft(unrelatedId, 'Unrelated draft');
+          denied = true;
+          await controller.open(_typedConversation());
+          expect(accessChecks, 1);
+          expect(controller.conversation, isNull);
+          expect(controller.messages, isEmpty);
+          expect(
+            controller.draftFor(siblingId),
+            meetingDenied ? '' : 'Sibling draft',
+          );
+          expect(controller.draftFor(unrelatedId), 'Unrelated draft');
+          await controller.open(
+            AssistantConversation.fromJson(sibling, response: _result(sibling)),
+          );
+          if (meetingDenied) {
+            expect(controller.pending, isNull);
+          } else {
+            expect(controller.pending?.turn?.turnId, _turnId);
+          }
+        },
+      );
     }
 
     test('ASK cooldown survives editing and conversation switching', () async {

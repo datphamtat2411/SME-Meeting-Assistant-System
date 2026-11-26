@@ -139,7 +139,10 @@ class AssistantEvidenceResolver {
               transcript.finalizedAt != null &&
               transcript.segments.isNotEmpty,
         );
-        artifact = TranscriptEvidence(transcript, meetingTitle: access.meetingTitle);
+        artifact = TranscriptEvidence(
+          transcript,
+          meetingTitle: access.meetingTitle,
+        );
       case AssistantSourceType.summary:
         final summary = await results.currentSummary(
           sessionScope: scope,
@@ -168,7 +171,10 @@ class AssistantEvidenceResolver {
           decision.version,
           decision.status == 'CONFIRMED' && !decision.stale,
         );
-        artifact = DecisionEvidence(decision, meetingTitle: access.meetingTitle);
+        artifact = DecisionEvidence(
+          decision,
+          meetingTitle: access.meetingTitle,
+        );
       case AssistantSourceType.actionItem:
         final snapshot = await actionItems.detail(
           citation.sourceId,
