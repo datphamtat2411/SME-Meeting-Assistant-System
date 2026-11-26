@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:record/record.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
+import 'package:sme_meeting_assistant/core/app_dependencies.dart';
+import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_database.dart';
@@ -14,13 +17,142 @@ import 'package:sme_meeting_assistant/features/recording/local_media_persistence
 import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/managed_media_storage.dart';
 import 'package:sme_meeting_assistant/features/recording/recording_coordinator.dart';
+import 'package:sme_meeting_assistant/main.dart';
 
 import 'support/meeting_test_support.dart';
+import 'support/widget_test_support.dart';
 
 void main() {
   setUpAll(() {
     sqfliteFfiInit();
     sqflite.databaseFactory = databaseFactoryFfi;
+  });
+
+  testWidgets('active capture survives Account navigation and appearance', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(600, 1000);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final fixture = (await tester.runAsync(
+      () => _Fixture.create(
+        handler: (request) async {
+          final path = request.url.path;
+          if (path.endsWith('/me/profile')) {
+            return meetingApiSuccess(
+              {
+                'id': testUserId,
+                'email': 'user@example.test',
+                'displayName': 'Test User',
+                'globalRole': 'ADMINISTRATOR',
+                'accountStatus': 'ACTIVE',
+                'primaryOrgUnitId': null,
+              },
+              headers: {'etag': '"v1"'},
+            );
+          }
+          if (path.endsWith('/me/preferences')) {
+            return meetingApiSuccess({
+              'timezone': null,
+              'locale': null,
+              'meetingEmailEnabled': true,
+              'actionItemEmailEnabled': true,
+            });
+          }
+          if (path.endsWith('/meetings/$testMeetingId')) {
+            return meetingApiSuccess(
+              meetingTestJson(status: 'IN_PROGRESS'),
+              headers: {'etag': testMeetingEtag},
+            );
+          }
+          return meetingApiFailure(404, 'NOT_USED');
+        },
+      ),
+    ))!;
+    final capture = _ControlledCapture();
+    final recording = fixture.coordinator(capture);
+    final dependencies = AppDependencies(
+      api: fixture.api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: fixture.client,
+      localMedia: fixture.repository,
+      recording: recording,
+    );
+    addTearDown(() async {
+      await dependencies.shutdown();
+      await fixture.directory.delete(recursive: true);
+    });
+    await tester.pumpWidget(MeetingAssistantApp(dependencies: dependencies));
+    await pumpUntil(
+      tester,
+      () => find.byType(NavigationBar).evaluate().isNotEmpty,
+      reason: 'authenticated shell',
+    );
+
+    final started = await tester.runAsync(
+      () => recording.start(
+        meetingId: testMeetingId,
+        capabilities: fixture.capabilities,
+        meetingStatus: MeetingStatus.inProgress,
+      ),
+    );
+    expect(started?.lifecycle, RecordingLifecycleState.recording);
+    final banner = find.textContaining('Đang ghi âm ·');
+    await pumpUntil(
+      tester,
+      () => banner.evaluate().isNotEmpty,
+      reason: 'active recording banner',
+    );
+
+    await tester.tap(find.text('Tài khoản'));
+    await pumpUntil(
+      tester,
+      () => find.text('Test User').evaluate().isNotEmpty,
+      reason: 'Account profile to load during recording',
+    );
+    final modes = find.byType(SegmentedButton<ThemeMode>);
+    await tester.scrollUntilVisible(
+      modes,
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(modes);
+    await tester.tap(find.descendant(of: modes, matching: find.text('Tối')));
+    await pumpUntil(
+      tester,
+      () =>
+          tester.widget<MaterialApp>(find.byType(MaterialApp)).themeMode ==
+          ThemeMode.dark,
+      reason: 'appearance change during active recording',
+    );
+    expect(recording.state.lifecycle, RecordingLifecycleState.recording);
+    expect(recording.state.sessionScope, fixture.scope);
+    expect(recording.state.meetingId, testMeetingId);
+    expect(capture.nativeRecording, isTrue);
+    expect(capture.startCalls, 1);
+    expect(capture.stopCalls, 0);
+    expect(banner, findsOneWidget);
+    expect(find.widgetWithText(TextButton, 'Mở').hitTestable(), findsOneWidget);
+
+    await tester.tap(find.text('Tổng quan'));
+    await tester.pump();
+    expect(banner, findsOneWidget);
+    expect(recording.state.lifecycle, RecordingLifecycleState.recording);
+    expect(capture.stopCalls, 0);
+
+    final stopped = await tester.runAsync(() async {
+      await File(capture.path!).writeAsBytes(<int>[1, 2, 3]);
+      return recording.stop();
+    });
+    expect(stopped?.lifecycle, RecordingLifecycleState.localReady);
+    expect(stopped?.asset?.isReady, isTrue);
+    expect(capture.stopCalls, 1);
+    await tester.pump();
+    expect(banner, findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   test('stop during permission acquisition prevents native start', () async {
@@ -442,6 +574,7 @@ void main() {
 class _Fixture {
   _Fixture({
     required this.api,
+    required this.client,
     required this.database,
     required this.repository,
   }) : scope = api.requireAuthenticatedSessionScope(),
@@ -451,16 +584,18 @@ class _Fixture {
        );
 
   final ApiClient api;
+  final MeetingTestHttpClient client;
   final LocalMediaDatabase database;
   final LocalMediaRepository repository;
   final AuthenticatedSessionScope scope;
   final MeetingCapabilities capabilities;
   final List<RecordingCoordinator> coordinators = <RecordingCoordinator>[];
 
-  static Future<_Fixture> create() async {
-    final api = createMeetingTestApi(
-      MeetingTestHttpClient((_) => meetingApiFailure(404, 'NOT_USED')),
+  static Future<_Fixture> create({MeetingRequestHandler? handler}) async {
+    final client = MeetingTestHttpClient(
+      handler ?? ((_) => meetingApiFailure(404, 'NOT_USED')),
     );
+    final api = createMeetingTestApi(client);
     await signInMeetingTestApi(api);
     final directory = await Directory.systemTemp.createTemp('sme-recording-');
     final database = await LocalMediaDatabase.open(
@@ -473,8 +608,12 @@ class _Fixture {
         root: Directory('${directory.path}/managed'),
       ),
     );
-    return _Fixture(api: api, database: database, repository: repository)
-      ..directory = directory;
+    return _Fixture(
+      api: api,
+      client: client,
+      database: database,
+      repository: repository,
+    )..directory = directory;
   }
 
   late Directory directory;

@@ -8,6 +8,8 @@ import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/app_config.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
+import 'package:sme_meeting_assistant/features/profile/preferences_panel.dart';
+import 'package:sme_meeting_assistant/features/profile/profile_page.dart';
 import 'package:sme_meeting_assistant/main.dart';
 
 import 'support/http_test_support.dart';
@@ -719,6 +721,138 @@ void main() {
     });
   }
 
+  testWidgets('device appearance survives Account theme changes and login', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(600, 1000);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final credentials = InMemoryCredentialStorage();
+    await _writeRefreshCredential(credentials, 'refresh-0');
+    var replacement = false;
+    final client = _authClient(
+      identityProvider: () => replacement
+          ? _identity(
+              userId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+              email: 'other@example.test',
+              displayName: 'Other User',
+              sessionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            )
+          : _identity(),
+    );
+    final harness = _Harness.create(client, credentials);
+    int accountRequests() {
+      return client.requests.where((request) {
+        final path = request.url.path;
+        return path.endsWith('/me/profile') || path.endsWith('/me/preferences');
+      }).length;
+    }
+
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.signedIn &&
+          find.byType(NavigationBar).evaluate().isNotEmpty,
+      reason: 'authenticated navigation',
+    );
+    expect(accountRequests(), 0);
+    await tester.tap(find.text('Tài khoản'));
+    final panel = find.byType(PreferencesPanel);
+    await pumpUntil(
+      tester,
+      () =>
+          panel.evaluate().isNotEmpty &&
+          tester.widget<PreferencesPanel>(panel).controller.snapshot != null,
+      reason: 'initial Account preferences',
+    );
+    await tester.pumpAndSettle();
+    expect(accountRequests(), 2);
+    final workspace = find.byType(ProfilePage);
+    final workspaceState = tester.state(workspace);
+    final owner = tester.widget<PreferencesPanel>(panel).controller;
+
+    final scroll = find.byType(Scrollable).first;
+    final modes = find.byType(SegmentedButton<ThemeMode>);
+    await tester.scrollUntilVisible(modes, 250, scrollable: scroll);
+    await tester.ensureVisible(modes);
+    await tester.tap(find.descendant(of: modes, matching: find.text('Tối')));
+    await pumpUntil(
+      tester,
+      () =>
+          tester.widget<MaterialApp>(find.byType(MaterialApp)).themeMode ==
+          ThemeMode.dark,
+      reason: 'application theme change',
+    );
+    await tester.pumpAndSettle();
+    expect(
+      await tester.runAsync(
+        harness.dependencies.appearancePreferences.loadThemeMode,
+      ),
+      ThemeMode.dark,
+    );
+    expect(tester.state(workspace), same(workspaceState));
+    final meetingEmail = find.widgetWithText(SwitchListTile, 'Email cuộc họp');
+    await tester.scrollUntilVisible(meetingEmail, -250, scrollable: scroll);
+    expect(tester.widget<PreferencesPanel>(panel).controller, same(owner));
+    expect(accountRequests(), 2);
+
+    final logout = find.text('Đăng xuất');
+    await tester.scrollUntilVisible(logout, 250, scrollable: scroll);
+    await tester.ensureVisible(logout);
+    await tester.tap(logout);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Đăng xuất'));
+    await pumpUntil(
+      tester,
+      () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'sign-out destination',
+    );
+    expect(owner.current, isFalse);
+    expect(owner.snapshot, isNull);
+    expect(find.byType(AppShell), findsNothing);
+    expect(
+      tester.widget<MaterialApp>(find.byType(MaterialApp)).themeMode,
+      ThemeMode.dark,
+    );
+
+    replacement = true;
+    await tester.runAsync(
+      () => harness.api.signIn('other@example.test', 'password'),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.signedIn &&
+          find.byType(NavigationBar).evaluate().isNotEmpty,
+      reason: 'replacement authenticated shell',
+    );
+    expect(
+      tester.widget<MaterialApp>(find.byType(MaterialApp)).themeMode,
+      ThemeMode.dark,
+    );
+    expect(accountRequests(), 2);
+    await tester.tap(find.text('Tài khoản'));
+    await pumpUntil(
+      tester,
+      () =>
+          find.text('Other User').evaluate().isNotEmpty &&
+          panel.evaluate().isNotEmpty &&
+          tester.widget<PreferencesPanel>(panel).controller.snapshot != null,
+      reason: 'fresh Account resources for the replacement identity',
+    );
+    expect(
+      tester.widget<PreferencesPanel>(panel).controller,
+      isNot(same(owner)),
+    );
+    expect(accountRequests(), 4);
+    expect(find.text('Test User'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('a fresh authenticated shell is created after logout and login', (
     tester,
   ) async {
@@ -820,6 +954,7 @@ class _Harness {
 RecordingHttpClient _authClient({
   int? refreshStatus,
   int identityFailures = 0,
+  Map<String, dynamic> Function()? identityProvider,
   int? loginStatus,
   int? logoutStatus,
   Completer<void>? identityRequested,
@@ -873,7 +1008,10 @@ RecordingHttpClient _authClient({
           errorEnvelope('SERVICE_UNAVAILABLE', 'Try again later.'),
         );
       }
-      return jsonResponse(200, successEnvelope(_identity()));
+      return jsonResponse(
+        200,
+        successEnvelope(identityProvider?.call() ?? _identity()),
+      );
     }
     if (path.endsWith('/auth/login')) {
       expect(request.headers['Authorization'], isNull);
@@ -909,7 +1047,7 @@ RecordingHttpClient _authClient({
       return jsonResponse(200, successEnvelope(null));
     }
     if (path.endsWith('/me/profile')) {
-      final identity = _identity();
+      final identity = identityProvider?.call() ?? _identity();
       return streamedResponse(
         200,
         body: utf8.encode(
@@ -953,10 +1091,15 @@ Map<String, dynamic> _tokens(String access, String refresh) =>
 String _accessToken(String access) =>
     'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.$access';
 
-Map<String, dynamic> _identity() => <String, dynamic>{
-  'userId': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-  'email': 'user@example.test',
-  'displayName': 'Test User',
+Map<String, dynamic> _identity({
+  String userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  String email = 'user@example.test',
+  String displayName = 'Test User',
+  String sessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+}) => <String, dynamic>{
+  'userId': userId,
+  'email': email,
+  'displayName': displayName,
   'globalRole': 'EMPLOYEE',
   'accountStatus': 'ACTIVE',
   'primaryOrgUnitId': null,
@@ -965,7 +1108,7 @@ Map<String, dynamic> _identity() => <String, dynamic>{
     'unitIds': <String>[],
   },
   'session': <String, dynamic>{
-    'id': 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    'id': sessionId,
     'clientType': 'MOBILE',
     'createdAt': '2026-11-22T10:00:00Z',
     'lastSeenAt': null,

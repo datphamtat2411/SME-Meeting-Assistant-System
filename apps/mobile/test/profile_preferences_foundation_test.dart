@@ -1700,14 +1700,20 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     var profileReads = 0;
     var preferenceReads = 0;
+    Completer<http.StreamedResponse>? pendingProfile;
+    Completer<http.StreamedResponse>? pendingPreferences;
     final api = (await tester.runAsync(
       () => _authenticated((request) async {
         expect(request.method, 'GET');
         if (request.url.path.endsWith('/me/profile')) {
           profileReads++;
+          final gate = pendingProfile;
+          if (gate != null) return gate.future;
           return _profileResponse('Test User', '"v1"');
         }
         preferenceReads++;
+        final gate = pendingPreferences;
+        if (gate != null) return gate.future;
         return jsonResponse(200, successEnvelope(_preferences()));
       }),
     ))!;
@@ -1800,6 +1806,51 @@ void main() {
       () => profileReads == 4 && preferenceReads == 4 && !owner.loading,
       reason: 'manual account refresh',
     );
+    await tester.pumpAndSettle();
+    final profileGate = Completer<http.StreamedResponse>();
+    final preferencesGate = Completer<http.StreamedResponse>();
+    pendingProfile = profileGate;
+    pendingPreferences = preferencesGate;
+
+    // Exercise the actual gesture, not just the shared refresh callback.
+    final list = find.byType(ListView);
+    expect(list, findsOneWidget);
+    await tester.drag(list, const Offset(0, 400));
+    await tester.pump();
+    await pumpUntil(
+      tester,
+      () => profileReads == 5 && preferenceReads == 5 && owner.loading,
+      reason: 'pull-to-refresh to dispatch both reads',
+    );
+
+    // Re-entry and foreground events during the same in-flight reads must
+    // join them, not queue additional network requests.
+    update(() => active = false);
+    await tester.pump();
+    update(() => active = true);
+    await tester.pump();
+    await _sendLifecycle(tester, AppLifecycleState.inactive);
+    await _sendLifecycle(tester, AppLifecycleState.resumed);
+    await tester.pump();
+    expect(profileReads, 5);
+    expect(preferenceReads, 5);
+
+    profileGate.complete(await _profileResponse('Test User', '"v2"'));
+    preferencesGate.complete(
+      await jsonResponse(200, successEnvelope(_preferences(meeting: false))),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          !owner.loading &&
+          owner.snapshot?.preferences.meetingEmailEnabled == false &&
+          find.byType(RefreshProgressIndicator).evaluate().isEmpty,
+      reason: 'joined refreshes to settle with canonical preferences',
+    );
+    await tester.pumpAndSettle();
+    expect(profileReads, 5);
+    expect(preferenceReads, 5);
+    expect(tester.widget<PreferencesPanel>(panel).controller, same(owner));
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

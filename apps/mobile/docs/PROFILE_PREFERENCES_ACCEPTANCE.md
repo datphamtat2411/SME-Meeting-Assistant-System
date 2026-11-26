@@ -2,12 +2,17 @@
 
 ## Scope and status
 
-Status: **NOT_ACCEPTED — candidate verification pending**. The implementation
-candidate is the revision containing this record. The historical Wave 02
-baseline `42fa0ea3b76c9d1daf0498100cdef5785674af20` passed
-[Mobile CI](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45905855602)
-with 605 Flutter tests and an Android debug build. That is not evidence for the
-new candidate. Update this record only after candidate-specific execution.
+Status: **NOT_ACCEPTED — closure-candidate verification pending**.
+
+The Wave 03 implementation baseline
+`0be6a4152192a2bed6573176b17756cd5351c71c` passed
+[Mobile CI / Android verification](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45909101936/job/140212873772)
+on 2026-11-26 UTC (613 Flutter tests passed, zero failures; formatting,
+analysis, native Android and credential durability checks passed; debug APK
+built). The closure changes add focused integration verification without
+changing production behavior. Baseline results are not evidence of execution
+of those new assertions. Use the exact closure candidate's CI before changing
+the overall status.
 
 Profile and Preferences have independent session-scoped controllers owned by
 the Account workspace, not by lazily rendered settings panels. The Core API
@@ -27,17 +32,27 @@ The existing recording and media recovery policy is unchanged.
 ## Automated gates
 
 Environment: pinned Mobile CI toolchain (Flutter 3.50.1, Dart 3.14.0, Android).
-Local environment in this implementation session did not contain Flutter/Dart
-and had no direct GitHub network resolution. The MCP connection can submit
-source changes and inspect hosted CI; it cannot execute a local Flutter test.
+The closure editing environment has no Flutter/Dart or Android runtime and
+cannot resolve GitHub directly. Source changes are submitted through GitHub
+MCP; the existing hosted Mobile CI is the executable automated gate. The
+baseline results below are from the actual CI job linked above. The additional
+closure scenarios are explicitly pending until their candidate is executed.
 
-| Scenario | Candidate status | Expected evidence |
+| Scenario | Baseline result (0be6a41) | Closure candidate |
 | --- | --- | --- |
-| Lazy activation, re-entry, covered foreground resume, manual refresh | NOT_EXECUTED | Workspace widget tests and full CI |
-| Retained preferences intent across viewport/tab changes | NOT_EXECUTED | Workspace regression test |
-| Cross-client observed name and bounded identity synchronization | NOT_EXECUTED | Controller regression test |
-| Stale logout confirmation, confirmed/unconfirmed/cleanup-failure destinations | NOT_EXECUTED | Workspace and startup widget tests |
-| Wave 01/02 regressions, recording, navigation, storage, formatting, analysis, native checks, debug APK | NOT_EXECUTED | Candidate Mobile CI run |
+| Lazy activation, re-entry, covered foreground resume, manual refresh button | PASS: workspace widget test | NOT_EXECUTED |
+| Retained preferences intent across viewport/tab changes | PASS: workspace regression | NOT_EXECUTED |
+| Cross-client observed name and bounded identity synchronization | PASS: controller regression | NOT_EXECUTED |
+| Stale logout confirmation, confirmed/unconfirmed/cleanup-failure destinations | PASS: workspace and startup widget tests | NOT_EXECUTED |
+| Wave 01/02 regressions, recording, navigation, storage, formatting, analysis, native checks, debug APK | PASS: 613 tests and complete Mobile CI | NOT_EXECUTED |
+| Actual pull-to-refresh and overlapping activation/resume while reads are pending | Not established by baseline | NOT_EXECUTED: extended workspace widget test |
+| Theme change retains Account ownership and avoids API requests; appearance survives logout and a different account | Not established by baseline | NOT_EXECUTED: application journey widget test |
+| Active capture and banner survive Account navigation and theme change; explicit stop retains local media | Not established by baseline | NOT_EXECUTED: application integration test with fake capture and managed storage |
+
+The recording closure test verifies application integration using a controlled
+capture adapter, not physical microphone behavior. The appearance journey
+uses the existing in-memory preference seam; persistent storage and restart
+behavior retain their separate adapter/controller coverage and device gate.
 
 ## External acceptance matrix
 
