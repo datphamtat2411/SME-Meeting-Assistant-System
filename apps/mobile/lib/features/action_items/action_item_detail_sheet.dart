@@ -104,7 +104,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     final selected = await pickActionItemAssignee(context, widget.repository);
     if (!mounted ||
         !_controller.current ||
-        _controller.busy ||
+        !_controller.canUseSnapshot ||
         !identical(original, _controller.draft) ||
         selected == null) {
       return;
@@ -118,7 +118,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     final selected = await chooseActionItemDueDate(context, original?.dueDate);
     if (!mounted ||
         !_controller.current ||
-        _controller.busy ||
+        !_controller.canUseSnapshot ||
         !identical(original, _controller.draft) ||
         selected == null) {
       return;
@@ -196,7 +196,9 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
   Future<void> _discardEdit() async {
     if (!await _confirmDiscard() || !mounted || !_controller.current) return;
     _controller.discardEdit(acknowledgeUnresolved: true);
-    if (_controller.unresolved) await _controller.refresh();
+    if (_controller.unresolved || _controller.revalidationRequired) {
+      await _controller.refresh();
+    }
   }
 
   Future<void> _requestExit() async {
@@ -214,6 +216,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
   Widget _readDetail(ActionItemSnapshot snapshot) {
     final item = snapshot.item;
     final capabilities = item.capabilities;
+    final enabled = _controller.canUseSnapshot && !_controller.unresolved;
     final commands = capabilities.allowedCommands.where(
       (command) =>
           command != ActionItemCommand.complete ||
@@ -267,7 +270,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
         ),
         if (capabilities.canEdit || capabilities.canAssign)
           FilledButton.icon(
-            onPressed: _controller.busy || _controller.unresolved
+            onPressed: !enabled
                 ? null
                 : () => _controller.beginEdit(reviewed: snapshot),
             icon: const Icon(Icons.edit_outlined),
@@ -284,7 +287,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
             children: [
               for (final command in commands)
                 OutlinedButton(
-                  onPressed: _controller.busy || _controller.unresolved
+                  onPressed: !enabled
                       ? null
                       : () => _command(snapshot, command),
                   child: Text(actionItemCommandLabel(command)),
@@ -308,7 +311,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
   );
 
   Widget _edit(ActionItemResource item, ActionItemDraft draft) {
-    final enabled = !_controller.busy && !_controller.unresolved;
+    final enabled = _controller.canUseSnapshot && !_controller.unresolved;
     return Form(
       key: _form,
       child: Column(
@@ -376,6 +379,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
     };
     final required = merge.fieldsRequiringChoice;
     final blocked = merge.blockedFields;
+    final canReview = _controller.canUseSnapshot;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -416,7 +420,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
                         label: const Text('Giữ của tôi'),
                         selected:
                             _choices[field] == ActionItemMergeChoice.local,
-                        onSelected: _controller.busy || blocked.contains(field)
+                        onSelected: !canReview || blocked.contains(field)
                             ? null
                             : (_) => setState(
                                 () => _choices[field] =
@@ -427,7 +431,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
                         label: const Text('Dùng máy chủ'),
                         selected:
                             _choices[field] == ActionItemMergeChoice.server,
-                        onSelected: _controller.busy
+                        onSelected: !canReview
                             ? null
                             : (_) => setState(
                                 () => _choices[field] =
@@ -441,7 +445,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
             ),
           ),
         FilledButton(
-          onPressed: _controller.busy || !required.every(_choices.containsKey)
+          onPressed: !canReview || !required.every(_choices.containsKey)
               ? null
               : () {
                   try {
@@ -504,7 +508,8 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
                         ),
                         onRetry: _controller.busy ? null : _controller.refresh,
                       ),
-                    if (_controller.unresolved && merge == null)
+                    if (_controller.revalidationRequired ||
+                        (_controller.unresolved && merge == null))
                       MessagePanel(
                         title: 'Cần kiểm tra lại kết quả trước khi tiếp tục',
                         onRetry: _controller.busy ? null : _controller.refresh,

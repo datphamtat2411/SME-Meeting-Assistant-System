@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
+import 'package:sme_meeting_assistant/features/meetings/participant_selection.dart';
 
 import 'action_item_models.dart';
 import 'action_item_repository.dart';
@@ -23,6 +25,7 @@ class ActionItemCreationController extends ChangeNotifier {
   }) : _now = now ?? DateTime.now,
        _scope = repository.captureSession() {
     repository.api.sessionCoordinator.addListener(_sessionChanged);
+    repository.invalidation.addListener(_onInvalidation);
   }
 
   final ActionItemRepository repository;
@@ -34,6 +37,10 @@ class ActionItemCreationController extends ChangeNotifier {
 
   ActionItemCreationPhase _phase = ActionItemCreationPhase.idle;
   ActionItemCreateIntent? _intent;
+  ActionItemCreationMeeting? _recoveryMeeting;
+  ActionItemAssignee? _recoveryAssignee;
+  String? _assigneeSearchHint;
+  int _contextGeneration = 0;
   DateTime? _firstDispatch;
   Object? _error;
   bool _disposed = false;
@@ -42,6 +49,8 @@ class ActionItemCreationController extends ChangeNotifier {
 
   ActionItemCreationPhase get phase => _phase;
   ActionItemCreateIntent? get unresolvedIntent => _intent;
+  ActionItemCreationMeeting? get recoveryMeeting => _recoveryMeeting;
+  ActionItemAssignee? get recoveryAssignee => _recoveryAssignee;
   Object? get error => _error;
   bool get busy =>
       _phase == ActionItemCreationPhase.checking ||
@@ -107,6 +116,7 @@ class ActionItemCreationController extends ChangeNotifier {
         idempotencyKey: _newKey(),
         sessionScope: _scope,
       );
+      _assigneeSearchHint = assignee.displayName;
       _firstDispatch = _now();
       _elapsed
         ..reset()
@@ -131,6 +141,7 @@ class ActionItemCreationController extends ChangeNotifier {
     final intent = _intent;
     if (!current || intent == null) return null;
     _phase = ActionItemCreationPhase.submitting;
+    _clearRecoveryContext();
     _error = null;
     notifyListeners();
     try {
@@ -155,7 +166,95 @@ class ActionItemCreationController extends ChangeNotifier {
         _phase = ActionItemCreationPhase.rejected;
       }
       notifyListeners();
+      if (_phase == ActionItemCreationPhase.unresolved) {
+        await refreshRecoveryContext();
+      }
       return null;
+    }
+  }
+
+  // Labels are separate from the frozen request. Reopen or retry recovery
+  // against the authorized discovery contracts, never a general user lookup.
+  Future<void> refreshRecoveryContext() async {
+    final intent = _intent;
+    if (!current ||
+        intent == null ||
+        _phase != ActionItemCreationPhase.unresolved) {
+      return;
+    }
+    _clearRecoveryContext();
+    final generation = _contextGeneration;
+    bool owns() =>
+        current &&
+        generation == _contextGeneration &&
+        identical(intent, _intent) &&
+        _phase == ActionItemCreationPhase.unresolved;
+    notifyListeners();
+    try {
+      final page = await repository.creationMeetings(
+        ActionItemCreationMeetingQuery(search: intent.input.meetingId),
+        sessionScope: _scope,
+      );
+      if (!owns()) return;
+      _recoveryMeeting = page.items
+          .where(
+            (meeting) =>
+                sameActionItemIdentity(meeting.id, intent.input.meetingId),
+          )
+          .firstOrNull;
+      notifyListeners();
+    } catch (_) {
+      // Unavailable display context does not resolve or replace the intent.
+      // Keep the safe reference label rather than an old protected title.
+    }
+    if (!owns()) return;
+    try {
+      final assigneeId = intent.input.assigneeUserId;
+      if (sameActionItemIdentity(assigneeId, _scope.userId)) {
+        _recoveryAssignee = repository.selfCandidate(_scope);
+      } else {
+        final hint = _assigneeSearchHint?.trim();
+        if (hint == null || hint.length < 2 || hint.length > 200) return;
+        final page = await repository.assignmentCandidates(
+          MeetingCandidateQuery(search: hint),
+          sessionScope: _scope,
+        );
+        if (!owns()) return;
+        final candidate = page.items
+            .where((value) => sameActionItemIdentity(value.id, assigneeId))
+            .firstOrNull;
+        if (candidate != null) {
+          _recoveryAssignee = ActionItemAssignee(
+            id: candidate.id,
+            displayName: candidate.displayName,
+            accountStatus: ActionItemAccountStatus.active,
+          );
+        }
+      }
+      if (owns()) notifyListeners();
+    } catch (_) {
+      // Candidate discovery is best effort. The immutable assignee identity
+      // remains available even if the account is no longer discoverable.
+    }
+  }
+
+  void _clearRecoveryContext() {
+    _contextGeneration++;
+    _recoveryMeeting = null;
+    _recoveryAssignee = null;
+  }
+
+  void _onInvalidation() {
+    final intent = _intent;
+    if (!current ||
+        intent == null ||
+        _phase != ActionItemCreationPhase.unresolved) {
+      return;
+    }
+    final meetingId = repository.invalidation.lastMeetingId;
+    if (meetingId == null ||
+        sameActionItemIdentity(meetingId, intent.input.meetingId)) {
+      unawaited(refreshRecoveryContext());
     }
   }
 
@@ -173,6 +272,8 @@ class ActionItemCreationController extends ChangeNotifier {
 
   void _clearIntent() {
     _intent = null;
+    _clearRecoveryContext();
+    _assigneeSearchHint = null;
     _firstDispatch = null;
     _retryExpired = false;
     _elapsed
@@ -195,6 +296,7 @@ class ActionItemCreationController extends ChangeNotifier {
     _disposed = true;
     _clearIntent();
     repository.api.sessionCoordinator.removeListener(_sessionChanged);
+    repository.invalidation.removeListener(_onInvalidation);
     super.dispose();
   }
 }

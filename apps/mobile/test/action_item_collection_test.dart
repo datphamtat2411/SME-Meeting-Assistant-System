@@ -43,7 +43,7 @@ void main() {
     ).query().toQueryParameters();
     expect(review['reviewable'], 'true');
     expect(review['status'], 'PROPOSED');
-    expect(review.containsKey('overdue'), isFalse);
+    expect(review['overdue'], 'true');
     expect(review.containsKey('official'), isFalse);
 
     final all = const ActionItemCollectionCriteria(

@@ -37,6 +37,8 @@ class ActionItemPicker<T> extends StatefulWidget {
     required this.describe,
     this.minimumSearchLength = 0,
     this.pinned = const [],
+    this.pinnedChanges,
+    this.readPinned,
   });
 
   final ApiClient api;
@@ -46,6 +48,8 @@ class ActionItemPicker<T> extends StatefulWidget {
   final ActionItemPickerOption<T> Function(T value) describe;
   final int minimumSearchLength;
   final List<ActionItemPickerOption<T>> pinned;
+  final Listenable? pinnedChanges;
+  final List<ActionItemPickerOption<T>> Function()? readPinned;
 
   @override
   State<ActionItemPicker<T>> createState() => _ActionItemPickerState<T>();
@@ -60,6 +64,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
   bool _changed = false;
   bool _sessionLost = false;
   bool _accessDenied = false;
+  bool _knownPinsRevoked = false;
   Object? _error;
   Timer? _timer;
 
@@ -74,6 +79,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
   void initState() {
     super.initState();
     widget.api.sessionCoordinator.addListener(_sessionChanged);
+    widget.pinnedChanges?.addListener(_pinnedChanged);
     if (_searchable) unawaited(_fetch());
   }
 
@@ -82,8 +88,13 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
     _generation++;
     _timer?.cancel();
     widget.api.sessionCoordinator.removeListener(_sessionChanged);
+    widget.pinnedChanges?.removeListener(_pinnedChanged);
     _search.dispose();
     super.dispose();
+  }
+
+  void _pinnedChanged() {
+    if (_current) setState(() {});
   }
 
   void _sessionChanged() {
@@ -110,7 +121,6 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
       _busy = false;
       _loaded = false;
       _changed = false;
-      _accessDenied = false;
       _error = null;
     });
     if (!_searchable) return;
@@ -183,6 +193,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
           _window = PageWindow<T>();
           _loaded = false;
           _accessDenied = true;
+          _knownPinsRevoked = true;
         }
       });
     } finally {
@@ -200,14 +211,16 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
         body: const MessagePanel(title: 'Phiên đăng nhập đã thay đổi'),
       );
     }
-    final pinnedIds = widget.pinned
-        .map((option) => option.id.toLowerCase())
-        .toSet();
-    final options = [
+    final fresh = _window.items.map(widget.describe).toList();
+    final freshIds = fresh.map((option) => option.id.toLowerCase()).toSet();
+    final pins = <ActionItemPickerOption<T>>[
       if (!_accessDenied) ...widget.pinned,
-      ..._window.items
-          .map(widget.describe)
-          .where((option) => !pinnedIds.contains(option.id.toLowerCase())),
+      if (!_accessDenied && !_knownPinsRevoked)
+        ...?widget.readPinned?.call(),
+    ];
+    final options = [
+      ...pins.where((option) => !freshIds.contains(option.id.toLowerCase())),
+      ...fresh,
     ];
     return Scaffold(
       appBar: AppBar(title: Text(widget.title)),

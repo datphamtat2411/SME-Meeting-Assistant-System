@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_creation.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_detail.dart';
@@ -123,6 +125,126 @@ void main() {
     },
   );
 
+  test(
+    'failed revalidation blocks reconciliation until a fresh read',
+    () async {
+      var reads = 0;
+      var writes = 0;
+      final client = MeetingTestHttpClient((request) async {
+        if (request.method == 'PATCH') {
+          writes++;
+          return meetingApiFailure(412, 'RESOURCE_VERSION_CONFLICT');
+        }
+        reads++;
+        if (reads == 3) return meetingApiFailure(503, 'INTERNAL_ERROR');
+        return meetingApiSuccess(
+          {
+            ...itemJson(version: reads),
+            'title': reads == 1 ? 'Original' : 'Server $reads',
+          },
+          headers: {'etag': '"v$reads"'},
+        );
+      });
+      final repository = await repositoryFor(client);
+      final detail = ActionItemDetailController(
+        repository: repository,
+        admission: ActionItemMutationAdmission(),
+        itemId: itemId,
+      );
+      addTearDown(detail.dispose);
+      await detail.refresh();
+      detail.beginEdit();
+      final original = detail.draft!;
+      detail.setDraft(
+        ActionItemDraft(
+          title: 'Local',
+          details: original.details,
+          assigneeUserId: original.assigneeUserId,
+          dueDate: original.dueDate,
+        ),
+      );
+      expect(await detail.save(), isFalse);
+      final merge = detail.reconciliation!;
+      expect(detail.canUseSnapshot, isTrue);
+      final failedRead = Completer<void>();
+      detail.addListener(() {
+        if (!detail.busy &&
+            detail.revalidationRequired &&
+            detail.error != null &&
+            !failedRead.isCompleted) {
+          failedRead.complete();
+        }
+      });
+      repository.invalidation.invalidate(
+        sessionScope: repository.captureSession(),
+        actionItemId: itemId,
+      );
+      await failedRead.future;
+      expect(detail.revalidationRequired, isTrue);
+      expect(detail.unresolved, isFalse);
+      detail.acceptReconciliation({
+        ActionItemEditField.title: ActionItemMergeChoice.local,
+      });
+      expect(detail.reconciliation, same(merge));
+      expect(await detail.save(), isFalse);
+      expect(writes, 1);
+      await detail.refresh();
+      expect(detail.canUseSnapshot, isTrue);
+      expect(detail.reconciliation!.latest.etag, '"v4"');
+      detail.acceptReconciliation({
+        ActionItemEditField.title: ActionItemMergeChoice.local,
+      });
+      expect(detail.draft!.title, 'Local');
+      expect(detail.reconciliation, isNull);
+      expect(writes, 1);
+    },
+  );
+
+  test(
+    'definitive command conflict with failed read blocks stale commands',
+    () async {
+      var reads = 0;
+      var writes = 0;
+      final client = MeetingTestHttpClient((request) async {
+        if (request.method == 'POST') {
+          writes++;
+          return meetingApiFailure(412, 'RESOURCE_VERSION_CONFLICT');
+        }
+        reads++;
+        if (reads == 2) return meetingApiFailure(503, 'INTERNAL_ERROR');
+        return meetingApiSuccess(
+          itemJson(version: reads),
+          headers: {'etag': '"v$reads"'},
+        );
+      });
+      final repository = await repositoryFor(client);
+      final detail = ActionItemDetailController(
+        repository: repository,
+        admission: ActionItemMutationAdmission(),
+        itemId: itemId,
+      );
+      addTearDown(detail.dispose);
+      await detail.refresh();
+      final reviewed = detail.snapshot!;
+      expect(
+        await detail.command(ActionItemCommand.start, reviewed: reviewed),
+        isFalse,
+      );
+      expect(detail.revalidationRequired, isTrue);
+      expect(detail.unresolved, isFalse);
+      detail.beginEdit();
+      expect(detail.editing, isFalse);
+      expect(
+        await detail.command(ActionItemCommand.start, reviewed: reviewed),
+        isFalse,
+      );
+      expect(writes, 1);
+      await detail.refresh();
+      expect(detail.canUseSnapshot, isTrue);
+      expect(detail.snapshot!.etag, '"v3"');
+    },
+  );
+
   test('creation replay retains key after an ambiguous response', () async {
     var writes = 0;
     final keys = <String?>[];
@@ -173,6 +295,9 @@ void main() {
       isNull,
     );
     expect(creation.phase, ActionItemCreationPhase.unresolved);
+    expect(creation.recoveryMeeting?.id, testMeetingId);
+    expect(creation.recoveryMeeting?.title, isNull);
+    expect(creation.recoveryAssignee?.id, testUserId);
     expect(
       await creation.submit(input: input, meeting: meeting, assignee: assignee),
       isNull,
@@ -186,6 +311,8 @@ void main() {
     expect(payloads[0], payloads[1]);
     expect(payloads[1], payloads[2]);
     expect(creation.unresolvedIntent, isNull);
+    expect(creation.recoveryMeeting, isNull);
+    expect(creation.recoveryAssignee, isNull);
   });
 
   test(

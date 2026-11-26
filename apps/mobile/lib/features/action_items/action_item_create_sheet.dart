@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:sme_meeting_assistant/core/command_actions.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
@@ -31,6 +33,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
   bool _checkingInitialMeeting = false;
   bool _leaving = false;
   bool _allowExit = false;
+  bool _showRecoveryContext = true;
 
   ActionItemCreationController get _controller => widget.controller;
   bool get _unresolved =>
@@ -46,7 +49,14 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
   void initState() {
     super.initState();
     _controller.addListener(_controllerChanged);
-    if (widget.initialMeetingId != null && !_unresolved) {
+    if (_unresolved) {
+      _showRecoveryContext = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_controller.current) return;
+        _showRecoveryContext = true;
+        unawaited(_controller.refreshRecoveryContext());
+      });
+    } else if (widget.initialMeetingId != null) {
       _verifyInitialMeeting();
     }
   }
@@ -215,6 +225,10 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
 
   Widget _recovery() {
     final input = _controller.unresolvedIntent?.input;
+    final meeting = _showRecoveryContext ? _controller.recoveryMeeting : null;
+    final assignee = _showRecoveryContext
+        ? _controller.recoveryAssignee
+        : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -233,6 +247,12 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 if (input.details != null) Text(input.details!),
+                Text(
+                  'Cuộc họp: ${meeting == null ? actionItemMeetingReferenceLabel(input.meetingId) : actionItemMeetingLabel(meeting.id, meeting.title)}',
+                ),
+                Text(
+                  'Phụ trách: ${assignee == null ? actionItemAssigneeReferenceLabel(input.assigneeUserId) : actionItemAssigneeLabel(assignee)}',
+                ),
                 Text('Hạn: ${actionItemDueLabel(input.dueDate)}'),
               ],
             ),

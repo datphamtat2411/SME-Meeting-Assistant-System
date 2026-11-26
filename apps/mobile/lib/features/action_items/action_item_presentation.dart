@@ -23,6 +23,12 @@ String actionItemStateLabel(ActionItemResource item) =>
 String actionItemMeetingLabel(String id, String? title) =>
     title ?? 'Cuộc họp giới hạn quyền · mã ${id.substring(id.length - 6)}';
 
+String actionItemMeetingReferenceLabel(String id) =>
+    'Cuộc họp đã chọn · mã ${id.substring(id.length - 6)}';
+
+String actionItemAssigneeReferenceLabel(String id) =>
+    'Người phụ trách đã chọn · mã ${id.substring(id.length - 6)}';
+
 String actionItemAssigneeLabel(ActionItemAssignee? assignee) {
   if (assignee == null) return 'Chưa phân công';
   return assignee.accountStatus == ActionItemAccountStatus.active
@@ -84,7 +90,7 @@ class ActionItemStatusIndicators extends StatelessWidget {
       if (!item.official) const Chip(label: Text('Đề xuất AI')),
       if (item.overdue)
         Text(
-          'Quá hạn',
+          item.official ? 'Quá hạn' : 'Đã qua hạn đề xuất',
           style: TextStyle(color: Theme.of(context).colorScheme.error),
         ),
     ],
@@ -118,7 +124,8 @@ Future<ActionItemCreationMeeting?> pickActionItemCreationMeeting(
 Future<ActionItemAssignee?> pickActionItemAssignee(
   BuildContext context,
   ActionItemRepository repository, {
-  List<ActionItemAssignee> known = const [],
+  List<ActionItemAssignee> Function()? readKnown,
+  Listenable? knownChanges,
   bool allowKnownInactive = false,
   bool forFilter = false,
 }) {
@@ -130,15 +137,6 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
       id: self.id,
       label: '${forFilter ? 'Tôi' : 'Giao cho tôi'} · ${self.displayName}',
     ),
-    for (final item in known)
-      if (!sameActionItemIdentity(item.id, self.id) &&
-          (allowKnownInactive ||
-              item.accountStatus == ActionItemAccountStatus.active))
-        ActionItemPickerOption(
-          value: item,
-          id: item.id,
-          label: actionItemAssigneeLabel(item),
-        ),
   ];
   return openActionItemPicker(
     context,
@@ -148,6 +146,18 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
       title: forFilter ? 'Lọc theo người phụ trách' : 'Chọn người phụ trách',
       minimumSearchLength: 2,
       pinned: pinned,
+      pinnedChanges: knownChanges,
+      readPinned: () => [
+        for (final item in readKnown?.call() ?? const <ActionItemAssignee>[])
+          if (!sameActionItemIdentity(item.id, self.id) &&
+              (allowKnownInactive ||
+                  item.accountStatus == ActionItemAccountStatus.active))
+            ActionItemPickerOption(
+              value: item,
+              id: item.id,
+              label: actionItemAssigneeLabel(item),
+            ),
+      ],
       load: (search, page) async => mapActionItemPickerPage(
         await repository.assignmentCandidates(
           MeetingCandidateQuery(search: search, page: page),

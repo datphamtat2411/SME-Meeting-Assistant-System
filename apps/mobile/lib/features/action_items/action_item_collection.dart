@@ -50,7 +50,7 @@ class ActionItemCollectionCriteria {
       assignee: mine ? const ActionItemAssigneeFilter.me() : assignee,
       official: mine ? true : null,
       reviewable: review ? true : null,
-      overdue: review && overdue == true ? null : overdue,
+      overdue: overdue,
       sortField: sortField,
       sortDirection: sortDirection,
       page: page,

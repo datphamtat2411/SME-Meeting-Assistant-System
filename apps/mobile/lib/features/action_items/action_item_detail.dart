@@ -51,6 +51,8 @@ class ActionItemDetailController extends ChangeNotifier {
   Object? _error;
   bool _busy = false;
   bool _unresolved = false;
+  bool _requiresRevalidation = true;
+  bool _mergeRequired = false;
   bool _dirty = false;
   bool _disposed = false;
   bool _expiredSession = false;
@@ -62,6 +64,9 @@ class ActionItemDetailController extends ChangeNotifier {
   Object? get error => _error;
   bool get busy => _busy;
   bool get unresolved => _unresolved;
+  bool get revalidationRequired => _requiresRevalidation || _dirty;
+  bool get canUseSnapshot =>
+      current && !_busy && !revalidationRequired && _snapshot != null;
   bool get editing => _baseline != null || _reconciliation != null;
   bool get current =>
       !_disposed &&
@@ -85,6 +90,7 @@ class ActionItemDetailController extends ChangeNotifier {
       return;
     }
     _busy = true;
+    _requiresRevalidation = true;
     _dirty = false;
     notifyListeners();
     try {
@@ -96,8 +102,7 @@ class ActionItemDetailController extends ChangeNotifier {
 
   void beginEdit({ActionItemSnapshot? reviewed}) {
     final currentSnapshot = _snapshot;
-    if (!current ||
-        _busy ||
+    if (!canUseSnapshot ||
         _unresolved ||
         editing ||
         currentSnapshot == null ||
@@ -113,8 +118,7 @@ class ActionItemDetailController extends ChangeNotifier {
   }
 
   void setDraft(ActionItemDraft value) {
-    if (!current ||
-        _busy ||
+    if (!canUseSnapshot ||
         !editing ||
         _reconciliation != null ||
         _unresolved) {
@@ -135,8 +139,7 @@ class ActionItemDetailController extends ChangeNotifier {
     Map<ActionItemEditField, ActionItemMergeChoice> choices,
   ) {
     final merge = _reconciliation;
-    if (!current ||
-        _busy ||
+    if (!canUseSnapshot ||
         merge == null ||
         !identical(_snapshot, merge.latest)) {
       return;
@@ -155,8 +158,7 @@ class ActionItemDetailController extends ChangeNotifier {
   Future<bool> save() async {
     final original = _baseline;
     final local = _draft;
-    if (!current ||
-        _busy ||
+    if (!canUseSnapshot ||
         _unresolved ||
         _reconciliation != null ||
         original == null ||
@@ -184,8 +186,7 @@ class ActionItemDetailController extends ChangeNotifier {
     required ActionItemSnapshot reviewed,
   }) async {
     final original = _snapshot;
-    if (!current ||
-        _busy ||
+    if (!canUseSnapshot ||
         _unresolved ||
         editing ||
         original == null ||
@@ -227,6 +228,7 @@ class ActionItemDetailController extends ChangeNotifier {
           signal.lastActionItemId != null &&
           sameActionItemIdentity(signal.lastActionItemId!, itemId)) {
         _dirty = false;
+        _requiresRevalidation = false;
       }
       _clearEdit();
       _unresolved = false;
@@ -245,6 +247,8 @@ class ActionItemDetailController extends ChangeNotifier {
           failure?.category == ActionItemFailureCategory.resourceUnavailable ||
           failure?.category == ActionItemFailureCategory.businessConflict;
       if (needsRevalidation) {
+        _requiresRevalidation = true;
+        _mergeRequired = contentEdit;
         // Consume the repository's own invalidation. Later invalidations
         // arriving during the read remain pending.
         _dirty = false;
@@ -261,6 +265,7 @@ class ActionItemDetailController extends ChangeNotifier {
     bool forceMerge = false,
     bool preserveError = false,
   }) async {
+    _requiresRevalidation = true;
     try {
       if (!current) return;
       final latest = await repository.detail(itemId, sessionScope: _scope);
@@ -286,6 +291,7 @@ class ActionItemDetailController extends ChangeNotifier {
           _reconciliation = previousMerge.withLatest(latest);
         } else if (original != null &&
             (forceMerge ||
+                _mergeRequired ||
                 _unresolved ||
                 original.etag != latest.etag ||
                 original.item.capabilities.canReadMeetingContext !=
@@ -294,7 +300,7 @@ class ActionItemDetailController extends ChangeNotifier {
                     latest.item.capabilities.canEdit ||
                 original.item.capabilities.canAssign !=
                     latest.item.capabilities.canAssign)) {
-          if (hasChanges || forceMerge || _unresolved) {
+          if (hasChanges || forceMerge || _mergeRequired || _unresolved) {
             _reconciliation = ActionItemReconciliation(
               original: original,
               local: local,
@@ -311,6 +317,8 @@ class ActionItemDetailController extends ChangeNotifier {
         // the current canonical state, not as proven success of that request.
         _unresolved = false;
       }
+      _mergeRequired = false;
+      _requiresRevalidation = false;
       if (!preserveError && !_unresolved) _error = null;
     } catch (error) {
       if (!current) return;
@@ -323,10 +331,9 @@ class ActionItemDetailController extends ChangeNotifier {
         _snapshot = null;
         _clearEdit();
         _unresolved = false;
-      } else if (forceMerge) {
-        // A failed conflict read must not allow a stale baseline to be reused.
-        _unresolved = true;
       }
+      // Failed reads leave the freshness gate closed. A definitive conflict
+      // is not an unknown write outcome; the draft still needs reconciliation.
     }
   }
 
@@ -334,6 +341,7 @@ class ActionItemDetailController extends ChangeNotifier {
     _baseline = null;
     _draft = null;
     _reconciliation = null;
+    _mergeRequired = false;
   }
 
   void _finish() {
@@ -354,6 +362,7 @@ class ActionItemDetailController extends ChangeNotifier {
     final affected = signal.lastActionItemId;
     if (affected != null && !sameActionItemIdentity(affected, itemId)) return;
     _dirty = true;
+    _requiresRevalidation = true;
     if (!_busy) unawaited(refresh());
   }
 
@@ -366,6 +375,7 @@ class ActionItemDetailController extends ChangeNotifier {
     _error = null;
     _busy = false;
     _dirty = false;
+    _requiresRevalidation = true;
     _unresolved = false;
     notifyListeners();
   }

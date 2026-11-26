@@ -40,8 +40,8 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
   late final AuthenticatedSessionScope _scope;
   ActionItemCollectionMode _mode = ActionItemCollectionMode.myWork;
   ActionItemStatus? _status;
-  ActionItemMeetingContext? _meeting;
-  ActionItemAssignee? _assignee;
+  String? _meetingId;
+  String? _assigneeId;
   bool? _overdue;
   ActionItemSortField _sort = ActionItemSortField.createdAt;
   ActionItemSortDirection _direction = ActionItemSortDirection.desc;
@@ -100,8 +100,8 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
     if (!mounted) return;
     if (!_current) {
       _search.clear();
-      _meeting = null;
-      _assignee = null;
+      _meetingId = null;
+      _assigneeId = null;
       _eligible = null;
       _eligibilityError = null;
       _eligibilityGeneration++;
@@ -113,10 +113,10 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
     mode: _mode,
     search: _search.text,
     status: _status,
-    meetingId: _meeting?.id,
-    assignee: _assignee == null
+    meetingId: _meetingId,
+    assignee: _assigneeId == null
         ? null
-        : ActionItemAssigneeFilter.user(_assignee!.id),
+        : ActionItemAssigneeFilter.user(_assigneeId!),
     overdue: _overdue,
     sortField: _sort,
     sortDirection: _direction,
@@ -173,12 +173,11 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
     setState(() {
       _mode = mode;
       if (mode == ActionItemCollectionMode.myWork) {
-        _assignee = null;
+        _assigneeId = null;
         if (_status == ActionItemStatus.proposed) _status = null;
       }
       if (mode == ActionItemCollectionMode.needsReview) {
         _status = null;
-        if (_overdue == true) _overdue = null;
       }
     });
     _apply();
@@ -188,8 +187,8 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
     setState(() {
       _search.clear();
       _status = null;
-      _meeting = null;
-      _assignee = null;
+      _meetingId = null;
+      _assigneeId = null;
       _overdue = null;
       _sort = ActionItemSortField.createdAt;
       _direction = ActionItemSortDirection.desc;
@@ -230,27 +229,80 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
     );
   }
 
+  // Filter identities survive revalidation; their display labels do not.
+  // Only use projections from the current successfully loaded collection.
+  List<ActionItemResource> get _verifiedFilterItems {
+    final state = _collection.state;
+    return _current &&
+            state.loaded &&
+            state.phase == ActionItemCollectionPhase.idle &&
+            state.failure == null
+        ? state.items
+        : const [];
+  }
+
+  String get _meetingFilterLabel {
+    final id = _meetingId;
+    if (id == null) return 'Cuộc họp';
+    final matching = _verifiedFilterItems.where(
+      (item) => sameActionItemIdentity(item.meetingId, id),
+    );
+    if (matching.isEmpty) return actionItemMeetingReferenceLabel(id);
+    // A redacted representation takes precedence over a visible title.
+    final title = matching.any((item) => item.meetingContext.title == null)
+        ? null
+        : matching.firstOrNull?.meetingContext.title;
+    return actionItemMeetingLabel(id, title);
+  }
+
+  String get _assigneeFilterLabel {
+    final id = _assigneeId;
+    if (id == null) return 'Người phụ trách';
+    final assignee = _knownAssignees
+        .where((value) => sameActionItemIdentity(value.id, id))
+        .firstOrNull;
+    return assignee == null
+        ? actionItemAssigneeReferenceLabel(id)
+        : actionItemAssigneeLabel(assignee);
+  }
+
+  List<ActionItemAssignee> get _knownAssignees => [
+    ...<String, ActionItemAssignee>{
+      for (final item in _verifiedFilterItems)
+        if (item.assignee != null)
+          item.assignee!.id.toLowerCase(): item.assignee!,
+    }.values,
+  ];
+
+  List<ActionItemPickerOption<ActionItemMeetingContext>> _knownMeetings() {
+    final known = <String, ActionItemMeetingContext>{};
+    for (final item in _verifiedFilterItems) {
+      final key = item.meetingId.toLowerCase();
+      if (!known.containsKey(key) || item.meetingContext.title == null) {
+        known[key] = item.meetingContext;
+      }
+    }
+    return [
+      for (final meeting in known.values)
+        ActionItemPickerOption(
+          value: meeting,
+          id: meeting.id,
+          label: actionItemMeetingLabel(meeting.id, meeting.title),
+          subtitle: 'Từ danh sách công việc hiện tại',
+        ),
+    ];
+  }
+
   Future<void> _pickMeeting() async {
     if (!_current) return;
-    final known = <String, ActionItemMeetingContext>{
-      for (final item in _collection.state.items)
-        item.meetingId.toLowerCase(): item.meetingContext,
-    };
     final selected = await openActionItemPicker(
       context,
       ActionItemPicker<ActionItemMeetingContext>(
         api: widget.dependencies.api,
         scope: _scope,
         title: 'Lọc theo cuộc họp',
-        pinned: [
-          for (final meeting in known.values)
-            ActionItemPickerOption(
-              value: meeting,
-              id: meeting.id,
-              label: actionItemMeetingLabel(meeting.id, meeting.title),
-              subtitle: 'Từ danh sách công việc hiện tại',
-            ),
-        ],
+        pinnedChanges: _collection,
+        readPinned: _knownMeetings,
         load: (search, page) async => mapActionItemPickerPage(
           await widget.dependencies.meetings.list(
             query: MeetingQuery(search: search, page: page),
@@ -268,27 +320,23 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
       ),
     );
     if (_current && selected != null) {
-      setState(() => _meeting = selected);
+      setState(() => _meetingId = selected.id);
       _apply();
     }
   }
 
   Future<void> _pickAssignee() async {
     if (!_current) return;
-    final known = <String, ActionItemAssignee>{
-      for (final item in _collection.state.items)
-        if (item.assignee != null)
-          item.assignee!.id.toLowerCase(): item.assignee!,
-    };
     final selected = await pickActionItemAssignee(
       context,
       widget.dependencies.actionItems,
-      known: known.values.toList(),
+      readKnown: () => _knownAssignees,
+      knownChanges: _collection,
       allowKnownInactive: true,
       forFilter: true,
     );
     if (_current && selected != null) {
-      setState(() => _assignee = selected);
+      setState(() => _assigneeId = selected.id);
       _apply();
     }
   }
@@ -416,46 +464,41 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
             if (widget.meetingId == null)
               InputChip(
                 label: Text(
-                  _meeting == null
-                      ? 'Cuộc họp'
-                      : actionItemMeetingLabel(_meeting!.id, _meeting!.title),
+                  _meetingFilterLabel,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
                 onPressed: _pickMeeting,
-                onDeleted: _meeting == null
+                onDeleted: _meetingId == null
                     ? null
                     : () {
-                        setState(() => _meeting = null);
+                        setState(() => _meetingId = null);
                         _apply();
                       },
               ),
             if (_mode != ActionItemCollectionMode.myWork)
               InputChip(
                 label: Text(
-                  _assignee == null
-                      ? 'Người phụ trách'
-                      : actionItemAssigneeLabel(_assignee),
+                  _assigneeFilterLabel,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
                 onPressed: _pickAssignee,
-                onDeleted: _assignee == null
+                onDeleted: _assigneeId == null
                     ? null
                     : () {
-                        setState(() => _assignee = null);
+                        setState(() => _assigneeId = null);
                         _apply();
                       },
               ),
-            if (_mode != ActionItemCollectionMode.needsReview)
-              FilterChip(
-                label: const Text('Quá hạn'),
-                selected: _overdue == true,
-                onSelected: (selected) {
-                  setState(() => _overdue = selected ? true : null);
-                  _apply();
-                },
-              ),
+            FilterChip(
+              label: const Text('Quá hạn'),
+              selected: _overdue == true,
+              onSelected: (selected) {
+                setState(() => _overdue = selected ? true : null);
+                _apply();
+              },
+            ),
             PopupMenuButton<ActionItemSortField>(
               tooltip: 'Sắp xếp',
               onSelected: (sort) {
@@ -530,7 +573,7 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
             onPressed: widget.meetingId != null
                 ? null
                 : () {
-                    setState(() => _meeting = item.meetingContext);
+                    setState(() => _meetingId = item.meetingId);
                     _apply();
                   },
             icon: const Icon(Icons.video_camera_front_outlined, size: 16),
