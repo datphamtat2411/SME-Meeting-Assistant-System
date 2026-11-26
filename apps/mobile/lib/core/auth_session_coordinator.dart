@@ -134,6 +134,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
   int? _lastRefreshErrorGeneration;
   DateTime? _lastRefreshRetryNotBefore;
   int _lifecycleEpoch = 0;
+  int? _interactiveSignInEpoch;
   int _accessGeneration = 0;
   Future<void> _tokenStoreTail = Future<void>.value();
   bool _disposed = false;
@@ -145,6 +146,18 @@ class AuthSessionCoordinator extends ChangeNotifier {
 
   AuthSessionState get state => _state;
   int get lifecycleEpoch => _lifecycleEpoch;
+
+  bool get isInteractiveSignIn =>
+      _interactiveSignInEpoch == _lifecycleEpoch &&
+      (_state.phase == AuthSessionPhase.signingIn ||
+          _state.phase == AuthSessionPhase.verifyingIdentity);
+
+  Duration get retryRemaining {
+    final remaining = _state.retryNotBefore?.difference(_now());
+    return remaining != null && remaining > Duration.zero
+        ? remaining
+        : Duration.zero;
+  }
 
   AuthenticatedSessionScope? get authenticatedSessionScope {
     final identity = _state.identity;
@@ -513,6 +526,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
     _ensureCanSignIn();
     _ensureRetryWindowOpen();
     final epoch = ++_lifecycleEpoch;
+    _interactiveSignInEpoch = epoch;
     _setState(AuthSessionState._(phase: AuthSessionPhase.signingIn));
     try {
       final tokens = await _repository.login(email, password);
@@ -1319,6 +1333,10 @@ class AuthSessionCoordinator extends ChangeNotifier {
 
   void _setState(AuthSessionState next) {
     if (_disposed) return;
+    if (next.phase != AuthSessionPhase.signingIn &&
+        next.phase != AuthSessionPhase.verifyingIdentity) {
+      _interactiveSignInEpoch = null;
+    }
     _state = next;
     notifyListeners();
   }
