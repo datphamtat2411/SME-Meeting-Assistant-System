@@ -13,7 +13,7 @@ class RecoveryRequestForm extends StatefulWidget {
     required this.api,
     required this.onBack,
     required this.retryDeadlines,
-  );
+  });
 
   final ApiClient api;
   final VoidCallback onBack;
