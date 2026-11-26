@@ -823,8 +823,9 @@ class LocalMediaRepository {
       (key, _) =>
           key.startsWith(prefix) &&
           key.endsWith(suffix) &&
-          key != '$prefix${scope.lifecycleEpoch}:'
-              '${scope.protectedAccessGeneration}$suffix',
+          key !=
+              '$prefix${scope.lifecycleEpoch}:'
+                  '${scope.protectedAccessGeneration}$suffix',
     );
   }
 

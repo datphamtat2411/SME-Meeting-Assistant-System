@@ -51,7 +51,13 @@ enum AuthLogoutOutcome {
   remoteRevocationUnconfirmed,
 }
 
-enum AuthReconciliationOutcome { noSession, verified, invalidated, denied, unavailable }
+enum AuthReconciliationOutcome {
+  noSession,
+  verified,
+  invalidated,
+  denied,
+  unavailable,
+}
 
 enum AuthSessionPhase {
   initializing,
@@ -191,7 +197,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
 
   bool isCurrentAuthenticatedSession(AuthenticatedSessionScope scope) =>
       _isCurrentEpoch(scope.lifecycleEpoch) &&
-    scope.protectedAccessGeneration == _protectedAccessGeneration &&
+      scope.protectedAccessGeneration == _protectedAccessGeneration &&
       _state.isAuthenticated &&
       _state.identity?.userId.value == scope.userId &&
       _tokenStore.scopeDigest == scope.deploymentScope;
@@ -558,6 +564,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
   /// Closes protected access synchronously and verifies the current session.
   /// A later request supersedes any in-flight identity probe, not credentials.
   Future<AuthReconciliationOutcome> reconcileSession() {
+    if (_disposed) return Future.value(AuthReconciliationOutcome.invalidated);
     switch (_state.phase) {
       case AuthSessionPhase.unauthenticated:
         return Future.value(AuthReconciliationOutcome.noSession);
@@ -717,7 +724,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
       final retryCredential = _credentialForDispatch(
         retryCandidate,
         requireVerifiedSession: expectedScope != null,
-      expectedScope: expectedScope,
+        expectedScope: expectedScope,
       );
       try {
         final identity = await _repository.currentIdentity(

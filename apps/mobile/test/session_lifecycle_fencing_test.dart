@@ -42,32 +42,38 @@ void main() {
     );
   }
 
-  test('reconciliation permanently fences an earlier protected request', () async {
-    final client = _SessionRaceClient()..delaySecondIdentity = true;
-    final api = _api(client);
-    addTearDown(api.dispose);
-    await _signIn(api);
-    final previousScope = api.sessionCoordinator.authenticatedSessionScope!;
-    final response = api.get('/slow');
-    final rejected = expectLater(response, throwsA(isA<AuthSessionException>()));
-    await client.slowRequestStarted.future;
+  test(
+    'reconciliation permanently fences an earlier protected request',
+    () async {
+      final client = _SessionRaceClient()..delaySecondIdentity = true;
+      final api = _api(client);
+      addTearDown(api.dispose);
+      await _signIn(api);
+      final previousScope = api.sessionCoordinator.authenticatedSessionScope!;
+      final response = api.get('/slow');
+      final rejected = expectLater(
+        response,
+        throwsA(isA<AuthSessionException>()),
+      );
+      await client.slowRequestStarted.future;
 
-    final reconciliation = api.reconcileSession();
-    expect(api.sessionState.isAuthenticated, isFalse);
-    expect(api.sessionCoordinator.authenticatedSessionScope, isNull);
-    await expectLater(api.get('/blocked'), throwsA(isA<ApiFailure>()));
-    await client.delayedIdentityStarted.future;
-    client.completeDelayedIdentity();
-    expect(await reconciliation, AuthReconciliationOutcome.verified);
-    final nextScope = api.sessionCoordinator.authenticatedSessionScope!;
-    expect(nextScope.lifecycleEpoch, previousScope.lifecycleEpoch);
-    expect(nextScope, isNot(previousScope));
-    expect(client.loginCount, 1);
+      final reconciliation = api.reconcileSession();
+      expect(api.sessionState.isAuthenticated, isFalse);
+      expect(api.sessionCoordinator.authenticatedSessionScope, isNull);
+      await expectLater(api.get('/blocked'), throwsA(isA<ApiFailure>()));
+      await client.delayedIdentityStarted.future;
+      client.completeDelayedIdentity();
+      expect(await reconciliation, AuthReconciliationOutcome.verified);
+      final nextScope = api.sessionCoordinator.authenticatedSessionScope!;
+      expect(nextScope.lifecycleEpoch, previousScope.lifecycleEpoch);
+      expect(nextScope, isNot(previousScope));
+      expect(client.loginCount, 1);
 
-    client.completeSlowRequest(status: 200);
-    await rejected;
-    expect(api.sessionState.identity!.userId.value, _userA);
-  });
+      client.completeSlowRequest(status: 200);
+      await rejected;
+      expect(api.sessionState.identity!.userId.value, _userA);
+    },
+  );
 
   test('a newer reconciliation requires a newer identity probe', () async {
     final client = _SessionRaceClient()
@@ -91,26 +97,32 @@ void main() {
     expect(client.loginCount, 1);
   });
 
-  test('ordinary identity reload cannot reopen the reconciliation gate', () async {
-    final client = _SessionRaceClient()
-      ..delaySecondIdentity = true
-      ..delayThirdIdentity = true;
-    final api = _api(client);
-    addTearDown(api.dispose);
-    await _signIn(api);
+  test(
+    'ordinary identity reload cannot reopen the reconciliation gate',
+    () async {
+      final client = _SessionRaceClient()
+        ..delaySecondIdentity = true
+        ..delayThirdIdentity = true;
+      final api = _api(client);
+      addTearDown(api.dispose);
+      await _signIn(api);
 
-    final reload = api.loadIdentity();
-    final rejected = expectLater(reload, throwsA(isA<AuthSessionException>()));
-    await client.delayedIdentityStarted.future;
-    final reconciliation = api.reconcileSession();
-    await client.thirdIdentityStarted.future;
-    client.completeDelayedIdentity();
-    await rejected;
-    expect(api.sessionState.isAuthenticated, isFalse);
+      final reload = api.loadIdentity();
+      final rejected = expectLater(
+        reload,
+        throwsA(isA<AuthSessionException>()),
+      );
+      await client.delayedIdentityStarted.future;
+      final reconciliation = api.reconcileSession();
+      await client.thirdIdentityStarted.future;
+      client.completeDelayedIdentity();
+      await rejected;
+      expect(api.sessionState.isAuthenticated, isFalse);
 
-    client.completeThirdIdentity();
-    expect(await reconciliation, AuthReconciliationOutcome.verified);
-  });
+      client.completeThirdIdentity();
+      expect(await reconciliation, AuthReconciliationOutcome.verified);
+    },
+  );
 
   test('unavailable verification stays closed and can be retried', () async {
     final client = _SessionRaceClient()..delaySecondIdentity = true;
@@ -128,7 +140,10 @@ void main() {
     expect(api.sessionState.canRetryIdentityVerification, isTrue);
     expect(api.sessionState.isAuthenticated, isFalse);
     expect(await api.reconcileSession(), AuthReconciliationOutcome.verified);
-    expect(api.sessionCoordinator.authenticatedSessionScope, isNot(previousScope));
+    expect(
+      api.sessionCoordinator.authenticatedSessionScope,
+      isNot(previousScope),
+    );
     expect(client.loginCount, 1);
   });
 
