@@ -1,4 +1,3 @@
-import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle, UserRound } from 'lucide-react'
 import { toast } from 'sonner'
@@ -6,6 +5,7 @@ import { normalizeCoreApiError } from '@/lib/core-api'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import {
   classifyParticipantMemberships,
   type MeetingView,

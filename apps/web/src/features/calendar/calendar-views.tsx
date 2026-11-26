@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { CalendarDays, Clock3, MapPin, Users } from 'lucide-react'
 import { Temporal } from '@js-temporal/polyfill'
-import { useRegionalPresentation } from '@/context/regional-presentation'
+import { CalendarDays, Clock3, MapPin, Users } from 'lucide-react'
 import { formatCivilDate, instantCivilFields } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -671,8 +671,7 @@ export function CalendarMonthView({
               className='w-full table-fixed border-collapse'
             >
               <caption className='sr-only'>
-                Monday-first calendar for{' '}
-                {monthLabel}
+                Monday-first calendar for {monthLabel}
               </caption>
               <thead>
                 <tr>
@@ -693,7 +692,11 @@ export function CalendarMonthView({
                 {Array.from({ length: cells.length / 7 }, (_, rowIndex) => (
                   <tr key={`${monthKey}-week-${rowIndex}`}>
                     {cells.slice(rowIndex * 7, rowIndex * 7 + 7).map((cell) => {
-                      const dateLabel = formatCivilDate(cell.dayKey, locale, fullDateOptions)
+                      const dateLabel = formatCivilDate(
+                        cell.dayKey,
+                        locale,
+                        fullDateOptions
+                      )
                       const daySegments = cell.inMonth
                         ? (segmentsByDay.get(cell.dayKey) ?? [])
                         : []

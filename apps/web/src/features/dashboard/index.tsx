@@ -8,6 +8,7 @@ import {
   Timer,
   TriangleAlert,
 } from 'lucide-react'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -19,7 +20,6 @@ import {
   RequestError,
   RequestLoading,
 } from '@/components/request-state'
-import { useRegionalPresentation } from '@/context/regional-presentation'
 import { currentUserQueryOptions } from '@/features/auth/session/current-user'
 import {
   managementDashboardQuery,
@@ -41,7 +41,9 @@ function Metric({
       <CardContent className='flex items-center justify-between gap-3 p-5'>
         <div>
           <p className='text-sm text-muted-foreground'>{label}</p>
-          <p className='mt-1 text-3xl font-bold'>{new Intl.NumberFormat(locale).format(value)}</p>
+          <p className='mt-1 text-3xl font-bold'>
+            {new Intl.NumberFormat(locale).format(value)}
+          </p>
         </div>
         <Icon className='size-7 text-primary' />
       </CardContent>
@@ -182,7 +184,10 @@ export function Dashboard() {
               </div>
               <p className='text-xs text-muted-foreground'>
                 Personal dashboard as of {dateTime(data.asOf)} ·{' '}
-                {new Intl.NumberFormat(locale).format(data.assignedActionItems.done)} completed actions.
+                {new Intl.NumberFormat(locale).format(
+                  data.assignedActionItems.done
+                )}{' '}
+                completed actions.
               </p>
             </>
           )

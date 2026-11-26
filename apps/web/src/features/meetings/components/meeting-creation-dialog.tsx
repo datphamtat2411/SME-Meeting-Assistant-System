@@ -1,12 +1,12 @@
 import { useDeferredValue, useEffect, useRef, useState } from 'react'
 import { z } from 'zod'
-import { useRegionalPresentation } from '@/context/regional-presentation'
-import { parseCivilDate, compareInstants } from '@/lib/regional-time'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CalendarDays, Check, LoaderCircle } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { parseCivilDate, compareInstants } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -133,8 +133,18 @@ const meetingFormSchema = z
     }
     if (!values.date || !values.startTime || !values.endTime) return
 
-    const start = resolveScheduleEndpoint(values.date, values.startTime, values.scheduleTimezone, values.startOccurrence)
-    const end = resolveScheduleEndpoint(values.endDate || values.date, values.endTime, values.scheduleTimezone, values.endOccurrence)
+    const start = resolveScheduleEndpoint(
+      values.date,
+      values.startTime,
+      values.scheduleTimezone,
+      values.startOccurrence
+    )
+    const end = resolveScheduleEndpoint(
+      values.endDate || values.date,
+      values.endTime,
+      values.scheduleTimezone,
+      values.endOccurrence
+    )
     if (values.fallbackRequired && !values.fallbackAcknowledged) {
       context.addIssue({
         code: 'custom',
@@ -146,14 +156,22 @@ const meetingFormSchema = z
       context.addIssue({
         code: 'custom',
         path: ['startTime'],
-        message: scheduleEndpointError(values.date, values.startTime, values.scheduleTimezone),
+        message: scheduleEndpointError(
+          values.date,
+          values.startTime,
+          values.scheduleTimezone
+        ),
       })
     }
     if (!end) {
       context.addIssue({
         code: 'custom',
         path: ['endTime'],
-        message: scheduleEndpointError(values.endDate || values.date, values.endTime, values.scheduleTimezone),
+        message: scheduleEndpointError(
+          values.endDate || values.date,
+          values.endTime,
+          values.scheduleTimezone
+        ),
       })
     }
     if (start && end && compareInstants(start, end) >= 0) {
@@ -281,15 +299,19 @@ export function MeetingCreationDialog({
     control: form.control,
     name: 'participantIds',
   })
-  const scheduleTimezone = useWatch({ control: form.control, name: 'scheduleTimezone' })
-  const startOccurrence = useWatch({ control: form.control, name: 'startOccurrence' })
-  const endOccurrence = useWatch({ control: form.control, name: 'endOccurrence' })
-  const schedule = getScheduleValues({
-    date, endDate, startTime, endTime, scheduleTimezone, startOccurrence, endOccurrence,
+  const scheduleTimezone = useWatch({
+    control: form.control,
+    name: 'scheduleTimezone',
   })
-  const currentScheduleFingerprint = getSchedulingFingerprint({
-    title,
-    description,
+  const startOccurrence = useWatch({
+    control: form.control,
+    name: 'startOccurrence',
+  })
+  const endOccurrence = useWatch({
+    control: form.control,
+    name: 'endOccurrence',
+  })
+  const schedule = getScheduleValues({
     date,
     endDate,
     startTime,
@@ -297,9 +319,23 @@ export function MeetingCreationDialog({
     scheduleTimezone,
     startOccurrence,
     endOccurrence,
-    roomId,
-    participantIds,
-  }, schedule)
+  })
+  const currentScheduleFingerprint = getSchedulingFingerprint(
+    {
+      title,
+      description,
+      date,
+      endDate,
+      startTime,
+      endTime,
+      scheduleTimezone,
+      startOccurrence,
+      endOccurrence,
+      roomId,
+      participantIds,
+    },
+    schedule
+  )
   const [roomLookupOpen, setRoomLookupOpen] = useState(false)
   const [roomLookupSearch, setRoomLookupSearch] = useState('')
   const [roomLookupPage, setRoomLookupPage] = useState(1)
@@ -355,7 +391,10 @@ export function MeetingCreationDialog({
       if (!form.getValues('scheduleTimezone')) {
         if (regional.status === 'loading') return
         form.setValue('scheduleTimezone', regional.timezone)
-        form.setValue('fallbackRequired', regional.status === 'unavailable' || regional.timezoneFallback)
+        form.setValue(
+          'fallbackRequired',
+          regional.status === 'unavailable' || regional.timezoneFallback
+        )
       }
       if (
         isValidLocalDateKey(initialScheduleDate) &&

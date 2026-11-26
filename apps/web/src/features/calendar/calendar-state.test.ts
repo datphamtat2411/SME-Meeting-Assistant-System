@@ -88,9 +88,16 @@ describe('calendar URL state', () => {
 
   it('resolves an implicit month in the preferred timezone', () => {
     const instant = new Date('2026-12-01T02:00:00Z')
-    expect(resolveCalendarState({}, instant, 'America/New_York').monthKey).toBe('2026-11')
-    expect(resolveCalendarState({}, instant, 'Asia/Tokyo').monthKey).toBe('2026-12')
-    expect(resolveCalendarState({ month: '2026-12' }, instant, 'America/New_York').monthKey).toBe('2026-12')
+    expect(resolveCalendarState({}, instant, 'America/New_York').monthKey).toBe(
+      '2026-11'
+    )
+    expect(resolveCalendarState({}, instant, 'Asia/Tokyo').monthKey).toBe(
+      '2026-12'
+    )
+    expect(
+      resolveCalendarState({ month: '2026-12' }, instant, 'America/New_York')
+        .monthKey
+    ).toBe('2026-12')
   })
 
   it('navigates across year boundaries using local civil months', () => {

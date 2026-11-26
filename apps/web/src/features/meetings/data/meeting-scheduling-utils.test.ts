@@ -79,7 +79,10 @@ describe('meeting scheduling utilities', () => {
 describe('preferred scheduling timezone', () => {
   it('resolves the canonical interval in the explicit timezone', () => {
     const result = getScheduleValues({
-      date: '2026-12-01', endDate: '2026-12-01', startTime: '09:00', endTime: '10:00',
+      date: '2026-12-01',
+      endDate: '2026-12-01',
+      startTime: '09:00',
+      endTime: '10:00',
       scheduleTimezone: 'America/New_York',
     })
     expect(result?.start).toBe('2026-12-01T14:00:00.000Z')
@@ -87,21 +90,38 @@ describe('preferred scheduling timezone', () => {
   })
 
   it('rejects a DST gap and requires an explicit ambiguous occurrence', () => {
-    expect(getScheduleValues({
-      date: '2026-03-08', endDate: '2026-03-08', startTime: '02:30', endTime: '04:00', scheduleTimezone: 'America/New_York',
-    })).toBeUndefined()
+    expect(
+      getScheduleValues({
+        date: '2026-03-08',
+        endDate: '2026-03-08',
+        startTime: '02:30',
+        endTime: '04:00',
+        scheduleTimezone: 'America/New_York',
+      })
+    ).toBeUndefined()
     const overlap = {
-      date: '2026-11-01', endDate: '2026-11-01', startTime: '01:30', endTime: '02:30', scheduleTimezone: 'America/New_York',
+      date: '2026-11-01',
+      endDate: '2026-11-01',
+      startTime: '01:30',
+      endTime: '02:30',
+      scheduleTimezone: 'America/New_York',
     }
     expect(getScheduleValues(overlap)).toBeUndefined()
-    expect(getScheduleValues({ ...overlap, startOccurrence: '2026-11-01T06:30:00Z' })?.start).toBe('2026-11-01T06:30:00.000Z')
+    expect(
+      getScheduleValues({ ...overlap, startOccurrence: '2026-11-01T06:30:00Z' })
+        ?.start
+    ).toBe('2026-11-01T06:30:00.000Z')
   })
 
   it('preserves unchanged original endpoints even in an overlap', () => {
     const original = '2026-11-01T06:30:17.123456Z'
     const result = getScheduleValues({
-      date: '2026-11-01', endDate: '2026-11-01', startTime: '01:30', endTime: '03:00',
-      scheduleTimezone: 'America/New_York', originalStartAt: original,
+      date: '2026-11-01',
+      endDate: '2026-11-01',
+      startTime: '01:30',
+      endTime: '03:00',
+      scheduleTimezone: 'America/New_York',
+      originalStartAt: original,
     })
     expect(result?.start).toBe(original)
     expect(result?.end).toBe('2026-11-01T08:00:00.000Z')

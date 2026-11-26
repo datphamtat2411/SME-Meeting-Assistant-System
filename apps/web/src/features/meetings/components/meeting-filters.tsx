@@ -98,7 +98,10 @@ export function MeetingFilters({
   const partialFrom = Boolean(search.from && !fromDate)
   const partialTo = Boolean(search.to && !toDate)
   const changeDate = (key: 'from' | 'to', value: string) => {
-    if (value && !dateInputToOffsetDateTime(value, key === 'to', regional.timezone)) {
+    if (
+      value &&
+      !dateInputToOffsetDateTime(value, key === 'to', regional.timezone)
+    ) {
       setDateError('Choose a valid calendar day in the displayed timezone.')
       return
     }
@@ -311,25 +314,57 @@ export function MeetingFilters({
           type='button'
           variant='outline'
           className='mt-auto'
-          onClick={() => { setDateError(undefined); onReset() }}
+          onClick={() => {
+            setDateError(undefined)
+            onReset()
+          }}
         >
           Reset filters
         </Button>
       </div>
       <p className='text-xs text-muted-foreground'>
-        Date filters use {regional.timezone}. The To date includes the entire selected day.
+        Date filters use {regional.timezone}. The To date includes the entire
+        selected day.
         {regional.status === 'loading' && ' Loading regional preferences…'}
-        {(regional.status === 'unavailable' || regional.timezoneFallback) && ' Using a fallback timezone.'}
+        {(regional.status === 'unavailable' || regional.timezoneFallback) &&
+          ' Using a fallback timezone.'}
       </p>
-      {dateError && <p role='alert' className='text-sm text-destructive'>{dateError}</p>}
+      {dateError && (
+        <p role='alert' className='text-sm text-destructive'>
+          {dateError}
+        </p>
+      )}
       {(partialFrom || partialTo) && (
         <div role='status' className='space-y-1 rounded-md border p-3 text-sm'>
-          <p>The existing filter retains its exact timestamps. Select a date to replace a boundary.</p>
+          <p>
+            The existing filter retains its exact timestamps. Select a date to
+            replace a boundary.
+          </p>
           {partialFrom && search.from && (
-            <div>From (inclusive): {formatBoundary(search.from)} <Button type='button' variant='link' size='sm' onClick={() => changeDate('from', '')}>Clear start</Button></div>
+            <div>
+              From (inclusive): {formatBoundary(search.from)}{' '}
+              <Button
+                type='button'
+                variant='link'
+                size='sm'
+                onClick={() => changeDate('from', '')}
+              >
+                Clear start
+              </Button>
+            </div>
           )}
           {partialTo && search.to && (
-            <div>To (exclusive): {formatBoundary(search.to)} <Button type='button' variant='link' size='sm' onClick={() => changeDate('to', '')}>Clear end</Button></div>
+            <div>
+              To (exclusive): {formatBoundary(search.to)}{' '}
+              <Button
+                type='button'
+                variant='link'
+                size='sm'
+                onClick={() => changeDate('to', '')}
+              >
+                Clear end
+              </Button>
+            </div>
           )}
         </div>
       )}

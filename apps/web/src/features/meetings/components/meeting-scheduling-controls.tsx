@@ -7,8 +7,8 @@ import {
   Clock3,
   MapPin,
 } from 'lucide-react'
-import { useRegionalPresentation } from '@/context/regional-presentation'
 import { instantCivilFields, resolveWallTime } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -59,7 +59,10 @@ export function MeetingScheduleFields({
 
   return (
     <>
-      <fieldset disabled={!timezone} className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
+      <fieldset
+        disabled={!timezone}
+        className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'
+      >
         <FormField
           control={control}
           name='date'
@@ -155,15 +158,29 @@ export function MeetingScheduleFields({
       </fieldset>
       {timezone ? (
         <>
-          <ScheduleOccurrenceField name='startOccurrence' date={date} time={startTime} timezone={timezone} original={originalStartAt} />
-          <ScheduleOccurrenceField name='endOccurrence' date={endDate || date} time={endTime} timezone={timezone} original={originalEndAt} />
+          <ScheduleOccurrenceField
+            name='startOccurrence'
+            date={date}
+            time={startTime}
+            timezone={timezone}
+            original={originalStartAt}
+          />
+          <ScheduleOccurrenceField
+            name='endOccurrence'
+            date={endDate || date}
+            time={endTime}
+            timezone={timezone}
+            original={originalEndAt}
+          />
           <p className='flex items-center gap-2 text-xs text-muted-foreground'>
             <Clock3 className='size-3.5' />
-            Scheduling timezone: {timezone}. Times are sent to Core API as absolute instants.
+            Scheduling timezone: {timezone}. Times are sent to Core API as
+            absolute instants.
           </p>
           {regional.timezone !== timezone && (
             <p role='status' className='text-xs text-muted-foreground'>
-              Regional preferences changed. This editor retains {timezone}; a new editor will use {regional.timezone}.
+              Regional preferences changed. This editor retains {timezone}; a
+              new editor will use {regional.timezone}.
             </p>
           )}
           {fallbackRequired && (
@@ -172,7 +189,10 @@ export function MeetingScheduleFields({
               name='fallbackAcknowledged'
               render={({ field }) => (
                 <FormItem className='rounded-md border p-3'>
-                  <p className='text-sm'>The configured timezone was unavailable when this editor opened.</p>
+                  <p className='text-sm'>
+                    The configured timezone was unavailable when this editor
+                    opened.
+                  </p>
                   <div className='flex items-center gap-2'>
                     <FormControl>
                       <input
@@ -181,14 +201,21 @@ export function MeetingScheduleFields({
                         ref={field.ref}
                         checked={field.value}
                         onBlur={field.onBlur}
-                        onChange={(event) => field.onChange(event.target.checked)}
+                        onChange={(event) =>
+                          field.onChange(event.target.checked)
+                        }
                       />
                     </FormControl>
                     <FormLabel>I confirm scheduling in {timezone}.</FormLabel>
                   </div>
                   <FormMessage />
                   {regional.retry && (
-                    <Button type='button' variant='outline' size='sm' onClick={regional.retry}>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={regional.retry}
+                    >
                       Retry regional preferences
                     </Button>
                   )}
@@ -198,7 +225,9 @@ export function MeetingScheduleFields({
           )}
         </>
       ) : (
-        <p role='status' className='text-xs text-muted-foreground'>Loading regional preferences…</p>
+        <p role='status' className='text-xs text-muted-foreground'>
+          Loading regional preferences…
+        </p>
       )}
     </>
   )
@@ -219,15 +248,23 @@ function ScheduleOccurrenceField({
 }) {
   const { control } = useFormContext<MeetingScheduleFormValues>()
   const resolution = resolveWallTime(date, time, timezone)
-  const label = name === 'startOccurrence' ? 'Start time UTC offset' : 'End time UTC offset'
+  const label =
+    name === 'startOccurrence' ? 'Start time UTC offset' : 'End time UTC offset'
   if (resolution.kind === 'gap') {
-    return <p role='alert' className='text-sm text-destructive'>{label}: this local time does not exist. Choose another time.</p>
+    return (
+      <p role='alert' className='text-sm text-destructive'>
+        {label}: this local time does not exist. Choose another time.
+      </p>
+    )
   }
   if (resolution.kind !== 'ambiguous') return null
   const existing = original ? instantCivilFields(original, timezone) : undefined
-  const originalChoice = existing?.date === date && existing.time === time
-    ? resolution.occurrences.find((candidate) => candidate.offset === existing.offset)?.instant
-    : undefined
+  const originalChoice =
+    existing?.date === date && existing.time === time
+      ? resolution.occurrences.find(
+          (candidate) => candidate.offset === existing.offset
+        )?.instant
+      : undefined
 
   return (
     <FormField
@@ -253,7 +290,9 @@ function ScheduleOccurrenceField({
               ))}
             </select>
           </FormControl>
-          <p className='text-xs text-muted-foreground'>This local time occurs twice. Select the intended occurrence.</p>
+          <p className='text-xs text-muted-foreground'>
+            This local time occurs twice. Select the intended occurrence.
+          </p>
           <FormMessage />
         </FormItem>
       )}

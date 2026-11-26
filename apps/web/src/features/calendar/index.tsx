@@ -2,8 +2,12 @@ import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
 import { toast } from 'sonner'
+import {
+  formatCivilDate,
+  instantCivilFields,
+  parseCivilDate,
+} from '@/lib/regional-time'
 import { useRegionalPresentation } from '@/context/regional-presentation'
-import { formatCivilDate, instantCivilFields, parseCivilDate } from '@/lib/regional-time'
 import { Button } from '@/components/ui/button'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
@@ -84,7 +88,10 @@ function CalendarPageContent({
     : undefined
   const presentation = calendarDataPresentationFromController(calendar)
   const timeZone = regional.timezone
-  const currentOffset = instantCivilFields(new Date().toISOString(), timeZone)?.offset
+  const currentOffset = instantCivilFields(
+    new Date().toISOString(),
+    timeZone
+  )?.offset
 
   function selectDay(dayKey: string) {
     const date = parseCivilDate(dayKey)
@@ -136,15 +143,16 @@ function CalendarPageContent({
               aria-label='Calendar time zone'
               className='mt-2 text-xs text-muted-foreground'
             >
-              Times shown in {timeZone} (UTC{currentOffset} today; daylight-saving
-              offsets follow each meeting date).
+              Times shown in {timeZone} (UTC{currentOffset} today;
+              daylight-saving offsets follow each meeting date).
             </p>
             {regional.status === 'loading' && (
               <p role='status' className='text-sm text-muted-foreground'>
                 Loading regional preferences…
               </p>
             )}
-            {(regional.status === 'unavailable' || regional.timezoneFallback) && (
+            {(regional.status === 'unavailable' ||
+              regional.timezoneFallback) && (
               <p role='status' className='text-sm text-muted-foreground'>
                 Using fallback timezone {timeZone}.
                 {regional.retry && (
@@ -179,7 +187,8 @@ function CalendarPageContent({
             role='status'
             className='flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground'
           >
-            New meetings will use {formatCivilDate(selectedDayDate.toString(), regional.locale, {
+            New meetings will use{' '}
+            {formatCivilDate(selectedDayDate.toString(), regional.locale, {
               weekday: 'long',
               month: 'long',
               day: 'numeric',
