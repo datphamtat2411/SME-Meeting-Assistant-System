@@ -71,9 +71,9 @@ describe('export adapter identity contracts', () => {
       parseExportStatus({ ...failed, retryEligible: false }).retryEligible
     ).toBe(false)
     expect(parseExportStatus(failed).retryEligible).toBeUndefined()
-    expect(() =>
-      parseExportStatus({ ...status, retryEligible: true })
-    ).toThrow(CoreApiError)
+    expect(() => parseExportStatus({ ...status, retryEligible: true })).toThrow(
+      CoreApiError
+    )
   })
 
   it('uses a distinct recovery route and never creates on unavailable receipt', async () => {

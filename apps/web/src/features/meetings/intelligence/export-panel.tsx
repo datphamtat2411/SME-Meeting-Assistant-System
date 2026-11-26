@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, FileDown } from 'lucide-react'
 import { toast } from 'sonner'
@@ -27,18 +21,11 @@ import { useOptionalMeetingAuthorization } from '../meeting-authorization-contex
 import {
   accessMinutesExport,
   exportCapabilitiesQuery,
-  exportStatusQuery,
   fetchExportStatus,
   type ExportStatus,
 } from './export-api'
-import {
-  canRetryObservation,
-  isTerminalExportStatus,
-  normalPollMs,
-  observationBudgetMs,
-  observationRetryDelay,
-} from './export-observation-policy'
 import { minutesQuery } from './minutes-api'
+import { useExportStatusObservation } from './use-export-status-observation'
 
 type ExportFormat = ExportStatus['format']
 
@@ -132,15 +119,6 @@ function validateDownloadCapability(
   }
 }
 
-function subscribeVisibility(listener: () => void) {
-  document.addEventListener('visibilitychange', listener)
-  return () => document.removeEventListener('visibilitychange', listener)
-}
-
-function pageVisible() {
-  return document.visibilityState === 'visible'
-}
-
 const statusLabels: Record<ExportStatus['status'], string> = {
   PENDING: 'Queued',
   GENERATING: 'Generating document',
@@ -172,101 +150,15 @@ function FormatExportCard({
   const queryClient = useQueryClient()
   const label = format === 'PDF' ? 'PDF' : 'Markdown'
   const statusScope = JSON.stringify([scope, meetingId, operation?.exportId])
-  const statusChannel = 'export-status-' + format
   const downloadChannel = 'export-download-' + format
-  const visible = useSyncExternalStore(subscribeVisibility, pageVisible)
-  const [paused, setPaused] = useState(false)
-  const remaining = useRef(observationBudgetMs)
-  const activeSince = useRef<number | undefined>(undefined)
-  const remainingTime = () =>
-    remaining.current -
-    (activeSince.current === undefined
-      ? 0
-      : performance.now() - activeSince.current)
-  const options = exportStatusQuery(operation?.exportId ?? '', {
-    meetingId,
-    format,
-    scope,
-  })
-  const statusQuery = useQuery({
-    ...options,
-    enabled: (query) =>
-      canObserve &&
-      Boolean(operation?.exportId) &&
-      visible &&
-      !paused &&
-      query.state.status !== 'error',
-    retry: (failures, error) =>
-      pageVisible() && canRetryObservation(failures, error, remainingTime()),
-    retryDelay: observationRetryDelay,
-    refetchInterval: (query) => {
-      if (
-        !canObserve ||
-        !operation?.exportId ||
-        !visible ||
-        paused ||
-        query.state.status === 'error' ||
-        remainingTime() <= 0
-      )
-        return false
-      const value = query.state.data
-      return isTerminalExportStatus(value) ? false : normalPollMs
-    },
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    retryOnMount: false,
-  })
-  useEffect(() => {
-    if (!canObserve || !operation?.exportId) return
-    if (
-      statusQuery.isError &&
-      isProtectedResourceAccessFailure(statusQuery.error)
-    ) {
-      void reconcileProtectedScope(queryClient, statusChannel, statusScope)
-    } else if (statusQuery.isSuccess && !statusQuery.isFetching) {
-      resetProtectedScopeReconciliation(queryClient, statusChannel, statusScope)
-    }
-  }, [
-    canObserve,
-    operation?.exportId,
-    queryClient,
-    statusChannel,
-    statusScope,
-    statusQuery.error,
-    statusQuery.isError,
-    statusQuery.isFetching,
-    statusQuery.isSuccess,
-  ])
-
-  const status =
-    canObserve && !statusQuery.isError ? statusQuery.data : undefined
-  const terminal = isTerminalExportStatus(status)
-  const tracking =
-    canObserve &&
-    Boolean(operation?.exportId) &&
-    visible &&
-    !paused &&
-    !terminal &&
-    !statusQuery.isError
-
-  useEffect(() => {
-    if (!tracking) return
-    const started = performance.now()
-    activeSince.current = started
-    const timer = window.setTimeout(
-      () => setPaused(true),
-      Math.max(0, remaining.current)
-    )
-    return () => {
-      window.clearTimeout(timer)
-      remaining.current = Math.max(
-        0,
-        remaining.current - (performance.now() - started)
-      )
-      activeSince.current = undefined
-    }
-  }, [tracking])
+  const { statusQuery, status, terminal, paused, refreshStatus } =
+    useExportStatusObservation({
+      exportId: operation?.exportId,
+      meetingId,
+      format,
+      scope,
+      canObserve,
+    })
 
   const noteReady = owner.noteReady
   const intentId = operation?.intentId
@@ -367,16 +259,6 @@ function FormatExportCard({
       }
     },
   })
-
-  function refreshStatus() {
-    if (!canObserve || !operation?.exportId || statusQuery.isFetching) return
-    if (paused || statusQuery.isError) {
-      remaining.current = observationBudgetMs
-      setPaused(false)
-    }
-    resetProtectedScopeReconciliation(queryClient, statusChannel, statusScope)
-    void statusQuery.refetch()
-  }
 
   function submit(confirmNewIntent = false) {
     if (owner.pending[format] || download.isPending) return

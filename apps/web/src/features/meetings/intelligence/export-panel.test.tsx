@@ -322,6 +322,194 @@ describe('ExportPanel authorization and download boundary', () => {
     expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
   })
 
+  it('keeps a known export identity through same-tab reload without admitting again', async () => {
+    const first = await renderPanel()
+    await userEvent.click(first.getByRole('button', { name: 'Generate PDF' }))
+    await expect
+      .element(first.getByRole('button', { name: 'Download' }))
+      .toBeVisible()
+    first.unmount()
+
+    const second = await renderPanel()
+    await expect
+      .element(second.getByRole('button', { name: 'Download' }))
+      .toBeVisible()
+    expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
+    expect(exportMocks.recoverMinutesExport).not.toHaveBeenCalled()
+  })
+
+  it('distinguishes unknown freshness from a confirmed stale artifact', async () => {
+    const ready = {
+      exportId,
+      meetingId: authorizationMocks.value.meetingId,
+      format: 'PDF',
+      status: 'READY',
+      freshness: 'UNKNOWN',
+    }
+    exportMocks.fetchExportStatus.mockResolvedValue(ready)
+    const screen = await renderPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await expect
+      .element(screen.getByRole('button', { name: 'Verify freshness' }))
+      .toBeEnabled()
+    await expect
+      .element(screen.getByRole('button', { name: 'Download' }))
+      .not.toBeInTheDocument()
+    exportMocks.fetchExportStatus.mockResolvedValue({
+      ...ready,
+      freshness: 'STALE',
+    })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Verify freshness' })
+    )
+    await expect
+      .element(
+        screen.getByText('This export is outdated. Generate a new version.')
+      )
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('button', { name: 'Verify freshness' }))
+      .not.toBeInTheDocument()
+    expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
+    expect(exportMocks.accessMinutesExport).not.toHaveBeenCalled()
+  })
+
+  it('preserves a previous artifact after replacement failure and revalidates it before access', async () => {
+    const ready = {
+      exportId,
+      meetingId: authorizationMocks.value.meetingId,
+      format: 'PDF',
+      status: 'READY',
+      freshness: 'CURRENT',
+    }
+    exportMocks.createMinutesExport
+      .mockResolvedValueOnce({ exportId })
+      .mockResolvedValueOnce({ exportId: secondExportId })
+    exportMocks.fetchExportStatus.mockImplementation(async (id: string) =>
+      id === exportId
+        ? ready
+        : {
+            ...ready,
+            exportId: id,
+            status: 'FAILED',
+            retryEligible: false,
+            freshness: 'NOT_APPLICABLE',
+          }
+    )
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+    const screen = await renderPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Generate new PDF' })
+    )
+    await expect.element(screen.getByText('Generation failed')).toBeVisible()
+    const previous = screen.getByRole('button', {
+      name: 'Verify and download previous PDF',
+    })
+    await userEvent.click(previous)
+    await expect.poll(() => click.mock.calls.length).toBe(1)
+    expect(exportMocks.accessMinutesExport).toHaveBeenCalledWith(exportId)
+    ready.freshness = 'STALE'
+    await userEvent.click(previous)
+    await expect
+      .poll(() => exportMocks.fetchExportStatus.mock.calls.length)
+      .toBeGreaterThan(3)
+    expect(exportMocks.accessMinutesExport).toHaveBeenCalledOnce()
+    expect(click).toHaveBeenCalledOnce()
+    click.mockRestore()
+  })
+
+  it('keeps one format usable when the other admission fails', async () => {
+    exportMocks.createMinutesExport.mockImplementation(
+      async (_meetingId: string, format: string) => {
+        if (format === 'PDF') {
+          throw new CoreApiError({
+            message: 'PDF admission rejected.',
+            code: 'EXPORT_CONFLICT',
+            status: 409,
+            kind: 'http',
+          })
+        }
+        return { exportId: secondExportId }
+      }
+    )
+    exportMocks.fetchExportStatus.mockResolvedValue({
+      exportId: secondExportId,
+      meetingId: authorizationMocks.value.meetingId,
+      format: 'MARKDOWN',
+      status: 'READY',
+      freshness: 'CURRENT',
+    })
+    const screen = await renderPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await expect
+      .element(screen.getByText('PDF export request failed'))
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Generate Markdown' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Download' }))
+      .toBeEnabled()
+    await expect
+      .element(screen.getByText('PDF export request failed'))
+      .toBeVisible()
+  })
+
+  it('does not let concurrent downloads of different formats invalidate each other', async () => {
+    const markdown = {
+      ...exportCapability,
+      exportId: secondExportId,
+      accessUrl: 'https://localhost/download/export.md?signature=test',
+      filename: 'meeting-minutes.md',
+      contentType: 'text/markdown; charset=UTF-8',
+    }
+    const pdfResponse = deferred<typeof exportCapability>()
+    const markdownResponse = deferred<typeof markdown>()
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+    exportMocks.createMinutesExport.mockImplementation(
+      async (_meetingId: string, format: string) => ({
+        exportId: format === 'PDF' ? exportId : secondExportId,
+      })
+    )
+    exportMocks.fetchExportStatus.mockImplementation(async (id: string) => ({
+      exportId: id,
+      meetingId: authorizationMocks.value.meetingId,
+      format: id === exportId ? 'PDF' : 'MARKDOWN',
+      status: 'READY',
+      freshness: 'CURRENT',
+    }))
+    exportMocks.accessMinutesExport.mockImplementation((id: string) =>
+      id === exportId ? pdfResponse.promise : markdownResponse.promise
+    )
+    const screen = await renderPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Generate Markdown' })
+    )
+    await userEvent.click(
+      screen
+        .getByRole('region', { name: 'PDF export' })
+        .getByRole('button', { name: 'Download' })
+    )
+    await userEvent.click(
+      screen
+        .getByRole('region', { name: 'Markdown export' })
+        .getByRole('button', { name: 'Download' })
+    )
+    await expect
+      .poll(() => exportMocks.accessMinutesExport.mock.calls.length)
+      .toBe(2)
+    markdownResponse.resolve(markdown)
+    pdfResponse.resolve(exportCapability)
+    await expect.poll(() => click.mock.calls.length).toBe(2)
+    click.mockRestore()
+  })
+
   it('does not create exports when deployment admission is disabled', async () => {
     exportMocks.capabilities.admission = false
     const screen = await renderPanel()
