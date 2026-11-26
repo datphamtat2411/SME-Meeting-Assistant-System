@@ -1705,7 +1705,13 @@ describe('MeetingWorkspacePage', () => {
       ['dashboard', 'management', 'manager-scope'],
       ['export', 'pdf-a', 'meeting-1', 'PDF', 'actor-scope'],
     ]
-    const unrelatedExport = ['export', 'pdf-b', 'meeting-2', 'PDF', 'actor-scope']
+    const unrelatedExport = [
+      'export',
+      'pdf-b',
+      'meeting-2',
+      'PDF',
+      'actor-scope',
+    ]
     for (const key of [...dependentKeys, unrelatedExport]) {
       queryClient.setQueryData(key, { observed: true })
     }
@@ -1728,7 +1734,9 @@ describe('MeetingWorkspacePage', () => {
     for (const key of dependentKeys) {
       expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
     }
-    expect(queryClient.getQueryState(unrelatedExport)?.isInvalidated).toBe(false)
+    expect(queryClient.getQueryState(unrelatedExport)?.isInvalidated).toBe(
+      false
+    )
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ['meetings', 'list'],
     })

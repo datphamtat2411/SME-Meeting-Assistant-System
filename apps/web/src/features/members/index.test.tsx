@@ -348,10 +348,39 @@ describe('Members directory', () => {
       .toHaveValue('alpha')
 
     const search = screen.getByRole('textbox', { name: 'Search members' })
-    await userEvent.fill(search, 'obsolete draft')
-    await router.navigate({
-      search: { q: 'bravo' } as never,
-    })
+    // Keep the debounce pending until navigation, even on a busy CI runner.
+    // Verify that navigation cancels the actual timer, not just its UI draft.
+    const scheduleTimeout = window.setTimeout.bind(window)
+    let pendingSearchTimer: number | undefined
+    const scheduleSpy = vi
+      .spyOn(window, 'setTimeout')
+      .mockImplementation((handler, delay, ...args) => {
+        const isSearchDebounce = delay === 350
+        const id = scheduleTimeout(
+          handler,
+          isSearchDebounce ? 60_000 : delay,
+          ...args
+        )
+        if (isSearchDebounce) pendingSearchTimer = id
+        return id
+      })
+    const clearSpy = vi.spyOn(window, 'clearTimeout')
+    try {
+      await userEvent.fill(search, 'obsolete draft')
+      await expect.poll(() => pendingSearchTimer).toBeDefined()
+      const timerId = pendingSearchTimer
+      expect(router.state.location.search.q).toBe('alpha')
+      await router.navigate({
+        search: { q: 'bravo' } as never,
+      })
+      await expect.poll(() => clearSpy.mock.calls).toContainEqual([timerId])
+    } finally {
+      if (pendingSearchTimer !== undefined) {
+        window.clearTimeout(pendingSearchTimer)
+      }
+      scheduleSpy.mockRestore()
+      clearSpy.mockRestore()
+    }
     await expect.poll(() => router.state.location.search.q).toBe('bravo')
     await expect.element(search).toHaveValue('bravo')
 
