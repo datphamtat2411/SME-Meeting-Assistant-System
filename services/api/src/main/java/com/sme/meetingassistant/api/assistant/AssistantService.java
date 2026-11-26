@@ -94,7 +94,7 @@ public final class AssistantService {
         requireEnabled();UUID user=actor();validatePage(page,size);
         var conversation=store.require(id,user,false);
         access.requireReadable(conversation.meetingId(),user);
-        List<AssistantStore.Message> messages=store.messages(id,page,size+1);
+        List<AssistantStore.Message> messages=store.messages(id,size+1,page*size);
         boolean hasMore=messages.size()>size;
         if(hasMore)messages=messages.subList(messages.size()-size,messages.size());
         List<MessageView> views=new ArrayList<>();

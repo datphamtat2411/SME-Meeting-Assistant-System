@@ -10,6 +10,8 @@ on:
       - 'mobile/module-meeting-results'
       # M06 Wave 01 extends the Core API Action Item contract.
       - 'mobile/module-action-items'
+      # M07 Wave 01 corrects Core API Assistant history pagination.
+      - 'mobile/module-assistant'
   pull_request:
     branches:
       - develop

@@ -181,12 +181,12 @@ class AssistantStore {
               FROM assistant_messages WHERE id=?
             """,AssistantStore::message,messageId).stream().findFirst().orElse(null);
     }
-    List<Message> messages(UUID conversation,int page,int size){
+    List<Message> messages(UUID conversation,int limit,int offset){
         List<Message> reversed=jdbc.query("""
             SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,created_at
               FROM assistant_messages WHERE conversation_id=?
              ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?
-            """,AssistantStore::message,conversation,size,page*size);
+            """,AssistantStore::message,conversation,limit,offset);
         Collections.reverse(reversed);
         return reversed;
     }

@@ -76,6 +76,48 @@ class AssistantHttpIntegrationTests {
             "scopeVersion",req.path("authorizedScope").path("scopeVersion").asText(),
             "claims",List.of(),"citations",List.of(),"diagnostics",Map.of(),"failures",List.of()));
     }
+    @Test void historyPaginationPreservesEveryMessageAndStableOrdering() throws Exception {
+        UUID owner=user(),id=conversation(owner,meeting(owner));
+        // Equal timestamps exercise the canonical UUID tie-breaker as well as
+        // the lookahead boundary. No inference or admission quota is involved.
+        List<String> newestFirst=new java.util.ArrayList<>();
+        for(int i=1;i<=12;i++){
+            UUID message=new UUID(0,i);
+            // Use a random namespace so other tests/runs cannot collide.
+            message=new UUID(id.getMostSignificantBits(),message.getLeastSignificantBits());
+            jdbc.update("""
+                INSERT INTO assistant_messages(id,conversation_id,role,content,created_at)
+                VALUES (?,?,'USER','Question',TIMESTAMPTZ '2026-01-01 00:00:00+00')
+                """,message,id);
+            newestFirst.addFirst(message.toString());
+        }
+        for(int size:List.of(1,4,5,12,50)){
+            List<String> actual=new java.util.ArrayList<>();
+            for(int page=0;page<=12/size;page++){
+                JsonNode detail=response(mvc.perform(get("/api/v1/assistant/conversations/"+id)
+                    .principal(principal(owner)).param("page",String.valueOf(page))
+                    .param("size",String.valueOf(size))).andExpect(status().isOk()).andReturn());
+                assertThat(detail.path("page").asInt()).isEqualTo(page);
+                assertThat(detail.path("size").asInt()).isEqualTo(size);
+                int from=page*size,to=Math.min(from+size,12);
+                List<String> expected=new java.util.ArrayList<>(newestFirst.subList(from,to));
+                java.util.Collections.reverse(expected);
+                List<String> pageIds=new java.util.ArrayList<>();
+                for(JsonNode row:detail.path("messages"))pageIds.add(row.path("id").asText());
+                assertThat(pageIds).containsExactlyElementsOf(expected);
+                assertThat(detail.path("hasMore").asBoolean()).isEqualTo(to<12);
+                java.util.Collections.reverse(pageIds);
+                actual.addAll(pageIds);
+            }
+            assertThat(actual).containsExactlyElementsOf(newestFirst);
+        }
+        UUID empty=conversation(owner,meeting(owner));
+        JsonNode detail=response(mvc.perform(get("/api/v1/assistant/conversations/"+empty)
+            .principal(principal(owner))).andExpect(status().isOk()).andReturn());
+        assertThat(detail.path("messages").size()).isZero();
+        assertThat(detail.path("hasMore").asBoolean()).isFalse();
+    }
+
     @Test void ownerAndCurrentMeetingMembershipAreBothRequired() throws Exception {
         UUID owner=user(),member=user(),outsider=user(),meeting=meeting(owner,member);
         UUID id=conversation(member,meeting);
