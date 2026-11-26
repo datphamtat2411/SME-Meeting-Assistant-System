@@ -523,6 +523,91 @@ void main() {
       expect(calls, 2);
     });
 
+    for (final detail in [false, true]) {
+      for (final lateFailure in [false, true]) {
+        test(
+          'old session cannot publish ${detail ? 'detail' : 'list'} '
+          '${lateFailure ? 'failure' : 'success'} after session replacement',
+          () async {
+            final entered = Completer<void>();
+            final held = Completer<http.StreamedResponse>();
+            var reads = 0;
+            final repository = await _repository(
+              MeetingTestHttpClient((request) async {
+                expect(request.method, 'GET');
+                reads++;
+                if (reads == 1) {
+                  entered.complete();
+                  return held.future;
+                }
+                return meetingApiSuccess(
+                  detail ? _detail() : [_conversation()],
+                );
+              }),
+            );
+            final oldScope = repository.captureSession();
+            Future<Object> read(AuthenticatedSessionScope scope) => detail
+                ? repository.getConversation(
+                    _conversationId,
+                    sessionScope: scope,
+                    expectedMeetingId: testMeetingId,
+                  )
+                : repository.listConversations(sessionScope: scope);
+
+            final pending = read(oldScope);
+            final expectation = expectLater(
+              pending,
+              throwsA(
+                isA<AssistantFailure>()
+                    .having(
+                      (e) => e.category,
+                      'category',
+                      AssistantFailureCategory.authentication,
+                    )
+                    .having(
+                      (e) => e.outcome,
+                      'outcome',
+                      AssistantMutationOutcome.notApplicable,
+                    ),
+              ),
+            );
+            await entered.future;
+            await repository.api.signOut();
+            await repository.api.signIn('user@example.test', 'password');
+            final newScope = repository.captureSession();
+            expect(newScope, isNot(oldScope));
+            held.complete(
+              lateFailure
+                  ? await meetingApiFailure(403, 'AUTHZ_FORBIDDEN')
+                  : await meetingApiSuccess(
+                      detail ? _detail() : [_conversation()],
+                    ),
+            );
+            await expectation;
+            await expectLater(
+              read(oldScope),
+              throwsA(
+                isA<AssistantFailure>().having(
+                  (e) => e.outcome,
+                  'outcome',
+                  AssistantMutationOutcome.notDispatched,
+                ),
+              ),
+            );
+            expect(reads, 1);
+            final current = await read(newScope);
+            expect(
+              current,
+              detail
+                  ? isA<AssistantConversationDetail>()
+                  : isA<AssistantConversationPage>(),
+            );
+            expect(reads, 2);
+          },
+        );
+      }
+    }
+
     test('old session cannot dispatch or publish a late mutation', () async {
       final entered = Completer<void>();
       final held = Completer<http.StreamedResponse>();
