@@ -17,11 +17,11 @@ import {
   type MeetingLifecycleStatus,
 } from '@/features/meetings/data/list-api'
 import { CalendarRoomFilter } from './calendar-room-filter'
-import { calendarMonthKey } from './calendar-state'
-import type {
-  CalendarFilters,
-  CalendarRelationship,
-  CalendarView,
+import {
+  calendarMonthKey,
+  type CalendarFilters,
+  type CalendarRelationship,
+  type CalendarView,
 } from './calendar-state'
 
 const statusLabels: Record<MeetingLifecycleStatus, string> = {

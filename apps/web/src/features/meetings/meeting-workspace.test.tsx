@@ -1,3 +1,5 @@
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { useState } from 'react'
 import {
   QueryClient,
@@ -392,9 +394,18 @@ async function renderEditableWorkspace(
     userId: 'current-user',
     displayName: 'Current User',
   })
+  queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
+  })
   const screen = await render(
     <QueryClientProvider client={queryClient}>
-      <MeetingWorkspacePage meetingId='meeting-1' />
+      <RegionalPresentationProvider>
+        <MeetingWorkspacePage meetingId='meeting-1' />
+      </RegionalPresentationProvider>
     </QueryClientProvider>
   )
   return { queryClient, screen }

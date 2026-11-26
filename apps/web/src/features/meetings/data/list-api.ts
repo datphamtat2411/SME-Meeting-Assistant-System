@@ -1,3 +1,4 @@
+import { Temporal } from '@js-temporal/polyfill'
 import { z } from 'zod'
 import { queryOptions } from '@tanstack/react-query'
 import { CoreApiError, coreApi, type ApiResponseData } from '@/lib/core-api'
@@ -35,11 +36,17 @@ const offsetDateTimePattern =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/
 
 export function isValidOffsetDateTime(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    offsetDateTimePattern.test(value) &&
-    Number.isFinite(Date.parse(value))
-  )
+  if (typeof value !== 'string' || !offsetDateTimePattern.test(value)) {
+    return false
+  }
+  try {
+    // Date.parse normalizes some invalid civil dates. Calendar projection and
+    // scheduling use Temporal, so validate the canonical representation here.
+    Temporal.Instant.from(value)
+    return true
+  } catch {
+    return false
+  }
 }
 
 const offsetDateTimeSchema = z.string().refine(isValidOffsetDateTime)

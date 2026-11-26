@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  formatRegionalInstant,
   civilDayInterval,
   civilMonthInterval,
   compareInstants,
@@ -99,5 +100,19 @@ describe('regional temporal semantics', () => {
       )
     ).toBe(-1)
     expect(formatCivilDate('2026-12-01', 'en-GB')).toBe('1 Dec 2026')
+  })
+})
+
+describe('regional instant presentation', () => {
+  it('formats the same instant under independent timezone and locale preferences', () => {
+    const value = '2026-12-01T02:00:00Z'
+    const options = { dateStyle: 'medium', timeStyle: 'short' } as const
+    expect(formatRegionalInstant(value, 'Asia/Tokyo', 'en-GB', options)).toBe(
+      '1 Dec 2026, 11:00'
+    )
+    expect(formatRegionalInstant(value, 'America/New_York', 'en-GB', options)).toBe(
+      '30 Nov 2026, 21:00'
+    )
+    expect(formatRegionalInstant('invalid', 'UTC', 'en-GB')).toBeUndefined()
   })
 })

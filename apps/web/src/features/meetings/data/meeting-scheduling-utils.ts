@@ -1,3 +1,4 @@
+import { Temporal } from '@js-temporal/polyfill'
 import {
   compareInstants,
   instantCivilFields,
@@ -47,7 +48,9 @@ export function resolveScheduleEndpoint(
   const instant = wallTimeInstant(date, time, timezone, occurrence)
   // Entered values have at most whole-second precision. Unchanged originals
   // above are never round-tripped through Date.
-  return instant ? new Date(instant).toISOString() : undefined
+  return instant
+    ? Temporal.Instant.from(instant).toString({ fractionalSecondDigits: 3 })
+    : undefined
 }
 
 export function scheduleEndpointError(date: string, time: string, timezone: string) {

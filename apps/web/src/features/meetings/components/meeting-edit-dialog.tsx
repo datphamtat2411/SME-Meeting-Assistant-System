@@ -219,19 +219,89 @@ export type MeetingEditDialogProps = {
   onCommitted?: (commit: MeetingEditCommit) => void
 }
 
-export function MeetingEditDialog({
+type MeetingEditorSession = {
+  meeting: MeetingView
+  etag: string
+  timezone: string
+  fallbackRequired: boolean
+  discardOnClose: boolean
+}
+
+export function MeetingEditDialog(props: MeetingEditDialogProps) {
+  const regional = useRegionalPresentation()
+  const queryClient = useQueryClient()
+  const [session, setSession] = useState<MeetingEditorSession | null>(null)
+
+  // A fresh editor owns one confirmed snapshot and one timezone. Opening it
+  // is a state boundary, not an effect that repeatedly resets a live draft.
+  if (!props.open && session?.discardOnClose) {
+    setSession(null)
+  } else if (
+    props.open &&
+    regional.status !== 'loading' &&
+    (!session || session.meeting.id !== props.meeting.id)
+  ) {
+    const cached = queryClient.getQueryData<MeetingDetailResponse>(
+      meetingDetailQueryKey(props.meeting.id)
+    )
+    setSession({
+      meeting: cached?.meeting ?? props.meeting,
+      etag: cached?.etag ?? props.etag,
+      timezone: regional.timezone,
+      fallbackRequired:
+        regional.status === 'unavailable' || regional.timezoneFallback,
+      discardOnClose: false,
+    })
+  }
+
+  if (!session || session.meeting.id !== props.meeting.id) {
+    if (!props.open) return null
+    return (
+      <Dialog open onOpenChange={props.onOpenChange}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit meeting</DialogTitle>
+            <DialogDescription>Loading regional preferences…</DialogDescription>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
+  return (
+    <MeetingEditSession
+      key={session.meeting.id}
+      {...props}
+      session={session}
+      onDiscardSession={() =>
+        setSession((current) =>
+          current ? { ...current, discardOnClose: true } : current
+        )
+      }
+    />
+  )
+}
+
+function MeetingEditSession({
   open,
   onOpenChange,
   meeting,
-  etag,
   currentUserId,
   onCommitted,
-}: MeetingEditDialogProps) {
-  const regional = useRegionalPresentation()
+  session,
+  onDiscardSession,
+}: MeetingEditDialogProps & {
+  session: MeetingEditorSession
+  onDiscardSession: () => void
+}) {
   const queryClient = useQueryClient()
   const form = useForm<MeetingEditFormValues>({
     resolver: zodResolver(meetingEditFormSchema),
-    defaultValues: toMeetingEditFormValues(meeting, ''),
+    defaultValues: toMeetingEditFormValues(
+      session.meeting,
+      session.timezone,
+      session.fallbackRequired
+    ),
   })
   const [phase, setPhase] = useState<EditPhase>('idle')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -244,8 +314,8 @@ export function MeetingEditDialog({
   const [pendingSchedule, setPendingSchedule] =
     useState<PendingSchedule | null>(null)
   const [showWarningDetails, setShowWarningDetails] = useState(false)
-  const [workingMeeting, setWorkingMeeting] = useState<MeetingView>(meeting)
-  const [currentEtag, setCurrentEtag] = useState(etag)
+  const [workingMeeting, setWorkingMeeting] = useState<MeetingView>(session.meeting)
+  const [currentEtag, setCurrentEtag] = useState(session.etag)
   const [latestDetail, setLatestDetail] =
     useState<MeetingDetailResponse | null>(null)
   const [reloadConfirmationOpen, setReloadConfirmationOpen] = useState(false)
@@ -256,10 +326,8 @@ export function MeetingEditDialog({
     'precondition' | 'uncertain' | null
   >(null)
   const operationInFlight = useRef(false)
-  const openedMeetingId = useRef<string | null>(null)
-  const resetOnNextOpen = useRef(true)
   const [originalSchedule, setOriginalSchedule] = useState<OriginalSchedule>(
-    () => createOriginalSchedule(meeting)
+    () => createOriginalSchedule(session.meeting)
   )
   const reportedCommitKeys = useRef(new Set<string>())
 
@@ -333,45 +401,6 @@ export function MeetingEditDialog({
     phase === 'confirmed'
 
   useEffect(() => {
-    if (!open) {
-      if (!form.formState.isDirty) resetOnNextOpen.current = true
-      return
-    }
-    if (resetOnNextOpen.current || openedMeetingId.current !== meeting.id) {
-      if (regional.status === 'loading') return
-      const cachedDetail = queryClient.getQueryData<MeetingDetailResponse>(
-        meetingDetailQueryKey(meeting.id)
-      )
-      const canonicalMeeting = cachedDetail?.meeting ?? meeting
-      const canonicalEtag = cachedDetail?.etag ?? etag
-      const formValues = toMeetingEditFormValues(
-        canonicalMeeting,
-        regional.timezone,
-        regional.status === 'unavailable' || regional.timezoneFallback
-      )
-      form.reset(formValues)
-      setOriginalSchedule(createOriginalSchedule(canonicalMeeting))
-      setWorkingMeeting(canonicalMeeting)
-      setCurrentEtag(canonicalEtag)
-      setPhase('idle')
-      setErrorMessage(null)
-      setOutcome(null)
-      setScheduleCheck(null)
-      setScheduleCheckFingerprint(null)
-      setPendingSchedule(null)
-      setShowWarningDetails(false)
-      setLatestDetail(null)
-      setReloadConfirmationOpen(false)
-      setEditingBlocked(false)
-      setReconciliationIntent(null)
-      setReconciliationMode(null)
-      operationInFlight.current = false
-      openedMeetingId.current = meeting.id
-      resetOnNextOpen.current = false
-    }
-  }, [etag, form, form.formState.isDirty, meeting, open, queryClient, regional.status, regional.timezone, regional.timezoneFallback])
-
-  useEffect(() => {
     if (!form.formState.isDirty && !busy) return
     const preventDiscard = (event: BeforeUnloadEvent) => {
       event.preventDefault()
@@ -441,7 +470,7 @@ export function MeetingEditDialog({
     setPhase('confirmed')
     setPendingSchedule(null)
     operationInFlight.current = false
-    resetOnNextOpen.current = true
+    onDiscardSession()
     onOpenChange(false)
     const commitKey = `${result.meeting.id}:${result.etag}:${confirmedOutcome}`
     if (reportedCommitKeys.current.has(commitKey)) return
@@ -969,6 +998,9 @@ export function MeetingEditDialog({
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen && busy) return
+    if (!nextOpen && !form.formState.isDirty && phase !== 'version_unverified') {
+      onDiscardSession()
+    }
     onOpenChange(nextOpen)
   }
 

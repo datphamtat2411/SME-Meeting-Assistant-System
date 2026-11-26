@@ -1,3 +1,5 @@
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
@@ -186,9 +188,18 @@ describe('MeetingsPage', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
+    queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
+  })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <MeetingsPage />
+        <RegionalPresentationProvider>
+          <MeetingsPage />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -253,9 +264,18 @@ describe('MeetingsPage', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
+    queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
+  })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <MeetingsPage />
+        <RegionalPresentationProvider>
+          <MeetingsPage />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -338,9 +358,18 @@ describe('MeetingsPage', () => {
         absoluteExpiresAt: '2026-09-02T00:00:00Z',
       },
     } as AuthContext)
+    queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
+  })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <MeetingsPage />
+        <RegionalPresentationProvider>
+          <MeetingsPage />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -471,9 +500,18 @@ describe('MeetingsPage', () => {
         absoluteExpiresAt: '2026-09-02T00:00:00Z',
       },
     } as AuthContext)
+    queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
+  })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <MeetingsPage />
+        <RegionalPresentationProvider>
+          <MeetingsPage />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -599,9 +637,18 @@ describe('MeetingsPage', () => {
         absoluteExpiresAt: '2026-09-02T00:00:00Z',
       },
     } as AuthContext)
+    queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
+  })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <MeetingsPage />
+        <RegionalPresentationProvider>
+          <MeetingsPage />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -682,9 +729,18 @@ describe('MeetingsPage', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
+    queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
+  })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <MeetingsPage />
+        <RegionalPresentationProvider>
+          <MeetingsPage />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -752,9 +808,18 @@ describe('MeetingsPage', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
+    queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
+  })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <MeetingsPage />
+        <RegionalPresentationProvider>
+          <MeetingsPage />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -803,9 +868,18 @@ describe('MeetingsPage', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
+    queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
+  })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <MeetingsPage />
+        <RegionalPresentationProvider>
+          <MeetingsPage />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -838,9 +912,18 @@ describe('MeetingsPage', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
+    queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
+  })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <MeetingsPage />
+        <RegionalPresentationProvider>
+          <MeetingsPage />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 

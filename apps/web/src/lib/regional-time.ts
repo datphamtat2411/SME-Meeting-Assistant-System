@@ -81,9 +81,14 @@ export function wallTimeInstant(
 ): string | undefined {
   const resolved = resolveWallTime(date, time, timezone)
   if (resolved.kind === 'unique') return resolved.occurrence.instant
-  if (resolved.kind === 'ambiguous') {
-    return resolved.occurrences.find((item) => item.instant === occurrence)
-      ?.instant
+  if (resolved.kind === 'ambiguous' && occurrence) {
+    try {
+      return resolved.occurrences.find(
+        (item) => compareInstants(item.instant, occurrence) === 0
+      )?.instant
+    } catch {
+      return undefined
+    }
   }
   return undefined
 }
