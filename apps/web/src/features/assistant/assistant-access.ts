@@ -6,7 +6,11 @@ import {
   isRequestRecoveryBlocked,
   isSessionLossConfirmed,
 } from '@/lib/request-recovery'
-import type { AssistantConversation } from './assistant-api'
+import type {
+  AssistantConversation,
+  AssistantConversationDetail,
+  AssistantMessage,
+} from './assistant-api'
 
 type AccessState = {
   session: number
@@ -14,6 +18,7 @@ type AccessState = {
   listEpoch: number
   resourceEpochs: Map<string, number>
   questionEpochs: Map<string, number>
+  historyEpochs: Map<string, number>
   denied: Map<string, CoreApiError>
   listError?: CoreApiError
   revision: number
@@ -33,6 +38,7 @@ function stateFor(client: QueryClient): AccessState {
       listEpoch: 0,
       resourceEpochs: new Map(),
       questionEpochs: new Map(),
+      historyEpochs: new Map(),
       denied: new Map(),
       revision: 0,
       listeners: new Set(),
@@ -44,6 +50,7 @@ function stateFor(client: QueryClient): AccessState {
     state.listEpoch += 1
     state.resourceEpochs.clear()
     state.questionEpochs.clear()
+    state.historyEpochs.clear()
     state.denied.clear()
     state.listError = undefined
     state.revision += 1
@@ -166,7 +173,9 @@ export function isAssistantAuthorizationDenial(error: unknown): boolean {
   return (
     failure.status === 401 ||
     failure.status === 403 ||
-    (failure.status === 404 && failure.code !== 'ASSISTANT_TURN_NOT_FOUND')
+    (failure.status === 404 &&
+      failure.code !== 'ASSISTANT_TURN_NOT_FOUND' &&
+      failure.code !== 'ASSISTANT_HISTORY_ANCHOR_NOT_FOUND')
   )
 }
 
@@ -255,4 +264,82 @@ export async function readAssistantProtected<T>(
     containAssistantAccessFailure(client, token, error)
     throw error
   }
+}
+
+function historyEpoch(client: QueryClient, conversationId: string): number {
+  return stateFor(client).historyEpochs.get(conversationId) ?? 0
+}
+
+function advanceHistoryEpoch(client: QueryClient, conversationId: string) {
+  stateFor(client).historyEpochs.set(
+    conversationId,
+    historyEpoch(client, conversationId) + 1
+  )
+}
+
+function replaceRedactions(
+  detail: AssistantConversationDetail,
+  redactions: Map<string, AssistantMessage>
+): AssistantConversationDetail {
+  return {
+    ...detail,
+    messages: detail.messages.map(
+      (message) => redactions.get(message.id) ?? message
+    ),
+  }
+}
+
+// Protect every cached representation, not just the currently rendered page.
+// A concurrent read started before a newly observed redaction is obsolete.
+export async function readAssistantHistoryProtected(
+  client: QueryClient,
+  conversationId: string,
+  read: () => Promise<AssistantConversationDetail>
+): Promise<AssistantConversationDetail> {
+  const epoch = historyEpoch(client, conversationId)
+  const detail = await readAssistantProtected(client, conversationId, read)
+  if (epoch !== historyEpoch(client, conversationId)) {
+    throw new CoreApiError({
+      code: 'ASSISTANT_OPERATION_OBSOLETE',
+      kind: 'http',
+      message: 'Assistant history changed during this read.',
+    })
+  }
+
+  const redactions = new Map(
+    detail.messages
+      .filter((message) => message.visibility === 'SOURCE_UNAVAILABLE')
+      .map((message) => [message.id, message] as const)
+  )
+  if (redactions.size > 0) {
+    advanceHistoryEpoch(client, conversationId)
+    client.setQueriesData<AssistantConversationDetail>(
+      { queryKey: ['assistant', 'conversation', conversationId, 'page'] },
+      (cached) => cached && replaceRedactions(cached, redactions)
+    )
+    client.setQueriesData<InfiniteData<AssistantConversationDetail>>(
+      { queryKey: ['assistant', 'conversation', conversationId, 'history'] },
+      (cached) =>
+        cached && {
+          ...cached,
+          pages: cached.pages.map((page) => replaceRedactions(page, redactions)),
+        }
+    )
+  }
+  return detail
+}
+
+// A stale-source outcome does not identify every affected cached message.
+// Discard the conversation's cached history and revalidate through Core.
+export function invalidateAssistantHistory(
+  client: QueryClient,
+  conversationId: string
+): void {
+  advanceHistoryEpoch(client, conversationId)
+  const pageKey = ['assistant', 'conversation', conversationId, 'page']
+  const historyKey = ['assistant', 'conversation', conversationId, 'history']
+  void client.cancelQueries({ queryKey: pageKey })
+  client.removeQueries({ queryKey: pageKey })
+  void client.cancelQueries({ queryKey: historyKey })
+  void client.resetQueries({ queryKey: historyKey })
 }

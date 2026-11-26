@@ -389,6 +389,30 @@ describe('Assistant Core API adapter', () => {
     expect(post).not.toHaveBeenCalled()
   })
 
+  it('accepts 4096 supplementary code points and rejects oversized questions', async () => {
+    const post = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      turnId: '66666666-6666-4666-8666-666666666666',
+      state: 'PROCESSING',
+      userMessageId,
+      assistantMessageId: null,
+      answerStatus: null,
+      answer: null,
+      claims: [],
+      citations: [],
+    })
+    const question = '😀'.repeat(4096)
+    await submitAssistantQuestion(conversationId, `  ${question}  `, 'unicode-key')
+    expect(post).toHaveBeenCalledWith(
+      `/assistant/conversations/${conversationId}/messages`,
+      { question },
+      { headers: { 'Idempotency-Key': 'unicode-key' } }
+    )
+    await expect(
+      submitAssistantQuestion(conversationId, question + 'x', 'too-long')
+    ).rejects.toMatchObject({ status: 422 })
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
   it('matches the exact assistant message ID without substituting a different response', () => {
     const laterAssistant = {
       ...groundedMessage,

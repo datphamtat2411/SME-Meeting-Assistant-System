@@ -5,7 +5,7 @@ import {
   useMutation,
   useQueryClient,
 } from '@tanstack/react-query'
-import { CoreApiError } from '@/lib/core-api'
+import { CoreApiError, normalizeCoreApiError } from '@/lib/core-api'
 import { getRequestRecoveryGeneration } from '@/lib/request-recovery'
 import {
   assistantAccessError,
@@ -13,6 +13,7 @@ import {
   beginAssistantQuestion,
   captureAssistantAccess,
   containAssistantAccessFailure,
+  invalidateAssistantHistory,
   isAssistantAccessCurrent,
   retryAssistantAccess,
   useAssistantAccessRevision,
@@ -38,6 +39,7 @@ import {
   useAssistantHistory,
   useAssistantHistoryPolling,
 } from './assistant-history'
+import { canRetryAssistantSubmission } from './assistant-error-policy'
 import type {
   AssistantUiScope,
   ProcessingTurn,
@@ -365,6 +367,8 @@ export function useAssistantConversation() {
     }
 
     const previous = submissionRef.current
+    const replayAllowed = canRetryAssistantSubmission(submissionError)
+    if (retrySameQuestion && !replayAllowed) return
     const previousMatchesScope =
       previous?.meetingId === activeScope.meetingId &&
       previous.conversationId === activeScope.conversationId
@@ -373,7 +377,7 @@ export function useAssistantConversation() {
         ? previous
         : previousMatchesScope &&
             previous.question === normalizedQuestion &&
-            submissionError
+            replayAllowed
           ? previous
           : {
               meetingId: activeScope.meetingId,
@@ -429,6 +433,7 @@ export function useAssistantConversation() {
         return
       }
       if (turn.state === 'STALE_SOURCE') {
+        invalidateAssistantHistory(queryClient, current.conversationId)
         if (isCurrentScope(operation.scope)) {
           setSubmissionError(
             new CoreApiError({
@@ -447,7 +452,7 @@ export function useAssistantConversation() {
             new CoreApiError({
               status: 503,
               message: 'Assistant answer is unavailable.',
-              code: 'ASSISTANT_UNAVAILABLE',
+              code: 'ASSISTANT_TURN_FAILED',
               kind: 'server',
             })
           )
@@ -460,9 +465,16 @@ export function useAssistantConversation() {
       setSubmission(undefined)
       submissionRef.current = undefined
     } catch (error) {
-      if (!containAssistantAccessFailure(queryClient, operation.access, error) &&
-        isAssistantAccessCurrent(queryClient, operation.access) &&
-        isCurrentScope(operation.scope)) setSubmissionError(error)
+      if (
+        containAssistantAccessFailure(queryClient, operation.access, error) ||
+        !isAssistantAccessCurrent(queryClient, operation.access)
+      ) {
+        return
+      }
+      if (normalizeCoreApiError(error).code === 'ASSISTANT_SOURCE_STALE') {
+        invalidateAssistantHistory(queryClient, current.conversationId)
+      }
+      if (isCurrentScope(operation.scope)) setSubmissionError(error)
     } finally {
       if (operation.scope.session === getRequestRecoveryGeneration() &&
         questionOperationRef.current === operation.operationId) {
@@ -480,8 +492,15 @@ export function useAssistantConversation() {
     setHistoryRefreshError(undefined)
     setIsRefreshingHistory(true)
     try {
-      const newest = await fetchNewestHistory(currentScope.conversationId)
-      if (!isCurrentScope(currentScope)) return
+      const access = captureAssistantAccess(queryClient, currentScope.conversationId)
+      const refreshed = await detailQuery.refetch({ throwOnError: true })
+      assertAssistantAccessCurrent(queryClient, access)
+      if (
+        !isCurrentScope(currentScope) ||
+        refreshOperationRef.current !== operationId
+      ) {
+        return
+      }
       const accepted =
         processingTurn &&
         isCurrentScope(processingTurn.scope) &&
@@ -493,7 +512,7 @@ export function useAssistantConversation() {
       >(
         assistantConversationHistoryQueryOptions(currentScope.conversationId)
           .queryKey
-      )?.pages ?? [newest]
+      )?.pages ?? refreshed.data?.pages ?? []
       if (
         accepted &&
         pages.some((detail) => findAssistantTurnMessage(detail, accepted.turn))

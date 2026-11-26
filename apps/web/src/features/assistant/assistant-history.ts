@@ -77,6 +77,15 @@ export function useAssistantHistory() {
             detail.messages.map((message) => [message.id, message] as const)
           )
         )
+        // Once a cached copy is redacted, a separately observed older copy
+        // must not restore it. A complete fresh history read can replace it.
+        for (const detail of cached?.pages ?? []) {
+          for (const message of detail.messages) {
+            if (message.visibility === 'SOURCE_UNAVAILABLE') {
+              fresh.set(message.id, message)
+            }
+          }
+        }
         const seenMessageIds = new Set<string>()
         const deduplicatedPages = pages.map((detail) => ({
           ...detail,

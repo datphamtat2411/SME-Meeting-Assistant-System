@@ -11,6 +11,7 @@ import {
   type AssistantConversation,
 } from './assistant-api'
 import { AssistantError } from './assistant-error'
+import { canRetryAssistantSubmission } from './assistant-error-policy'
 import { chronologicalHistoryMessages } from './assistant-history'
 import { ConversationHistory } from './message-history'
 import type {
@@ -151,7 +152,7 @@ export function ConversationPanel({
       {submissionError !== undefined && submissionError !== null && (
         <AssistantError
           error={submissionError}
-          onRetry={submission ? onQuestionRetry : undefined}
+          onRetry={submission && canRetryAssistantSubmission(submissionError) ? onQuestionRetry : undefined}
         />
       )}
       {pollingError !== undefined &&

@@ -5,7 +5,10 @@ import {
   type QueryClient,
 } from '@tanstack/react-query'
 import { CoreApiError, coreApi, type ApiResponseData } from '@/lib/core-api'
-import { readAssistantProtected } from './assistant-access'
+import {
+  readAssistantHistoryProtected,
+  readAssistantProtected,
+} from './assistant-access'
 
 const assistantAnswerStatuses = [
   'GROUNDED',
@@ -347,7 +350,7 @@ export function assistantConversationDetailQueryOptions(
       size,
     ] as const,
     queryFn: ({ signal, client }: { signal: AbortSignal; client: QueryClient }) =>
-      readAssistantProtected(client, conversationId, () =>
+      readAssistantHistoryProtected(client, conversationId as string, () =>
         fetchAssistantConversationDetail(conversationId as string, {
           page,
           size,
@@ -381,7 +384,7 @@ export function assistantConversationHistoryQueryOptions(
       signal: AbortSignal
       client: QueryClient
     }) =>
-      readAssistantProtected(client, conversationId, () =>
+      readAssistantHistoryProtected(client, conversationId as string, () =>
         fetchAssistantConversationDetail(conversationId as string, {
           page: pageParam,
           size,

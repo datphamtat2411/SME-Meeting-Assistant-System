@@ -6,14 +6,13 @@ import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
 import {
   getAuthLifecycleSnapshot,
+  isAuthLifecycleBlocking,
   subscribeAuthLifecycle,
 } from '@/features/auth/session/auth-lifecycle'
 import { ConversationPanel } from './conversation-panel'
 import { ConversationSelector } from './conversation-selector'
-import {
-  MeetingSearchCard,
-  useAssistantMeetingDiscovery,
-} from './meeting-discovery'
+import { MeetingSearchCard } from './meeting-discovery'
+import { useAssistantMeetingDiscovery } from './use-assistant-meeting-discovery'
 import { useAssistantConversation } from './use-assistant-conversation'
 
 export function AssistantPage() {
@@ -21,6 +20,7 @@ export function AssistantPage() {
     subscribeAuthLifecycle,
     () => getAuthLifecycleSnapshot().generation
   )
+  if (isAuthLifecycleBlocking()) return null
   return <AssistantWorkspace key={generation} />
 }
 
