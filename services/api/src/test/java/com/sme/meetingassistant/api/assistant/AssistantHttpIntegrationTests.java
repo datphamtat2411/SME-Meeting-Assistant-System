@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.security.Principal;
@@ -21,6 +22,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import com.sme.meetingassistant.api.media.worker.WorkerJson;
+import java.nio.charset.StandardCharsets;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -33,6 +38,8 @@ class AssistantHttpIntegrationTests {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
+    @Autowired AssistantStore store;
+    @Autowired PlatformTransactionManager transactionManager;
     @MockitoBean AssistantAiGateway gateway;
     @MockitoBean AssistantSourceVerifier sourceVerifier;
 
@@ -115,7 +122,8 @@ class AssistantHttpIntegrationTests {
         mvc.perform(post(target(id)).principal(principal(owner))
             .header("Idempotency-Key","assistant-key-01")
             .contentType(MediaType.APPLICATION_JSON).content("{\"question\":\"Nội dung khác\"}"))
-            .andExpect(status().isConflict());
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("ASSISTANT_IDEMPOTENCY_CONFLICT"));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_turns WHERE conversation_id=?",Integer.class,id)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_messages WHERE conversation_id=?",Integer.class,id)).isEqualTo(2);
         var req = org.mockito.ArgumentCaptor.forClass(String.class);
@@ -131,7 +139,8 @@ class AssistantHttpIntegrationTests {
         mvc.perform(post(target(id)).principal(principal(owner))
             .header("Idempotency-Key","assistant-fail-01")
             .contentType(MediaType.APPLICATION_JSON).content("{\"question\":\"Điều gì xảy ra?\"}"))
-            .andExpect(status().isServiceUnavailable());
+            .andExpect(status().isServiceUnavailable())
+            .andExpect(jsonPath("$.code").value("ASSISTANT_TURN_FAILED"));
         String history=mvc.perform(get("/api/v1/assistant/conversations/"+id)
             .principal(principal(owner))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         assertThat(history).contains("FAILED").doesNotContain("private provider token");
@@ -296,4 +305,82 @@ class AssistantHttpIntegrationTests {
         mvc.perform(get(url+"/"+turnId).principal(principal(member))).andExpect(status().isNotFound());
         verify(gateway,times(1)).answer(anyString());
     }
+    @Test void pendingObservationNeverReclaimsAnExpiredLeaseOrInvokesAi() throws Exception {
+        UUID owner=user(),meeting=meeting(owner),id=conversation(owner,meeting);
+        String key="pending-turn";
+        String question="Kết luận?";
+        AssistantStore.Turn original=new TransactionTemplate(transactionManager).execute(s->
+            store.insertTurn(id,key,WorkerJson.sha256(question.getBytes(StandardCharsets.UTF_8)),
+                question,"test-scope"));
+        String url="/api/v1/assistant/conversations/"+id;
+        JsonNode active=response(mvc.perform(get(url).principal(principal(owner)))
+            .andExpect(status().isOk()).andReturn()).path("pendingTurn");
+        assertThat(active.path("turnId").asText()).isEqualTo(original.id().toString());
+        assertThat(active.path("state").asText()).isEqualTo("PROCESSING");
+        assertThat(active.path("leaseStatus").asText()).isEqualTo("ACTIVE");
+        jdbc.update("UPDATE assistant_turns SET claim_expires_at=clock_timestamp()-interval '1 second' WHERE id=?",
+            original.id());
+        var expired=store.findById(original.id());
+        JsonNode statusView=response(mvc.perform(get(url+"/turns/"+original.id()).principal(principal(owner)))
+            .andExpect(status().isOk()).andReturn());
+        assertThat(statusView.path("leaseStatus").asText()).isEqualTo("EXPIRED");
+        JsonNode discovered=response(mvc.perform(get(url).principal(principal(owner)))
+            .andExpect(status().isOk()).andReturn()).path("pendingTurn");
+        assertThat(discovered).isEqualTo(statusView);
+        JsonNode lookup=response(mvc.perform(get(url+"/turns").header("Idempotency-Key",key)
+            .principal(principal(owner))).andExpect(status().isOk()).andReturn());
+        assertThat(lookup).isEqualTo(statusView);
+        assertThat(store.findById(original.id())).isEqualTo(expired);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_messages WHERE conversation_id=?",
+            Integer.class,id)).isEqualTo(1);
+        verifyNoInteractions(gateway);
+    }
+
+    @Test void staleSourceIsRedactedAcrossHistoryObservationAndReplay() throws Exception {
+        UUID owner=user(),meeting=meeting(owner),id=conversation(owner,meeting),source=UUID.randomUUID();
+        when(sourceVerifier.current("TRANSCRIPT",source,meeting,0L)).thenReturn(true);
+        when(gateway.answer(anyString())).thenAnswer(inv->grounded(inv.getArgument(0),source,meeting));
+        String key="source-redaction";
+        String body=json.writeValueAsString(Map.of("question","Dự án có được duyệt không?"));
+        JsonNode result=response(mvc.perform(post(target(id)).principal(principal(owner))
+            .header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isOk()).andReturn());
+        when(sourceVerifier.current("TRANSCRIPT",source,meeting,0L)).thenReturn(false);
+        String url="/api/v1/assistant/conversations/"+id;
+        JsonNode observed=response(mvc.perform(get(url+"/turns/"+result.path("turnId").asText())
+            .principal(principal(owner))).andExpect(status().isOk()).andReturn());
+        assertThat(observed.path("state").asText()).isEqualTo("STALE_SOURCE");
+        JsonNode history=response(mvc.perform(get(url).principal(principal(owner)))
+            .andExpect(status().isOk()).andReturn()).path("messages");
+        JsonNode answer=history.get(1);
+        assertThat(answer.path("visibility").asText()).isEqualTo("SOURCE_UNAVAILABLE");
+        assertThat(answer.path("content").isNull()).isTrue();
+        assertThat(answer.path("claims").size()).isZero();
+        assertThat(answer.path("citations").size()).isZero();
+        mvc.perform(post(target(id)).principal(principal(owner)).header("Idempotency-Key",key)
+            .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("ASSISTANT_SOURCE_STALE"));
+        verify(gateway,times(1)).answer(anyString());
+    }
+
+    @Test void normalizedUnicodeLimitAndFingerprintRemainConsistent() throws Exception {
+        UUID owner=user(),meeting=meeting(owner),id=conversation(owner,meeting);
+        when(gateway.answer(anyString())).thenAnswer(inv->insufficient(inv.getArgument(0)));
+        String question="😀".repeat(4096);
+        String key="unicode-boundary";
+        for(String value:List.of("  "+question+"  ",question)){
+            mvc.perform(post(target(id)).principal(principal(owner)).header("Idempotency-Key",key)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("question",value))))
+                .andExpect(status().isOk());
+        }
+        mvc.perform(post(target(id)).principal(principal(owner)).header("Idempotency-Key","oversized")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json.writeValueAsString(Map.of("question",question+"x"))))
+            .andExpect(status().isUnprocessableEntity());
+        verify(gateway,times(1)).answer(anyString());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_turns WHERE conversation_id=?",
+            Integer.class,id)).isEqualTo(1);
+    }
 }
+

@@ -205,14 +205,17 @@ class AssistantStore {
         return reversed;
     }
     List<Message> messagesBefore(UUID conversation,UUID anchorId,int limit) {
-        Message anchor=answer(anchorId);
-        if(anchor==null||!conversation.equals(anchor.conversationId()))
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        List<OffsetDateTime> anchors=jdbc.query("""
+            SELECT created_at FROM assistant_messages WHERE conversation_id=? AND id=?
+            """,(rs,i)->rs.getObject(1,OffsetDateTime.class),conversation,anchorId);
+        if(anchors.isEmpty())
+            throw new AssistantDomainException(HttpStatus.NOT_FOUND,"ASSISTANT_HISTORY_ANCHOR_NOT_FOUND",
+                "Assistant history anchor was not found.");
         List<Message> reversed=jdbc.query("""
             SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,created_at
               FROM assistant_messages WHERE conversation_id=? AND (created_at,id)<(?,?)
              ORDER BY created_at DESC,id DESC LIMIT ?
-            """,AssistantStore::message,conversation,anchor.createdAt(),anchor.id(),limit);
+            """,AssistantStore::message,conversation,anchors.getFirst(),anchorId,limit);
         Collections.reverse(reversed);
         return reversed;
     }
