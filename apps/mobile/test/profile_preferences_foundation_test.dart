@@ -388,7 +388,10 @@ void main() {
     var unavailable = false;
     final api = await _authenticated((request) async {
       if (unavailable) {
-        return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Unavailable'));
+        return jsonResponse(
+          503,
+          errorEnvelope('INTERNAL_ERROR', 'Unavailable'),
+        );
       }
       return jsonResponse(200, successEnvelope(_preferences()));
     });
@@ -509,19 +512,16 @@ void main() {
 
   test('failed renewal after a rejected PATCH does not imply commit', () async {
     var patches = 0;
-    final api = await _authenticated(
-      (request) async {
-        if (request.method == 'GET') {
-          return jsonResponse(200, successEnvelope(_preferences()));
-        }
-        patches++;
-        return jsonResponse(
-          401,
-          errorEnvelope('AUTH_SESSION_EXPIRED', 'Expired'),
-        );
-      },
-      refreshResponse: _rateLimitResponse,
-    );
+    final api = await _authenticated((request) async {
+      if (request.method == 'GET') {
+        return jsonResponse(200, successEnvelope(_preferences()));
+      }
+      patches++;
+      return jsonResponse(
+        401,
+        errorEnvelope('AUTH_SESSION_EXPIRED', 'Expired'),
+      );
+    }, refreshResponse: _rateLimitResponse);
     final controller = PreferencesController(ProfileRepository(api: api));
     addTearDown(controller.dispose);
     await controller.refresh();
@@ -578,10 +578,8 @@ void main() {
         return _profileResponse('New name', '"v2"');
       },
       storage: storage,
-      reloadIdentity: () => jsonResponse(
-        401,
-        errorEnvelope('AUTH_SESSION_EXPIRED', 'Expired'),
-      ),
+      reloadIdentity: () =>
+          jsonResponse(401, errorEnvelope('AUTH_SESSION_EXPIRED', 'Expired')),
     );
     final controller = ProfileController(ProfileRepository(api: api));
     addTearDown(controller.dispose);

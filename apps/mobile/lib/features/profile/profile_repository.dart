@@ -21,11 +21,8 @@ enum ProfileFailureCategory {
 enum ProfileMutationOutcome { notDispatched, rejected, unknown, confirmed }
 
 class ProfileFailure extends ApiFailure {
-  ProfileFailure(
-    ApiFailure source, {
-    required this.outcome,
-    this.authFailure,
-  }) : category = _category(source, authFailure),
+  ProfileFailure(ApiFailure source, {required this.outcome, this.authFailure})
+    : category = _category(source, authFailure),
       super(
         source.status,
         source.code,
