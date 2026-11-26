@@ -9,6 +9,7 @@ import 'package:sme_meeting_assistant/core/app_config.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/auth/account_flow.dart';
+import 'package:sme_meeting_assistant/features/auth/account_forms.dart';
 import 'package:sme_meeting_assistant/features/auth/credential_workflow.dart';
 import 'package:sme_meeting_assistant/main.dart';
 
