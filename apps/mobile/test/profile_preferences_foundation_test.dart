@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
+import 'package:sme_meeting_assistant/features/profile/account_resource_view.dart';
 import 'package:sme_meeting_assistant/features/profile/profile_controllers.dart';
 import 'package:sme_meeting_assistant/features/profile/profile_edit_dialog.dart';
 import 'package:sme_meeting_assistant/features/profile/profile_models.dart';
@@ -119,6 +120,22 @@ Future<http.StreamedResponse> _rateLimitResponse() => streamedResponse(
   },
 );
 
+Future<void> _waitForIdentity(ProfileController controller) {
+  if (controller.identityStatus != IdentitySyncStatus.synchronizing) {
+    return Future<void>.value();
+  }
+  final settled = Completer<void>();
+  void listener() {
+    if (controller.identityStatus != IdentitySyncStatus.synchronizing) {
+      controller.removeListener(listener);
+      settled.complete();
+    }
+  }
+
+  controller.addListener(listener);
+  return settled.future;
+}
+
 class _FailingCredentialStorage extends InMemoryCredentialStorage {
   bool failWrites = false;
 
@@ -205,6 +222,7 @@ void main() {
     expect(controller.snapshot!.profile.displayName, 'Canonical Name');
     expect(controller.snapshot!.etag, '"v2"');
     expect(controller.outcome, ProfileMutationOutcome.confirmed);
+    await _waitForIdentity(controller);
     expect(controller.identityRefreshFailed, isTrue);
     expect(requests, 2);
   });
@@ -595,6 +613,7 @@ void main() {
     await controller.refresh();
     final original = controller.snapshot!;
     await controller.updateName(original, 'New name');
+    await _waitForIdentity(controller);
     expect(patches, 1);
     expect(api.sessionState.isAuthenticated, isFalse);
     expect(controller.snapshot, isNull);
@@ -739,6 +758,7 @@ void main() {
         await controller.updateName(controller.snapshot!, 'New name'),
         isTrue,
       );
+      await _waitForIdentity(controller);
       expect(controller.identityRefreshFailed, isTrue);
       await controller.retryIdentity();
       expect(controller.identityStatus, IdentitySyncStatus.synchronized);
@@ -1198,4 +1218,237 @@ void main() {
       expect(patches, 1);
     },
   );
+
+  testWidgets('confirmed save closes editor during pending identity reload', (
+    tester,
+  ) async {
+    final identity = Completer<http.StreamedResponse>();
+    var reloads = 0;
+    var patches = 0;
+    final api = (await tester.runAsync(
+      () => _authenticated(
+        (request) async {
+          if (request.method == 'GET') {
+            return _profileResponse('Original', '"v1"');
+          }
+          patches++;
+          return _profileResponse('New name', '"v2"');
+        },
+        reloadIdentity: () {
+          reloads++;
+          return identity.future;
+        },
+      ),
+    ))!;
+    final controller = ProfileController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await tester.runAsync(controller.refresh);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showDialog<bool>(
+                context: context,
+                barrierDismissible: false,
+                builder: (_) => ProfileEditDialog(
+                  controller: controller,
+                  original: controller.snapshot!,
+                  initialName: 'New name',
+                ),
+              ),
+              child: const Text('Open editor'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open editor'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Lưu'));
+    // Do not settle an indefinitely animating progress indicator on regression.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byType(ProfileEditDialog), findsNothing);
+    expect(controller.snapshot!.etag, '"v2"');
+    expect(controller.outcome, ProfileMutationOutcome.confirmed);
+    expect(controller.identityStatus, IdentitySyncStatus.synchronizing);
+    expect(controller.saving, isFalse);
+    expect(controller.canMutate, isFalse);
+    expect(reloads, 1);
+    expect(patches, 1);
+    identity.complete(
+      await jsonResponse(200, successEnvelope(_identity(name: 'New name'))),
+    );
+    await tester.pumpAndSettle();
+    expect(controller.identityStatus, IdentitySyncStatus.synchronized);
+    expect(controller.canMutate, isTrue);
+    expect(patches, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  test('reconciliation completes independently of identity reload', () async {
+    final identity = Completer<http.StreamedResponse>();
+    var reads = 0;
+    var patches = 0;
+    final api = await _authenticated(
+      (request) async {
+        if (request.url.path.endsWith('/me/preferences')) {
+          if (request.method == 'GET') {
+            return jsonResponse(200, successEnvelope(_preferences()));
+          }
+          return jsonResponse(
+            200,
+            successEnvelope(_preferences(meeting: false)),
+          );
+        }
+        if (request.method == 'GET') {
+          return ++reads == 1
+              ? _profileResponse('Original', '"v1"')
+              : _profileResponse('New name', '"v2"');
+        }
+        patches++;
+        return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Down'));
+      },
+      reloadIdentity: () => identity.future,
+    );
+    final repository = ProfileRepository(api: api);
+    final profile = ProfileController(repository);
+    final preferences = PreferencesController(repository);
+    addTearDown(profile.dispose);
+    addTearDown(preferences.dispose);
+    await profile.refresh();
+    await preferences.refresh();
+    expect(await profile.updateName(profile.snapshot!, 'New name'), isFalse);
+    await profile.refresh();
+    expect(profile.reconciled, isTrue);
+    expect(profile.pendingEdit, isNull);
+    expect(profile.loading, isFalse);
+    expect(profile.outcome, ProfileMutationOutcome.unknown);
+    expect(profile.identityStatus, IdentitySyncStatus.synchronizing);
+    expect(await preferences.updateMeetingEmail(false), isTrue);
+    expect(preferences.snapshot!.preferences.meetingEmailEnabled, isFalse);
+    expect(patches, 1);
+    identity.complete(
+      await jsonResponse(200, successEnvelope(_identity(name: 'New name'))),
+    );
+    await _waitForIdentity(profile);
+    expect(profile.identityStatus, IdentitySyncStatus.synchronized);
+  });
+
+  testWidgets('regional save cooldown expires without replay', (tester) async {
+    var patches = 0;
+    final api = (await tester.runAsync(
+      () => _authenticated((request) async {
+        if (request.method == 'GET') {
+          return jsonResponse(200, successEnvelope(_preferences()));
+        }
+        if (++patches == 1) return _rateLimitResponse();
+        return jsonResponse(
+          200,
+          successEnvelope({..._preferences(), 'locale': null}),
+        );
+      }),
+    ))!;
+    final controller = PreferencesController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await tester.runAsync(controller.refresh);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showDialog<RegionalSelection>(
+                context: context,
+                barrierDismissible: false,
+                builder: (_) => RegionalPreferenceDialog(
+                  controller: controller,
+                  original: controller.snapshot!,
+                  field: PreferenceField.locale,
+                  title: 'Ngôn ngữ ưu tiên',
+                  options: const {'vi-VN': 'Tiếng Việt'},
+                ),
+              ),
+              child: const Text('Open picker'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open picker'));
+    await tester.pumpAndSettle();
+    final clear = find.text('Xóa tùy chọn đã lưu');
+    await tester.ensureVisible(clear);
+    await tester.tap(clear);
+    await tester.pumpAndSettle();
+    final save = find.widgetWithText(FilledButton, 'Lưu lựa chọn');
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+    expect(find.byType(AccountRetryNotice), findsOneWidget);
+    expect(tester.widget<FilledButton>(save).onPressed, isNull);
+    expect(controller.canRefresh, isFalse);
+    expect(controller.canMutate, isFalse);
+    expect(patches, 1);
+    await tester.pump(const Duration(seconds: 20));
+    expect(tester.widget<FilledButton>(save).onPressed, isNull);
+    await tester.pump(const Duration(seconds: 11));
+    expect(find.byType(AccountRetryNotice), findsNothing);
+    expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
+    expect(controller.canRefresh, isTrue);
+    expect(patches, 1);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+    expect(find.byType(RegionalPreferenceDialog), findsNothing);
+    expect(controller.snapshot!.preferences.locale, isNull);
+    expect(patches, 2);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('identity retry cooldown is independent and expires', (
+    tester,
+  ) async {
+    var reloads = 0;
+    var patches = 0;
+    final api = (await tester.runAsync(
+      () => _authenticated(
+        (request) async {
+          if (request.method == 'GET') {
+            return _profileResponse('Original', '"v1"');
+          }
+          patches++;
+          return _profileResponse('New name', '"v2"');
+        },
+        reloadIdentity: () {
+          if (++reloads == 1) return _rateLimitResponse();
+          return jsonResponse(
+            200,
+            successEnvelope(_identity(name: 'New name')),
+          );
+        },
+      ),
+    ))!;
+    final controller = ProfileController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await tester.runAsync(controller.refresh);
+    final save = controller.updateName(controller.snapshot!, 'New name');
+    await tester.pump();
+    expect(await save, isTrue);
+    await tester.pump();
+    expect(controller.identityRefreshFailed, isTrue);
+    expect(controller.identityRetryNotBefore, isNotNull);
+    expect(controller.canRetryIdentity, isFalse);
+    expect(controller.canMutate, isTrue);
+    expect(controller.canRefresh, isTrue);
+    await controller.retryIdentity();
+    expect(reloads, 1);
+    await tester.pump(const Duration(seconds: 31));
+    expect(controller.canRetryIdentity, isTrue);
+    expect(reloads, 1);
+    final retry = controller.retryIdentity();
+    await tester.pump();
+    await retry;
+    expect(controller.identityStatus, IdentitySyncStatus.synchronized);
+    expect(patches, 1);
+    expect(reloads, 2);
+  });
 }

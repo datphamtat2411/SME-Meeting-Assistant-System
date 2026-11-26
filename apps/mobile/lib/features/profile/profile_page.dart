@@ -89,6 +89,8 @@ class _ProfilePageState extends State<ProfilePage> {
           needsReconciliation:
               controller.pendingEdit == null && controller.needsReconciliation,
           retry: controller.refresh,
+          canRetry: controller.canRefresh,
+          retryNotBefore: controller.retryNotBefore,
           builder: (response) {
             final account = response.profile;
             return ContentCard(
@@ -187,8 +189,12 @@ class _ProfilePageState extends State<ProfilePage> {
                   'Danh tính ứng dụng chưa đồng bộ. Có thể tải lại hồ sơ '
                   'nếu thông tin đã thay đổi trên thiết bị khác.',
                 ),
+                if (controller.identityRetryNotBefore case final deadline?)
+                  AccountRetryNotice(deadline: deadline),
                 TextButton(
-                  onPressed: controller.retryIdentity,
+                  onPressed: controller.canRetryIdentity
+                      ? controller.retryIdentity
+                      : null,
                   child: const Text('Thử đồng bộ lại'),
                 ),
               ],

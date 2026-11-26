@@ -13,6 +13,8 @@ class AccountResourceView<T> extends StatelessWidget {
     required this.failure,
     required this.needsReconciliation,
     required this.retry,
+    this.canRetry = true,
+    this.retryNotBefore,
     required this.builder,
   });
 
@@ -22,6 +24,8 @@ class AccountResourceView<T> extends StatelessWidget {
   final ProfileFailure? failure;
   final bool needsReconciliation;
   final VoidCallback retry;
+  final bool canRetry;
+  final DateTime? retryNotBefore;
   final Widget Function(T) builder;
 
   @override
@@ -35,7 +39,12 @@ class AccountResourceView<T> extends StatelessWidget {
         child: Column(
           children: [
             Text(failure?.message ?? 'Chưa tải được dữ liệu tài khoản.'),
-            TextButton(onPressed: retry, child: const Text('Tải lại')),
+            if (retryNotBefore case final deadline?)
+              AccountRetryNotice(deadline: deadline),
+            TextButton(
+              onPressed: canRetry ? retry : null,
+              child: const Text('Tải lại'),
+            ),
           ],
         ),
       );
@@ -45,6 +54,8 @@ class AccountResourceView<T> extends StatelessWidget {
       children: [
         builder(value),
         if (loading || saving) const LinearProgressIndicator(),
+        if (retryNotBefore case final deadline?)
+          AccountRetryNotice(deadline: deadline),
         if (failure != null || needsReconciliation)
           ContentCard(
             child: Column(
@@ -56,13 +67,37 @@ class AccountResourceView<T> extends StatelessWidget {
                       : failure!.message,
                 ),
                 TextButton(
-                  onPressed: loading ? null : retry,
+                  onPressed: canRetry && !loading && !saving ? retry : null,
                   child: const Text('Tải lại'),
                 ),
               ],
             ),
           ),
       ],
+    );
+  }
+}
+
+/// Shared presentation for resource and identity cooldowns.
+class AccountRetryNotice extends StatelessWidget {
+  const AccountRetryNotice({super.key, required this.deadline});
+
+  final DateTime deadline;
+
+  @override
+  Widget build(BuildContext context) {
+    final local = deadline.toLocal();
+    final localizations = MaterialLocalizations.of(context);
+    final date = localizations.formatCompactDate(local);
+    final time = localizations.formatTimeOfDay(
+      TimeOfDay.fromDateTime(local),
+      alwaysUse24HourFormat: true,
+    );
+    final seconds = local.second.toString().padLeft(2, '0');
+    return Text(
+      'Máy chủ đang giới hạn yêu cầu. Có thể thử lại từ '
+      '$date, $time:$seconds.',
+      style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
     );
   }
 }

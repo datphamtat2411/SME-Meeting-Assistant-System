@@ -1,8 +1,33 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../../core/api_client.dart';
 import 'profile_models.dart';
 import 'profile_repository.dart';
+
+/// A resource-local, one-shot retry gate. Expiry only publishes availability;
+/// it never dispatches a request.
+class _RetryCooldown {
+  Timer? _timer;
+  DateTime? deadline;
+
+  void start(Duration duration, VoidCallback onExpired) {
+    clear();
+    if (duration <= Duration.zero) return;
+    deadline = DateTime.now().add(duration);
+    _timer = Timer(duration, () {
+      clear();
+      onExpired();
+    });
+  }
+
+  void clear() {
+    _timer?.cancel();
+    _timer = null;
+    deadline = null;
+  }
+}
 
 /// Shared only by the two account resources. A session owns each instance.
 abstract class _AccountResource<T> extends ChangeNotifier {
@@ -15,8 +40,7 @@ abstract class _AccountResource<T> extends ChangeNotifier {
   final AuthenticatedSessionScope scope;
   T? _snapshot;
   ProfileFailure? _failure;
-  ProfileFailure? _rateFailure;
-  DateTime? _retryNotBefore;
+  final _cooldown = _RetryCooldown();
   Future<void>? _reading;
   bool _saving = false;
   bool _disposed = false;
@@ -34,6 +58,9 @@ abstract class _AccountResource<T> extends ChangeNotifier {
   ProfileFailure? get failure => _failure;
   bool get loading => current && _reading != null;
   bool get saving => current && _saving;
+  DateTime? get retryNotBefore => current ? _cooldown.deadline : null;
+  bool get canRefresh =>
+      current && !loading && !saving && retryNotBefore == null;
   bool get needsReconciliation => current && _needsReconciliation;
   bool get reconciled => current && _reconciled;
   ProfileMutationOutcome? get outcome => _outcome;
@@ -44,26 +71,20 @@ abstract class _AccountResource<T> extends ChangeNotifier {
       _snapshot != null &&
       !_saving &&
       !_needsReconciliation &&
+      retryNotBefore == null &&
       !_additionalBusy;
   bool get canMutate => _canStart && !_hasPendingDecision;
+  bool get canConfirmPending => _hasPendingDecision && _canStart && !loading;
 
   Future<T> _readResource();
-  Future<void> _afterRead(T result) => Future<void>.value();
+  void _afterRead(T result) {}
   void _clearWorkflow() {}
-
-  bool _retryWindowOpen() {
-    final deadline = _retryNotBefore;
-    if (deadline == null || !DateTime.now().isBefore(deadline)) return true;
-    _failure = _rateFailure;
-    notifyListeners();
-    return false;
-  }
 
   Future<void> refresh() {
     if (!current || _saving) return Future<void>.value();
     final existing = _reading;
     if (existing != null) return existing;
-    if (!_retryWindowOpen()) return Future<void>.value();
+    if (retryNotBefore != null) return Future<void>.value();
     final generation = ++_generation;
     final pending = Future<void>.microtask(() => _read(generation));
     _reading = pending;
@@ -83,7 +104,7 @@ abstract class _AccountResource<T> extends ChangeNotifier {
       _failure = null;
       _needsReconciliation = false;
       _reconciled = false;
-      await _afterRead(result);
+      _afterRead(result);
     } on ProfileFailure catch (error) {
       if (_owns(generation)) _applyFailure(error);
     } finally {
@@ -98,6 +119,7 @@ abstract class _AccountResource<T> extends ChangeNotifier {
     _failure = error;
     if (error.accessLost) {
       _snapshot = null;
+      _cooldown.clear();
       _needsReconciliation = false;
       _reconciled = false;
       _clearWorkflow();
@@ -107,8 +129,9 @@ abstract class _AccountResource<T> extends ChangeNotifier {
     if (error.category == ProfileFailureCategory.rateLimited) {
       final duration = error.retryAfterDuration();
       if (duration != null) {
-        _retryNotBefore = DateTime.now().add(duration);
-        _rateFailure = error;
+        _cooldown.start(duration, () {
+          if (current) notifyListeners();
+        });
       }
     }
   }
@@ -117,9 +140,9 @@ abstract class _AccountResource<T> extends ChangeNotifier {
     Future<T> Function() send, {
     VoidCallback? onStart,
     void Function(ProfileFailure)? onFailure,
-    Future<void> Function()? afterConfirmed,
+    VoidCallback? afterConfirmed,
   }) async {
-    if (!_canStart || !_retryWindowOpen()) return false;
+    if (!_canStart) return false;
     final generation = ++_generation;
     _reading = null;
     _saving = true;
@@ -134,10 +157,9 @@ abstract class _AccountResource<T> extends ChangeNotifier {
       if (!_owns(generation)) return false;
       _snapshot = result;
       _outcome = ProfileMutationOutcome.confirmed;
-      final secondary = afterConfirmed?.call();
+      afterConfirmed?.call();
       _saving = false;
       notifyListeners();
-      if (secondary != null) await secondary;
       return current;
     } on ProfileFailure catch (error) {
       if (_owns(generation)) {
@@ -164,8 +186,7 @@ abstract class _AccountResource<T> extends ChangeNotifier {
     _generation++;
     _snapshot = null;
     _failure = null;
-    _rateFailure = null;
-    _retryNotBefore = null;
+    _cooldown.clear();
     _outcome = null;
     _reading = null;
     _saving = false;
@@ -181,6 +202,7 @@ abstract class _AccountResource<T> extends ChangeNotifier {
     _disposed = true;
     _generation++;
     _snapshot = null;
+    _cooldown.clear();
     _clearWorkflow();
     repository.api.sessionCoordinator.removeListener(_sessionChanged);
     super.dispose();
@@ -202,12 +224,20 @@ class ProfileController extends _AccountResource<ProfileSnapshot> {
   ProfileEditIntent? _pendingEdit;
   IdentitySyncStatus _identityStatus = IdentitySyncStatus.idle;
   Future<void>? _identitySync;
-  DateTime? _identityRetryNotBefore;
+  final _identityCooldown = _RetryCooldown();
+  int _identityGeneration = 0;
 
   ProfileEditIntent? get pendingEdit => current ? _pendingEdit : null;
   IdentitySyncStatus get identityStatus =>
       current ? _identityStatus : IdentitySyncStatus.idle;
   bool get identityRefreshFailed => identityStatus == IdentitySyncStatus.failed;
+  DateTime? get identityRetryNotBefore =>
+      current ? _identityCooldown.deadline : null;
+  bool get canRetryIdentity =>
+      identityRefreshFailed &&
+      snapshot != null &&
+      _identitySync == null &&
+      identityRetryNotBefore == null;
 
   @override
   bool get _hasPendingDecision => _pendingEdit != null;
@@ -219,69 +249,75 @@ class ProfileController extends _AccountResource<ProfileSnapshot> {
   Future<ProfileSnapshot> _readResource() => repository.profile(scope);
 
   @override
-  Future<void> _afterRead(ProfileSnapshot result) async {
+  void _afterRead(ProfileSnapshot result) {
     final intent = _pendingEdit;
     if (intent == null || result.profile.displayName != intent.name) return;
     _pendingEdit = null;
     _reconciled = true;
-    await _synchronizeIdentity();
+    _startIdentitySynchronization();
   }
 
   @override
   void _clearWorkflow() {
     _pendingEdit = null;
     _identityStatus = IdentitySyncStatus.idle;
-    _identityRetryNotBefore = null;
-    // The original future remains fenced by current session and snapshot.
+    _identityCooldown.clear();
+    _identityGeneration++;
+    // Keep the in-flight handle until it settles to preserve single-flight.
   }
 
   Future<void> retryIdentity() {
-    if (!identityRefreshFailed) {
-      return _identitySync ?? Future<void>.value();
-    }
+    final existing = _identitySync;
+    if (existing != null) return existing;
+    if (!canRetryIdentity) return Future<void>.value();
     return _synchronizeIdentity();
+  }
+
+  void _startIdentitySynchronization() {
+    unawaited(_synchronizeIdentity());
   }
 
   Future<void> _synchronizeIdentity() {
     if (!current || snapshot == null) return Future<void>.value();
     final existing = _identitySync;
     if (existing != null) return existing;
-    final deadline = _identityRetryNotBefore;
-    if (deadline != null && DateTime.now().isBefore(deadline)) {
-      _identityStatus = IdentitySyncStatus.failed;
-      notifyListeners();
-      return Future<void>.value();
-    }
+    if (identityRetryNotBefore != null) return Future<void>.value();
+    final generation = ++_identityGeneration;
+    bool owns() =>
+        current && snapshot != null && generation == _identityGeneration;
+
     _identityStatus = IdentitySyncStatus.synchronizing;
     final pending = Future<void>.microtask(() async {
       try {
-        if (!current || snapshot == null) return;
+        if (!owns()) return;
         await repository.api.loadIdentity(expectedScope: scope);
-        if (current && snapshot != null) {
+        if (owns()) {
           _identityStatus =
               repository.api.displayName == snapshot!.profile.displayName
               ? IdentitySyncStatus.synchronized
               : IdentitySyncStatus.failed;
-          _identityRetryNotBefore = null;
+          _identityCooldown.clear();
         }
       } on ApiFailure catch (error) {
-        if (current && snapshot != null) {
+        if (owns()) {
           _identityStatus = IdentitySyncStatus.failed;
           final duration = error.retryAfterDuration();
           if (duration != null) {
-            _identityRetryNotBefore = DateTime.now().add(duration);
+            _identityCooldown.start(duration, () {
+              if (owns()) notifyListeners();
+            });
           }
         }
       } on AuthSessionException {
-        if (current && snapshot != null) {
+        if (owns()) {
           _identityStatus = IdentitySyncStatus.failed;
         }
       } on TokenStoreException {
-        if (current && snapshot != null) {
+        if (owns()) {
           _identityStatus = IdentitySyncStatus.failed;
         }
       } on TokenStoreStateException {
-        if (current && snapshot != null) {
+        if (owns()) {
           _identityStatus = IdentitySyncStatus.failed;
         }
       } finally {
@@ -323,9 +359,7 @@ class ProfileController extends _AccountResource<ProfileSnapshot> {
 
   Future<bool> confirmPending(ProfileSnapshot reviewed, String name) async {
     final value = normalizeDisplayName(name);
-    if (_pendingEdit == null ||
-        !_canStart ||
-        loading ||
+    if (!canConfirmPending ||
         reviewed.sessionScope != scope ||
         reviewed.etag != snapshot!.etag ||
         !isValidDisplayName(value)) {
@@ -350,7 +384,7 @@ class ProfileController extends _AccountResource<ProfileSnapshot> {
         _pendingEdit = ProfileEditIntent(original, name);
       }
     },
-    afterConfirmed: _synchronizeIdentity,
+    afterConfirmed: _startIdentitySynchronization,
   );
 
   void abandonPending() {
@@ -406,13 +440,12 @@ class PreferencesController extends _AccountResource<PreferencesSnapshot> {
   Future<PreferencesSnapshot> _readResource() => repository.preferences(scope);
 
   @override
-  Future<void> _afterRead(PreferencesSnapshot result) {
+  void _afterRead(PreferencesSnapshot result) {
     final intent = _pendingIntent;
     if (intent != null && intent.valueIn(result.preferences) == intent.value) {
       _pendingIntent = null;
       _reconciled = true;
     }
-    return Future<void>.value();
   }
 
   @override
@@ -465,7 +498,7 @@ class PreferencesController extends _AccountResource<PreferencesSnapshot> {
 
   Future<bool> confirmPending(Object? reviewedValue) async {
     final intent = _pendingIntent;
-    if (intent == null || !_canStart || loading) return false;
+    if (intent == null || !canConfirmPending) return false;
     final observed = intent.valueIn(snapshot!.preferences);
     if (observed != reviewedValue) return false;
     if (observed == intent.value) {

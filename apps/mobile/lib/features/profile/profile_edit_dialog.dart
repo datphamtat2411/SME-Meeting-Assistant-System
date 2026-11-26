@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'account_resource_view.dart';
 import 'profile_controllers.dart';
 import 'profile_models.dart';
 import 'profile_repository.dart';
@@ -108,8 +109,11 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
       final reviewing = pending != null && !checking;
       final canSave =
           !busy &&
-          !controller.loading &&
-          controller.identityStatus != IdentitySyncStatus.synchronizing;
+          (checking
+              ? controller.canRefresh
+              : reviewing
+              ? controller.canConfirmPending
+              : !controller.loading && controller.canMutate);
       return PopScope(
         canPop: !busy,
         child: AlertDialog(
@@ -156,11 +160,10 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
                           color: Theme.of(context).colorScheme.error,
                         ),
                       ),
+                    if (controller.retryNotBefore case final deadline?)
+                      AccountRetryNotice(deadline: deadline),
                     if (busy || controller.loading)
                       const LinearProgressIndicator(),
-                    if (busy &&
-                        controller.outcome == ProfileMutationOutcome.confirmed)
-                      const Text('Hồ sơ đã lưu. Đang đồng bộ danh tính.'),
                   ],
                 ),
           actions: [
@@ -170,7 +173,7 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
             ),
             if (!unavailable && reviewing)
               TextButton(
-                onPressed: !canSave
+                onPressed: busy || controller.loading
                     ? null
                     : () {
                         controller.abandonPending();

@@ -122,7 +122,7 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
             ),
           if (checking)
             TextButton(
-              onPressed: busy ? null : controller.refresh,
+              onPressed: controller.canRefresh ? controller.refresh : null,
               child: const Text('Kiểm tra lại thiết lập'),
             )
           else
@@ -134,7 +134,7 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
                   child: const Text('Giữ giá trị máy chủ'),
                 ),
                 FilledButton(
-                  onPressed: busy
+                  onPressed: !controller.canConfirmPending
                       ? null
                       : () {
                           if (intent.field == PreferenceField.timezone ||
@@ -169,6 +169,8 @@ class _PreferencesPanelState extends State<PreferencesPanel> {
       needsReconciliation:
           controller.pendingIntent == null && controller.needsReconciliation,
       retry: controller.refresh,
+      canRetry: controller.canRefresh,
+      retryNotBefore: controller.retryNotBefore,
       builder: (snapshot) {
         final prefs = snapshot.preferences;
         final pending = controller.pendingIntent;

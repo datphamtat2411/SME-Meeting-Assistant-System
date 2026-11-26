@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'account_resource_view.dart';
 import 'profile_controllers.dart';
 import 'profile_models.dart';
 
@@ -167,7 +168,8 @@ class _RegionalPreferenceDialogState extends State<RegionalPreferenceDialog> {
           !busy &&
           !controller.loading &&
           pending == null &&
-          controller.canMutate;
+          !controller.needsReconciliation &&
+          controller.current;
       final options = widget.options.entries.where(
         (entry) =>
             entry.key.toLowerCase().contains(_query) ||
@@ -253,6 +255,8 @@ class _RegionalPreferenceDialogState extends State<RegionalPreferenceDialog> {
                           color: Theme.of(context).colorScheme.error,
                         ),
                       ),
+                    if (controller.retryNotBefore case final deadline?)
+                      AccountRetryNotice(deadline: deadline),
                     if (busy || controller.loading)
                       const LinearProgressIndicator(),
                   ],
@@ -279,11 +283,13 @@ class _RegionalPreferenceDialogState extends State<RegionalPreferenceDialog> {
               ),
             if (controller.current && snapshot != null && ownsPending)
               FilledButton(
-                onPressed: busy || controller.loading
+                onPressed: busy
                     ? null
                     : controller.needsReconciliation
-                    ? _check
-                    : () => _confirm(_valueIn(snapshot)),
+                    ? (controller.canRefresh ? _check : null)
+                    : (controller.canConfirmPending
+                          ? () => _confirm(_valueIn(snapshot))
+                          : null),
                 child: Text(
                   controller.needsReconciliation
                       ? 'Kiểm tra lại'
@@ -292,7 +298,7 @@ class _RegionalPreferenceDialogState extends State<RegionalPreferenceDialog> {
               )
             else if (!unavailable && pending == null)
               FilledButton(
-                onPressed: editable ? _save : null,
+                onPressed: editable && controller.canMutate ? _save : null,
                 child: const Text('Lưu lựa chọn'),
               ),
           ],
