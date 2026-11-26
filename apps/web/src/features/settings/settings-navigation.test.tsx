@@ -364,6 +364,11 @@ describe('settings navigation and cleanup', () => {
     })
     await expect.element(actionEmails).toHaveAttribute('aria-checked', 'false')
     await userEvent.click(actionEmails)
+    await expect.element(actionEmails).toHaveAttribute('aria-checked', 'true')
+    expect(patch).toHaveBeenCalledTimes(1)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save notifications' })
+    )
     await vi.waitFor(() =>
       expect(patch).toHaveBeenCalledWith('/me/preferences', {
         actionItemEmailEnabled: true,
@@ -371,6 +376,96 @@ describe('settings navigation and cleanup', () => {
     )
     await expect.element(actionEmails).toHaveAttribute('aria-checked', 'true')
     expect(showSubmittedData).not.toHaveBeenCalled()
+  })
+
+  it('discards notification drafts and sends only deliberately changed flags', async () => {
+    const get = mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patch').mockImplementation(async () => {
+      const saved = { ...preferences, meetingEmailEnabled: false }
+      get.mockResolvedValue(saved)
+      return saved as never
+    })
+    const { screen } = await renderApiSettings(<NotificationsForm />)
+    const meeting = screen.getByRole('switch', { name: 'Meeting emails' })
+    const save = screen.getByRole('button', { name: 'Save notifications' })
+    const discard = screen.getByRole('button', { name: 'Discard' })
+
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'true')
+    await expect.element(save).toBeDisabled()
+    await userEvent.click(meeting)
+    await expect.element(save).toBeEnabled()
+    await userEvent.click(discard)
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'true')
+    await expect.element(save).toBeDisabled()
+    expect(patch).not.toHaveBeenCalled()
+
+    await userEvent.click(meeting)
+    await userEvent.click(save)
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/me/preferences', {
+        meetingEmailEnabled: false,
+      })
+    )
+    await expect.element(save).toBeDisabled()
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'false')
+    await expect
+      .element(screen.getByText('Account and security emails'))
+      .toBeVisible()
+  })
+
+  it('reconciles notification drafts with confirmed preference changes', async () => {
+    mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patch')
+    const { screen, queryClient } = await renderApiSettings(<NotificationsForm />)
+    const meeting = screen.getByRole('switch', { name: 'Meeting emails' })
+    const action = screen.getByRole('switch', { name: 'Action item emails' })
+    const save = screen.getByRole('button', { name: 'Save notifications' })
+
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'true')
+    await userEvent.click(meeting)
+    queryClient.setQueryData(preferencesQueryKey, {
+      ...preferences,
+      actionItemEmailEnabled: true,
+      locale: 'en-US',
+    })
+    await expect.element(action).toHaveAttribute('aria-checked', 'true')
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'false')
+    await expect.element(save).toBeEnabled()
+
+    queryClient.setQueryData(preferencesQueryKey, {
+      ...preferences,
+      meetingEmailEnabled: false,
+      actionItemEmailEnabled: true,
+    })
+    await expect.element(save).toBeDisabled()
+    queryClient.setQueryData(preferencesQueryKey, preferences)
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'true')
+    await expect.element(save).toBeDisabled()
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('reconciles an uncertain notification write without replaying it', async () => {
+    const get = mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patch').mockImplementation(async () => {
+      get.mockResolvedValue({ ...preferences, meetingEmailEnabled: false })
+      throw new CoreApiError({ message: 'Connection lost', kind: 'network' })
+    })
+    const { screen } = await renderApiSettings(<NotificationsForm />)
+    const meeting = screen.getByRole('switch', { name: 'Meeting emails' })
+    const save = screen.getByRole('button', { name: 'Save notifications' })
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'true')
+    await userEvent.click(meeting)
+    await userEvent.click(save)
+    const refresh = screen.getByRole('button', {
+      name: 'Refresh saved preferences',
+    })
+    await expect.element(refresh).toBeEnabled()
+    await expect.element(save).toBeDisabled()
+    await userEvent.click(refresh)
+    await expect.element(refresh).not.toBeInTheDocument()
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'false')
+    await expect.element(save).toBeDisabled()
+    expect(patch).toHaveBeenCalledTimes(1)
   })
 
   it('preserves the reviewed ETag when a dirty profile is refreshed', async () => {
