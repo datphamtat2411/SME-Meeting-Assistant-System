@@ -36,3 +36,11 @@ No product workspace redesign, streaming, cross-meeting retrieval, new AI
 infrastructure, or browser-persisted protected content. Wave 03 owns evidence
 interaction and final presentation. Live Web-to-Core-to-AI verification remains
 a separate integration gate.
+
+## Targeted lifecycle and security corrections
+
+- Idempotency conflict is a rejected intent, independent of transient lookup or status errors; observing a conflicting durable turn does not accept the rejected question.
+- Status retry deadlines are scoped to the durable turn and survive conversation navigation and observation cancellation in authenticated feature memory.
+- A changed authoritative pending identity displaces old recovery controls. Observe the old identity and then the replacement before allowing recovery of the current turn.
+- Confirmed canonical meeting-detail denial uses the Assistant meeting containment boundary, including history reads already in flight. Creation checks the current selected meeting projection at the action boundary; metadata visibility is not a content grant.
+- Infinite history commits may sanitize earlier pages with redactions observed during the same reset generation. Session, resource and explicit reset fences remain strict; obsolete reads cannot restore source content.

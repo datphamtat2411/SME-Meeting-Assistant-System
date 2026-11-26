@@ -1735,6 +1735,58 @@ describe('AssistantPage', () => {
     )
   })
 
+  it('honors a status Retry-After when switching conversations and returning', async () => {
+    const turnId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    let rateLimitedAt = 0
+    const { getStatusReads } = setupReads({
+      detailsById: {
+        [conversationId]: {
+          ...baseDetail,
+          pendingTurn: turnStatus(conversationId, turnId),
+        },
+        [otherConversationId]: {
+          ...baseDetail,
+          conversation: otherConversation,
+          messages: [],
+        },
+      },
+      onStatus: (reads, id, currentTurnId) => {
+        if (reads === 1) {
+          rateLimitedAt = Date.now()
+          return coreError(429, 'Rate limited', { retryAfter: '30' })
+        }
+        return turnStatus(id, currentTurnId)
+      },
+    })
+    const screen = await renderPage({ initial: { conversationId, meetingId } })
+    await expect.poll(() => getStatusReads()).toBe(1)
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      otherMeetingId
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' })
+    )
+    await expect
+      .element(screen.getByRole('heading', { name: otherConversation.title }))
+      .toBeVisible()
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      meetingId
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' })
+    )
+    await expect
+      .element(screen.getByText('Core is processing this question.'))
+      .toBeVisible()
+    // A new observation cycle must not schedule its usual one-second read
+    // while the server's original deadline is still in force.
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    expect(Date.now()).toBeLessThan(rateLimitedAt + 30_000)
+    expect(getStatusReads()).toBe(1)
+  }, 10_000)
+
   it('reports malformed Assistant responses without fabricating success', async () => {
     setupReads({
       conversations: new CoreApiError({
