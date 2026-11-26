@@ -11,6 +11,7 @@ import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
+import 'package:sme_meeting_assistant/features/profile/profile_page.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_database.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_models.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_persistence.dart';
@@ -112,14 +113,20 @@ void main() {
       () => find.text('Test User').evaluate().isNotEmpty,
       reason: 'Account profile to load during recording',
     );
-    final modes = find.byType(SegmentedButton<ThemeMode>);
-    await tester.scrollUntilVisible(
-      modes,
-      250,
-      scrollable: find.byType(Scrollable).first,
+    final workspace = find.byType(ProfilePage);
+    final scroll = find.descendant(
+      of: workspace,
+      matching: find.byType(Scrollable),
     );
-    await tester.ensureVisible(modes);
-    await tester.tap(find.descendant(of: modes, matching: find.text('Tối')));
+    final modes = find.byType(SegmentedButton<ThemeMode>);
+    final darkMode = find.descendant(of: modes, matching: find.text('Tối'));
+    await revealScrollableControl(
+      tester,
+      darkMode,
+      scrollable: scroll,
+      delta: 250,
+    );
+    await tester.tap(darkMode);
     await pumpUntil(
       tester,
       () =>

@@ -775,11 +775,19 @@ void main() {
     final workspaceState = tester.state(workspace);
     final owner = tester.widget<PreferencesPanel>(panel).controller;
 
-    final scroll = find.byType(Scrollable).first;
+    final scroll = find.descendant(
+      of: workspace,
+      matching: find.byType(Scrollable),
+    );
     final modes = find.byType(SegmentedButton<ThemeMode>);
-    await tester.scrollUntilVisible(modes, 250, scrollable: scroll);
-    await tester.ensureVisible(modes);
-    await tester.tap(find.descendant(of: modes, matching: find.text('Tối')));
+    final darkMode = find.descendant(of: modes, matching: find.text('Tối'));
+    await revealScrollableControl(
+      tester,
+      darkMode,
+      scrollable: scroll,
+      delta: 250,
+    );
+    await tester.tap(darkMode);
     await pumpUntil(
       tester,
       () =>
@@ -789,20 +797,23 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(
-      await tester.runAsync(
-        harness.dependencies.appearancePreferences.loadThemeMode,
-      ),
+      await harness.dependencies.appearancePreferences.loadThemeMode(),
       ThemeMode.dark,
     );
     expect(tester.state(workspace), same(workspaceState));
     final meetingEmail = find.widgetWithText(SwitchListTile, 'Email cuộc họp');
     await tester.scrollUntilVisible(meetingEmail, -250, scrollable: scroll);
+    await tester.pump();
     expect(tester.widget<PreferencesPanel>(panel).controller, same(owner));
     expect(accountRequests(), 2);
 
     final logout = find.text('Đăng xuất');
-    await tester.scrollUntilVisible(logout, 250, scrollable: scroll);
-    await tester.ensureVisible(logout);
+    await revealScrollableControl(
+      tester,
+      logout,
+      scrollable: scroll,
+      delta: 250,
+    );
     await tester.tap(logout);
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, 'Đăng xuất'));
@@ -820,15 +831,34 @@ void main() {
     );
 
     replacement = true;
-    await tester.runAsync(
-      () => harness.api.signIn('other@example.test', 'password'),
+    // Logout originated in the widget test zone. Keep login in that same
+    // zone: awaiting it inside runAsync can strand the token-store queue.
+    await tester.enterText(
+      find.byType(TextFormField).at(0),
+      'other@example.test',
     );
+    await tester.enterText(find.byType(TextFormField).at(1), 'password');
+    final login = find.widgetWithText(FilledButton, 'Đăng nhập');
+    await tester.ensureVisible(login);
+    await tester.pump();
+    expect(login.hitTestable(), findsOneWidget);
+    await tester.tap(login);
     await pumpUntil(
       tester,
       () =>
           harness.api.signedIn &&
           find.byType(NavigationBar).evaluate().isNotEmpty,
       reason: 'replacement authenticated shell',
+    );
+    expect(
+      harness.api.sessionState.identity?.userId.value,
+      'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    );
+    expect(
+      client.requests.where(
+        (request) => request.url.path.endsWith('/auth/login'),
+      ),
+      hasLength(1),
     );
     expect(
       tester.widget<MaterialApp>(find.byType(MaterialApp)).themeMode,
