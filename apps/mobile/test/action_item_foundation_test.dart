@@ -88,7 +88,115 @@ Future<ActionItemRepository> repositoryFor(MeetingTestHttpClient client) async {
   );
 }
 
+Map<String, dynamic> _eligiblePageMeta(int page, int total) => {
+  ...meetingTestMeta,
+  'pagination': {
+    'page': page,
+    'size': 20,
+    'totalElements': total,
+    'totalPages': (total + 19) ~/ 20,
+    'hasNext': (page + 1) * 20 < total,
+    'hasPrevious': page > 0,
+  },
+};
+
+Map<String, dynamic> _eligibleMeeting(String id) => {
+  'id': id,
+  'title': null,
+  'canReadMeetingContext': false,
+};
+
+List<Map<String, dynamic>> _titleMatches() => List.generate(
+  20,
+  (index) => _eligibleMeeting(
+    '00000000-0000-4000-8000-${index.toString().padLeft(12, '0')}',
+  ),
+);
+
 void main() {
+  test('exact creation meeting lookup scans beyond title matches', () async {
+    final pages = <int>[];
+    final client = MeetingTestHttpClient((request) async {
+      expect(request.url.queryParameters['q'], testMeetingId);
+      final page = int.parse(request.url.queryParameters['page']!);
+      pages.add(page);
+      return meetingApiSuccess(
+        page == 0 ? _titleMatches() : [_eligibleMeeting(testMeetingId)],
+        meta: _eligiblePageMeta(page, 21),
+      );
+    });
+    final repository = await repositoryFor(client);
+    final meeting = await repository.findCreationMeeting(
+      testMeetingId,
+      sessionScope: repository.captureSession(),
+    );
+    expect(meeting?.id, testMeetingId);
+    expect(meeting?.title, isNull);
+    expect(pages, [0, 1]);
+  });
+
+  test('exact lookup returns absent only after exhausting the search', () async {
+    final pages = <int>[];
+    final client = MeetingTestHttpClient((request) async {
+      final page = int.parse(request.url.queryParameters['page']!);
+      pages.add(page);
+      return meetingApiSuccess(
+        page == 0 ? _titleMatches() : [_eligibleMeeting(testRoomId)],
+        meta: _eligiblePageMeta(page, 21),
+      );
+    });
+    final repository = await repositoryFor(client);
+    expect(
+      await repository.findCreationMeeting(
+        testMeetingId,
+        sessionScope: repository.captureSession(),
+      ),
+      isNull,
+    );
+    expect(pages, [0, 1]);
+  });
+
+  test('exact lookup fails on inconsistent pagination', () async {
+    final client = MeetingTestHttpClient((request) async {
+      final page = int.parse(request.url.queryParameters['page']!);
+      return meetingApiSuccess(
+        page == 0 ? _titleMatches() : [],
+        meta: _eligiblePageMeta(page, page == 0 ? 21 : 20),
+      );
+    });
+    final repository = await repositoryFor(client);
+    await expectLater(
+      repository.findCreationMeeting(
+        testMeetingId,
+        sessionScope: repository.captureSession(),
+      ),
+      throwsStateError,
+    );
+  });
+
+  test('exact lookup stops when host ownership is revoked', () async {
+    var allowed = true;
+    var reads = 0;
+    final client = MeetingTestHttpClient((request) async {
+      reads++;
+      allowed = false;
+      return meetingApiSuccess(
+        _titleMatches(),
+        meta: _eligiblePageMeta(0, 21),
+      );
+    });
+    final repository = await repositoryFor(client);
+    await expectLater(
+      repository.findCreationMeeting(
+        testMeetingId,
+        sessionScope: repository.captureSession(),
+        stillAllowed: () => allowed,
+      ),
+      throwsStateError,
+    );
+    expect(reads, 1);
+  });
+
   test(
     'decodes official and restricted projections without inventing data',
     () {

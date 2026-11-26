@@ -137,6 +137,49 @@ class ActionItemRepository {
     );
   });
 
+  /// Discovery matches both titles and IDs, so the first page is not proof
+  /// that a specific meeting is ineligible. Only an exhausted, consistent
+  /// search can establish absence. An interrupted scan is a read failure.
+  Future<ActionItemCreationMeeting?> findCreationMeeting(
+    String meetingId, {
+    required AuthenticatedSessionScope sessionScope,
+    bool Function()? stillAllowed,
+  }) async {
+    const size = 20;
+    const maxPages = 100;
+    int? totalElements;
+    final seen = <String>{};
+    for (var page = 0; page < maxPages; page++) {
+      if (stillAllowed?.call() == false) {
+        throw StateError('Creation meeting verification is no longer active.');
+      }
+      final result = await creationMeetings(
+        ActionItemCreationMeetingQuery(
+          search: meetingId,
+          page: page,
+          size: size,
+        ),
+        sessionScope: sessionScope,
+      );
+      if (stillAllowed?.call() == false) {
+        throw StateError('Creation meeting verification is no longer active.');
+      }
+      totalElements ??= result.totalElements;
+      final remaining = result.totalElements - page * size;
+      final expectedCount = remaining > size ? size : remaining;
+      if (result.totalElements != totalElements ||
+          result.items.length != expectedCount ||
+          result.items.any((meeting) => !seen.add(meeting.id.toLowerCase()))) {
+        throw StateError('Creation eligibility changed during discovery.');
+      }
+      for (final meeting in result.items) {
+        if (sameActionItemIdentity(meeting.id, meetingId)) return meeting;
+      }
+      if (!result.hasNext) return null;
+    }
+    throw StateError('Creation meeting verification exceeded its page limit.');
+  }
+
   Future<PagedCollection<MeetingParticipantCandidate>> assignmentCandidates(
     MeetingCandidateQuery query, {
     required AuthenticatedSessionScope sessionScope,

@@ -100,16 +100,14 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
       _localError = null;
     });
     try {
-      final result = await repository.creationMeetings(
-        ActionItemCreationMeetingQuery(search: id),
+      final eligible = await repository.findCreationMeeting(
+        id,
         sessionScope: scope,
+        stillAllowed: () => _current,
       );
       if (!mounted || !_current) return;
-      final eligible = result.items.where(
-        (meeting) => sameActionItemIdentity(meeting.id, id),
-      );
       setState(() {
-        _meeting = eligible.firstOrNull;
+        _meeting = eligible;
         if (_meeting == null) {
           _localError = StateError('The selected meeting is not eligible.');
         }

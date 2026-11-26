@@ -106,11 +106,10 @@ class ActionItemCreationController extends ChangeNotifier {
         notifyListeners();
         return null;
       }
-      // The contract supports exact opaque UUID lookup without reading
-      // protected meeting titles or enumerating every eligible meeting.
-      final page = await repository.creationMeetings(
-        ActionItemCreationMeetingQuery(search: input.meetingId),
+      final eligibleMeeting = await repository.findCreationMeeting(
+        input.meetingId,
         sessionScope: _scope,
+        stillAllowed: () => current && (stillAllowed?.call() ?? true),
       );
       if (!current) return null;
       if (!(stillAllowed?.call() ?? true)) {
@@ -118,9 +117,7 @@ class ActionItemCreationController extends ChangeNotifier {
         notifyListeners();
         return null;
       }
-      if (!page.items.any(
-        (candidate) => sameActionItemIdentity(candidate.id, input.meetingId),
-      )) {
+      if (eligibleMeeting == null) {
         throw const ApiFailure(
           403,
           'ACTION_ITEM_MEETING_INELIGIBLE',
@@ -140,8 +137,12 @@ class ActionItemCreationController extends ChangeNotifier {
       return await _dispatch(recovering: false, stillAllowed: stillAllowed);
     } catch (error) {
       if (current) {
-        _error = error;
-        _phase = ActionItemCreationPhase.rejected;
+        if (stillAllowed?.call() == false) {
+          _phase = ActionItemCreationPhase.idle;
+        } else {
+          _error = error;
+          _phase = ActionItemCreationPhase.rejected;
+        }
         notifyListeners();
       }
       return null;
@@ -220,17 +221,13 @@ class ActionItemCreationController extends ChangeNotifier {
         _phase == ActionItemCreationPhase.unresolved;
     notifyListeners();
     try {
-      final page = await repository.creationMeetings(
-        ActionItemCreationMeetingQuery(search: intent.input.meetingId),
+      final meeting = await repository.findCreationMeeting(
+        intent.input.meetingId,
         sessionScope: _scope,
+        stillAllowed: owns,
       );
       if (!owns()) return;
-      _recoveryMeeting = page.items
-          .where(
-            (meeting) =>
-                sameActionItemIdentity(meeting.id, intent.input.meetingId),
-          )
-          .firstOrNull;
+      _recoveryMeeting = meeting;
       notifyListeners();
     } catch (_) {
       // Unavailable display context does not resolve or replace the intent.

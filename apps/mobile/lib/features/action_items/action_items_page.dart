@@ -168,22 +168,30 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
       _eligibilityError = null;
     });
     try {
-      final result = await widget.dependencies.actionItems.creationMeetings(
-        ActionItemCreationMeetingQuery(search: widget.meetingId, size: 1),
-        sessionScope: _scope,
-      );
-      if (!_current || generation != _eligibilityGeneration) return;
-      if (result.totalElements > 0 && result.items.isEmpty) {
-        throw StateError('Creation eligibility changed during discovery.');
+      final repository = widget.dependencies.actionItems;
+      final meetingId = widget.meetingId;
+      bool owns() => _current && generation == _eligibilityGeneration;
+      final bool eligible;
+      if (meetingId == null) {
+        final result = await repository.creationMeetings(
+          ActionItemCreationMeetingQuery(size: 1),
+          sessionScope: _scope,
+        );
+        if (result.totalElements > 0 && result.items.isEmpty) {
+          throw StateError('Creation eligibility changed during discovery.');
+        }
+        eligible = result.items.isNotEmpty;
+      } else {
+        eligible =
+            await repository.findCreationMeeting(
+              meetingId,
+              sessionScope: _scope,
+              stillAllowed: owns,
+            ) !=
+            null;
       }
-      setState(() {
-        _eligible = widget.meetingId == null
-            ? result.items.isNotEmpty
-            : result.items.any(
-                (meeting) =>
-                    sameActionItemIdentity(meeting.id, widget.meetingId!),
-              );
-      });
+      if (!owns()) return;
+      setState(() => _eligible = eligible);
     } catch (error) {
       if (_current && generation == _eligibilityGeneration) {
         setState(() => _eligibilityError = error);

@@ -419,16 +419,7 @@ void main() {
     final client = MeetingTestHttpClient((request) async {
       expect(request.method, 'GET');
       if (request.url.path.endsWith('/action-items/creation-meetings')) {
-        return meetingApiSuccess(
-          [],
-          meta: {
-            ...pageMeta(total: 0),
-            'pagination': {
-              ...(pageMeta(total: 0)['pagination'] as Map<String, dynamic>),
-              'size': 1,
-            },
-          },
-        );
+        return meetingApiSuccess([], meta: pageMeta(total: 0));
       }
       if (request.url.path.endsWith('/action-items/$itemId')) {
         detailReads++;
