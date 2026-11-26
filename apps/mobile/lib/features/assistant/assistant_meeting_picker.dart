@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
-import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_discovery.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
