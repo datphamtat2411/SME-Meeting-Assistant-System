@@ -1256,11 +1256,7 @@ void main() {
     bool entryEnabled() => entryButton.evaluate().any(
       (element) => (element.widget as FilledButton).onPressed != null,
     );
-    await pumpUntil(
-      tester,
-      entryEnabled,
-      reason: 'meeting overview ready',
-    );
+    await pumpUntil(tester, entryEnabled, reason: 'meeting overview ready');
     await tester.ensureVisible(entry);
     holdNext = true;
     await tester.tap(entry);
@@ -1279,11 +1275,7 @@ void main() {
         headers: {'etag': testMeetingEtag},
       ),
     );
-    await pumpUntil(
-      tester,
-      entryEnabled,
-      reason: 'old entry intent released',
-    );
+    await pumpUntil(tester, entryEnabled, reason: 'old entry intent released');
     expect(find.byType(AssistantPage), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
