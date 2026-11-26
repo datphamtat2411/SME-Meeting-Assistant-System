@@ -15,6 +15,16 @@ reported Maven BUILD SUCCESS: 1,612 tests reported, zero failures/errors,
 evidence for this closure patch. The final candidate must be checked using its
 own GitHub Actions runs and logs.
 
+Wave-04 candidate [0279e64](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/commit/0279e64277e42bf01fc4535153b9ea929ba43a25) had [Mobile CI failure](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45797736420):
+552 Flutter tests passed, three failed (ambiguous composer finder and two
+asynchronous fixture assertion conflicts). Formatting and analysis passed;
+merged-manifest verification and the APK build were not executed. The
+[API run](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45797736293)
+passed, including the new Manager/Administrator scope regression. The
+corrective candidate must rerun its gates; its expanded two-turn, keyboard
+inset, text-scaling and deterministic status assertions are not yet evidence
+of execution. No live or device result is inferred from these runs.
+
 Mobile uses the shared authenticated public Core API and one workspace per
 authenticated session. Creation is explicit, each conversation has a fixed
 meeting, pending intents are in memory, and only read-only status requests

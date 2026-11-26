@@ -1004,9 +1004,18 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetViewInsets);
     final conversation = _conversation()..['title'] = 'Weekly review';
     final questions = <String>[];
     final keys = <String?>[];
+    final creationMeetingIds = <Object?>[];
+    final creationKeys = <String?>[];
+    final canonicalMessages = <Map<String, dynamic>>[];
+    const followUpUserId = '55555555-5555-4555-8555-555555555555';
+    const followUpAssistantId = '66666666-6666-4666-8666-666666666666';
+    const followUpTurnId = '77777777-7777-4777-8777-777777777777';
+    const followUpQuestion = 'Ai phụ trách bước tiếp theo?';
+    const followUpAnswer = 'Nhóm sẽ xác nhận người phụ trách.';
     var creations = 0;
     final client = MeetingTestHttpClient((request) async {
       final path = request.url.path;
@@ -1042,22 +1051,46 @@ void main() {
       if (path.endsWith('/assistant/conversations')) {
         if (request.method == 'POST') {
           creations++;
-          expect(decodeRequestBody(request)['meetingId'], testMeetingId);
-          expect(request.headers['idempotency-key'], isNotEmpty);
+          creationMeetingIds.add(decodeRequestBody(request)['meetingId']);
+          creationKeys.add(request.headers['idempotency-key']);
           return meetingApiSuccess(conversation, status: 201);
         }
         return meetingApiSuccess(creations == 0 ? [] : [conversation]);
       }
-      if (path.endsWith('/messages')) {
-        questions.add(decodeRequestBody(request)['question'] as String);
+      if (path.endsWith('/messages') && request.method == 'POST') {
+        final question = decodeRequestBody(request)['question'] as String;
+        questions.add(question);
         keys.add(request.headers['idempotency-key']);
-        return meetingApiSuccess(_turn());
+        if (questions.length == 1) {
+          canonicalMessages.addAll([_userMessage(), _message()]);
+          return meetingApiSuccess(_turn());
+        }
+        if (questions.length == 2) {
+          canonicalMessages.addAll([
+            _userMessage()
+              ..['id'] = followUpUserId
+              ..['content'] = question
+              ..['createdAt'] = '2026-11-24T12:01:00Z',
+            _message()
+              ..['id'] = followUpAssistantId
+              ..['content'] = followUpAnswer
+              ..['claims'] = [_claim()..['text'] = followUpAnswer]
+              ..['createdAt'] = '2026-11-24T12:01:01Z',
+          ]);
+          return meetingApiSuccess(
+            _turn()
+              ..['turnId'] = followUpTurnId
+              ..['userMessageId'] = followUpUserId
+              ..['assistantMessageId'] = followUpAssistantId
+              ..['answer'] = followUpAnswer
+              ..['claims'] = [_claim()..['text'] = followUpAnswer],
+          );
+        }
+        throw StateError('Unexpected additional question submission.');
       }
       if (path.endsWith('/conversations/$_conversationId')) {
         return meetingApiSuccess(
-          _detail(
-            messages: questions.isEmpty ? [] : [_userMessage(), _message()],
-          )..['conversation'] = conversation,
+          _detail(messages: canonicalMessages)..['conversation'] = conversation,
         );
       }
       if (path.endsWith('/meetings/$testMeetingId')) {
@@ -1079,6 +1112,12 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: ThemeData.dark(),
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: const TextScaler.linear(1.4)),
+          child: child!,
+        ),
         home: Scaffold(
           body: AssistantPage(dependencies: dependencies, active: true),
         ),
@@ -1099,15 +1138,23 @@ void main() {
     );
     expect(creations, 0);
     await tester.tap(meeting);
-    final composer = find.byType(TextField);
+    final composer = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField &&
+          widget.decoration?.hintText == 'Hỏi về cuộc họp này…',
+    );
     await pumpUntil(
       tester,
       () =>
-          composer.evaluate().isNotEmpty &&
+          composer.evaluate().length == 1 &&
           dependencies.assistantWorkspace.canCompose,
       reason: 'created conversation history',
     );
+    await tester.pumpAndSettle();
+    expect(composer, findsOneWidget);
     expect(creations, 1);
+    expect(creationMeetingIds, [testMeetingId]);
+    expect(creationKeys.single, isNotEmpty);
     expect(
       dependencies.assistantWorkspace.conversation?.meetingId,
       testMeetingId,
@@ -1148,6 +1195,38 @@ void main() {
     expect(dependencies.assistantWorkspace.messages.length, 2);
     expect(creations, 1);
     expect(questions.length, 1);
+    await tester.pumpAndSettle();
+    await tester.tap(composer);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    await tester.pump();
+    expect(composer.hitTestable(), findsOneWidget);
+    await tester.enterText(composer, followUpQuestion);
+    await tester.pump();
+    expect(send.hitTestable(), findsOneWidget);
+    expect(tester.widget<IconButton>(send).onPressed, isNotNull);
+    await tester.tap(send);
+    tester.view.resetViewInsets();
+    await pumpUntil(
+      tester,
+      () =>
+          dependencies.assistantWorkspace.pending == null &&
+          dependencies.assistantWorkspace.messages.length == 4,
+      reason: 'canonical follow-up reconciliation',
+    );
+    expect(questions, ['Câu hỏi', followUpQuestion]);
+    expect(keys, everyElement(isNotEmpty));
+    expect(keys.toSet(), hasLength(2));
+    expect(creations, 1);
+    expect(
+      dependencies.assistantWorkspace.conversation?.meetingId,
+      testMeetingId,
+    );
+    expect(
+      dependencies.assistantWorkspace.messages.map((message) => message.id),
+      [_userMessageId, _assistantMessageId, followUpUserId, followUpAssistantId],
+    );
+    expect(find.text(followUpAnswer), findsWidgets);
+    expect(tester.widget<TextField>(composer).controller!.text, isEmpty);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
@@ -1701,13 +1780,17 @@ void main() {
         (tester) async {
           var reads = 0;
           var writes = 0;
+          final statusMethods = <String>[];
+          final statusKeys = <String?>[];
+          final questionKeys = <String?>[];
           final client = MeetingTestHttpClient((request) async {
             if (request.url.path.endsWith('/conversations')) {
               return meetingApiSuccess([]);
             }
             if (request.url.path.endsWith('/turns/by-key')) {
               reads++;
-              expect(request.method, 'GET');
+              statusMethods.add(request.method);
+              statusKeys.add(request.headers['idempotency-key']);
               if (longCooldown && reads == 1) {
                 return meetingApiFailure(
                   429,
@@ -1722,6 +1805,7 @@ void main() {
             }
             if (request.method == 'POST') {
               writes++;
+              questionKeys.add(request.headers['idempotency-key']);
               return meetingApiSuccess(_turn(processing: true), status: 202);
             }
             return meetingApiSuccess(_detail(messages: [_userMessage()]));
@@ -1792,6 +1876,10 @@ void main() {
           );
           expect(reads, exhaustedReads + 1);
           expect(writes, 1);
+          expect(statusMethods, hasLength(reads));
+          expect(statusMethods, everyElement('GET'));
+          expect(questionKeys.single, isNotEmpty);
+          expect(statusKeys, everyElement(questionKeys.single));
           controller.setActive(false);
         },
       );
