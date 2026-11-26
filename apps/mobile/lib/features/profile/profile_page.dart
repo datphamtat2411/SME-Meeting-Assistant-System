@@ -142,7 +142,9 @@ class _ProfilePageState extends State<ProfilePage> {
                   const Divider(height: 26),
                   Text('Vai trò: ${profileRoleLabel(account.globalRole)}'),
                   const SizedBox(height: 6),
-                  Text('Trạng thái: ${profileStatusLabel(account.accountStatus)}'),
+                  Text(
+                    'Trạng thái: ${profileStatusLabel(account.accountStatus)}',
+                  ),
                 ],
               ),
             );

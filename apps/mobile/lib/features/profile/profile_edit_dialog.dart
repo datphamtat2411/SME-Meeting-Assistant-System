@@ -165,9 +165,7 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
                 ),
           actions: [
             TextButton(
-              onPressed: busy
-                  ? null
-                  : () => Navigator.pop(context, false),
+              onPressed: busy ? null : () => Navigator.pop(context, false),
               child: Text(unavailable ? 'Đóng' : 'Hủy'),
             ),
             if (!unavailable && reviewing)

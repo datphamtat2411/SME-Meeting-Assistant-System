@@ -7,11 +7,14 @@ enum RegionalSelectionKind { cancel, set, clear }
 
 class RegionalSelection {
   const RegionalSelection.cancel()
-    : kind = RegionalSelectionKind.cancel, value = null;
+    : kind = RegionalSelectionKind.cancel,
+      value = null;
   const RegionalSelection.set(String identifier)
-    : kind = RegionalSelectionKind.set, value = identifier;
+    : kind = RegionalSelectionKind.set,
+      value = identifier;
   const RegionalSelection.clear()
-    : kind = RegionalSelectionKind.clear, value = null;
+    : kind = RegionalSelectionKind.clear,
+      value = null;
 
   final RegionalSelectionKind kind;
   final String? value;
@@ -38,8 +41,7 @@ class RegionalPreferenceDialog extends StatefulWidget {
       _RegionalPreferenceDialogState();
 }
 
-class _RegionalPreferenceDialogState
-    extends State<RegionalPreferenceDialog> {
+class _RegionalPreferenceDialogState extends State<RegionalPreferenceDialog> {
   late final TextEditingController _identifier;
   String _query = '';
   bool _clear = false;
@@ -48,9 +50,8 @@ class _RegionalPreferenceDialogState
 
   PreferencesController get controller => widget.controller;
   bool get _timezone => widget.field == PreferenceField.timezone;
-  String? _valueIn(PreferencesSnapshot snapshot) => _timezone
-      ? snapshot.preferences.timezone
-      : snapshot.preferences.locale;
+  String? _valueIn(PreferencesSnapshot snapshot) =>
+      _timezone ? snapshot.preferences.timezone : snapshot.preferences.locale;
 
   @override
   void initState() {
@@ -105,8 +106,7 @@ class _RegionalPreferenceDialogState
   Future<void> _save() async {
     if (_submitting || !controller.current) return;
     final selection = _selection();
-    if (selection == null ||
-        selection.kind == RegionalSelectionKind.cancel) {
+    if (selection == null || selection.kind == RegionalSelectionKind.cancel) {
       return;
     }
     setState(() {
@@ -208,9 +208,8 @@ class _RegionalPreferenceDialogState
                           labelText: 'Tìm lựa chọn phổ biến',
                           prefixIcon: Icon(Icons.search),
                         ),
-                        onChanged: (value) => setState(
-                          () => _query = value.trim().toLowerCase(),
-                        ),
+                        onChanged: (value) =>
+                            setState(() => _query = value.trim().toLowerCase()),
                       ),
                       for (final option in options)
                         ListTile(
@@ -268,9 +267,7 @@ class _RegionalPreferenceDialogState
                     ),
               child: Text(unavailable ? 'Đóng' : 'Hủy'),
             ),
-            if (!unavailable &&
-                ownsPending &&
-                !controller.needsReconciliation)
+            if (!unavailable && ownsPending && !controller.needsReconciliation)
               TextButton(
                 onPressed: busy || controller.loading
                     ? null

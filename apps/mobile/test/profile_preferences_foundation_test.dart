@@ -42,10 +42,7 @@ Map<String, dynamic> _identity({
   'globalRole': 'EMPLOYEE',
   'accountStatus': 'ACTIVE',
   'primaryOrgUnitId': null,
-  'directoryManagementScope': {
-    'allUnits': false,
-    'unitIds': <String>[],
-  },
+  'directoryManagementScope': {'allUnits': false, 'unitIds': <String>[]},
   'session': {
     'id': sessionId,
     'clientType': 'MOBILE',
@@ -635,111 +632,123 @@ void main() {
     expect(current.failure, isNull);
   });
 
-  test('profile conflict retains draft and requires reviewed version', () async {
-    var reads = 0;
-    var patches = 0;
-    final api = await _authenticated((request) async {
-      if (request.method == 'GET') {
-        return ++reads == 1
-            ? _profileResponse('Original', '"v1"')
-            : _profileResponse('Other client', '"v2"');
-      }
-      patches++;
-      if (patches == 1) {
-        expect(request.headers['if-match'], '"v1"');
-        return jsonResponse(
-          412,
-          errorEnvelope('RESOURCE_PRECONDITION', 'Conflict'),
-        );
-      }
-      expect(request.headers['if-match'], '"v2"');
-      return _profileResponse('My draft', '"v3"');
-    });
-    final controller = ProfileController(ProfileRepository(api: api));
-    addTearDown(controller.dispose);
-    await controller.refresh();
-    final original = controller.snapshot!;
-    expect(await controller.updateName(original, 'My draft'), isFalse);
-    expect(controller.pendingEdit!.name, 'My draft');
-    await controller.refresh();
-    expect(controller.snapshot!.profile.displayName, 'Other client');
-    expect(controller.canMutate, isFalse);
-    expect(await controller.confirmPending(original, 'My draft'), isFalse);
-    expect(patches, 1);
-    expect(
-      await controller.confirmPending(controller.snapshot!, 'My draft'),
-      isTrue,
-    );
-    expect(controller.pendingEdit, isNull);
-    expect(controller.snapshot!.etag, '"v3"');
-    expect(patches, 2);
-  });
-
-  test('unknown profile outcome resolves observed value without replay', () async {
-    var reads = 0;
-    var patches = 0;
-    final api = await _authenticated((request) async {
-      if (request.method == 'GET') {
-        if (++reads == 1) return _profileResponse('Original', '"v1"');
-        if (reads == 2) {
-          return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Down'));
-        }
-        return _profileResponse('My draft', '"v2"');
-      }
-      patches++;
-      return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Down'));
-    });
-    final controller = ProfileController(ProfileRepository(api: api));
-    addTearDown(controller.dispose);
-    await controller.refresh();
-    expect(
-      await controller.updateName(controller.snapshot!, 'My draft'),
-      isFalse,
-    );
-    await controller.refresh();
-    expect(controller.needsReconciliation, isTrue);
-    expect(controller.pendingEdit!.name, 'My draft');
-    await controller.refresh();
-    expect(controller.pendingEdit, isNull);
-    expect(controller.reconciled, isTrue);
-    expect(controller.outcome, ProfileMutationOutcome.unknown);
-    expect(patches, 1);
-  });
-
-  test('identity retry is independent of a confirmed profile mutation', () async {
-    var patches = 0;
-    var reloads = 0;
-    final api = await _authenticated(
-      (request) async {
+  test(
+    'profile conflict retains draft and requires reviewed version',
+    () async {
+      var reads = 0;
+      var patches = 0;
+      final api = await _authenticated((request) async {
         if (request.method == 'GET') {
-          return _profileResponse('Original', '"v1"');
+          return ++reads == 1
+              ? _profileResponse('Original', '"v1"')
+              : _profileResponse('Other client', '"v2"');
         }
         patches++;
-        return _profileResponse('New name', '"v2"');
-      },
-      reloadIdentity: () {
-        if (++reloads == 1) {
-          return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Down'));
+        if (patches == 1) {
+          expect(request.headers['if-match'], '"v1"');
+          return jsonResponse(
+            412,
+            errorEnvelope('RESOURCE_PRECONDITION', 'Conflict'),
+          );
         }
-        return jsonResponse(200, successEnvelope(_identity(name: 'New name')));
-      },
-    );
-    final controller = ProfileController(ProfileRepository(api: api));
-    addTearDown(controller.dispose);
-    await controller.refresh();
-    expect(
-      await controller.updateName(controller.snapshot!, 'New name'),
-      isTrue,
-    );
-    expect(controller.identityRefreshFailed, isTrue);
-    await controller.retryIdentity();
-    expect(controller.identityStatus, IdentitySyncStatus.synchronized);
-    expect(api.displayName, 'New name');
-    expect(controller.outcome, ProfileMutationOutcome.confirmed);
-    expect(controller.snapshot!.profile.displayName, 'New name');
-    expect(patches, 1);
-    expect(reloads, 2);
-  });
+        expect(request.headers['if-match'], '"v2"');
+        return _profileResponse('My draft', '"v3"');
+      });
+      final controller = ProfileController(ProfileRepository(api: api));
+      addTearDown(controller.dispose);
+      await controller.refresh();
+      final original = controller.snapshot!;
+      expect(await controller.updateName(original, 'My draft'), isFalse);
+      expect(controller.pendingEdit!.name, 'My draft');
+      await controller.refresh();
+      expect(controller.snapshot!.profile.displayName, 'Other client');
+      expect(controller.canMutate, isFalse);
+      expect(await controller.confirmPending(original, 'My draft'), isFalse);
+      expect(patches, 1);
+      expect(
+        await controller.confirmPending(controller.snapshot!, 'My draft'),
+        isTrue,
+      );
+      expect(controller.pendingEdit, isNull);
+      expect(controller.snapshot!.etag, '"v3"');
+      expect(patches, 2);
+    },
+  );
+
+  test(
+    'unknown profile outcome resolves observed value without replay',
+    () async {
+      var reads = 0;
+      var patches = 0;
+      final api = await _authenticated((request) async {
+        if (request.method == 'GET') {
+          if (++reads == 1) return _profileResponse('Original', '"v1"');
+          if (reads == 2) {
+            return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Down'));
+          }
+          return _profileResponse('My draft', '"v2"');
+        }
+        patches++;
+        return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Down'));
+      });
+      final controller = ProfileController(ProfileRepository(api: api));
+      addTearDown(controller.dispose);
+      await controller.refresh();
+      expect(
+        await controller.updateName(controller.snapshot!, 'My draft'),
+        isFalse,
+      );
+      await controller.refresh();
+      expect(controller.needsReconciliation, isTrue);
+      expect(controller.pendingEdit!.name, 'My draft');
+      await controller.refresh();
+      expect(controller.pendingEdit, isNull);
+      expect(controller.reconciled, isTrue);
+      expect(controller.outcome, ProfileMutationOutcome.unknown);
+      expect(patches, 1);
+    },
+  );
+
+  test(
+    'identity retry is independent of a confirmed profile mutation',
+    () async {
+      var patches = 0;
+      var reloads = 0;
+      final api = await _authenticated(
+        (request) async {
+          if (request.method == 'GET') {
+            return _profileResponse('Original', '"v1"');
+          }
+          patches++;
+          return _profileResponse('New name', '"v2"');
+        },
+        reloadIdentity: () {
+          if (++reloads == 1) {
+            return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Down'));
+          }
+          return jsonResponse(
+            200,
+            successEnvelope(_identity(name: 'New name')),
+          );
+        },
+      );
+      final controller = ProfileController(ProfileRepository(api: api));
+      addTearDown(controller.dispose);
+      await controller.refresh();
+      expect(
+        await controller.updateName(controller.snapshot!, 'New name'),
+        isTrue,
+      );
+      expect(controller.identityRefreshFailed, isTrue);
+      await controller.retryIdentity();
+      expect(controller.identityStatus, IdentitySyncStatus.synchronized);
+      expect(api.displayName, 'New name');
+      expect(controller.outcome, ProfileMutationOutcome.confirmed);
+      expect(controller.snapshot!.profile.displayName, 'New name');
+      expect(patches, 1);
+      expect(reloads, 2);
+    },
+  );
 
   test('preference recovery compares only the intended field', () async {
     var reads = 0;
@@ -751,10 +760,7 @@ void main() {
         }
         return jsonResponse(
           200,
-          successEnvelope({
-            ..._preferences(meeting: false),
-            'locale': 'ja-JP',
-          }),
+          successEnvelope({..._preferences(meeting: false), 'locale': 'ja-JP'}),
         );
       }
       patches++;
@@ -828,11 +834,7 @@ void main() {
     final original = controller.snapshot!;
     await controller.refresh();
     expect(
-      await controller.submitRegional(
-        PreferenceField.locale,
-        null,
-        original,
-      ),
+      await controller.submitRegional(PreferenceField.locale, null, original),
       isFalse,
     );
     expect(controller.pendingIntent!.value, isNull);
@@ -842,50 +844,56 @@ void main() {
     expect(patches, 1);
   });
 
-  test('name validation uses UTF-16 and does not dispatch no-op edits', () async {
-    var patches = 0;
-    final api = await _authenticated((request) async {
-      if (request.method == 'GET') {
-        return _profileResponse('Nguyễn Văn An', '"v1"');
-      }
-      patches++;
-      return _profileResponse('Updated', '"v2"');
-    });
-    final controller = ProfileController(ProfileRepository(api: api));
-    addTearDown(controller.dispose);
-    await controller.refresh();
-    final original = controller.snapshot!;
-    expect(await controller.updateName(original, '   '), isFalse);
-    expect(
-      await controller.updateName(original, List.filled(101, '😀').join()),
-      isFalse,
-    );
-    expect(
-      await controller.updateName(original, '  Nguyễn Văn An  '),
-      isTrue,
-    );
-    expect(patches, 0);
-    expect(isValidDisplayName(List.filled(100, '😀').join()), isTrue);
-  });
+  test(
+    'name validation uses UTF-16 and does not dispatch no-op edits',
+    () async {
+      var patches = 0;
+      final api = await _authenticated((request) async {
+        if (request.method == 'GET') {
+          return _profileResponse('Nguyễn Văn An', '"v1"');
+        }
+        patches++;
+        return _profileResponse('Updated', '"v2"');
+      });
+      final controller = ProfileController(ProfileRepository(api: api));
+      addTearDown(controller.dispose);
+      await controller.refresh();
+      final original = controller.snapshot!;
+      expect(await controller.updateName(original, '   '), isFalse);
+      expect(
+        await controller.updateName(original, List.filled(101, '😀').join()),
+        isFalse,
+      );
+      expect(
+        await controller.updateName(original, '  Nguyễn Văn An  '),
+        isTrue,
+      );
+      expect(patches, 0);
+      expect(isValidDisplayName(List.filled(100, '😀').join()), isTrue);
+    },
+  );
 
-  test('identity reload rejects a different session before publishing', () async {
-    final api = await _authenticated(
-      (_) => throw StateError('Unexpected resource request'),
-      reloadIdentity: () => jsonResponse(
-        200,
-        successEnvelope(
-          _identity(sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'),
+  test(
+    'identity reload rejects a different session before publishing',
+    () async {
+      final api = await _authenticated(
+        (_) => throw StateError('Unexpected resource request'),
+        reloadIdentity: () => jsonResponse(
+          200,
+          successEnvelope(
+            _identity(sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'),
+          ),
         ),
-      ),
-    );
-    final scope = api.requireAuthenticatedSessionScope();
-    await expectLater(
-      api.loadIdentity(expectedScope: scope),
-      throwsA(isA<AuthSessionException>()),
-    );
-    expect(api.sessionState.isAuthenticated, isFalse);
-    expect(api.isCurrentAuthenticatedSession(scope), isFalse);
-  });
+      );
+      final scope = api.requireAuthenticatedSessionScope();
+      await expectLater(
+        api.loadIdentity(expectedScope: scope),
+        throwsA(isA<AuthSessionException>()),
+      );
+      expect(api.sessionState.isAuthenticated, isFalse);
+      expect(api.isCurrentAuthenticatedSession(scope), isFalse);
+    },
+  );
 
   test('older identity reload cannot overwrite a newer one', () async {
     final started = Completer<void>();
@@ -976,7 +984,10 @@ void main() {
     await tester.enterText(find.byType(TextField), 'My draft');
     await tester.tap(find.text('Lưu'));
     await tester.pumpAndSettle();
-    expect(find.text('Tên hiện tại trên máy chủ: Other client'), findsOneWidget);
+    expect(
+      find.text('Tên hiện tại trên máy chủ: Other client'),
+      findsOneWidget,
+    );
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller!.text,
       'My draft',
@@ -1095,83 +1106,96 @@ void main() {
     expect(patches, 1);
   });
 
-  test('unknown profile mismatch remains pending until deliberate decision', () async {
-    var reads = 0;
-    var patches = 0;
-    final api = await _authenticated((request) async {
-      if (request.method == 'GET') {
-        return ++reads == 1
-            ? _profileResponse('Original', '"v1"')
-            : _profileResponse('Other client', '"v2"');
-      }
-      patches++;
-      return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Down'));
-    });
-    final controller = ProfileController(ProfileRepository(api: api));
-    addTearDown(controller.dispose);
-    await controller.refresh();
-    expect(
-      await controller.updateName(controller.snapshot!, 'My draft'),
-      isFalse,
-    );
-    await controller.refresh();
-    expect(controller.needsReconciliation, isFalse);
-    expect(controller.pendingEdit!.name, 'My draft');
-    expect(controller.canMutate, isFalse);
-    expect(controller.outcome, ProfileMutationOutcome.unknown);
-    expect(patches, 1);
-    controller.abandonPending();
-    expect(controller.canMutate, isTrue);
-    expect(controller.snapshot!.profile.displayName, 'Other client');
-  });
+  test(
+    'unknown profile mismatch remains pending until deliberate decision',
+    () async {
+      var reads = 0;
+      var patches = 0;
+      final api = await _authenticated((request) async {
+        if (request.method == 'GET') {
+          return ++reads == 1
+              ? _profileResponse('Original', '"v1"')
+              : _profileResponse('Other client', '"v2"');
+        }
+        patches++;
+        return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Down'));
+      });
+      final controller = ProfileController(ProfileRepository(api: api));
+      addTearDown(controller.dispose);
+      await controller.refresh();
+      expect(
+        await controller.updateName(controller.snapshot!, 'My draft'),
+        isFalse,
+      );
+      await controller.refresh();
+      expect(controller.needsReconciliation, isFalse);
+      expect(controller.pendingEdit!.name, 'My draft');
+      expect(controller.canMutate, isFalse);
+      expect(controller.outcome, ProfileMutationOutcome.unknown);
+      expect(patches, 1);
+      controller.abandonPending();
+      expect(controller.canMutate, isTrue);
+      expect(controller.snapshot!.profile.displayName, 'Other client');
+    },
+  );
 
-  test('regional update preserves unrelated changes and canonical value', () async {
-    var reads = 0;
-    var patches = 0;
-    final api = await _authenticated((request) async {
-      if (request.method == 'GET') {
+  test(
+    'regional update preserves unrelated changes and canonical value',
+    () async {
+      var reads = 0;
+      var patches = 0;
+      final api = await _authenticated((request) async {
+        if (request.method == 'GET') {
+          return jsonResponse(
+            200,
+            successEnvelope(_preferences(meeting: ++reads == 1)),
+          );
+        }
+        patches++;
+        expect(jsonDecode((request as http.Request).body), {'locale': 'en-gb'});
         return jsonResponse(
           200,
-          successEnvelope(_preferences(meeting: ++reads == 1)),
+          successEnvelope({..._preferences(meeting: false), 'locale': 'en-GB'}),
         );
-      }
-      patches++;
-      expect(jsonDecode((request as http.Request).body), {'locale': 'en-gb'});
-      return jsonResponse(
-        200,
-        successEnvelope({..._preferences(meeting: false), 'locale': 'en-GB'}),
+      });
+      final controller = PreferencesController(ProfileRepository(api: api));
+      addTearDown(controller.dispose);
+      await controller.refresh();
+      final original = controller.snapshot!;
+      await controller.refresh();
+      expect(
+        await controller.submitRegional(
+          PreferenceField.locale,
+          'en-gb',
+          original,
+        ),
+        isTrue,
       );
-    });
-    final controller = PreferencesController(ProfileRepository(api: api));
-    addTearDown(controller.dispose);
-    await controller.refresh();
-    final original = controller.snapshot!;
-    await controller.refresh();
-    expect(
-      await controller.submitRegional(PreferenceField.locale, 'en-gb', original),
-      isTrue,
-    );
-    expect(controller.snapshot!.preferences.locale, 'en-GB');
-    expect(controller.snapshot!.preferences.meetingEmailEnabled, isFalse);
-    expect(await controller.updateLocale('en-GB'), isTrue);
-    expect(patches, 1);
-  });
+      expect(controller.snapshot!.preferences.locale, 'en-GB');
+      expect(controller.snapshot!.preferences.meetingEmailEnabled, isFalse);
+      expect(await controller.updateLocale('en-GB'), isTrue);
+      expect(patches, 1);
+    },
+  );
 
-  test('rate-limited mutation cannot be immediately dispatched again', () async {
-    var patches = 0;
-    final api = await _authenticated((request) async {
-      if (request.method == 'GET') {
-        return jsonResponse(200, successEnvelope(_preferences()));
-      }
-      patches++;
-      return _rateLimitResponse();
-    });
-    final controller = PreferencesController(ProfileRepository(api: api));
-    addTearDown(controller.dispose);
-    await controller.refresh();
-    expect(await controller.updateMeetingEmail(false), isFalse);
-    expect(await controller.updateMeetingEmail(false), isFalse);
-    expect(controller.failure!.retryAfter, '30');
-    expect(patches, 1);
-  });
+  test(
+    'rate-limited mutation cannot be immediately dispatched again',
+    () async {
+      var patches = 0;
+      final api = await _authenticated((request) async {
+        if (request.method == 'GET') {
+          return jsonResponse(200, successEnvelope(_preferences()));
+        }
+        patches++;
+        return _rateLimitResponse();
+      });
+      final controller = PreferencesController(ProfileRepository(api: api));
+      addTearDown(controller.dispose);
+      await controller.refresh();
+      expect(await controller.updateMeetingEmail(false), isFalse);
+      expect(await controller.updateMeetingEmail(false), isFalse);
+      expect(controller.failure!.retryAfter, '30');
+      expect(patches, 1);
+    },
+  );
 }

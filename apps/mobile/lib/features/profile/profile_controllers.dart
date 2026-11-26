@@ -367,13 +367,17 @@ enum PreferenceField { meetingEmail, actionItemEmail, timezone, locale }
 /// The named constructors keep boolean and nullable regional intents distinct.
 class PreferenceIntent {
   const PreferenceIntent.meetingEmail(bool enabled)
-    : field = PreferenceField.meetingEmail, value = enabled;
+    : field = PreferenceField.meetingEmail,
+      value = enabled;
   const PreferenceIntent.actionItemEmail(bool enabled)
-    : field = PreferenceField.actionItemEmail, value = enabled;
+    : field = PreferenceField.actionItemEmail,
+      value = enabled;
   const PreferenceIntent.timezone(String? timezone)
-    : field = PreferenceField.timezone, value = timezone;
+    : field = PreferenceField.timezone,
+      value = timezone;
   const PreferenceIntent.locale(String? locale)
-    : field = PreferenceField.locale, value = locale;
+    : field = PreferenceField.locale,
+      value = locale;
 
   final PreferenceField field;
   final Object? value;
@@ -471,21 +475,26 @@ class PreferencesController extends _AccountResource<PreferencesSnapshot> {
     return _send(intent, recovering: true);
   }
 
-  Future<bool> _send(
-    PreferenceIntent intent, {
-    bool recovering = false,
-  }) async {
+  Future<bool> _send(PreferenceIntent intent, {bool recovering = false}) async {
     try {
       return await _mutate(
         () => switch (intent.field) {
-          PreferenceField.meetingEmail =>
-            repository.updateMeetingEmail(scope, intent.value as bool),
-          PreferenceField.actionItemEmail =>
-            repository.updateActionItemEmail(scope, intent.value as bool),
-          PreferenceField.timezone =>
-            repository.updateTimezone(scope, intent.value as String?),
-          PreferenceField.locale =>
-            repository.updateLocale(scope, intent.value as String?),
+          PreferenceField.meetingEmail => repository.updateMeetingEmail(
+            scope,
+            intent.value as bool,
+          ),
+          PreferenceField.actionItemEmail => repository.updateActionItemEmail(
+            scope,
+            intent.value as bool,
+          ),
+          PreferenceField.timezone => repository.updateTimezone(
+            scope,
+            intent.value as String?,
+          ),
+          PreferenceField.locale => repository.updateLocale(
+            scope,
+            intent.value as String?,
+          ),
         },
         onStart: () {
           _pendingIntent = null;
@@ -493,7 +502,8 @@ class PreferencesController extends _AccountResource<PreferencesSnapshot> {
         },
         onFailure: (error) {
           if (error.requiresReconciliation ||
-              recovering && error.category != ProfileFailureCategory.validation) {
+              recovering &&
+                  error.category != ProfileFailureCategory.validation) {
             _pendingIntent = intent;
           }
         },
