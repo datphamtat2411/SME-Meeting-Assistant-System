@@ -28,7 +28,9 @@ void main() {
           final owner = CredentialWorkflowOwner(api);
           addTearDown(owner.dispose);
           final attempt = owner.begin(AccountOperation.reset);
-          final submission = AccountSubmissionController(AccountOperation.reset);
+          final submission = AccountSubmissionController(
+            AccountOperation.reset,
+          );
           addTearDown(submission.dispose);
           await owner.submit(attempt, submission, 'opaque', 'new password 123');
           await client.delayedIdentityStarted.future;
@@ -117,30 +119,37 @@ void main() {
     expect(client.resetCount, 1);
   });
 
-  test('setup and rejected reset do not reconcile an unrelated session', () async {
-    final client = _SessionRaceClient()..resetStatus = 422;
-    final api = _api(client);
-    addTearDown(api.dispose);
-    await _signIn(api);
-    final scope = api.authenticatedSessionScope;
-    final owner = CredentialWorkflowOwner(api);
-    addTearDown(owner.dispose);
-    final reset = owner.begin(AccountOperation.reset);
-    final resetSubmission = AccountSubmissionController(AccountOperation.reset);
-    addTearDown(resetSubmission.dispose);
-    await owner.submit(reset, resetSubmission, 'opaque', 'password');
-    expect(resetSubmission.failure?.kind, AccountFailureKind.rejected);
-    expect(owner.outcome, isNull);
-    owner.abandon(reset);
-    final setup = owner.begin(AccountOperation.setup);
-    final setupSubmission = AccountSubmissionController(AccountOperation.setup);
-    addTearDown(setupSubmission.dispose);
-    await owner.submit(setup, setupSubmission, 'opaque', 'password');
-    expect(owner.outcome?.kind, CredentialOutcomeKind.completed);
-    expect(api.authenticatedSessionScope, scope);
-    expect(client.identityCount, 1);
-    expect(client.loginCount, 1);
-  });
+  test(
+    'setup and rejected reset do not reconcile an unrelated session',
+    () async {
+      final client = _SessionRaceClient()..resetStatus = 422;
+      final api = _api(client);
+      addTearDown(api.dispose);
+      await _signIn(api);
+      final scope = api.authenticatedSessionScope;
+      final owner = CredentialWorkflowOwner(api);
+      addTearDown(owner.dispose);
+      final reset = owner.begin(AccountOperation.reset);
+      final resetSubmission = AccountSubmissionController(
+        AccountOperation.reset,
+      );
+      addTearDown(resetSubmission.dispose);
+      await owner.submit(reset, resetSubmission, 'opaque', 'password');
+      expect(resetSubmission.failure?.kind, AccountFailureKind.rejected);
+      expect(owner.outcome, isNull);
+      owner.abandon(reset);
+      final setup = owner.begin(AccountOperation.setup);
+      final setupSubmission = AccountSubmissionController(
+        AccountOperation.setup,
+      );
+      addTearDown(setupSubmission.dispose);
+      await owner.submit(setup, setupSubmission, 'opaque', 'password');
+      expect(owner.outcome?.kind, CredentialOutcomeKind.completed);
+      expect(api.authenticatedSessionScope, scope);
+      expect(client.identityCount, 1);
+      expect(client.loginCount, 1);
+    },
+  );
 
   for (final status in <int>[200, 503]) {
     test(

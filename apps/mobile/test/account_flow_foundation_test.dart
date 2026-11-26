@@ -199,39 +199,42 @@ void main() {
     expect(submission.canSubmit, isTrue);
   });
 
-  test('acknowledgement cooldown survives replacement and server limits', () async {
-    var now = DateTime.utc(2026, 11, 26);
-    final deadlines = AccountRetryDeadlines();
-    addTearDown(deadlines.dispose);
-    final first = AccountSubmissionController(
-      AccountOperation.recovery,
-      now: () => now,
-      retryDeadlines: deadlines,
-    );
-    await first.submit(() async {});
-    first.dispose();
-    final next = AccountSubmissionController(
-      AccountOperation.recovery,
-      now: () => now,
-      retryDeadlines: deadlines,
-    );
-    addTearDown(next.dispose);
-    expect(next.retryRemaining, const Duration(seconds: 60));
-    deadlines.retain(
-      AccountOperation.recovery,
-      now.add(const Duration(seconds: 90)),
-      now,
-    );
-    expect(next.retryRemaining, const Duration(seconds: 90));
-    expect(next.retryFeedback, contains('Máy chủ đang giới hạn'));
-    var calls = 0;
-    await next.submit(() async => calls++);
-    expect(calls, 0);
-    now = now.add(const Duration(seconds: 90));
-    expect(next.canSubmit, isTrue);
-    expect(next.retryFeedback, isNull);
-    expect(calls, 0);
-  });
+  test(
+    'acknowledgement cooldown survives replacement and server limits',
+    () async {
+      var now = DateTime.utc(2026, 11, 26);
+      final deadlines = AccountRetryDeadlines();
+      addTearDown(deadlines.dispose);
+      final first = AccountSubmissionController(
+        AccountOperation.recovery,
+        now: () => now,
+        retryDeadlines: deadlines,
+      );
+      await first.submit(() async {});
+      first.dispose();
+      final next = AccountSubmissionController(
+        AccountOperation.recovery,
+        now: () => now,
+        retryDeadlines: deadlines,
+      );
+      addTearDown(next.dispose);
+      expect(next.retryRemaining, const Duration(seconds: 60));
+      deadlines.retain(
+        AccountOperation.recovery,
+        now.add(const Duration(seconds: 90)),
+        now,
+      );
+      expect(next.retryRemaining, const Duration(seconds: 90));
+      expect(next.retryFeedback, contains('Máy chủ đang giới hạn'));
+      var calls = 0;
+      await next.submit(() async => calls++);
+      expect(calls, 0);
+      now = now.add(const Duration(seconds: 90));
+      expect(next.canSubmit, isTrue);
+      expect(next.retryFeedback, isNull);
+      expect(calls, 0);
+    },
+  );
 
   test('respects both Retry-After forms without automatic dispatch', () async {
     var now = DateTime.utc(2026, 11, 26);

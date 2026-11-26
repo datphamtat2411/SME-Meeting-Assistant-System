@@ -234,7 +234,10 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         message: 'Đang đăng xuất...',
       ),
       AuthSessionPhase.unauthenticated ||
-      AuthSessionPhase.reauthenticationRequired => AuthPage(api: api, credentialWorkflows: _credentialWorkflows),
+      AuthSessionPhase.reauthenticationRequired => AuthPage(
+        api: api,
+        credentialWorkflows: _credentialWorkflows,
+      ),
       AuthSessionPhase.recoverableFailure => _recoverableSessionView(session),
       AuthSessionPhase.authenticated => AppShell(
         key: ValueKey(api.authenticatedSessionScope),
@@ -273,8 +276,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         mutationNotice: switch (outcome?.kind) {
           CredentialOutcomeKind.completed =>
             'Thao tác tài khoản đã hoàn tất. Cần xác minh lại phiên đăng nhập.',
-          CredentialOutcomeKind.uncertain =>
-            'Thao tác tài khoản có thể đã hoàn tất. Cần xác minh lại phiên đăng nhập.',
+          CredentialOutcomeKind.uncertain => 'Thao tác tài khoản có thể đã hoàn tất. Cần xác minh lại phiên đăng nhập.',
           _ => null,
         },
       );

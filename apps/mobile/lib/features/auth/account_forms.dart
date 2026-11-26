@@ -425,18 +425,20 @@ class CredentialOutcomeView extends StatelessWidget {
     final reset = outcome.operation == AccountOperation.reset;
     final completed = outcome.kind == CredentialOutcomeKind.completed;
     final title = switch (outcome.kind) {
-      CredentialOutcomeKind.completed => reset
-          ? 'Đặt lại mật khẩu thành công'
-          : 'Kích hoạt tài khoản thành công',
+      CredentialOutcomeKind.completed =>
+        reset
+            ? 'Đặt lại mật khẩu thành công'
+            : 'Kích hoạt tài khoản thành công',
       CredentialOutcomeKind.uncertain => 'Chưa xác nhận được kết quả',
       CredentialOutcomeKind.unavailable => 'Tính năng hiện không khả dụng',
     };
     final message = switch (outcome.kind) {
-      CredentialOutcomeKind.completed => reset
-          ? 'Mật khẩu đã được cập nhật. Các phiên đăng nhập trước đó '
-                'của tài khoản được đặt lại đã bị thu hồi.'
-          : 'Tài khoản đã sẵn sàng. Hãy đăng nhập bằng email doanh nghiệp '
-                'và mật khẩu vừa thiết lập.',
+      CredentialOutcomeKind.completed =>
+        reset
+            ? 'Mật khẩu đã được cập nhật. Các phiên đăng nhập trước đó '
+                  'của tài khoản được đặt lại đã bị thu hồi.'
+            : 'Tài khoản đã sẵn sàng. Hãy đăng nhập bằng email doanh nghiệp '
+                  'và mật khẩu vừa thiết lập.',
       CredentialOutcomeKind.uncertain =>
         'Thao tác có thể đã hoàn tất. Hãy thử đăng nhập bằng mật khẩu '
             'vừa chọn. Không gửi lại yêu cầu này.',

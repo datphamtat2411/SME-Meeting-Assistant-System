@@ -140,13 +140,19 @@ void main() {
           'token': 'opaque+/=',
           'password': password,
         });
-        expect(harness.api.sessionState.phase, AuthSessionPhase.unauthenticated);
+        expect(
+          harness.api.sessionState.phase,
+          AuthSessionPhase.unauthenticated,
+        );
         final continuation = find.text('Tiếp tục đăng nhập');
         await tester.ensureVisible(continuation);
         await tester.tap(continuation);
         await tester.pump();
         expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
-        expect(client.requests.where((r) => r.url.path.endsWith('/auth/login')), isEmpty);
+        expect(
+          client.requests.where((r) => r.url.path.endsWith('/auth/login')),
+          isEmpty,
+        );
         await tester.pumpWidget(const SizedBox.shrink());
       });
     }
@@ -1188,7 +1194,9 @@ RecordingHttpClient _authClient({
         return jsonResponse(
           credentialStatus,
           errorEnvelope(
-            credentialStatus == 404 ? 'RESOURCE_NOT_FOUND' : 'SERVICE_UNAVAILABLE',
+            credentialStatus == 404
+                ? 'RESOURCE_NOT_FOUND'
+                : 'SERVICE_UNAVAILABLE',
             'Private server feedback.',
           ),
         );
