@@ -10,6 +10,7 @@ import 'package:sme_meeting_assistant/features/recording/local_media_repository.
 import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_manager.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
+import 'package:sme_meeting_assistant/features/results/results_invalidation.dart';
 
 import 'support/http_test_support.dart';
 import 'support/meeting_test_support.dart';
@@ -32,6 +33,48 @@ void main() {
     expect(dependencies.meetings, isA<MeetingRepository>());
     expect(dependencies.meetingInvalidation.isDisposed, isTrue);
     expect(dependencies.isDisposed, isTrue);
+  });
+
+  test('Action Item invalidation scopes Minutes and session', () async {
+    final client = MeetingTestHttpClient((request) async {
+      throw StateError('Unexpected request ${request.url.path}');
+    });
+    final api = createMeetingTestApi(client);
+    await signInMeetingTestApi(api);
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+    );
+    addTearDown(dependencies.shutdown);
+    final actions = dependencies.actionItemInvalidation;
+    final results = dependencies.resultsInvalidation;
+    final scope = api.requireAuthenticatedSessionScope();
+    final initial = results.revision;
+
+    expect(
+      actions.invalidate(sessionScope: scope, meetingId: testMeetingId),
+      isTrue,
+    );
+    expect(results.revision, initial + 1);
+    expect(results.meetingId, testMeetingId);
+    expect(results.resources, {ResultsResourceKind.minutes});
+    expect(actions.revision, 1);
+
+    expect(actions.invalidate(sessionScope: scope), isTrue);
+    expect(results.revision, initial + 2);
+    expect(results.meetingId, isNull);
+    expect(results.resources, {ResultsResourceKind.minutes});
+
+    await api.signOut();
+    await api.signIn('user@example.test', 'password');
+    final nextRevision = results.revision;
+    expect(
+      actions.invalidate(sessionScope: scope, meetingId: testMeetingId),
+      isFalse,
+    );
+    expect(results.revision, nextRevision);
+    expect(results.resources, isEmpty);
   });
 
   test('the production composition factory injects its dependencies', () {

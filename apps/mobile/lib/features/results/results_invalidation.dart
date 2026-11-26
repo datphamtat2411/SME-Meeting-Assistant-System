@@ -47,7 +47,8 @@ class ResultsInvalidationSignal extends ChangeNotifier {
 
   bool invalidate({
     required AuthenticatedSessionScope sessionScope,
-    required String meetingId,
+    // A null target marks the specified resource kinds stale for all meetings.
+    required String? meetingId,
     Set<ResultsResourceKind> resources = const <ResultsResourceKind>{},
   }) {
     if (_disposed ||

@@ -207,6 +207,42 @@ void main() {
     expect(reads, 1);
   });
 
+  test('fixed meeting collections ignore unrelated invalidations', () async {
+    var reads = 0;
+    final client = MeetingTestHttpClient((request) async {
+      expect(request.url.queryParameters['meetingId'], testMeetingId);
+      reads++;
+      return meetingApiSuccess([_item(reads)], meta: _meta(0, 1));
+    });
+    final repository = await repositoryFor(client);
+    final controller = ActionItemCollectionController(
+      repository: repository,
+      fixedMeetingId: testMeetingId,
+      criteria: const ActionItemCollectionCriteria(
+        mode: ActionItemCollectionMode.allAccessible,
+        meetingId: testRoomId,
+      ),
+    );
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    final scope = repository.captureSession();
+    repository.invalidation.invalidate(
+      sessionScope: scope,
+      meetingId: testRoomId,
+    );
+    expect(reads, 1);
+    controller.setActive(false);
+    repository.invalidation.invalidate(
+      sessionScope: scope,
+      meetingId: testMeetingId,
+    );
+    expect(reads, 1);
+    controller.setActive(true);
+    await controller.refresh();
+    expect(reads, 2);
+    expect(controller.state.items.single.title, 'Item 2');
+  });
+
   test('hidden collection defers invalidation until activated', () async {
     var reads = 0;
     final client = MeetingTestHttpClient((request) async {

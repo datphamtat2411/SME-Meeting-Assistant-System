@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
+import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_timeline_panel.dart';
 import 'package:sme_meeting_assistant/features/results/summary_history_controller.dart';
@@ -29,6 +30,7 @@ import 'support/widget_test_support.dart';
 class _Repository extends ResultsRepository {
   _Repository(super.api);
   int reads = 0;
+  int minutesReads = 0;
   ApiFailure? historyFailure;
   int historyReads = 0;
   final List<PagedCollection<SummaryVersion>> historyPages = [];
@@ -192,53 +194,56 @@ class _Repository extends ResultsRepository {
   Future<MeetingMinutes> minutes({
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
-  }) async => MeetingMinutes(
-    completeness: 'PARTIAL',
-    assembledAt: _createdAt,
-    meeting: const MinutesMeeting(
-      id: testMeetingId,
-      title: 'Meeting',
-      description: null,
-      organizerUserId: 'user-1',
-      status: 'ENDED',
-      scheduledStartAt: null,
-      scheduledEndAt: null,
-      startedAt: null,
-      endedAt: null,
-    ),
-    summary: const MinutesSummary(
-      availability: 'AVAILABLE',
-      id: 'summary-1',
-      versionNumber: 1,
-      content: 'Summary',
-      sourceType: 'AI',
-      qualityStatus: 'READY',
-      transcriptId: 'transcript-1',
-      contentRevision: 1,
-      selectionEpoch: 1,
-      isStale: false,
-      aiWarnings: [],
-    ),
-    confirmedDecisions: <MinutesDecision>[],
-    officialActionItems: <MinutesAction>[],
-    transcript: const MinutesTranscript(
-      availability: 'AVAILABLE',
-      id: 'transcript-1',
-      processingJobId: null,
-      versionNumber: 1,
-      languageCode: 'vi',
-      status: 'READY',
-      contentRevision: 1,
-      durationMs: 1000,
-      suspiciousSegments: 0,
-      unresolvedSegments: 0,
-      unresolvedCoverageRegions: 0,
-    ),
-    warnings: <String>[],
-    proposalsIncluded: false,
-    schemaVersion: 1,
-    sourceFingerprint: 'test',
-  );
+  }) async {
+    minutesReads++;
+    return MeetingMinutes(
+      completeness: 'PARTIAL',
+      assembledAt: _createdAt,
+      meeting: const MinutesMeeting(
+        id: testMeetingId,
+        title: 'Meeting',
+        description: null,
+        organizerUserId: 'user-1',
+        status: 'ENDED',
+        scheduledStartAt: null,
+        scheduledEndAt: null,
+        startedAt: null,
+        endedAt: null,
+      ),
+      summary: const MinutesSummary(
+        availability: 'AVAILABLE',
+        id: 'summary-1',
+        versionNumber: 1,
+        content: 'Summary',
+        sourceType: 'AI',
+        qualityStatus: 'READY',
+        transcriptId: 'transcript-1',
+        contentRevision: 1,
+        selectionEpoch: 1,
+        isStale: false,
+        aiWarnings: [],
+      ),
+      confirmedDecisions: <MinutesDecision>[],
+      officialActionItems: <MinutesAction>[],
+      transcript: const MinutesTranscript(
+        availability: 'AVAILABLE',
+        id: 'transcript-1',
+        processingJobId: null,
+        versionNumber: 1,
+        languageCode: 'vi',
+        status: 'READY',
+        contentRevision: 1,
+        durationMs: 1000,
+        suspiciousSegments: 0,
+        unresolvedSegments: 0,
+        unresolvedCoverageRegions: 0,
+      ),
+      warnings: <String>[],
+      proposalsIncluded: false,
+      schemaVersion: 1,
+      sourceFingerprint: 'test',
+    );
+  }
 
   @override
   Future<bool> verifyReadAccess({
@@ -1045,6 +1050,53 @@ void main() {
     expect(repository.reads, 1);
     await workspace.loadTranscript(force: true);
     expect(repository.reads, 2);
+  });
+
+  test('Action Item changes reload only affected Minutes', () async {
+    final client = MeetingTestHttpClient((request) async {
+      throw StateError('Unexpected request ${request.url.path}');
+    });
+    final api = createMeetingTestApi(client);
+    await signInMeetingTestApi(api);
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+    );
+    final repository = _Repository(api);
+    final workspace = ResultsWorkspaceController(
+      api: api,
+      repository: repository,
+      meetingId: testMeetingId,
+      meeting: Meeting.fromJson(meetingTestJson()),
+      capabilities: const ResultsCapabilities(canRead: true, canMutate: true),
+      invalidation: dependencies.resultsInvalidation,
+    );
+    addTearDown(() async {
+      workspace.dispose();
+      await dependencies.shutdown();
+    });
+    await workspace.loadMinutes();
+    await workspace.loadTranscript();
+    final scope = workspace.sessionScope;
+    final actions = dependencies.actionItemInvalidation;
+
+    actions.invalidate(sessionScope: scope, meetingId: testRoomId);
+    await workspace.loadMinutes();
+    expect(repository.minutesReads, 1);
+
+    actions.invalidate(sessionScope: scope, meetingId: testMeetingId);
+    expect(repository.minutesReads, 1);
+    await workspace.loadMinutes();
+    expect(repository.minutesReads, 2);
+    await workspace.loadTranscript();
+    expect(repository.reads, 1);
+
+    workspace.activateResources({ResultsResourceKind.minutes});
+    actions.invalidate(sessionScope: scope);
+    await workspace.loadMinutes();
+    expect(repository.minutesReads, 3);
+    expect(repository.reads, 1);
   });
 
   test('inactive invalidated resource reloads on next access', () async {

@@ -74,6 +74,7 @@ class AppDependencies {
     roomScheduling = RoomSchedulingRepository(api);
     participantCandidates = ParticipantCandidateRepository(api);
     actionItemInvalidation = ActionItemInvalidationSignal(api);
+    actionItemInvalidation.addListener(_invalidateActionItemMinutes);
     actionItems = ActionItemRepository(
       api: api,
       invalidation: actionItemInvalidation,
@@ -121,6 +122,18 @@ class AppDependencies {
           localMedia: this.localMedia,
           capabilityResolver: _resolveProcessingCapability,
         );
+  }
+
+  void _invalidateActionItemMinutes() {
+    final scope = actionItemInvalidation.sessionScope;
+    if (_disposed || scope == null || actionItemInvalidation.revision == 0) {
+      return;
+    }
+    resultsInvalidation.invalidate(
+      sessionScope: scope,
+      meetingId: actionItemInvalidation.lastMeetingId,
+      resources: const {ResultsResourceKind.minutes},
+    );
   }
 
   Future<RecordingAuthorizationContext?> _resolveRecordingAuthorization(
@@ -193,6 +206,7 @@ class AppDependencies {
     if (_disposed) return;
     _disposed = true;
     actionItemWorkflows.dispose();
+    actionItemInvalidation.removeListener(_invalidateActionItemMinutes);
     actionItemInvalidation.dispose();
     // Fence every producer before releasing shared transport or local
     // persistence. If nothing is active, the close path runs synchronously

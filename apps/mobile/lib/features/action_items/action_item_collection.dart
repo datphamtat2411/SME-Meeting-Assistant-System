@@ -347,6 +347,13 @@ class ActionItemCollectionController extends ChangeNotifier {
     final revision = repository.invalidation.revision;
     if (revision == _revision) return;
     _revision = revision;
+    final affectedMeeting = repository.invalidation.lastMeetingId;
+    final meeting = fixedMeetingId ?? _criteria.meetingId;
+    if (meeting != null &&
+        affectedMeeting != null &&
+        !sameActionItemIdentity(meeting, affectedMeeting)) {
+      return;
+    }
     _dirty = true;
     _drainInvalidation();
   }
