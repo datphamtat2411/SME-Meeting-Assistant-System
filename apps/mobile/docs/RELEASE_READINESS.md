@@ -1,6 +1,6 @@
 # Mobile integration readiness
 
-Mobile is in an Android-first foundation phase. This checklist separates
+Mobile development and verification remain Android-first. This checklist separates
 automated foundation evidence from backend integration, device acceptance, and
 production release readiness. See
 [`M01_FOUNDATION_VERIFICATION.md`](M01_FOUNDATION_VERIFICATION.md) for the
@@ -8,6 +8,8 @@ current local results and the successful hosted GitHub Actions foundation run.
 For the M03-T08 meeting corrective patch, see
 [`M03_T08_ACCEPTANCE.md`](M03_T08_ACCEPTANCE.md).
 For the M05 Results workspace, see [`M05_ACCEPTANCE.md`](M05_ACCEPTANCE.md).
+For M06 Action Items and its verification status, see
+[`M06_ACCEPTANCE.md`](M06_ACCEPTANCE.md).
 
 ## Verified foundation capabilities
 
@@ -87,6 +89,8 @@ Do not infer or synthesize ETags from model versions or identifiers.
 - Evidence-backed manual Decision creation additionally requires deployment
   of the compatible reviewed-source API contract described in the M05
   acceptance document.
+- M06 Action Items use verified detail snapshots and server-issued opaque
+  ETags; collection and Minutes representations cannot authorize mutations.
 - HTTP 412/428 remain server outcomes, not a signal to invent or retry a
   token. An obsolete reviewed intent requires a fresh human review.
 
