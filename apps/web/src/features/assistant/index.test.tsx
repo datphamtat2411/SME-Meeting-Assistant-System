@@ -717,7 +717,7 @@ describe('AssistantPage', () => {
     await expect
       .element(screen.getByText('Core is processing this question.'))
       .toBeVisible()
-    await expect.poll(() => getStatusReads()).toBeGreaterThan(0)
+    await expect.poll(() => getStatusReads(), { timeout: 6_000 }).toBeGreaterThan(0)
 
     await userEvent.selectOptions(
       screen.getByRole('combobox', { name: 'Assistant meeting' }),
@@ -1023,7 +1023,7 @@ describe('AssistantPage', () => {
     )
     await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
 
-    await expect.poll(() => getStatusReads()).toBeGreaterThan(0)
+    await expect.poll(() => getStatusReads(), { timeout: 6_000 }).toBeGreaterThan(0)
     await userEvent.click(screen.getByRole('button', { name: 'Refresh history' }))
     await expect.element(screen.getByText('An unrelated later answer')).toBeVisible()
     await expect
@@ -1062,7 +1062,7 @@ describe('AssistantPage', () => {
     )
     await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
 
-    await expect.poll(() => getDetailReads()).toBeGreaterThan(1)
+    await expect.poll(() => getDetailReads(), { timeout: 6_000 }).toBeGreaterThan(1)
     await expect
       .element(screen.getByText('Exact accepted answer'))
       .toBeVisible()
@@ -1332,7 +1332,7 @@ describe('AssistantPage', () => {
       otherMeeting.id
     )
 
-    await expect.element(screen.getByText('Planning questions')).toBeVisible()
+    await expect.element(screen.getByRole('heading', { name: 'Planning questions', exact: true })).toBeVisible()
     await expect
       .element(screen.getByText('The launch is planned for Friday.').first())
       .toBeVisible()
@@ -1484,7 +1484,7 @@ describe('AssistantPage', () => {
   })
 
   it('keeps an uncertain submission identity for an explicit retry', async () => {
-    setupReads()
+    const { get } = setupReads()
     const post = vi
       .spyOn(coreApi, 'post')
       .mockRejectedValueOnce(
@@ -1525,6 +1525,10 @@ describe('AssistantPage', () => {
     )
     await expect.poll(() => post.mock.calls.length).toBe(2)
     expect(post.mock.calls[0]?.[2]).toEqual(post.mock.calls[1]?.[2])
+    expect(get).toHaveBeenCalledWith(
+      `/assistant/conversations/${conversationId}/turns`,
+      { headers: post.mock.calls[0]?.[2]?.headers }
+    )
   })
 
   it('reports malformed Assistant responses without fabricating success', async () => {

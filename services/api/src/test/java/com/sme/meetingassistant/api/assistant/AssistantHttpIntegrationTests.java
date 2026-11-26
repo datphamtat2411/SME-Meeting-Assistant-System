@@ -505,6 +505,43 @@ class AssistantHttpIntegrationTests {
         verify(gateway,times(1)).answer(anyString());
     }
 
+    @Test void concurrentRecoveryDoesNotExecuteTheSameDurableTurnTwice() throws Exception {
+        UUID owner=user(),meeting=meeting(owner),id=conversation(owner,meeting);
+        String question="Concurrent recovery?";
+        var original=new TransactionTemplate(transactionManager).execute(s->
+            store.insertTurn(id,"concurrent-recovery",WorkerJson.sha256(question.getBytes(StandardCharsets.UTF_8)),
+                question,"test-scope"));
+        jdbc.update("UPDATE assistant_turns SET claim_expires_at=clock_timestamp()-interval '1 second' WHERE id=?",
+            original.id());
+        var entered=new java.util.concurrent.CountDownLatch(1);
+        var release=new java.util.concurrent.CountDownLatch(1);
+        when(gateway.answer(anyString())).thenAnswer(inv->{
+            entered.countDown();
+            if(!release.await(15,java.util.concurrent.TimeUnit.SECONDS))
+                throw new IllegalStateException("Recovery test did not release inference");
+            return insufficient(inv.getArgument(0));
+        });
+        String recovery="/api/v1/assistant/conversations/"+id+"/turns/"+original.id()+"/recover";
+        try(var worker=java.util.concurrent.Executors.newSingleThreadExecutor()){
+            var first=worker.submit(()->mvc.perform(post(recovery).principal(principal(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.turnId").value(original.id().toString())).andReturn());
+            try {
+                assertThat(entered.await(15,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                mvc.perform(post(recovery).principal(principal(owner))).andExpect(status().isAccepted())
+                    .andExpect(jsonPath("$.data.turnId").value(original.id().toString()));
+            } finally {
+                release.countDown();
+            }
+            first.get(15,java.util.concurrent.TimeUnit.SECONDS);
+        }
+        verify(gateway,times(1)).answer(anyString());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_turns WHERE conversation_id=?",
+            Integer.class,id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_messages WHERE conversation_id=?",
+            Integer.class,id)).isEqualTo(2);
+    }
+
     @Test void failedRecoveryIsTerminalAndDoesNotRestartInference() throws Exception {
         UUID owner=user(),meeting=meeting(owner),id=conversation(owner,meeting);
         String question="Kết luận?";
