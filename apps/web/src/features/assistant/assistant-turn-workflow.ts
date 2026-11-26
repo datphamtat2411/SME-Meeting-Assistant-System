@@ -195,6 +195,7 @@ export function useAssistantTurnWorkflow(
           access: operation.access,
           conflict: operation.conflict,
           turnId: turn.turnId,
+          retryAt: observationRetryAt.current.get(key)?.get(turn.turnId),
         })
         return
       }
@@ -246,7 +247,16 @@ export function useAssistantTurnWorkflow(
           const phase =
             pending?.leaseStatus === 'EXPIRED' ? 'recoverable' : 'observing'
           if (previous.phase !== phase)
-            write(id, { ...previous, phase, error: undefined })
+            write(id, {
+              ...previous,
+              phase,
+              error: undefined,
+              retryAt:
+                Math.max(
+                  previous.retryAt ?? 0,
+                  observationRetryAt.current.get(id)?.get(previous.turnId) ?? 0
+                ) || undefined,
+            })
           return
         }
       }
@@ -259,6 +269,7 @@ export function useAssistantTurnWorkflow(
       access: captureAssistantAccess(client, id),
       conflict: previous?.conflict,
       turnId: pending.turnId,
+      retryAt: observationRetryAt.current.get(id)?.get(pending.turnId),
     })
   }, [client, id, detail, historyReady, pending, workflows, write])
 
@@ -389,6 +400,37 @@ export function useAssistantTurnWorkflow(
       ? workflow
       : undefined
   const observing = active?.phase === 'observing' ? active : undefined
+  const retryDeadline = active && 'retryAt' in active ? active.retryAt : undefined
+  const [clock, setClock] = useState(() => Date.now())
+  useEffect(() => {
+    if (!retryDeadline || retryDeadline <= clock) return
+    const timer = setTimeout(
+      () => setClock(Date.now()),
+      Math.min(2_147_483_647, Math.max(0, retryDeadline - Date.now()))
+    )
+    return () => clearTimeout(timer)
+  }, [retryDeadline, clock])
+
+  // Presentation consumes the same prerequisites as the action handlers.
+  // Wall-clock/operation ownership is checked again at the action boundary.
+  const canAct = Boolean(historyReady && id && active)
+  const canRecover =
+    canAct &&
+    conversation?.status === 'ACTIVE' &&
+    active?.phase === 'recoverable' &&
+    (!pending || pending.turnId === active.turnId) &&
+    !active.replacementTurnId
+  const canResume =
+    canAct && (active?.phase === 'paused' || active?.phase === 'uncertain')
+  const canRetry =
+    canAct &&
+    conversation?.status === 'ACTIVE' &&
+    active?.phase === 'uncertain' &&
+    !active.conflict &&
+    !pending &&
+    canRetryAssistantSubmission(active.error)
+  const blockedUntil =
+    retryDeadline && retryDeadline > clock ? retryDeadline : undefined
 
   useEffect(() => {
     if (!id || !observing) return
@@ -505,12 +547,9 @@ export function useAssistantTurnWorkflow(
 
   const recover = async () => {
     if (
-      !historyReady ||
+      !canRecover ||
       !id ||
-      !active ||
-      conversation?.status !== 'ACTIVE' ||
-      active.phase !== 'recoverable' ||
-      (pending && pending.turnId !== active.turnId) ||
+      active?.phase !== 'recoverable' ||
       !owns(id, active)
     )
       return
@@ -577,7 +616,7 @@ export function useAssistantTurnWorkflow(
   }
 
   const resume = () => {
-    if (!historyReady || !id || !active || !owns(id, active)) return
+    if (!canResume || !id || !active || !owns(id, active)) return
     if ('retryAt' in active && Date.now() < (active.retryAt ?? 0)) return
     if (active.phase === 'paused')
       write(id, { ...active, phase: 'observing', error: undefined })
@@ -586,6 +625,12 @@ export function useAssistantTurnWorkflow(
 
   return {
     workflow: active,
+    actions: {
+      recover: canRecover && !blockedUntil,
+      resume: canResume && !blockedUntil,
+      retry: canRetry && !blockedUntil,
+      blockedUntil,
+    },
     busy: Boolean(
       (active && active.phase !== 'settled') ||
       (pending &&
@@ -597,14 +642,7 @@ export function useAssistantTurnWorkflow(
     recover: () => void recover(),
     resume,
     retry: () => {
-      if (
-        historyReady &&
-        conversation?.status === 'ACTIVE' &&
-        active?.phase === 'uncertain' &&
-        !active.conflict &&
-        !pending &&
-        canRetryAssistantSubmission(active.error)
-      )
+      if (canRetry && active?.phase === 'uncertain')
         void submit(active.submission, active)
     },
   }

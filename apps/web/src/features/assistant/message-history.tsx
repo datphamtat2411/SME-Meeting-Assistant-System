@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { LoaderCircle, ShieldAlert } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -21,6 +21,13 @@ const suggestions = [
   'Những thời hạn nào đã được thống nhất?',
 ]
 
+// Presentation metadata only; no protected message bodies survive a history read.
+export type HistoryScrollPosition = {
+  following: boolean
+  reading?: { id: string; offset: number }
+  scrollTop?: number
+}
+
 type Inspection = {
   messageId: string
   citationId?: string
@@ -39,6 +46,9 @@ export function ConversationHistory({
   onLoadOlder,
   onSuggestion,
   suggestionsEnabled,
+  position,
+  showLatest,
+  onShowLatestChange,
 }: {
   conversationId: string
   meetingId: string
@@ -49,14 +59,14 @@ export function ConversationHistory({
   onLoadOlder: () => void
   onSuggestion: (question: string) => void
   suggestionsEnabled: boolean
+  position: RefObject<HistoryScrollPosition>
+  showLatest: boolean
+  onShowLatestChange: (show: boolean) => void
 }) {
   const client = useQueryClient()
   useAssistantAccessRevision(client)
   const [inspection, setInspection] = useState<Inspection>()
   const viewport = useRef<HTMLDivElement>(null)
-  const reading = useRef<{ id: string; offset: number } | undefined>(undefined)
-  const following = useRef(true)
-  const [showLatest, setShowLatest] = useState(false)
   const epoch = assistantHistoryEpoch(client, conversationId)
   const inspected =
     inspection &&
@@ -73,38 +83,46 @@ export function ConversationHistory({
 
   function rememberPosition() {
     const node = viewport.current
-    if (!node) return
-    following.current =
+    if (!node || !node.clientHeight) return
+    const following =
       node.scrollHeight - node.scrollTop - node.clientHeight < 80
-    setShowLatest(!following.current)
+    onShowLatestChange(!following)
     const top = node.getBoundingClientRect().top
     const first = Array.from(
       node.querySelectorAll<HTMLElement>('[data-message-id]')
     ).find((item) => item.getBoundingClientRect().bottom > top)
-    reading.current = first?.dataset.messageId
-      ? {
-          id: first.dataset.messageId,
-          offset: first.getBoundingClientRect().top - top,
-        }
-      : undefined
+    position.current = {
+      following,
+      scrollTop: node.scrollTop,
+      reading: first?.dataset.messageId
+        ? {
+            id: first.dataset.messageId,
+            offset: first.getBoundingClientRect().top - top,
+          }
+        : undefined,
+    }
   }
 
   useLayoutEffect(() => {
     const node = viewport.current
-    if (!node) return
-    if (following.current) {
+    if (!node || !node.clientHeight) return
+    const { following, reading, scrollTop } = position.current
+    if (following) {
       node.scrollTop = node.scrollHeight
-    } else if (reading.current) {
-      const anchor = Array.from(
-        node.querySelectorAll<HTMLElement>('[data-message-id]')
-      ).find((item) => item.dataset.messageId === reading.current?.id)
-      if (anchor)
+    } else {
+      const anchor = reading
+        ? Array.from(
+            node.querySelectorAll<HTMLElement>('[data-message-id]')
+          ).find((item) => item.dataset.messageId === reading.id)
+        : undefined
+      if (anchor && reading)
         node.scrollTop +=
           anchor.getBoundingClientRect().top -
           node.getBoundingClientRect().top -
-          reading.current.offset
+          reading.offset
+      else node.scrollTop = scrollTop ?? 0
     }
-  }, [messages])
+  }, [messages, position])
 
   function inspect(
     messageId: string,
@@ -121,7 +139,7 @@ export function ConversationHistory({
       <div
         ref={viewport}
         onScroll={rememberPosition}
-        className='min-h-0 flex-1 space-y-5 overflow-y-auto px-3 py-4 sm:px-6'
+        className='min-h-0 flex-1 space-y-5 overflow-y-auto px-3 py-4 [overflow-anchor:none] sm:px-6'
         aria-label='Conversation history'
         tabIndex={0}
       >
@@ -134,7 +152,8 @@ export function ConversationHistory({
               disabled={loadingOlder}
               onClick={() => {
                 rememberPosition()
-                following.current = false
+                position.current.following = false
+                onShowLatestChange(true)
                 onLoadOlder()
               }}
             >
@@ -184,10 +203,10 @@ export function ConversationHistory({
           size='sm'
           className='absolute bottom-3 left-1/2 -translate-x-1/2 shadow-sm'
           onClick={() => {
-            following.current = true
+            position.current = { following: true }
             if (viewport.current)
               viewport.current.scrollTop = viewport.current.scrollHeight
-            setShowLatest(false)
+            onShowLatestChange(false)
           }}
         >
           Jump to latest

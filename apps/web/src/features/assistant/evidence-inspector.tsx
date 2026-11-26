@@ -152,7 +152,7 @@ export function EvidenceInspector({
                 </p>
                 {entry.claimIds.length > 0 && (
                   <p className='text-xs text-muted-foreground'>
-                    Supports {entry.claimIds.length === 1 ? 'claim' : 'claims'}{' '}
+                    Related {entry.claimIds.length === 1 ? 'claim' : 'claims'}{' '}
                     {message.claims
                       .flatMap((claim, claimIndex) =>
                         entry.claimIds.includes(claim.claimId)

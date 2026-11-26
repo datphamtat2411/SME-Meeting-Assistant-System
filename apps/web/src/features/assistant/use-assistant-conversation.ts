@@ -322,6 +322,7 @@ export function useAssistantConversation(
       onQuestionSubmit: submitQuestion,
       questionBusy: turns.busy || inactive,
       workflow: turns.workflow,
+      turnActions: turns.actions,
       onQuestionRetry: turns.retry,
       onRecover: turns.recover,
       onResumePolling: turns.resume,

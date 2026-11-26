@@ -138,6 +138,7 @@ function AssistantWorkspace({ selection, onSelectionChange }: SelectionProps) {
               )}
               {selection.conversationId ? (
                 <ConversationPanel
+                  key={selection.conversationId}
                   {...conversation.panel}
                   selectedMeetingTitle={active.meeting?.title}
                 />

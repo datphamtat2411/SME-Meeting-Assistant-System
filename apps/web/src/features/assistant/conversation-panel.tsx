@@ -1,4 +1,4 @@
-import { useRef, type FormEvent, type ReactNode } from 'react'
+import { useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { LoaderCircle, RefreshCw } from 'lucide-react'
 import type { CoreApiError } from '@/lib/core-api'
@@ -16,7 +16,7 @@ import { canRetryAssistantSubmission } from './assistant-error-policy'
 import { chronologicalHistoryMessages } from './assistant-history'
 import type { TurnWorkflow } from './assistant-turn-workflow'
 import type { ConversationHistoryQuery } from './assistant-types'
-import { ConversationHistory } from './message-history'
+import { ConversationHistory, type HistoryScrollPosition } from './message-history'
 
 export function ConversationPanel({
   listAccessError,
@@ -42,6 +42,7 @@ export function ConversationPanel({
   inactive,
   onRefresh,
   onResumePolling,
+  turnActions,
 }: {
   listAccessError?: CoreApiError
   detailAccessError?: CoreApiError
@@ -66,8 +67,16 @@ export function ConversationPanel({
   inactive: boolean
   onRefresh: () => void
   onResumePolling: () => void
+  turnActions: {
+    recover: boolean
+    resume: boolean
+    retry: boolean
+    blockedUntil?: number
+  }
 }) {
   const form = useRef<HTMLFormElement>(null)
+  const position = useRef<HistoryScrollPosition>({ following: true })
+  const [showLatest, setShowLatest] = useState(false)
   if (!selectedConversationId || listAccessError) return null
   if (detailAccessError) {
     return (
@@ -117,6 +126,9 @@ export function ConversationPanel({
       {detailQuery.data ? (
         <ConversationHistory
           key={selectedConversationId}
+          position={position}
+          showLatest={showLatest}
+          onShowLatestChange={setShowLatest}
           conversationId={selectedConversationId}
           meetingId={selectedConversation.meetingId}
           onSuggestion={onQuestionChange}
@@ -172,7 +184,7 @@ export function ConversationPanel({
                   size='sm'
                   variant='outline'
                   onClick={onRecover}
-                  disabled={inactive}
+                  disabled={!turnActions.recover}
                 >
                   Recover turn
                 </Button>
@@ -184,6 +196,7 @@ export function ConversationPanel({
                   size='sm'
                   variant='outline'
                   onClick={onResumePolling}
+                  disabled={!turnActions.resume}
                 >
                   Resume status checks
                 </Button>
@@ -195,6 +208,7 @@ export function ConversationPanel({
         {workflow?.error != null && (
           <AssistantError
             error={workflow.error}
+            retryDisabled={!turnActions.retry}
             onRetry={
               workflow.phase === 'uncertain' &&
               !workflow.conflict &&
@@ -204,10 +218,10 @@ export function ConversationPanel({
             }
           />
         )}
-        {workflow && 'retryAt' in workflow && workflow.retryAt != null && (
-          <p className='text-sm text-muted-foreground'>
+        {turnActions.blockedUntil != null && (
+          <p className='text-sm text-muted-foreground' role='status'>
             Core requested no retry before{' '}
-            {new Date(workflow.retryAt).toLocaleTimeString()}.
+            {new Date(turnActions.blockedUntil).toLocaleTimeString()}.
           </p>
         )}
         {inactive && (

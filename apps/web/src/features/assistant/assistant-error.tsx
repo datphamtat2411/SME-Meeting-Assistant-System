@@ -6,9 +6,11 @@ import { Button } from '@/components/ui/button'
 export function AssistantError({
   error,
   onRetry,
+  retryDisabled,
 }: {
   error: unknown
   onRetry?: () => void
+  retryDisabled?: boolean
 }) {
   const failure = normalizeCoreApiError(error)
   return (
@@ -18,7 +20,13 @@ export function AssistantError({
       <AlertDescription>
         <p>{assistantErrorMessage(failure)}</p>
         {onRetry && (
-          <Button type='button' size='sm' variant='outline' onClick={onRetry}>
+          <Button
+            type='button'
+            size='sm'
+            variant='outline'
+            onClick={onRetry}
+            disabled={retryDisabled}
+          >
             <RefreshCw className='size-4' /> Retry or refresh
           </Button>
         )}
@@ -30,6 +38,7 @@ export function AssistantError({
 function assistantErrorTitle(error: CoreApiError): string {
   if (error.status === 401) return 'Authentication required'
   if (error.status === 403) return 'Assistant access denied'
+  if (error.code === 'ASSISTANT_MESSAGE_NOT_FOUND') return 'Answer unavailable'
   if (error.status === 404) return 'Conversation unavailable'
   if (error.code === 'ASSISTANT_SOURCE_STALE')
     return 'Assistant evidence is stale'
@@ -55,6 +64,9 @@ function assistantErrorMessage(error: CoreApiError): string {
   if (error.status === 401) return 'Sign in again to use the Assistant.'
   if (error.status === 403) {
     return 'You are not authorized to use this Assistant conversation.'
+  }
+  if (error.code === 'ASSISTANT_MESSAGE_NOT_FOUND') {
+    return 'This answer is no longer available for evidence inspection.'
   }
   if (error.status === 404) {
     return 'This conversation or meeting is no longer available to your account.'
