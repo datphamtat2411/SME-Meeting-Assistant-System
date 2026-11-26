@@ -106,7 +106,10 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
     try {
       requireSettingsSession(generation)
       await qc.cancelQueries({ queryKey: preferencesQueryKey })
-      const latest = await qc.fetchQuery({ ...preferencesQuery(), staleTime: 0 })
+      const latest = await qc.fetchQuery({
+        ...preferencesQuery(),
+        staleTime: 0,
+      })
       requireSettingsSession(generation)
       reset(regionalDraft(latest), { keepDirtyValues: !discard })
       setReconcile(false)
