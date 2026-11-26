@@ -29,3 +29,10 @@ ordinary access-token authentication, consistent with the endpoint's existing
 anonymous capability contract. Capability verification is unchanged. The
 transport regression test covers setup with an invalid access cookie and
 verifies that protected endpoints still reject that cookie.
+
+Recovery permits an explicit retry after an unavailable response. A credential
+mutation with an uncertain result remains blocked; setup guidance directs the
+user to sign in or contact the administrator for a new link. Retry-After
+cooldowns release the form without automatically replaying the request.
+Regression tests cover cooldown release, callback navigation during a pending
+mutation, backend field rejection, and Axios timeout normalization.

@@ -117,7 +117,11 @@ export function ForgotPasswordForm({
           disabled={submission.blocked || !email.trim()}
         >
           {submission.pending ? <Loader2 className='animate-spin' /> : <Mail />}
-          {submission.pending ? 'Requesting…' : 'Send recovery link'}
+          {submission.pending
+            ? 'Requesting…'
+            : submission.failure?.kind === 'unavailable'
+              ? 'Try again'
+              : 'Send recovery link'}
         </Button>
       </form>
     </Form>

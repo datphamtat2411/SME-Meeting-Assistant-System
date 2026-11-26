@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import {
   type AccountFlowFailure,
   type AccountFlowOperation,
@@ -18,7 +18,7 @@ function isBlocked(
   if (state.type === 'submitting' || state.type === 'completed') return true
   if (state.type !== 'failure') return false
   return (
-    state.failure.kind === 'unavailable' ||
+    (state.failure.kind === 'unavailable' && operation !== 'recovery') ||
     (state.failure.kind === 'uncertain' && operation !== 'recovery') ||
     state.failure.retryAt !== undefined
   )
@@ -30,7 +30,7 @@ export function useAccountFlowSubmission(operation: AccountFlowOperation) {
   const current = useRef<SubmissionState>({ type: 'ready' })
   const mounted = useRef(false)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     mounted.current = true
     return () => {
       mounted.current = false
@@ -38,11 +38,12 @@ export function useAccountFlowSubmission(operation: AccountFlowOperation) {
   }, [])
 
   const retryAt = state.type === 'failure' ? state.failure.retryAt : undefined
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (retryAt === undefined) return
     const deadline = retryAt
     let timer: ReturnType<typeof setTimeout>
     function releaseWhenDue() {
+      if (!mounted.current) return
       const remaining = deadline - Date.now()
       if (remaining > 0) {
         timer = setTimeout(releaseWhenDue, Math.min(remaining, 2_147_483_647))
@@ -52,7 +53,11 @@ export function useAccountFlowSubmission(operation: AccountFlowOperation) {
       if (previous.type === 'failure' && previous.failure.retryAt === retryAt) {
         const next: SubmissionState = {
           type: 'failure',
-          failure: { ...previous.failure, retryAt: undefined },
+          failure: {
+            ...previous.failure,
+            retryAt: undefined,
+            message: 'You can try again now.',
+          },
         }
         current.current = next
         setState(next)

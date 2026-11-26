@@ -1,4 +1,4 @@
-import { StrictMode } from 'react'
+import { StrictMode, act } from 'react'
 import {
   createBrowserHistory,
   createRootRoute,
@@ -44,7 +44,7 @@ describe('account setup browser routing', () => {
       routeTree: root.addChildren([setup, signIn]),
       history,
     })
-    vi.mocked(completeAccountSetup).mockResolvedValue(undefined)
+    vi.mocked(completeAccountSetup).mockReset().mockResolvedValue(undefined)
 
     const screen = await render(
       <StrictMode>
@@ -57,7 +57,27 @@ describe('account setup browser routing', () => {
       await expect.poll(() => history.location.hash).toBe('')
       expect(history.location.state.__TSR_key).toBe(initialKey)
       expect(history.location.search).toBe('?source=email')
-      await userEvent.fill(password, 'old password input')
+      let finishFirst!: () => void
+      vi.mocked(completeAccountSetup).mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishFirst = resolve
+          })
+      )
+      const firstPassword = 'old private activation password'
+      await userEvent.fill(password, firstPassword)
+      await userEvent.fill(
+        screen.getByLabelText('Confirm password'),
+        firstPassword
+      )
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Activate account' })
+      )
+      await expect.element(password).toBeDisabled()
+      expect(completeAccountSetup).toHaveBeenCalledExactlyOnceWith(
+        'first',
+        firstPassword
+      )
 
       history.push('/account-setup#token=second')
       history.flush()
@@ -65,6 +85,12 @@ describe('account setup browser routing', () => {
       await expect.poll(() => history.location.hash).toBe('')
       const newPassword = 'new private activation password'
       await userEvent.fill(password, newPassword)
+      await act(async () => {
+        finishFirst()
+      })
+      await expect.element(password).toHaveValue(newPassword)
+      await expect.element(password).toBeEnabled()
+      expect(completeAccountSetup).toHaveBeenCalledOnce()
       await userEvent.fill(
         screen.getByLabelText('Confirm password'),
         newPassword
@@ -75,7 +101,8 @@ describe('account setup browser routing', () => {
       await expect
         .element(screen.getByRole('status'))
         .toHaveTextContent(/account is ready/i)
-      expect(completeAccountSetup).toHaveBeenCalledExactlyOnceWith(
+      expect(completeAccountSetup).toHaveBeenCalledTimes(2)
+      expect(completeAccountSetup).toHaveBeenLastCalledWith(
         'second',
         newPassword
       )

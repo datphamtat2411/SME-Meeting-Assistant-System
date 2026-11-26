@@ -33,7 +33,7 @@ export function classifyAccountFlowFailure(
     return {
       kind: 'unavailable',
       message: recovery
-        ? 'Password recovery is unavailable on this deployment. Contact your administrator.'
+        ? 'Password recovery is unavailable on this deployment. Contact your administrator, or try again if the service becomes available.'
         : 'This account flow is unavailable. Contact your administrator.',
     }
   }
@@ -54,7 +54,9 @@ export function classifyAccountFlowFailure(
       kind: 'uncertain',
       message: recovery
         ? 'Your request may have been processed. Check your inbox and spam folder before sending another request.'
-        : 'The password change may already have completed. Try signing in with the password you selected. If necessary, reopen the original link or obtain a fresh link.',
+        : operation === 'setup'
+          ? 'Account activation may already have completed. Try signing in with the password you selected. If necessary, contact your administrator for a fresh setup link.'
+          : 'The password change may already have completed. Try signing in with the password you selected. If necessary, request a fresh recovery link.',
     }
   }
   if (failure.status === 401 || failure.status === 403) {
