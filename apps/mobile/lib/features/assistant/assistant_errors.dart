@@ -37,8 +37,8 @@ class AssistantFailure extends ApiFailure {
          responseRequestId: source.responseRequestId,
          timestamp: source.timestamp,
          errors: source.errors,
-         retryAfter: source.retryAfter ??
-             headerValue(source.headers, 'retry-after'),
+         retryAfter:
+             source.retryAfter ?? headerValue(source.headers, 'retry-after'),
          headers: source.headers,
          isTransportFailure: source.isTransportFailure,
          remoteOutcomeAmbiguous:

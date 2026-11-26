@@ -194,11 +194,10 @@ class _Evidence {
     final claims = requireJsonObjectArray(raw['claims'], response: response)
         .map((item) => AssistantClaim._decode(item, response))
         .toList(growable: false);
-    final citations = requireJsonObjectArray(
-      raw['citations'],
-      response: response,
-    ).map((item) => AssistantCitation._decode(item, response))
-        .toList(growable: false);
+    final citations =
+        requireJsonObjectArray(raw['citations'], response: response)
+            .map((item) => AssistantCitation._decode(item, response))
+            .toList(growable: false);
     final byClaim = {for (final claim in claims) claim.claimId: claim};
     final byCitation = {
       for (final citation in citations) citation.citationId: citation,

@@ -240,8 +240,14 @@ void main() {
         _message()..['createdAt'] = '2026-02-30T12:00:00Z',
         _message()..['citations'] = [_citation()..['meetingId'] = testRoomId],
         _message()..['citations'] = [_citation()..['sourceRevision'] = -1],
-        _message()..['claims'] = [_claim()..['citationIds'] = ['missing']],
-        _message()..['citations'] = [_citation()..['claimIds'] = ['missing']],
+        _message()
+          ..['claims'] = [
+            _claim()..['citationIds'] = ['missing'],
+          ],
+        _message()
+          ..['citations'] = [
+            _citation()..['claimIds'] = ['missing'],
+          ],
         _message()..['citations'] = [_citation(), _citation()],
       ]) {
         expect(
@@ -316,9 +322,11 @@ void main() {
           );
           expect(decodeRequestBody(request), {'question': 'Câu hỏi'});
           expect(
-            request.headers.entries.singleWhere(
-              (entry) => entry.key.toLowerCase() == 'idempotency-key',
-            ).value,
+            request.headers.entries
+                .singleWhere(
+                  (entry) => entry.key.toLowerCase() == 'idempotency-key',
+                )
+                .value,
             'intent-01:retry',
           );
           submissions++;
@@ -387,10 +395,12 @@ void main() {
 
     test('rejects invalid input without dispatch', () async {
       var requests = 0;
-      final repository = await _repository(MeetingTestHttpClient((_) async {
-        requests++;
-        return meetingApiSuccess(null);
-      }));
+      final repository = await _repository(
+        MeetingTestHttpClient((_) async {
+          requests++;
+          return meetingApiSuccess(null);
+        }),
+      );
       final scope = repository.captureSession();
       final matcher = isA<AssistantFailure>().having(
         (e) => e.outcome,
@@ -517,11 +527,13 @@ void main() {
       final entered = Completer<void>();
       final held = Completer<http.StreamedResponse>();
       var writes = 0;
-      final repository = await _repository(MeetingTestHttpClient((_) async {
-        writes++;
-        entered.complete();
-        return held.future;
-      }));
+      final repository = await _repository(
+        MeetingTestHttpClient((_) async {
+          writes++;
+          entered.complete();
+          return held.future;
+        }),
+      );
       final oldScope = repository.captureSession();
       final pending = repository.submitQuestion(
         _question(),

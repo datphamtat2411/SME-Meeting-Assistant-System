@@ -59,19 +59,23 @@ class AssistantRepository {
     int size = 20,
   }) async {
     _validatePage(page, size);
-    return _execute(sessionScope, mutation: false, operation: () async {
-      final response = await api.get(
-        _collection,
-        query: _pageQuery(page, size),
-        sessionScope: sessionScope,
-      );
-      if (response.statusCode != 200) throw response.invalidDataFailure();
-      return AssistantConversationPage.fromResult(
-        response,
-        page: page,
-        size: size,
-      );
-    });
+    return _execute(
+      sessionScope,
+      mutation: false,
+      operation: () async {
+        final response = await api.get(
+          _collection,
+          query: _pageQuery(page, size),
+          sessionScope: sessionScope,
+        );
+        if (response.statusCode != 200) throw response.invalidDataFailure();
+        return AssistantConversationPage.fromResult(
+          response,
+          page: page,
+          size: size,
+        );
+      },
+    );
   }
 
   Future<AssistantConversation> createConversation(
@@ -83,26 +87,26 @@ class AssistantRepository {
     if (title != null && title.length > 255) {
       throw AssistantFailure.invalidInput('title');
     }
-    return _execute(sessionScope, mutation: true, operation: () async {
-      final response = await api.post(
-        _collection,
-        {
+    return _execute(
+      sessionScope,
+      mutation: true,
+      operation: () async {
+        final response = await api.post(_collection, {
           'meetingId': input.meetingId.toLowerCase(),
           if (title != null && title.isNotEmpty) 'title': title,
-        },
-        sessionScope: sessionScope,
-      );
-      if (response.statusCode != 201) throw response.invalidDataFailure();
-      final conversation = AssistantConversation.fromJson(
-        response.objectData(),
-        response: response,
-      );
-      if (!sameAssistantIdentity(conversation.meetingId, input.meetingId) ||
-          conversation.status != AssistantConversationStatus.active) {
-        throw response.invalidDataFailure();
-      }
-      return conversation;
-    });
+        }, sessionScope: sessionScope);
+        if (response.statusCode != 201) throw response.invalidDataFailure();
+        final conversation = AssistantConversation.fromJson(
+          response.objectData(),
+          response: response,
+        );
+        if (!sameAssistantIdentity(conversation.meetingId, input.meetingId) ||
+            conversation.status != AssistantConversationStatus.active) {
+          throw response.invalidDataFailure();
+        }
+        return conversation;
+      },
+    );
   }
 
   Future<AssistantConversationDetail> getConversation(
@@ -117,21 +121,25 @@ class AssistantRepository {
       _validateUuid(expectedMeetingId, 'meetingId');
     }
     _validatePage(page, size);
-    return _execute(sessionScope, mutation: false, operation: () async {
-      final response = await api.get(
-        _path(conversationId),
-        query: _pageQuery(page, size),
-        sessionScope: sessionScope,
-      );
-      if (response.statusCode != 200) throw response.invalidDataFailure();
-      return AssistantConversationDetail.fromResult(
-        response,
-        conversationId: conversationId,
-        expectedMeetingId: expectedMeetingId,
-        requestedPage: page,
-        requestedSize: size,
-      );
-    });
+    return _execute(
+      sessionScope,
+      mutation: false,
+      operation: () async {
+        final response = await api.get(
+          _path(conversationId),
+          query: _pageQuery(page, size),
+          sessionScope: sessionScope,
+        );
+        if (response.statusCode != 200) throw response.invalidDataFailure();
+        return AssistantConversationDetail.fromResult(
+          response,
+          conversationId: conversationId,
+          expectedMeetingId: expectedMeetingId,
+          requestedPage: page,
+          requestedSize: size,
+        );
+      },
+    );
   }
 
   Future<AssistantTurn> submitQuestion(
@@ -146,19 +154,23 @@ class AssistantRepository {
     if (!_keyPattern.hasMatch(input.idempotencyKey)) {
       throw AssistantFailure.invalidInput('Idempotency-Key');
     }
-    return _execute(sessionScope, mutation: true, operation: () async {
-      final response = await api.post(
-        _path(input.conversation.id) + '/messages',
-        {'question': question},
-        headers: {'Idempotency-Key': input.idempotencyKey},
-        timeoutPolicy: submissionTimeoutPolicy,
-        sessionScope: sessionScope,
-      );
-      return AssistantTurn.fromResult(
-        response,
-        meetingId: input.conversation.meetingId,
-      );
-    });
+    return _execute(
+      sessionScope,
+      mutation: true,
+      operation: () async {
+        final response = await api.post(
+          _path(input.conversation.id) + '/messages',
+          {'question': question},
+          headers: {'Idempotency-Key': input.idempotencyKey},
+          timeoutPolicy: submissionTimeoutPolicy,
+          sessionScope: sessionScope,
+        );
+        return AssistantTurn.fromResult(
+          response,
+          meetingId: input.conversation.meetingId,
+        );
+      },
+    );
   }
 
   Future<T> _execute<T>(
