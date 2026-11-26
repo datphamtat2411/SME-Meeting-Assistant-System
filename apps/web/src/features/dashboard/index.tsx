@@ -24,7 +24,7 @@ export function Dashboard() {
             />
             {identity.globalRole === 'DEPARTMENT_MANAGER' && (
               <ManagementDashboard
-                key={getSessionContextKey(identity)}
+                key={'management:' + getSessionContextKey(identity)}
                 identity={identity}
               />
             )}

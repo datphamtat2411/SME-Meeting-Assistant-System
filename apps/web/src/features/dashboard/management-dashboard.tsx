@@ -68,6 +68,7 @@ function ManagementReport({
   const [end, setEnd] = useState('')
   const [unitId, setUnitId] = useState('')
   const [filterError, setFilterError] = useState('')
+  const [appliedPreset, setAppliedPreset] = useState('30')
   const [applied, setApplied] = useState(() => rollingPeriod(30))
   const report = useQuery(
     managementDashboardQuery(
@@ -88,15 +89,18 @@ function ManagementReport({
       if (unitId && !availableUnits.some((unit) => unit.id === unitId)) {
         throw new Error('Select an available managed organizational unit.')
       }
-      if (preset === 'custom' && !timezone) {
-        throw new Error('Verify the reporting timezone before using custom dates.')
+      let period
+      if (preset === 'custom') {
+        if (!timezone) {
+          throw new Error('Verify the reporting timezone before using custom dates.')
+        }
+        period = customPeriod(start, end, timezone)
+      } else {
+        period = rollingPeriod(preset === '7' ? 7 : preset === '90' ? 90 : 30)
       }
-      const period =
-        preset === 'custom'
-          ? customPeriod(start, end, timezone!)
-          : rollingPeriod(preset === '7' ? 7 : preset === '90' ? 90 : 30)
-      const next = { ...period, ...(unitId ? { orgUnitId: unitId } : {}) }
+      const next = { ...period, orgUnitId: unitId || undefined }
       setFilterError('')
+      setAppliedPreset(preset)
       if (
         applied.from === next.from &&
         applied.to === next.to &&
@@ -109,6 +113,21 @@ function ManagementReport({
     } catch (error) {
       setFilterError(error instanceof Error ? error.message : 'Invalid filters.')
     }
+  }
+
+  function refreshReport() {
+    if (appliedPreset === 'custom') {
+      void report.refetch()
+      return
+    }
+    const period = rollingPeriod(
+      appliedPreset === '7' ? 7 : appliedPreset === '90' ? 90 : 30
+    )
+    if (period.to === applied.to) {
+      void report.refetch()
+      return
+    }
+    setApplied({ ...period, orgUnitId: applied.orgUnitId })
   }
 
   function retryReport() {
@@ -204,7 +223,7 @@ function ManagementReport({
           {filterError && <p role='alert' className='text-sm text-destructive'>{filterError}</p>}
           <div className='flex flex-wrap gap-2'>
             <Button type='submit'>Apply filters</Button>
-            <Button type='button' variant='outline' disabled={report.isFetching} onClick={() => void report.refetch()}>
+            <Button type='button' variant='outline' disabled={report.isFetching} onClick={refreshReport}>
               Refresh applied report
             </Button>
           </div>
