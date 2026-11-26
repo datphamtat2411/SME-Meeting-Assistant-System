@@ -41,6 +41,15 @@ enum ActionItemCommand {
     ActionItemCommand.reopen => status == ActionItemStatus.done,
   };
 
+  ActionItemStatus get targetStatus => switch (this) {
+    ActionItemCommand.confirm ||
+    ActionItemCommand.reopen => ActionItemStatus.open,
+    ActionItemCommand.reject ||
+    ActionItemCommand.cancel => ActionItemStatus.cancelled,
+    ActionItemCommand.start => ActionItemStatus.inProgress,
+    ActionItemCommand.complete => ActionItemStatus.done,
+  };
+
   bool get requiresActiveAssignee =>
       this != ActionItemCommand.reject && this != ActionItemCommand.cancel;
 }

@@ -8,6 +8,7 @@ import com.sme.meetingassistant.api.actionitems.application.ActionItemAssignment
 import com.sme.meetingassistant.api.knowledge.KnowledgeIndexingProducer;
 import com.sme.meetingassistant.api.actionitems.ActionItemLifecycle.Command;
 import com.sme.meetingassistant.api.meeting.service.MeetingActionItemAccess;
+import com.sme.meetingassistant.api.meeting.service.MeetingActionItemRightsSql;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDate;
@@ -116,26 +117,9 @@ public class ActionItemService {
      * Mere AI suggestions, including rejected proposals with a prefilled
      * assignee, never become a read capability.
      */
-    // These relational predicates mirror the existing Meeting-owned access
-    // boundary. All collection, detail, mutation and discovery read models
-    // use the same predicates; mutation admission still calls Meeting.
-    private static final String MEETING_RIGHTS = """
-        CROSS JOIN (SELECT CAST(? AS uuid) AS id) actor
-        CROSS JOIN LATERAL (
-            SELECT (meeting.organizer_user_id=actor.id OR EXISTS (
-                SELECT 1 FROM meeting_participants participant
-                 WHERE participant.meeting_id=meeting.id AND participant.user_id=actor.id
-                   AND participant.removed_at IS NULL)) AS content_visible,
-                (meeting.organizer_user_id=actor.id OR EXISTS (
-                SELECT 1 FROM meeting_action_item_scopes scope
-                JOIN organizational_units unit ON unit.id=scope.org_unit_id AND unit.status='ACTIVE'
-                JOIN manager_scope_units grant_record ON grant_record.org_unit_id=scope.org_unit_id
-                JOIN users manager_actor ON manager_actor.id=grant_record.user_id
-                    AND manager_actor.account_status='ACTIVE'
-                    AND manager_actor.global_role='DEPARTMENT_MANAGER'
-                 WHERE scope.meeting_id=meeting.id AND grant_record.user_id=actor.id)) AS manageable
-        ) rights
-        """;
+    private static final String MEETING_RIGHTS =
+        " CROSS JOIN (SELECT CAST(? AS uuid) AS id) actor "
+            + MeetingActionItemRightsSql.RIGHTS_JOIN;
     private static final String OFFICIAL = "(ai.source_type='MANUAL' OR ai.confirmed_by_user_id IS NOT NULL)";
     private static final String REVIEWABLE = "(ai.status='PROPOSED' AND rights.manageable)";
     private static final String VISIBLE_FROM = """

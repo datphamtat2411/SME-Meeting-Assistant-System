@@ -203,6 +203,7 @@ class ActionItemRepository {
       sessionScope: original.sessionScope,
       meetingId: original.item.meetingId,
       actionItemId: original.item.id,
+      expectedStatus: command.targetStatus,
       send: () => api.post(
         [_path(original.item.id), command.name].join('/'),
         const <String, dynamic>{},
@@ -234,6 +235,7 @@ class ActionItemRepository {
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
     String? actionItemId,
+    ActionItemStatus? expectedStatus,
     required Future<ApiResult> Function() send,
   }) async {
     _requireCurrent(sessionScope);
@@ -251,6 +253,9 @@ class ActionItemRepository {
       if (actionItemId == null &&
           (result.item.source != ActionItemSource.manual ||
               !result.item.official)) {
+        throw response.invalidDataFailure();
+      }
+      if (expectedStatus != null && result.item.status != expectedStatus) {
         throw response.invalidDataFailure();
       }
       if (!invalidation.invalidate(

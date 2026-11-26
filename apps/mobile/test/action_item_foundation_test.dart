@@ -357,6 +357,155 @@ void main() {
     expect(repository.invalidation.revision, 6);
   });
 
+  test('rejects missing or unusable detail ETags', () async {
+    for (final etag in <String?>[null, 'W/"weak"', 'unquoted']) {
+      final client = MeetingTestHttpClient((request) async {
+        return meetingApiSuccess(
+          itemJson(),
+          headers: {if (etag != null) 'etag': etag},
+        );
+      });
+      final repository = await repositoryFor(client);
+      await expectLater(
+        repository.detail(itemId, sessionScope: repository.captureSession()),
+        throwsA(
+          isA<ActionItemFailure>().having(
+            (e) => e.category,
+            'category',
+            ActionItemFailureCategory.missingPrecondition,
+          ),
+        ),
+      );
+      expect(repository.invalidation.revision, 0);
+    }
+  });
+
+  test('rejects semantically invalid mutation responses', () async {
+    for (final invalid in [
+      {...itemJson(status: 'DONE'), 'id': testRoomId},
+      {...itemJson(status: 'DONE'), 'meetingId': testRoomId},
+      itemJson(status: 'OPEN'),
+      {...itemJson(status: 'DONE'), 'capabilities': null},
+    ]) {
+      final client = MeetingTestHttpClient((request) async {
+        return meetingApiSuccess(
+          request.method == 'GET' ? itemJson() : invalid,
+          headers: const {'etag': '"v1"'},
+        );
+      });
+      final repository = await repositoryFor(client);
+      final snapshot = await repository.detail(
+        itemId,
+        sessionScope: repository.captureSession(),
+      );
+      await expectLater(
+        repository.command(snapshot, ActionItemCommand.complete),
+        throwsA(
+          isA<ActionItemFailure>()
+              .having(
+                (e) => e.category,
+                'category',
+                ActionItemFailureCategory.invalidResponse,
+              )
+              .having(
+                (e) => e.outcome,
+                'outcome',
+                ActionItemMutationOutcome.unknown,
+              ),
+        ),
+      );
+      expect(repository.invalidation.revision, 1);
+      expect(repository.invalidation.lastActionItemId, itemId);
+    }
+  });
+
+  test('transport and server failures require mutation revalidation', () async {
+    for (final category in [
+      ActionItemFailureCategory.timeout,
+      ActionItemFailureCategory.transport,
+      ActionItemFailureCategory.server,
+    ]) {
+      final client = MeetingTestHttpClient((request) async {
+        if (request.method == 'GET') {
+          return meetingApiSuccess(
+            itemJson(),
+            headers: const {'etag': '"v1"'},
+          );
+        }
+        if (category == ActionItemFailureCategory.timeout) {
+          throw TimeoutException('Lost response');
+        }
+        if (category == ActionItemFailureCategory.transport) {
+          throw http.ClientException('Connection lost');
+        }
+        return meetingApiFailure(500, 'INTERNAL_ERROR');
+      });
+      final repository = await repositoryFor(client);
+      final snapshot = await repository.detail(
+        itemId,
+        sessionScope: repository.captureSession(),
+      );
+      await expectLater(
+        repository.command(snapshot, ActionItemCommand.complete),
+        throwsA(
+          isA<ActionItemFailure>()
+              .having((e) => e.category, 'category', category)
+              .having(
+                (e) => e.outcome,
+                'outcome',
+                ActionItemMutationOutcome.unknown,
+              ),
+        ),
+      );
+      expect(repository.invalidation.revision, 1);
+      expect(repository.invalidation.lastActionItemId, itemId);
+      expect(
+        client.requests
+            .where(
+              (r) => r.method == 'POST' && r.url.path.endsWith('/complete'),
+            )
+            .length,
+        1,
+      );
+    }
+  });
+
+  test('obsolete create intent cannot dispatch under a new session', () async {
+    var writes = 0;
+    final client = MeetingTestHttpClient((request) async {
+      writes++;
+      return meetingApiSuccess(
+        itemJson(),
+        status: 201,
+        headers: const {'etag': '"created"'},
+      );
+    });
+    final repository = await repositoryFor(client);
+    final intent = ActionItemCreateIntent(
+      sessionScope: repository.captureSession(),
+      idempotencyKey: 'obsolete-create',
+      input: ActionItemCreateInput(
+        meetingId: testMeetingId,
+        title: 'Send report',
+        assigneeUserId: testUserId,
+      ),
+    );
+    await repository.api.signOut();
+    await repository.api.signIn('user@example.test', 'password');
+    await expectLater(
+      repository.create(intent),
+      throwsA(
+        isA<ActionItemFailure>().having(
+          (e) => e.outcome,
+          'outcome',
+          ActionItemMutationOutcome.notDispatched,
+        ),
+      ),
+    );
+    expect(writes, 0);
+    expect(repository.invalidation.revision, 0);
+  });
+
   test('session changes fence late responses and obsolete snapshots', () async {
     final entered = Completer<void>();
     final held = Completer<http.StreamedResponse>();

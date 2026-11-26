@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.meeting.repository;
 
 import com.sme.meetingassistant.api.meeting.entity.MeetingEntity;
+import com.sme.meetingassistant.api.meeting.service.MeetingActionItemRightsSql;
 import java.util.UUID;
 import java.util.Optional;
 import org.springframework.data.domain.Page;
@@ -95,19 +96,18 @@ public interface MeetingRepository extends JpaRepository<MeetingEntity, UUID>,
     int captureActionItemScopeAtCreation(@Param("meetingId") UUID meetingId,
             @Param("organizerId") UUID organizerId);
 
-    /**
-     * Manager scopes require an active *current* grant and a stable meeting
-     * classification. No global administrator override or directory role alone.
-     */
+    /** Single-resource admission uses the same rights as set-based discovery. */
     @Query(value = """
-        SELECT EXISTS(
-          SELECT 1 FROM meeting_action_item_scopes scope
-          JOIN organizational_units unit ON unit.id=scope.org_unit_id
-             AND unit.status='ACTIVE'
-          JOIN manager_scope_units grant_record
-             ON grant_record.org_unit_id=scope.org_unit_id
-         WHERE scope.meeting_id=:meetingId AND grant_record.user_id=:managerId)
-        """, nativeQuery = true)
-    boolean hasActiveGrantedActionItemScope(@Param("meetingId") UUID meetingId,
-            @Param("managerId") UUID managerId);
+        SELECT rights.content_visible AS "contentVisible", rights.manageable AS "manageable"
+          FROM meetings meeting
+          CROSS JOIN (SELECT CAST(:actorId AS uuid) AS id) actor
+        """ + MeetingActionItemRightsSql.RIGHTS_JOIN + " WHERE meeting.id=:meetingId",
+        nativeQuery = true)
+    Optional<ActionItemRights> findActionItemRights(@Param("meetingId") UUID meetingId,
+            @Param("actorId") UUID actorId);
+
+    interface ActionItemRights {
+        boolean getContentVisible();
+        boolean getManageable();
+    }
 }
