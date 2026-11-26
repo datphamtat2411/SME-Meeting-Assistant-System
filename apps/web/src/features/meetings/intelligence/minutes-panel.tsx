@@ -1,15 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { AlertTriangle, FileText } from 'lucide-react'
-import {
-  formatPresentationInstant,
-  presentationTimeZone,
-} from '@/lib/presentation-time'
+import { formatCivilDate, formatRegionalInstant } from '@/lib/regional-time'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RequestError, RequestLoading } from '@/components/request-state'
 import { preferencesQuery } from '@/features/settings/preferences-api'
+import { resolveRegionalPreferences } from '@/features/settings/regional-preferences'
 import { minutesQuery } from './minutes-api'
 import {
   formatMinutesDuration,
@@ -101,10 +99,13 @@ export function MinutesPanel({
     id
       ? (assigneeDisplayNames[id] ?? names[id] ?? 'Name unavailable')
       : 'Unassigned'
-  const zone = presentationTimeZone(preferences.data?.timezone)
-  const locale = preferences.data?.locale
+  const { timezone: zone, locale } = resolveRegionalPreferences(
+    preferences.data ?? { timezone: null, locale: null }
+  )
   const time = (value: string | null) =>
-    formatPresentationInstant(value, zone, locale)
+    value
+      ? (formatRegionalInstant(value, zone, locale) ?? 'Time unavailable')
+      : 'Not recorded'
   const ready =
     minutes.completeness === 'COMPLETE' && !minutes.proposalsIncluded
   const transcript = minutes.transcript
@@ -333,7 +334,12 @@ export function MinutesPanel({
                       <dt className='text-xs text-muted-foreground'>
                         Due date
                       </dt>
-                      <dd>{item.dueDate ?? 'No due date'}</dd>
+                      <dd>
+                        {item.dueDate
+                          ? (formatCivilDate(item.dueDate, locale) ??
+                            'Date unavailable')
+                          : 'No due date'}
+                      </dd>
                     </div>
                   </dl>
                   <p className='text-xs text-muted-foreground'>

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  calendarMonthKey,
   isCalendarSearchCanonical,
   normalizeCalendarSearch,
   resolveCalendarState,
@@ -74,22 +73,37 @@ describe('calendar URL state', () => {
     ).toEqual({})
   })
 
-  it('omits default values from the URL state', () => {
+  it('omits default filters but preserves explicitly selected months', () => {
     const defaults = {
       month: '2026-11',
       view: 'month',
       relationship: 'all',
       q: '   ',
     }
-    expect(normalizeCalendarSearch(defaults, now)).toEqual({})
+    expect(normalizeCalendarSearch(defaults, now)).toEqual({ month: '2026-11' })
     expect(isCalendarSearchCanonical(defaults, now)).toBe(false)
     expect(isCalendarSearchCanonical({}, now)).toBe(true)
   })
 
-  it('navigates across year boundaries using local civil months', () => {
-    const december = new Date(2026, 11, 1)
+  it('resolves an implicit month in the preferred timezone', () => {
+    const instant = new Date('2026-12-01T02:00:00Z')
+    expect(resolveCalendarState({}, instant, 'America/New_York').monthKey).toBe(
+      '2026-11'
+    )
+    expect(resolveCalendarState({}, instant, 'Asia/Tokyo').monthKey).toBe(
+      '2026-12'
+    )
+    expect(
+      resolveCalendarState({ month: '2026-12' }, instant, 'America/New_York')
+        .monthKey
+    ).toBe('2026-12')
+  })
 
-    expect(calendarMonthKey(shiftCalendarMonth(december, 1))).toBe('2027-01')
-    expect(calendarMonthKey(shiftCalendarMonth(december, -1))).toBe('2026-11')
+  it('navigates across year boundaries using civil month keys', () => {
+    expect(shiftCalendarMonth('2026-12', 1)).toBe('2027-01')
+    expect(shiftCalendarMonth('2026-12', -1)).toBe('2026-11')
+    expect(shiftCalendarMonth('0001-01', -1)).toBe('0001-01')
+    expect(shiftCalendarMonth('9999-12', 1)).toBe('9999-12')
+    expect(() => shiftCalendarMonth('2026-13', 1)).toThrow(RangeError)
   })
 })

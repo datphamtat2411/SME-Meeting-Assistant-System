@@ -31,6 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import type { AuthContext } from '@/features/auth/session/current-user'
 import { useCurrentUserVerification } from '@/features/auth/session/current-user-verification'
 import {
@@ -91,13 +92,6 @@ import type {
   WorkspaceLookupState,
   WorkspaceParticipantState,
 } from './meeting-workspace-types'
-
-const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
-const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-  timeZone: presentationTimeZone,
-})
 
 type LookupState<T> = WorkspaceLookupState<T>
 type ParticipantState = WorkspaceParticipantState
@@ -1457,9 +1451,17 @@ function WorkspaceResultsOverview({
           mediaData.length === 0 && (
             <p className='pt-3 text-xs text-muted-foreground'>
               Meeting ended{' '}
-              {meeting.endedAt
-                ? `at ${formatDateTime(meeting.endedAt)}`
-                : 'without a recorded end time'}
+              {meeting.endedAt ? (
+                <>
+                  at{' '}
+                  <RegionalTimestamp
+                    value={meeting.endedAt}
+                    fallback='an unavailable time'
+                  />
+                </>
+              ) : (
+                'without a recorded end time'
+              )}
               ; no recording or processing result is inferred.
             </p>
           )}
@@ -1687,7 +1689,11 @@ function LifecycleCard({ meeting }: { meeting: MeetingView }) {
       </CardHeader>
       <CardContent className='space-y-4 pt-6'>
         {visibleTimestamps.map(([label, value]) => (
-          <InfoRow key={label} label={label} value={formatDateTime(value)} />
+          <InfoRow
+            key={label}
+            label={label}
+            value={<RegionalTimestamp value={value} />}
+          />
         ))}
         {meeting.cancellationReason && (
           <InfoRow
@@ -1803,10 +1809,6 @@ function formatParticipantCount(participants: ParticipantView[]) {
   return removed.length
     ? `${activeLabel}; ${removed.length} historical membership${removed.length === 1 ? '' : 's'}`
     : activeLabel
-}
-
-function formatDateTime(value: string) {
-  return meetingDateTimeFormatter.format(new Date(value))
 }
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {

@@ -44,10 +44,43 @@ afterEach(async () => {
 })
 
 describe('calendar domain projection', () => {
+  it('uses the selected timezone independently of the browser', async () => {
+    await setBrowserTimeZone('Asia/Ho_Chi_Minh')
+    expect(calendarMonthRange('2026-11', 'America/New_York')).toEqual({
+      from: '2026-11-01T04:00:00.000Z',
+      to: '2026-12-01T05:00:00.000Z',
+    })
+    const source = meeting(
+      'near-midnight',
+      '2026-12-01T02:00:00Z',
+      '2026-12-01T03:00:00Z'
+    )
+    expect(
+      projectCalendarMonth([source], '2026-11', 'America/New_York').segments[0]
+        ?.dayKey
+    ).toBe('2026-11-30')
+    expect(
+      projectCalendarMonth([source], '2026-12', 'America/New_York').segments
+    ).toEqual([])
+  })
+
+  it('skips nonexistent civil days without producing zero-length segments', () => {
+    const source = meeting(
+      'skipped-day',
+      '2011-12-30T09:00:00Z',
+      '2011-12-30T11:00:00Z'
+    )
+    expect(
+      projectCalendarMonth([source], '2011-12', 'Pacific/Apia').segments.map(
+        (segment) => segment.dayKey
+      )
+    ).toEqual(['2011-12-29', '2011-12-31'])
+  })
+
   it('uses local civil month boundaries as absolute request instants', async () => {
     await setBrowserTimeZone('Asia/Ho_Chi_Minh')
 
-    expect(calendarMonthRange(new Date(2026, 10, 15))).toEqual({
+    expect(calendarMonthRange('2026-11')).toEqual({
       from: '2026-10-31T17:00:00.000Z',
       to: '2026-11-30T17:00:00.000Z',
     })
@@ -61,7 +94,7 @@ describe('calendar domain projection', () => {
       '2026-10-31T17:30:00.000Z'
     )
 
-    const result = projectCalendarMonth([original], new Date(2026, 10, 1))
+    const result = projectCalendarMonth([original], '2026-11')
 
     expect(result.omissions).toEqual([])
     expect(result.segments).toEqual([
@@ -86,7 +119,7 @@ describe('calendar domain projection', () => {
       '2026-11-03T00:00:00.000Z'
     )
 
-    const result = projectCalendarMonth([source], new Date(2026, 10, 1))
+    const result = projectCalendarMonth([source], '2026-11')
 
     expect(result.segments.map((segment) => segment.dayKey)).toEqual([
       '2026-11-01',
@@ -120,7 +153,7 @@ describe('calendar domain projection', () => {
           '2026-11-04T11:00:00.000Z'
         ),
       ],
-      new Date(2026, 10, 1)
+      '2026-11'
     )
     expect(adjacent.segments.map((segment) => segment.meeting.id)).toEqual([
       'first',
@@ -136,8 +169,8 @@ describe('calendar domain projection', () => {
       '2027-01-01T01:00:00.000Z'
     )
 
-    const december = projectCalendarMonth([crossYear], new Date(2026, 11, 1))
-    const january = projectCalendarMonth([crossYear], new Date(2027, 0, 1))
+    const december = projectCalendarMonth([crossYear], '2026-12')
+    const january = projectCalendarMonth([crossYear], '2027-01')
 
     expect(december.segments).toMatchObject([
       {
@@ -169,9 +202,9 @@ describe('calendar domain projection', () => {
       '2026-12-31T23:30:00.000Z',
       '2027-01-01T00:00:00.000Z'
     )
-    expect(
-      projectCalendarMonth([endingAtNewYear], new Date(2027, 0, 1)).segments
-    ).toEqual([])
+    expect(projectCalendarMonth([endingAtNewYear], '2027-01').segments).toEqual(
+      []
+    )
   })
 
   it('uses 23-hour spring-forward and 25-hour fall-back civil days', async () => {
@@ -185,7 +218,7 @@ describe('calendar domain projection', () => {
           '2026-03-09T04:00:00.000Z'
         ),
       ],
-      new Date(2026, 2, 1)
+      '2026-03'
     )
     const fallBack = projectCalendarMonth(
       [
@@ -195,7 +228,7 @@ describe('calendar domain projection', () => {
           '2026-11-02T05:00:00.000Z'
         ),
       ],
-      new Date(2026, 10, 1)
+      '2026-11'
     )
 
     expect(
@@ -222,7 +255,7 @@ describe('calendar domain projection', () => {
     )
     const meetings = Object.freeze([later, earlier])
 
-    const result = projectCalendarMonth(meetings, new Date(2026, 10, 1))
+    const result = projectCalendarMonth(meetings, '2026-11')
 
     expect(result.segments.map((segment) => segment.meeting.id)).toEqual([
       'a-meeting',
@@ -249,7 +282,7 @@ describe('calendar domain projection', () => {
         malformed,
         meeting('zero-length', '2026-11-05T10:00:00Z', '2026-11-05T10:00:00Z'),
       ],
-      new Date(2026, 10, 1)
+      '2026-11'
     )
 
     expect(result.segments).toEqual([])

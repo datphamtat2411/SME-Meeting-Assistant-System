@@ -2,7 +2,12 @@ import { QueryClient } from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
 import type { MeetingDetailResponse, MeetingView } from './detail-api'
 import type { MeetingListItem, MeetingListResponse } from './list-api'
-import { meetingListQueryKey, synchronizeMeetingCaches } from './meeting-cache'
+import {
+  affectsRoomAvailability,
+  meetingListQueryKey,
+  sameMeetingInstant,
+  synchronizeMeetingCaches,
+} from './meeting-cache'
 
 const listMeeting = (): MeetingListItem => ({
   id: 'meeting-1',
@@ -63,6 +68,24 @@ function listResponse(): MeetingListResponse {
 }
 
 describe('meeting list cache synchronization', () => {
+  it('invalidates room availability for sub-millisecond schedule changes', () => {
+    const previous = {
+      ...detail().meeting,
+      scheduledStartAt: '2026-11-01T11:00:00.000001Z',
+    }
+    const next = {
+      ...previous,
+      scheduledStartAt: '2026-11-01T11:00:00.000002Z',
+    }
+    expect(affectsRoomAvailability(previous, next)).toBe(true)
+    expect(
+      sameMeetingInstant(
+        previous.scheduledStartAt,
+        '2026-11-01T18:00:00.000001+07:00'
+      )
+    ).toBe(true)
+  })
+
   it('updates single-page and Calendar infinite-query entries without changing pagination', () => {
     const queryClient = new QueryClient()
     const singlePageKey = [...meetingListQueryKey, { q: 'meeting' }] as const

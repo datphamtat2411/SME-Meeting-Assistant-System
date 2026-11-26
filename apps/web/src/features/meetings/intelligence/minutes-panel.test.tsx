@@ -1,8 +1,10 @@
+import { act } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { coreApi } from '@/lib/core-api'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { MinutesPanel } from './minutes-panel'
 
 const meetingId = '11111111-1111-4111-8111-111111111111'
@@ -68,7 +70,10 @@ vi.mock('@tanstack/react-router', () => ({
 
 async function renderPanel(
   snapshot: unknown,
-  callbacks: Partial<React.ComponentProps<typeof MinutesPanel>> = {}
+  callbacks: Partial<React.ComponentProps<typeof MinutesPanel>> = {},
+  queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
 ) {
   vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
     if (url === '/me/preferences') {
@@ -85,13 +90,7 @@ async function renderPanel(
     throw new Error('Unexpected Core GET ' + url)
   })
   return render(
-    <QueryClientProvider
-      client={
-        new QueryClient({
-          defaultOptions: { queries: { retry: false } },
-        })
-      }
-    >
+    <QueryClientProvider client={queryClient}>
       <MinutesPanel meetingId={meetingId} {...callbacks} />
     </QueryClientProvider>
   )
@@ -234,5 +233,63 @@ describe('MinutesPanel canonical document experience', () => {
     await expect
       .element(screen.getByText('Minutes are complete'))
       .not.toBeInTheDocument()
+  })
+
+  it('formats civil deadlines by locale without shifting the day by timezone', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const preferences = {
+      timezone: 'Pacific/Honolulu',
+      locale: 'en-GB',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    }
+    queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+    queryClient.setQueryData(preferencesQueryKey, preferences)
+    const action = {
+      id: '55555555-5555-4555-8555-555555555555',
+      title: 'Dated action',
+      details: null,
+      status: 'OPEN',
+      sourceType: 'MANUAL',
+      assigneeUserId: null,
+      dueDate: '2026-11-23',
+      version: 1,
+      createdAt: '2026-11-23T00:00:00Z',
+      confirmedByUserId: null,
+      confirmedAt: null,
+    }
+    const snapshot = {
+      ...validMinutes(),
+      officialActionItems: [
+        action,
+        {
+          ...action,
+          id: '66666666-6666-4666-8666-666666666666',
+          title: 'Undated action',
+          dueDate: null,
+        },
+      ],
+    }
+    const screen = await renderPanel(snapshot, {}, queryClient)
+    await expect.element(screen.getByText('23 Nov 2026')).toBeVisible()
+    await expect.element(screen.getByText('No due date')).toBeVisible()
+    await act(async () => {
+      queryClient.setQueryData(preferencesQueryKey, {
+        ...preferences,
+        timezone: 'Asia/Tokyo',
+      })
+    })
+    await expect.element(screen.getByText('23 Nov 2026')).toBeVisible()
+    await act(async () => {
+      queryClient.setQueryData(preferencesQueryKey, {
+        ...preferences,
+        timezone: 'Asia/Tokyo',
+        locale: 'en-US',
+      })
+    })
+    await expect.element(screen.getByText('Nov 23, 2026')).toBeVisible()
+    expect(action.dueDate).toBe('2026-11-23')
   })
 })

@@ -11,6 +11,8 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { compareInstants, instantCivilFields } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
   AlertDialog,
@@ -72,9 +74,12 @@ import {
   type MeetingEditPayload,
   type MeetingEditValues,
 } from '../data/meeting-editing-api'
+import { formatMeetingSchedule } from '../data/meeting-schedule-format'
 import {
-  getScheduleValues,
   getSchedulingFingerprint,
+  resolveScheduleEndpoint,
+  scheduleEndpointError,
+  scheduleFromInstants,
   type ScheduleValues,
 } from '../data/meeting-scheduling-utils'
 import {
@@ -92,6 +97,13 @@ const meetingEditFormSchema = z
     endDate: z.string(),
     startTime: z.string(),
     endTime: z.string(),
+    scheduleTimezone: z.string(),
+    startOccurrence: z.string(),
+    endOccurrence: z.string(),
+    fallbackRequired: z.boolean(),
+    fallbackAcknowledged: z.boolean(),
+    originalStartAt: z.string().nullable(),
+    originalEndAt: z.string().nullable(),
     roomId: z.string(),
   })
   .superRefine((values, context) => {
@@ -130,12 +142,47 @@ const meetingEditFormSchema = z
     }
     if (!values.date || !values.startTime || !values.endTime) return
 
-    const schedule = getScheduleValues(values)
-    if (!schedule) {
+    const start = resolveScheduleEndpoint(
+      values.date,
+      values.startTime,
+      values.scheduleTimezone,
+      values.startOccurrence,
+      values.originalStartAt
+    )
+    const end = resolveScheduleEndpoint(
+      values.endDate || values.date,
+      values.endTime,
+      values.scheduleTimezone,
+      values.endOccurrence,
+      values.originalEndAt
+    )
+    if (!start) {
+      context.addIssue({
+        code: 'custom',
+        path: ['startTime'],
+        message: scheduleEndpointError(
+          values.date,
+          values.startTime,
+          values.scheduleTimezone
+        ),
+      })
+    }
+    if (!end) {
       context.addIssue({
         code: 'custom',
         path: ['endTime'],
-        message: 'End time must be after start time and use a valid interval.',
+        message: scheduleEndpointError(
+          values.endDate || values.date,
+          values.endTime,
+          values.scheduleTimezone
+        ),
+      })
+    }
+    if (start && end && compareInstants(start, end) >= 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['endTime'],
+        message: 'End time must be after start time.',
       })
     }
   })
@@ -143,10 +190,14 @@ const meetingEditFormSchema = z
 type MeetingEditFormValues = z.infer<typeof meetingEditFormSchema>
 type ScheduleFormSnapshot = Pick<
   MeetingEditFormValues,
-  'date' | 'endDate' | 'startTime' | 'endTime'
+  | 'date'
+  | 'endDate'
+  | 'startTime'
+  | 'endTime'
+  | 'startOccurrence'
+  | 'endOccurrence'
 >
 type OriginalSchedule = {
-  form: ScheduleFormSnapshot
   schedule?: ScheduleValues
 }
 type EditPhase =
@@ -163,6 +214,8 @@ type EditAction = 'save' | 'schedule'
 
 type PendingSchedule = {
   action: EditAction
+  base: MeetingDetailResponse
+  roomId: string | undefined
   fingerprint: string
   payload: MeetingEditPayload
   schedule: ScheduleValues
@@ -206,18 +259,89 @@ export type MeetingEditDialogProps = {
   onCommitted?: (commit: MeetingEditCommit) => void
 }
 
-export function MeetingEditDialog({
+type MeetingEditorSession = {
+  meeting: MeetingView
+  etag: string
+  timezone: string
+  fallbackRequired: boolean
+  discardOnClose: boolean
+}
+
+export function MeetingEditDialog(props: MeetingEditDialogProps) {
+  const regional = useRegionalPresentation()
+  const queryClient = useQueryClient()
+  const [session, setSession] = useState<MeetingEditorSession | null>(null)
+
+  // A fresh editor owns one confirmed snapshot and one timezone. Opening it
+  // is a state boundary, not an effect that repeatedly resets a live draft.
+  if (!props.open && session?.discardOnClose) {
+    setSession(null)
+  } else if (
+    props.open &&
+    regional.status !== 'loading' &&
+    (!session || session.meeting.id !== props.meeting.id)
+  ) {
+    const cached = queryClient.getQueryData<MeetingDetailResponse>(
+      meetingDetailQueryKey(props.meeting.id)
+    )
+    setSession({
+      meeting: cached?.meeting ?? props.meeting,
+      etag: cached?.etag ?? props.etag,
+      timezone: regional.timezone,
+      fallbackRequired:
+        regional.status === 'unavailable' || regional.timezoneFallback,
+      discardOnClose: false,
+    })
+  }
+
+  if (!session || session.meeting.id !== props.meeting.id) {
+    if (!props.open) return null
+    return (
+      <Dialog open onOpenChange={props.onOpenChange}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit meeting</DialogTitle>
+            <DialogDescription>Loading regional preferences…</DialogDescription>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
+  return (
+    <MeetingEditSession
+      key={session.meeting.id}
+      {...props}
+      session={session}
+      onDiscardSession={() =>
+        setSession((current) =>
+          current ? { ...current, discardOnClose: true } : current
+        )
+      }
+    />
+  )
+}
+
+function MeetingEditSession({
   open,
   onOpenChange,
-  meeting,
-  etag,
   currentUserId,
   onCommitted,
-}: MeetingEditDialogProps) {
+  session,
+  onDiscardSession,
+}: MeetingEditDialogProps & {
+  session: MeetingEditorSession
+  onDiscardSession: () => void
+}) {
   const queryClient = useQueryClient()
+  const { locale } = useRegionalPresentation()
   const form = useForm<MeetingEditFormValues>({
     resolver: zodResolver(meetingEditFormSchema),
-    defaultValues: toMeetingEditFormValues(meeting),
+    defaultValues: toMeetingEditFormValues(
+      session.meeting,
+      session.timezone,
+      session.fallbackRequired
+    ),
   })
   const [phase, setPhase] = useState<EditPhase>('idle')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -230,8 +354,10 @@ export function MeetingEditDialog({
   const [pendingSchedule, setPendingSchedule] =
     useState<PendingSchedule | null>(null)
   const [showWarningDetails, setShowWarningDetails] = useState(false)
-  const [workingMeeting, setWorkingMeeting] = useState<MeetingView>(meeting)
-  const [currentEtag, setCurrentEtag] = useState(etag)
+  const [workingMeeting, setWorkingMeeting] = useState<MeetingView>(
+    session.meeting
+  )
+  const [currentEtag, setCurrentEtag] = useState(session.etag)
   const [latestDetail, setLatestDetail] =
     useState<MeetingDetailResponse | null>(null)
   const [reloadConfirmationOpen, setReloadConfirmationOpen] = useState(false)
@@ -242,11 +368,7 @@ export function MeetingEditDialog({
     'precondition' | 'uncertain' | null
   >(null)
   const operationInFlight = useRef(false)
-  const openedMeetingId = useRef<string | null>(null)
-  const resetOnNextOpen = useRef(true)
-  const [originalSchedule, setOriginalSchedule] = useState<OriginalSchedule>(
-    () => createOriginalSchedule(meeting)
-  )
+  const originalSchedule = createOriginalSchedule(workingMeeting)
   const reportedCommitKeys = useRef(new Set<string>())
 
   const title = useWatch({ control: form.control, name: 'title' })
@@ -256,22 +378,59 @@ export function MeetingEditDialog({
   const startTime = useWatch({ control: form.control, name: 'startTime' })
   const endTime = useWatch({ control: form.control, name: 'endTime' })
   const roomId = useWatch({ control: form.control, name: 'roomId' })
-  const scheduleFormValues = { date, endDate, startTime, endTime }
-  const scheduleFieldsChanged = hasDirtyScheduleFields(
-    form.formState.dirtyFields
-  )
-  const schedule = scheduleFieldsChanged
-    ? getScheduleValues(scheduleFormValues)
-    : originalSchedule.schedule
-  const currentScheduleFingerprint = getSchedulingFingerprint({
-    title,
-    description,
+  const scheduleTimezone = useWatch({
+    control: form.control,
+    name: 'scheduleTimezone',
+  })
+  const startOccurrence = useWatch({
+    control: form.control,
+    name: 'startOccurrence',
+  })
+  const endOccurrence = useWatch({
+    control: form.control,
+    name: 'endOccurrence',
+  })
+  const originalStartAt = useWatch({
+    control: form.control,
+    name: 'originalStartAt',
+  })
+  const originalEndAt = useWatch({
+    control: form.control,
+    name: 'originalEndAt',
+  })
+  const scheduleFormValues = {
     date,
     endDate,
     startTime,
     endTime,
-    roomId,
-  })
+    scheduleTimezone,
+    startOccurrence,
+    endOccurrence,
+    originalStartAt,
+    originalEndAt,
+  }
+  const schedule = scheduleTimezone
+    ? getEditedSchedule(
+        scheduleFormValues,
+        form.formState.dirtyFields,
+        originalSchedule.schedule
+      )
+    : undefined
+  const currentScheduleFingerprint = getSchedulingFingerprint(
+    {
+      title: title.trim(),
+      description,
+      date,
+      endDate,
+      startTime,
+      endTime,
+      scheduleTimezone,
+      startOccurrence,
+      endOccurrence,
+      roomId,
+    },
+    schedule
+  )
   const [roomLookupOpen, setRoomLookupOpen] = useState(false)
   const [roomLookupSearch, setRoomLookupSearch] = useState('')
   const [roomLookupPage, setRoomLookupPage] = useState(1)
@@ -290,6 +449,11 @@ export function MeetingEditDialog({
   const selectedRoom =
     selectedRoomQuery.data ??
     roomsQuery.data?.options.find((room) => room.id === roomId)
+  const latestRoomId = latestDetail?.meeting.roomId ?? undefined
+  const latestRoomQuery = useQuery({
+    ...roomFilterOptionByIdQueryOptions(latestRoomId),
+    enabled: open && Boolean(latestRoomId),
+  })
   const roomUnavailable = Boolean(
     roomId && selectedRoomQuery.isError && !selectedRoom
   )
@@ -311,40 +475,8 @@ export function MeetingEditDialog({
     busy ||
     phase === 'version_unverified' ||
     editingBlocked ||
+    latestDetail !== null ||
     phase === 'confirmed'
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-    if (resetOnNextOpen.current || openedMeetingId.current !== meeting.id) {
-      const cachedDetail = queryClient.getQueryData<MeetingDetailResponse>(
-        meetingDetailQueryKey(meeting.id)
-      )
-      const canonicalMeeting = cachedDetail?.meeting ?? meeting
-      const canonicalEtag = cachedDetail?.etag ?? etag
-      const formValues = toMeetingEditFormValues(canonicalMeeting)
-      form.reset(formValues)
-      setOriginalSchedule(createOriginalSchedule(canonicalMeeting))
-      setWorkingMeeting(canonicalMeeting)
-      setCurrentEtag(canonicalEtag)
-      setPhase('idle')
-      setErrorMessage(null)
-      setOutcome(null)
-      setScheduleCheck(null)
-      setScheduleCheckFingerprint(null)
-      setPendingSchedule(null)
-      setShowWarningDetails(false)
-      setLatestDetail(null)
-      setReloadConfirmationOpen(false)
-      setEditingBlocked(false)
-      setReconciliationIntent(null)
-      setReconciliationMode(null)
-      operationInFlight.current = false
-      openedMeetingId.current = meeting.id
-      resetOnNextOpen.current = false
-    }
-  }, [etag, form, meeting, open, queryClient])
 
   useEffect(() => {
     if (!form.formState.isDirty && !busy) return
@@ -416,7 +548,7 @@ export function MeetingEditDialog({
     setPhase('confirmed')
     setPendingSchedule(null)
     operationInFlight.current = false
-    resetOnNextOpen.current = true
+    onDiscardSession()
     onOpenChange(false)
     const commitKey = `${result.meeting.id}:${result.etag}:${confirmedOutcome}`
     if (reportedCommitKeys.current.has(commitKey)) return
@@ -430,6 +562,7 @@ export function MeetingEditDialog({
   }
 
   const setFailure = (error: unknown, operation: string) => {
+    clearPreview()
     setBackendFieldErrors(error)
     const normalized = normalizeCoreApiError(error)
     setErrorMessage(
@@ -498,9 +631,8 @@ export function MeetingEditDialog({
       invalidateRoomAvailability: intent.scheduleChanged,
     })
     setLatestDetail(latest)
-    setWorkingMeeting(latest.meeting)
-    setCurrentEtag(latest.etag)
-    setOriginalSchedule(createOriginalSchedule(latest.meeting))
+    // Keep the reviewed version and its civil draft together until the user
+    // explicitly adopts the latest snapshot. Never advance only the ETag.
 
     const lifecycleEditable =
       latest.meeting.status === 'DRAFT' || latest.meeting.status === 'SCHEDULED'
@@ -516,6 +648,7 @@ export function MeetingEditDialog({
     intent: ReconciliationIntent,
     mode: 'precondition' | 'uncertain'
   ) => {
+    clearPreview()
     setReconciliationIntent(intent)
     setReconciliationMode(mode)
     setPhase('reconciling')
@@ -589,12 +722,22 @@ export function MeetingEditDialog({
     setFailure(error, intent.operation)
   }
 
-  const getVerifiedSnapshot = (): MeetingDetailResponse => {
-    return (
-      queryClient.getQueryData<MeetingDetailResponse>(
-        meetingDetailQueryKey(meeting.id)
-      ) ?? { meeting: workingMeeting, etag: currentEtag }
+  const getReviewedSnapshot = (): MeetingDetailResponse => ({
+    meeting: workingMeeting,
+    etag: currentEtag,
+  })
+
+  const reviewIfSnapshotChanged = async (
+    base: MeetingDetailResponse,
+    intent: ReconciliationIntent
+  ) => {
+    const cached = queryClient.getQueryData<MeetingDetailResponse>(
+      meetingDetailQueryKey(base.meeting.id)
     )
+    if (!cached || cached.etag === base.etag) return false
+
+    await reconcileMutation(intent, 'precondition')
+    return true
   }
 
   const buildValuesForMutation = (
@@ -603,9 +746,11 @@ export function MeetingEditDialog({
   ): { editValues: MeetingEditValues; schedule?: ScheduleValues } => {
     const dirtyFields = form.formState.dirtyFields
     const authoritativeSchedule = createOriginalSchedule(baseMeeting).schedule
-    const nextSchedule = hasDirtyScheduleFields(dirtyFields)
-      ? getScheduleValues(values)
-      : authoritativeSchedule
+    const nextSchedule = getEditedSchedule(
+      values,
+      dirtyFields,
+      authoritativeSchedule
+    )
     return {
       editValues: {
         title: dirtyFields.title ? values.title : baseMeeting.title,
@@ -636,6 +781,7 @@ export function MeetingEditDialog({
       scheduleChanged,
       outcome: 'saved',
     }
+    if (await reviewIfSnapshotChanged(base, intent)) return
     setPhase('saving')
     try {
       const result = await updateMeeting(
@@ -656,7 +802,7 @@ export function MeetingEditDialog({
     operationInFlight.current = true
     setErrorMessage(null)
     setShowWarningDetails(false)
-    const base = getVerifiedSnapshot()
+    const base = candidate.base
     let mutationEtag = base.etag
     let patchedResult: ConfirmedMutation | undefined
     let scheduleIntent: ReconciliationIntent = {
@@ -679,6 +825,19 @@ export function MeetingEditDialog({
             : 'saved',
     }
     try {
+      if (await reviewIfSnapshotChanged(base, scheduleIntent)) return
+      if (
+        getSchedulingFingerprint(
+          { ...form.getValues(), title: form.getValues('title').trim() },
+          candidate.schedule
+        ) !== candidate.fingerprint
+      ) {
+        clearPreview()
+        setErrorMessage('The schedule inputs changed. Review and save again.')
+        setPhase('idle')
+        operationInFlight.current = false
+        return
+      }
       if (hasMeetingEditChanges(candidate.payload)) {
         setPhase('saving')
         const patched = await updateMeeting(
@@ -711,6 +870,40 @@ export function MeetingEditDialog({
         return
       }
 
+      if (patchedResult) {
+        const confirmed = patchedResult.meeting
+        if (
+          (confirmed.roomId ?? undefined) !== candidate.roomId ||
+          !sameOffsetDateTime(
+            confirmed.scheduledStartAt,
+            candidate.schedule.scheduledStartAt
+          ) ||
+          !sameOffsetDateTime(
+            confirmed.scheduledEndAt,
+            candidate.schedule.scheduledEndAt
+          )
+        ) {
+          clearPreview()
+          setLatestDetail(patchedResult)
+          setErrorMessage(
+            'Draft changes were saved, but the confirmed schedule or room differs from the checked values. Review the latest draft before scheduling.'
+          )
+          setPhase('idle')
+          operationInFlight.current = false
+          return
+        }
+        form.reset(
+          toMeetingEditFormValues(
+            confirmed,
+            scheduleTimezone,
+            form.getValues('fallbackRequired'),
+            form.getValues('fallbackAcknowledged')
+          )
+        )
+        if (await reviewIfSnapshotChanged(patchedResult, scheduleIntent)) {
+          return
+        }
+      }
       setPhase('scheduling')
       const scheduled = await scheduleMeeting(base.meeting.id, mutationEtag, {
         scheduledStartAt: candidate.schedule.scheduledStartAt,
@@ -728,11 +921,17 @@ export function MeetingEditDialog({
     action: EditAction,
     payload: MeetingEditPayload,
     scheduleValues: ScheduleValues,
-    scheduleChanged: boolean
+    scheduleChanged: boolean,
+    base: MeetingDetailResponse
   ) => {
-    const fingerprint = getSchedulingFingerprint(values)
+    const fingerprint = getSchedulingFingerprint(values, scheduleValues)
     const candidate: PendingSchedule = {
       action,
+      base,
+      roomId:
+        'roomId' in payload
+          ? (payload.roomId ?? undefined)
+          : (base.meeting.roomId ?? undefined),
       fingerprint,
       payload,
       schedule: scheduleValues,
@@ -743,21 +942,24 @@ export function MeetingEditDialog({
     setScheduleCheckFingerprint(fingerprint)
     setPhase('checking')
     try {
-      const base = getVerifiedSnapshot()
-      const effectiveRoomId = Object.prototype.hasOwnProperty.call(
+      const intent: ReconciliationIntent = {
+        operation: 'Checking the meeting schedule',
+        expectedStatus: base.meeting.status as 'DRAFT' | 'SCHEDULED',
         payload,
-        'roomId'
-      )
-        ? (payload.roomId ?? undefined)
-        : (base.meeting.roomId ?? undefined)
+        schedule: scheduleValues,
+        scheduleChanged,
+        outcome: action === 'schedule' ? 'scheduled' : 'rescheduled',
+      }
+      if (await reviewIfSnapshotChanged(base, intent)) return
       const preview = await checkMeetingSchedule(
         buildScheduleCheckPayload({
           meetingId: base.meeting.id,
           start: scheduleValues.start,
           end: scheduleValues.end,
-          roomId: effectiveRoomId,
+          roomId: candidate.roomId,
         })
       )
+      if (await reviewIfSnapshotChanged(base, intent)) return
       setScheduleCheck(preview)
       if (
         !preview.previewOnly ||
@@ -788,8 +990,14 @@ export function MeetingEditDialog({
   }
 
   const saveChanges = async (values: MeetingEditFormValues) => {
-    if (mutationLocked || operationInFlight.current || roomUnavailable) return
-    const base = getVerifiedSnapshot()
+    if (
+      !values.scheduleTimezone ||
+      mutationLocked ||
+      operationInFlight.current ||
+      roomUnavailable
+    )
+      return
+    const base = getReviewedSnapshot()
     if (!isEditableMeeting(base.meeting)) {
       setEditingBlocked(true)
       setErrorMessage(
@@ -801,7 +1009,14 @@ export function MeetingEditDialog({
       values,
       base.meeting
     )
-    if (base.meeting.status === 'SCHEDULED' && !scheduleValues) {
+    if (
+      !scheduleValues &&
+      (base.meeting.status === 'SCHEDULED' ||
+        (hasDirtyScheduleFields(form.formState.dirtyFields) &&
+          Boolean(
+            values.date || values.endDate || values.startTime || values.endTime
+          )))
+    ) {
       setScheduleRequiredErrors(form)
       return
     }
@@ -811,6 +1026,18 @@ export function MeetingEditDialog({
       return
     }
     const scheduleChanged = hasScheduleChange(payload)
+    if (
+      scheduleChanged &&
+      scheduleValues &&
+      values.fallbackRequired &&
+      !values.fallbackAcknowledged
+    ) {
+      form.setError('fallbackAcknowledged', {
+        type: 'manual',
+        message: 'Confirm the scheduling timezone before saving.',
+      })
+      return
+    }
     if (base.meeting.status === 'SCHEDULED' && scheduleChanged) {
       operationInFlight.current = true
       clearPreview()
@@ -820,7 +1047,8 @@ export function MeetingEditDialog({
         'save',
         payload,
         scheduleValues as ScheduleValues,
-        scheduleChanged
+        scheduleChanged,
+        base
       )
       return
     }
@@ -831,8 +1059,14 @@ export function MeetingEditDialog({
   }
 
   const saveAndSchedule = async (values: MeetingEditFormValues) => {
-    if (mutationLocked || operationInFlight.current || roomUnavailable) return
-    const base = getVerifiedSnapshot()
+    if (
+      !values.scheduleTimezone ||
+      mutationLocked ||
+      operationInFlight.current ||
+      roomUnavailable
+    )
+      return
+    const base = getReviewedSnapshot()
     if (!isEditableMeeting(base.meeting) || base.meeting.status !== 'DRAFT') {
       setEditingBlocked(true)
       setErrorMessage(
@@ -848,11 +1082,25 @@ export function MeetingEditDialog({
       setScheduleRequiredErrors(form)
       return
     }
+    if (values.fallbackRequired && !values.fallbackAcknowledged) {
+      form.setError('fallbackAcknowledged', {
+        type: 'manual',
+        message: 'Confirm the scheduling timezone before scheduling.',
+      })
+      return
+    }
     const payload = buildMeetingEditPayload(base.meeting, editValues)
     operationInFlight.current = true
     clearPreview()
     setErrorMessage(null)
-    await checkAndCommit(values, 'schedule', payload, scheduleValues, true)
+    await checkAndCommit(
+      values,
+      'schedule',
+      payload,
+      scheduleValues,
+      true,
+      base
+    )
   }
 
   const confirmScheduleWarnings = () => {
@@ -883,7 +1131,7 @@ export function MeetingEditDialog({
     void reconcileMutation(reconciliationIntent, reconciliationMode)
   }
 
-  const reloadLatestMeeting = () => {
+  const adoptLatestMeeting = (keepEdits: boolean) => {
     if (!latestDetail) return
     if (
       latestDetail.meeting.status !== 'DRAFT' &&
@@ -895,9 +1143,33 @@ export function MeetingEditDialog({
       setReloadConfirmationOpen(false)
       return
     }
-    const formValues = toMeetingEditFormValues(latestDetail.meeting)
+    const formValues = toMeetingEditFormValues(
+      latestDetail.meeting,
+      scheduleTimezone,
+      form.getValues('fallbackRequired'),
+      form.getValues('fallbackAcknowledged')
+    )
+    const draft = form.getValues()
+    const dirty = form.formState.dirtyFields
+    const keepStart = keepEdits && hasDirtyStart(dirty)
+    const keepEnd = keepEdits && hasDirtyEnd(dirty)
+    const keepFields = (['title', 'description', 'roomId'] as const).filter(
+      (field) => keepEdits && dirty[field]
+    )
     form.reset(formValues)
-    setOriginalSchedule(createOriginalSchedule(latestDetail.meeting))
+    for (const field of keepFields) {
+      form.setValue(field, draft[field], { shouldDirty: true })
+    }
+    if (keepStart) {
+      for (const field of ['date', 'startTime', 'startOccurrence'] as const) {
+        form.setValue(field, draft[field], { shouldDirty: true })
+      }
+    }
+    if (keepEnd) {
+      for (const field of ['endDate', 'endTime', 'endOccurrence'] as const) {
+        form.setValue(field, draft[field], { shouldDirty: true })
+      }
+    }
     setWorkingMeeting(latestDetail.meeting as EditableMeetingView)
     setCurrentEtag(latestDetail.etag)
     setLatestDetail(null)
@@ -921,6 +1193,13 @@ export function MeetingEditDialog({
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen && busy) return
+    if (
+      !nextOpen &&
+      !form.formState.isDirty &&
+      phase !== 'version_unverified'
+    ) {
+      onDiscardSession()
+    }
     onOpenChange(nextOpen)
   }
 
@@ -946,79 +1225,82 @@ export function MeetingEditDialog({
 
           <Form {...form}>
             <form id='edit-meeting-form' className='space-y-4'>
-              <FormField
-                control={form.control}
-                name='title'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Title</FormLabel>
-                    <FormControl>
-                      <Input {...field} placeholder='Meeting title' />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              <fieldset disabled={busy} className='space-y-4'>
+                <FormField
+                  control={form.control}
+                  name='title'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Title</FormLabel>
+                      <FormControl>
+                        <Input {...field} placeholder='Meeting title' />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
 
-              <FormField
-                control={form.control}
-                name='description'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Description</FormLabel>
-                    <FormControl>
-                      <Textarea
-                        {...field}
-                        placeholder='What should the team accomplish?'
-                        rows={3}
+                <FormField
+                  control={form.control}
+                  name='description'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Description</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          {...field}
+                          placeholder='What should the team accomplish?'
+                          rows={3}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <MeetingScheduleFields />
+
+                <FormField
+                  control={form.control}
+                  name='roomId'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Meeting room</FormLabel>
+                      <MeetingRoomLookup
+                        value={field.value}
+                        onChange={(value) => {
+                          if (!operationInFlight.current) field.onChange(value)
+                        }}
+                        open={roomLookupOpen}
+                        onOpenChange={setRoomLookupOpen}
+                        searchValue={roomLookupSearch}
+                        onSearchChange={(value) => {
+                          setRoomLookupSearch(value)
+                          setRoomLookupPage(1)
+                        }}
+                        options={roomsQuery.data?.options ?? []}
+                        selectedOption={selectedRoom}
+                        pagination={roomsQuery.data?.pagination}
+                        page={roomLookupPage}
+                        isLoading={roomLookupOpen && roomsQuery.isPending}
+                        isFetching={roomLookupOpen && roomsQuery.isFetching}
+                        isError={roomsQuery.isError}
+                        onRetry={() => void roomsQuery.refetch()}
+                        onPageChange={setRoomLookupPage}
+                        selectedLoading={Boolean(
+                          roomId && !selectedRoom && selectedRoomQuery.isPending
+                        )}
+                        selectedUnavailable={roomUnavailable}
                       />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <MeetingScheduleFields />
-
-              <FormField
-                control={form.control}
-                name='roomId'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Meeting room</FormLabel>
-                    <MeetingRoomLookup
-                      value={field.value}
-                      onChange={field.onChange}
-                      open={roomLookupOpen}
-                      onOpenChange={setRoomLookupOpen}
-                      searchValue={roomLookupSearch}
-                      onSearchChange={(value) => {
-                        setRoomLookupSearch(value)
-                        setRoomLookupPage(1)
-                      }}
-                      options={roomsQuery.data?.options ?? []}
-                      selectedOption={selectedRoom}
-                      pagination={roomsQuery.data?.pagination}
-                      page={roomLookupPage}
-                      isLoading={roomLookupOpen && roomsQuery.isPending}
-                      isFetching={roomLookupOpen && roomsQuery.isFetching}
-                      isError={roomsQuery.isError}
-                      onRetry={() => void roomsQuery.refetch()}
-                      onPageChange={setRoomLookupPage}
-                      selectedLoading={Boolean(
-                        roomId && !selectedRoom && selectedRoomQuery.isPending
-                      )}
-                      selectedUnavailable={roomUnavailable}
-                    />
-                    <FormDescription>
-                      The selected-room preview is advisory. Core API rechecks
-                      the reservation when the change is committed.
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
+                      <FormDescription>
+                        The selected-room preview is advisory. Core API rechecks
+                        the reservation when the change is committed.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </fieldset>
               <div className='flex items-center gap-2 text-sm text-muted-foreground'>
                 <CalendarDays className='size-4' />
                 <span>
@@ -1030,6 +1312,7 @@ export function MeetingEditDialog({
               {open &&
                 phase === 'idle' &&
                 !editingBlocked &&
+                !latestDetail &&
                 isEditableMeeting(workingMeeting) &&
                 schedule &&
                 roomId && (
@@ -1065,6 +1348,37 @@ export function MeetingEditDialog({
                       </span>
                       . Your local edits are still in the form.
                     </p>
+                    <p>
+                      Latest schedule:{' '}
+                      {formatMeetingSchedule(
+                        latestDetail.meeting.scheduledStartAt,
+                        latestDetail.meeting.scheduledEndAt,
+                        scheduleTimezone,
+                        locale
+                      )}{' '}
+                      ({scheduleTimezone})
+                    </p>
+                    <p>
+                      Latest room:{' '}
+                      {latestRoomId
+                        ? (latestRoomQuery.data?.name ??
+                          'Room details unavailable')
+                        : 'No room assigned'}
+                    </p>
+                    <p>
+                      Review the new version before saving. Keeping edits
+                      updates untouched fields and requires a new schedule
+                      check.
+                    </p>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      disabled={editingBlocked || busy}
+                      onClick={() => adoptLatestMeeting(true)}
+                    >
+                      Review and keep my edits
+                    </Button>
                     <Button
                       type='button'
                       variant='outline'
@@ -1139,7 +1453,10 @@ export function MeetingEditDialog({
               variant='secondary'
               onClick={handleSaveChangesClick}
               disabled={
-                mutationLocked || warningReviewPending || roomUnavailable
+                !scheduleTimezone ||
+                mutationLocked ||
+                warningReviewPending ||
+                roomUnavailable
               }
             >
               {phase === 'saving' ? (
@@ -1147,12 +1464,16 @@ export function MeetingEditDialog({
               ) : null}
               {phase === 'saving' ? 'Saving...' : 'Save changes'}
             </Button>
-            {workingMeeting.status === 'DRAFT' && (
+            {(latestDetail?.meeting.status ?? workingMeeting.status) ===
+              'DRAFT' && (
               <Button
                 type='button'
                 onClick={handleSaveAndScheduleClick}
                 disabled={
-                  mutationLocked || warningReviewPending || roomUnavailable
+                  !scheduleTimezone ||
+                  mutationLocked ||
+                  warningReviewPending ||
+                  roomUnavailable
                 }
               >
                 {phase === 'checking' || phase === 'scheduling' ? (
@@ -1184,7 +1505,7 @@ export function MeetingEditDialog({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Keep my edits</AlertDialogCancel>
-            <AlertDialogAction onClick={reloadLatestMeeting}>
+            <AlertDialogAction onClick={() => adoptLatestMeeting(false)}>
               Reload latest data
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -1194,13 +1515,20 @@ export function MeetingEditDialog({
   )
 }
 
-function toMeetingEditFormValues(meeting: MeetingView): MeetingEditFormValues {
-  const start = meeting.scheduledStartAt
-    ? toLocalDateTimeValues(meeting.scheduledStartAt)
-    : undefined
-  const end = meeting.scheduledEndAt
-    ? toLocalDateTimeValues(meeting.scheduledEndAt)
-    : undefined
+function toMeetingEditFormValues(
+  meeting: MeetingView,
+  timezone: string,
+  fallbackRequired = false,
+  fallbackAcknowledged = false
+): MeetingEditFormValues {
+  const start =
+    meeting.scheduledStartAt && timezone
+      ? instantCivilFields(meeting.scheduledStartAt, timezone)
+      : undefined
+  const end =
+    meeting.scheduledEndAt && timezone
+      ? instantCivilFields(meeting.scheduledEndAt, timezone)
+      : undefined
   const hasCompleteSchedule = Boolean(start && end)
   return {
     title: meeting.title,
@@ -1209,51 +1537,66 @@ function toMeetingEditFormValues(meeting: MeetingView): MeetingEditFormValues {
     endDate: hasCompleteSchedule && end ? end.date : '',
     startTime: hasCompleteSchedule && start ? start.time : '',
     endTime: hasCompleteSchedule && end ? end.time : '',
+    scheduleTimezone: timezone,
+    startOccurrence: '',
+    endOccurrence: '',
+    fallbackRequired,
+    fallbackAcknowledged,
+    originalStartAt: meeting.scheduledStartAt,
+    originalEndAt: meeting.scheduledEndAt,
     roomId: meeting.roomId ?? '',
   }
 }
 
-function toLocalDateTimeValues(value: string) {
-  const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) return undefined
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return {
-    date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
-    time: `${pad(date.getHours())}:${pad(date.getMinutes())}`,
-  }
-}
-
 function createOriginalSchedule(meeting: MeetingView): OriginalSchedule {
-  const formValues = toMeetingEditFormValues(meeting)
-  const schedule =
-    meeting.scheduledStartAt && meeting.scheduledEndAt
-      ? {
-          start: meeting.scheduledStartAt,
-          end: meeting.scheduledEndAt,
-          scheduledStartAt: meeting.scheduledStartAt,
-          scheduledEndAt: meeting.scheduledEndAt,
-        }
-      : undefined
   return {
-    form: {
-      date: formValues.date,
-      endDate: formValues.endDate,
-      startTime: formValues.startTime,
-      endTime: formValues.endTime,
-    },
-    schedule,
+    schedule: scheduleFromInstants(
+      meeting.scheduledStartAt,
+      meeting.scheduledEndAt
+    ),
   }
 }
 
-function hasDirtyScheduleFields(
-  dirtyFields: Partial<Record<keyof ScheduleFormSnapshot, boolean>>
+type ScheduleDirtyFields = Partial<Record<keyof ScheduleFormSnapshot, boolean>>
+
+function hasDirtyStart(dirty: ScheduleDirtyFields) {
+  return Boolean(dirty.date || dirty.startTime || dirty.startOccurrence)
+}
+
+function hasDirtyEnd(dirty: ScheduleDirtyFields) {
+  return Boolean(dirty.endDate || dirty.endTime || dirty.endOccurrence)
+}
+
+function hasDirtyScheduleFields(dirty: ScheduleDirtyFields) {
+  return hasDirtyStart(dirty) || hasDirtyEnd(dirty)
+}
+
+function getEditedSchedule(
+  values: Partial<MeetingEditFormValues>,
+  dirty: ScheduleDirtyFields,
+  authoritative: ScheduleValues | undefined
 ) {
-  return Boolean(
-    dirtyFields.date ||
-    dirtyFields.endDate ||
-    dirtyFields.startTime ||
-    dirtyFields.endTime
-  )
+  if (!hasDirtyScheduleFields(dirty)) return authoritative
+  const timezone = values.scheduleTimezone ?? ''
+  const start = hasDirtyStart(dirty)
+    ? resolveScheduleEndpoint(
+        values.date ?? '',
+        values.startTime ?? '',
+        timezone,
+        values.startOccurrence,
+        values.originalStartAt
+      )
+    : authoritative?.start
+  const end = hasDirtyEnd(dirty)
+    ? resolveScheduleEndpoint(
+        values.endDate || values.date || '',
+        values.endTime ?? '',
+        timezone,
+        values.endOccurrence,
+        values.originalEndAt
+      )
+    : authoritative?.end
+  return scheduleFromInstants(start, end)
 }
 
 function isEditableMeeting(
@@ -1276,13 +1619,11 @@ function sameOffsetDateTime(
 ) {
   if (first === second) return true
   if (!first || !second) return false
-  const firstTime = Date.parse(first)
-  const secondTime = Date.parse(second)
-  return (
-    Number.isFinite(firstTime) &&
-    Number.isFinite(secondTime) &&
-    firstTime === secondTime
-  )
+  try {
+    return compareInstants(first, second) === 0
+  } catch {
+    return false
+  }
 }
 
 function setScheduleRequiredErrors(

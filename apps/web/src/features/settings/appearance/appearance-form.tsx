@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { ChevronDownIcon } from '@radix-ui/react-icons'
@@ -30,20 +31,37 @@ export function AppearanceForm() {
   const { font, setFont } = useFont()
   const { theme, setTheme } = useTheme()
 
-  // This can come from your database or API.
-  const defaultValues: Partial<AppearanceFormValues> = {
-    theme,
-    font,
-  }
-
   const form = useForm<AppearanceFormValues>({
     resolver: zodResolver(appearanceFormSchema),
-    defaultValues,
+    defaultValues: { theme, font },
   })
+  const {
+    reset,
+    getValues,
+    getFieldState,
+    setValue,
+    formState: { dirtyFields, isDirty },
+  } = form
+
+  useEffect(() => {
+    const draft = getValues()
+    const keepTheme = getFieldState('theme').isDirty && draft.theme !== theme
+    const keepFont = getFieldState('font').isDirty && draft.font !== font
+
+    // Rebase against the current providers, clearing edits that have converged.
+    reset({ theme, font })
+    if (keepTheme) setValue('theme', draft.theme, { shouldDirty: true })
+    if (keepFont) setValue('font', draft.font, { shouldDirty: true })
+  }, [theme, font, getValues, getFieldState, reset, setValue])
 
   function onSubmit(data: AppearanceFormValues) {
-    if (data.font != font) setFont(data.font)
-    if (data.theme != theme) setTheme(data.theme)
+    const next = {
+      theme: dirtyFields.theme ? data.theme : theme,
+      font: dirtyFields.font ? data.font : font,
+    }
+    if (next.font !== font) setFont(next.font)
+    if (next.theme !== theme) setTheme(next.theme)
+    reset(next)
   }
 
   return (
@@ -75,7 +93,7 @@ export function AppearanceForm() {
                 <ChevronDownIcon className='absolute inset-e-3 top-2.5 h-4 w-4 opacity-50' />
               </div>
               <FormDescription className='font-manrope'>
-                Set the font you want to use in the dashboard.
+                Set the font used throughout the application.
               </FormDescription>
               <FormMessage />
             </FormItem>
@@ -88,16 +106,17 @@ export function AppearanceForm() {
             <FormItem>
               <FormLabel>Theme</FormLabel>
               <FormDescription>
-                Select the theme for the dashboard.
+                Select the application theme. System follows your device.
               </FormDescription>
               <FormMessage />
               <RadioGroup
                 onValueChange={field.onChange}
-                defaultValue={field.value}
+                value={field.value}
+                aria-label='Theme'
                 className='grid max-w-2xl grid-cols-1 gap-4 pt-2 sm:grid-cols-3'
               >
                 <FormItem>
-                  <FormLabel className='flex-col [&:has([data-state=checked])>div]:border-primary'>
+                  <FormLabel className='flex-col [&:has(:focus-visible)>div]:ring-2 [&:has(:focus-visible)>div]:ring-ring [&:has([data-state=checked])>div]:border-primary'>
                     <FormControl>
                       <RadioGroupItem value='light' className='sr-only' />
                     </FormControl>
@@ -123,7 +142,7 @@ export function AppearanceForm() {
                   </FormLabel>
                 </FormItem>
                 <FormItem>
-                  <FormLabel className='flex-col [&:has([data-state=checked])>div]:border-primary'>
+                  <FormLabel className='flex-col [&:has(:focus-visible)>div]:ring-2 [&:has(:focus-visible)>div]:ring-ring [&:has([data-state=checked])>div]:border-primary'>
                     <FormControl>
                       <RadioGroupItem value='dark' className='sr-only' />
                     </FormControl>
@@ -149,7 +168,7 @@ export function AppearanceForm() {
                   </FormLabel>
                 </FormItem>
                 <FormItem>
-                  <FormLabel className='flex-col [&:has([data-state=checked])>div]:border-primary'>
+                  <FormLabel className='flex-col [&:has(:focus-visible)>div]:ring-2 [&:has(:focus-visible)>div]:ring-ring [&:has([data-state=checked])>div]:border-primary'>
                     <FormControl>
                       <RadioGroupItem value='system' className='sr-only' />
                     </FormControl>
@@ -171,7 +190,28 @@ export function AppearanceForm() {
           )}
         />
 
-        <Button type='submit'>Update preferences</Button>
+        <p className='text-sm text-muted-foreground'>
+          Appearance preferences are stored in this browser.
+        </p>
+        {isDirty && (
+          <p role='status' className='text-sm text-muted-foreground'>
+            Applied appearance: {theme} theme, {font} font. Only your edited
+            selections will be applied.
+          </p>
+        )}
+        <div className='flex flex-wrap gap-2'>
+          <Button type='submit' disabled={!isDirty}>
+            Update preferences
+          </Button>
+          <Button
+            type='button'
+            variant='outline'
+            disabled={!isDirty}
+            onClick={() => reset({ theme, font })}
+          >
+            Discard
+          </Button>
+        </div>
       </form>
     </Form>
   )

@@ -17,6 +17,7 @@ import {
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { getPageNumbers } from '@/lib/utils'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -65,6 +66,7 @@ import { formatMeetingSchedule as formatSchedule } from './data/meeting-schedule
 const route = getRouteApi('/_authenticated/meetings/')
 
 export function MeetingsPage() {
+  const regional = useRegionalPresentation()
   const search = route.useSearch()
   const navigate = route.useNavigate()
   const queryClient = useQueryClient()
@@ -131,9 +133,12 @@ export function MeetingsPage() {
   }
 
   const setDateFilter = (key: 'from' | 'to', value: string) => {
-    updateSearch({
-      [key]: value ? dateInputToOffsetDateTime(value, key === 'to') : undefined,
-    })
+    if (regional.status === 'loading') return
+    const boundary = value
+      ? dateInputToOffsetDateTime(value, key === 'to', regional.timezone)
+      : undefined
+    if (value && !boundary) return
+    updateSearch({ [key]: boundary })
   }
 
   useEffect(() => {
@@ -333,6 +338,7 @@ function MeetingsTable({
 }
 
 function MeetingRow({ meeting }: { meeting: MeetingListItem }) {
+  const { timezone, locale } = useRegionalPresentation()
   const display = getMeetingDisplay(meeting)
   const room = getRoomDisplay(meeting, display)
 
@@ -355,7 +361,14 @@ function MeetingRow({ meeting }: { meeting: MeetingListItem }) {
       <TableCell>
         <div className='flex items-start gap-2'>
           <CalendarDays className='mt-0.5 size-4 shrink-0 text-muted-foreground' />
-          <span>{formatMeetingSchedule(meeting)}</span>
+          <span>
+            {formatSchedule(
+              meeting.scheduledStartAt,
+              meeting.scheduledEndAt,
+              timezone,
+              locale
+            )}
+          </span>
         </div>
       </TableCell>
       <TableCell className='whitespace-normal'>
@@ -622,10 +635,6 @@ function formatMeetingRange(pagination: MeetingPagination) {
   const first = pagination.page * pagination.size + 1
   const last = Math.min(pagination.totalElements, first + pagination.size - 1)
   return `${first}-${last} of ${pagination.totalElements}`
-}
-
-function formatMeetingSchedule(meeting: MeetingListItem) {
-  return formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt)
 }
 
 function formatParticipantCount(display: MeetingDisplay) {

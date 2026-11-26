@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, RotateCcw, Search } from 'lucide-react'
+import { formatCivilDate } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -15,10 +17,10 @@ import {
   type MeetingLifecycleStatus,
 } from '@/features/meetings/data/list-api'
 import { CalendarRoomFilter } from './calendar-room-filter'
-import type {
-  CalendarFilters,
-  CalendarRelationship,
-  CalendarView,
+import {
+  type CalendarFilters,
+  type CalendarRelationship,
+  type CalendarView,
 } from './calendar-state'
 
 const statusLabels: Record<MeetingLifecycleStatus, string> = {
@@ -30,7 +32,7 @@ const statusLabels: Record<MeetingLifecycleStatus, string> = {
 }
 
 export interface CalendarToolbarProps {
-  month: Date
+  month: string
   view: CalendarView
   filters: CalendarFilters
   onNavigateMonth: (offset: number) => void
@@ -51,6 +53,7 @@ export function CalendarToolbar({
   onViewChange,
   onFiltersChange,
 }: CalendarToolbarProps) {
+  const { locale } = useRegionalPresentation()
   const committedKeyword = filters.q ?? ''
   const [keywordDraft, setKeywordDraft] = useState({
     committed: committedKeyword,
@@ -71,7 +74,7 @@ export function CalendarToolbar({
     return () => window.clearTimeout(timer)
   }, [filters.q, keyword, onFiltersChange])
 
-  const monthLabel = month.toLocaleDateString(undefined, {
+  const monthLabel = formatCivilDate(month + '-01', locale, {
     month: 'long',
     year: 'numeric',
   })

@@ -21,10 +21,11 @@ export interface CalendarPageAggregate {
 }
 
 function calendarMeetingSearch(
-  month: Date,
-  filters: CalendarFilters
+  month: string,
+  filters: CalendarFilters,
+  timezone?: string
 ): Omit<MeetingListSearch, 'page'> {
-  const range = calendarMonthRange(month)
+  const range = calendarMonthRange(month, timezone)
   const relationship =
     filters.relationship === 'organizer'
       ? 'ORGANIZER'
@@ -46,15 +47,20 @@ function calendarMeetingSearch(
 export function calendarMeetingsInfiniteQueryOptions({
   month,
   filters,
+  timezone,
+  enabled = true,
 }: {
-  month: Date
+  month: string
   filters: CalendarFilters
+  timezone?: string
+  enabled?: boolean
 }) {
-  const search = calendarMeetingSearch(month, filters)
+  const search = calendarMeetingSearch(month, filters, timezone)
 
   return infiniteQueryOptions({
     queryKey: [...meetingListQueryKey, 'calendar', search] as const,
     initialPageParam: 1,
+    enabled,
     queryFn: ({ pageParam, signal }) =>
       fetchMeetingList({ ...search, page: pageParam }, signal),
     getNextPageParam: (

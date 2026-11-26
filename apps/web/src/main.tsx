@@ -63,7 +63,11 @@ const queryClient = new QueryClient({
   },
   queryCache: new QueryCache({
     onError: (error, query) => {
-      if (query.meta?.featureErrorBoundary === true) return
+      if (
+        query.meta?.featureErrorBoundary === true ||
+        query.meta?.handlesOwnErrors === true
+      )
+        return
       const apiError = normalizeCoreApiError(error)
       if (apiError.recoveryOutcome) return
 

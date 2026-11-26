@@ -1,4 +1,4 @@
-import { StrictMode, useState } from 'react'
+import { Fragment, StrictMode, useState } from 'react'
 import { AxiosHeaders } from 'axios'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -11,10 +11,12 @@ import {
   resetCsrfToken,
   setCsrfToken,
 } from '@/lib/core-api'
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import {
   beginAuthLifecycleLogout,
   resetAuthLifecycleAfterSignIn,
 } from '@/features/auth/session/auth-lifecycle'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import type { AssistantSelection } from './assistant-selection'
 import { AssistantPage } from './index'
 
@@ -434,6 +436,7 @@ function TestAssistant({
 async function renderPage(
   options: {
     strict?: boolean
+    regional?: boolean
     initial?: AssistantSelection
     client?: QueryClient
     onMeetingDetail?: (meetingId: string) => void
@@ -454,6 +457,9 @@ async function renderPage(
       meta: {},
     } as never
   })
+  const RegionalBoundary = options.regional
+    ? RegionalPresentationProvider
+    : Fragment
   return render(
     <QueryClientProvider
       client={
@@ -463,13 +469,15 @@ async function renderPage(
         })
       }
     >
-      {options.strict ? (
-        <StrictMode>
+      <RegionalBoundary>
+        {options.strict ? (
+          <StrictMode>
+            <TestAssistant initial={options.initial} />
+          </StrictMode>
+        ) : (
           <TestAssistant initial={options.initial} />
-        </StrictMode>
-      ) : (
-        <TestAssistant initial={options.initial} />
-      )}
+        )}
+      </RegionalBoundary>
     </QueryClientProvider>
   )
 }
@@ -2366,6 +2374,46 @@ describe('Assistant presentation regressions', () => {
     await expect
       .element(screen.getByRole('textbox', { name: 'Assistant question' }))
       .toBeVisible()
+  })
+
+  it('presents the retry deadline in the confirmed regional timezone and locale', async () => {
+    setupReads()
+    const deadline = new Date(Date.now() + 120_000).toUTCString()
+    vi.spyOn(coreApi, 'post').mockRejectedValue(
+      coreError(429, 'Rate limited', { retryAfter: deadline })
+    )
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+    client.setQueryData(preferencesQueryKey, {
+      timezone: 'America/New_York',
+      locale: 'en-GB',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
+    const screen = await renderPage({
+      initial: { conversationId, meetingId },
+      client,
+      regional: true,
+    })
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Assistant question' }),
+      'Retry me'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
+    const expected = new Intl.DateTimeFormat('en-GB', {
+      calendar: 'gregory',
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: 'America/New_York',
+    }).format(new Date(deadline))
+    await expect
+      .element(screen.getByText(/Core requested no retry before/))
+      .toHaveTextContent(expected)
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry or refresh' }))
+      .toBeDisabled()
   })
 
   it('disables retry and resume until the authoritative deadline then enables them', async () => {

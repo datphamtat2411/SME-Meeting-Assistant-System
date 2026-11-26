@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import {
   RequestEmpty,
   RequestError,
@@ -241,7 +242,12 @@ function MediaRow({
           {media.durationMs != null && (
             <span>{formatDuration(media.durationMs)}</span>
           )}
-          <span>{formatDate(media.createdAt)}</span>
+          <span>
+            <RegionalTimestamp
+              value={media.createdAt}
+              fallback='Time unavailable'
+            />
+          </span>
         </div>
         {media.failureCode && (
           <p className='mt-1 text-xs text-destructive'>{media.failureCode}</p>
@@ -268,14 +274,4 @@ function MediaRow({
 function formatDuration(durationMs: number): string {
   const totalSeconds = Math.floor(durationMs / 1000)
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`
-}
-
-function formatDate(value: string): string {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime())
-    ? 'Time unavailable'
-    : new Intl.DateTimeFormat(undefined, {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-      }).format(date)
 }

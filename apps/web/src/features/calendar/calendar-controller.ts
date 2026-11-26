@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { groupCalendarDaySegments, projectCalendarMonth } from './calendar-api'
 import {
   aggregateCalendarPages,
@@ -9,7 +10,6 @@ import {
   calendarMeetingsInfiniteQueryOptions,
 } from './calendar-query'
 import {
-  calendarMonthKey,
   currentCalendarMonth,
   hasCalendarFilters,
   resolveCalendarState,
@@ -24,19 +24,23 @@ import {
 const calendarRoute = getRouteApi('/_authenticated/calendar/')
 
 export interface CalendarMeetingDataOptions {
-  month: Date
+  month: string
   filters: CalendarFilters
+  timezone?: string
+  enabled?: boolean
 }
 
 export function useCalendarMeetingData({
   month,
   filters,
+  timezone,
+  enabled = true,
 }: CalendarMeetingDataOptions) {
   const query = useInfiniteQuery(
-    calendarMeetingsInfiniteQueryOptions({ month, filters })
+    calendarMeetingsInfiniteQueryOptions({ month, filters, timezone, enabled })
   )
+  const data = enabled ? query.data : undefined
   const {
-    data,
     hasNextPage,
     isFetchingNextPage,
     isFetchNextPageError,
@@ -48,8 +52,8 @@ export function useCalendarMeetingData({
     [data?.pages]
   )
   const projection = useMemo(
-    () => projectCalendarMonth(aggregate.meetings, month),
-    [aggregate.meetings, month]
+    () => projectCalendarMonth(aggregate.meetings, month, timezone),
+    [aggregate.meetings, month, timezone]
   )
   const dayGroups = useMemo(
     () => groupCalendarDaySegments(projection.segments),
@@ -58,6 +62,7 @@ export function useCalendarMeetingData({
 
   useEffect(() => {
     if (
+      !enabled ||
       !data ||
       !hasNextPage ||
       data.pages.length >= CALENDAR_AUTOMATIC_PAGE_LIMIT ||
@@ -70,6 +75,7 @@ export function useCalendarMeetingData({
   }, [
     data,
     data?.pages.length,
+    enabled,
     fetchNextPage,
     hasNextPage,
     isFetchNextPageError,
@@ -111,7 +117,7 @@ export function useCalendarMeetingData({
       : aggregate.hasMore
         ? ('partial' as const)
         : ('complete' as const),
-    isInitialLoading: query.isPending && !data,
+    isInitialLoading: !enabled || (query.isPending && !data),
     isRefreshing: Boolean(data) && query.isFetching && !isFetchingNextPage,
     isLoadingMore: isFetchingNextPage,
     isUnauthorized: authorizationStatus !== undefined,
@@ -127,10 +133,13 @@ export function useCalendarMeetingData({
 export function useCalendarController() {
   const search = calendarRoute.useSearch()
   const navigate = calendarRoute.useNavigate()
-  const state = resolveCalendarState(search)
+  const regional = useRegionalPresentation()
+  const state = resolveCalendarState(search, new Date(), regional.timezone)
   const data = useCalendarMeetingData({
-    month: state.month,
+    month: state.monthKey,
     filters: state.filters,
+    timezone: regional.timezone,
+    enabled: regional.status !== 'loading',
   })
 
   const updateSearch = useCallback(
@@ -145,14 +154,16 @@ export function useCalendarController() {
   const navigateMonth = useCallback(
     (offset: number) => {
       updateSearch({
-        month: calendarMonthKey(shiftCalendarMonth(state.month, offset)),
+        month: shiftCalendarMonth(state.monthKey, offset),
       })
     },
-    [state.month, updateSearch]
+    [state.monthKey, updateSearch]
   )
   const goToToday = useCallback(() => {
-    updateSearch({ month: calendarMonthKey(currentCalendarMonth()) })
-  }, [updateSearch])
+    updateSearch({
+      month: currentCalendarMonth(new Date(), regional.timezone),
+    })
+  }, [regional.timezone, updateSearch])
   const setView = useCallback(
     (view: CalendarView) => updateSearch({ view }),
     [updateSearch]
@@ -200,7 +211,6 @@ export function useCalendarController() {
 
   return {
     search: search as CalendarSearch,
-    month: state.month,
     monthKey: state.monthKey,
     view: state.view,
     filters: state.filters,

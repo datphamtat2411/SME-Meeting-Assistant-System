@@ -11,6 +11,7 @@ import type { CoreApiError } from '@/lib/core-api'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { RequestLoading } from '@/components/request-state'
 import {
   ASSISTANT_QUESTION_LIMIT,
@@ -235,7 +236,10 @@ export function ConversationPanel({
         {turnActions.blockedUntil != null && (
           <p className='text-sm text-muted-foreground' role='status'>
             Core requested no retry before{' '}
-            {new Date(turnActions.blockedUntil).toLocaleTimeString()}.
+            <RegionalTimestamp
+              value={new Date(turnActions.blockedUntil).toJSON()}
+            />
+            .
           </p>
         )}
         {inactive && (

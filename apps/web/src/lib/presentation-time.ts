@@ -27,6 +27,7 @@ export function formatPresentationInstant(
     dateStyle: 'medium',
     timeStyle: 'short',
     timeZone,
+    calendar: 'gregory',
   }
   try {
     return new Intl.DateTimeFormat(locale || undefined, options).format(date)
@@ -41,7 +42,11 @@ export function formatPresentationDate(
   timeZone: string,
   locale?: string | null
 ) {
-  const options: Intl.DateTimeFormatOptions = { dateStyle: 'full', timeZone }
+  const options: Intl.DateTimeFormatOptions = {
+    dateStyle: 'full',
+    timeZone,
+    calendar: 'gregory',
+  }
   try {
     return new Intl.DateTimeFormat(locale || undefined, options).format(value)
   } catch (error) {

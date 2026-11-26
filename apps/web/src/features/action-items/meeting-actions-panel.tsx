@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { RegionalCivilDate } from '@/components/regional-timestamp'
 import {
   RequestEmpty,
   RequestError,
@@ -214,7 +215,10 @@ function ProposalCollection({
             <Badge variant='outline'>AI proposal</Badge>
           </div>
           <div className='flex flex-wrap gap-3 text-xs text-muted-foreground'>
-            <span>Suggested due date: {item.dueDate ?? 'none'}</span>
+            <span>
+              Suggested due date:{' '}
+              <RegionalCivilDate value={item.dueDate} fallback='none' />
+            </span>
             <span>
               {item.assignee?.displayName
                 ? `Suggested responsibility: ${item.assignee.displayName}`
@@ -457,7 +461,9 @@ function ActionListState({
             <span>
               Responsible: {item.assignee?.displayName ?? 'Unassigned'}
             </span>
-            <span>Due: {item.dueDate ?? 'none'}</span>
+            <span>
+              Due: <RegionalCivilDate value={item.dueDate} fallback='none' />
+            </span>
             {item.overdue && <Badge variant='destructive'>Overdue</Badge>}
           </div>
           <div className='mt-3 flex flex-wrap gap-2'>

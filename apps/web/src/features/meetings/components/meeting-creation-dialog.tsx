@@ -5,6 +5,8 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CalendarDays, Check, LoaderCircle } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { parseCivilDate, compareInstants } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -48,7 +50,6 @@ import { type MeetingParticipantCandidate } from '../data/meeting-candidates-api
 import {
   buildCreateMeetingPayload,
   buildScheduleCheckPayload,
-  canonicalizeLocalDateTime,
   checkMeetingSchedule,
   classifyMeetingMutationError,
   createMeetingFromIntent,
@@ -64,6 +65,8 @@ import {
 import {
   getScheduleValues,
   getSchedulingFingerprint,
+  resolveScheduleEndpoint,
+  scheduleEndpointError,
   type ScheduleValues,
 } from '../data/meeting-scheduling-utils'
 import { MeetingParticipantLookup } from './meeting-participant-lookup'
@@ -75,22 +78,7 @@ import {
 import { SelectedRoomSchedulePreview } from './selected-room-schedule-preview'
 
 function isValidLocalDateKey(value: unknown): value is string {
-  if (typeof value !== 'string') return false
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
-  if (!match) return false
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
-  if (year < 1 || year > 9999 || month < 1 || month > 12) return false
-
-  const date = new Date(0)
-  date.setFullYear(year, month - 1, day)
-  date.setHours(0, 0, 0, 0)
-  return (
-    date.getFullYear() === year &&
-    date.getMonth() === month - 1 &&
-    date.getDate() === day
-  )
+  return typeof value === 'string' && Boolean(parseCivilDate(value))
 }
 
 const meetingFormSchema = z
@@ -101,6 +89,11 @@ const meetingFormSchema = z
     endDate: z.string(),
     startTime: z.string(),
     endTime: z.string(),
+    scheduleTimezone: z.string(),
+    startOccurrence: z.string(),
+    endOccurrence: z.string(),
+    fallbackRequired: z.boolean(),
+    fallbackAcknowledged: z.boolean(),
     roomId: z.string(),
     participantIds: z.array(z.string()),
     dateOnlyPrefill: z.boolean(),
@@ -140,26 +133,48 @@ const meetingFormSchema = z
     }
     if (!values.date || !values.startTime || !values.endTime) return
 
-    const start = canonicalizeLocalDateTime(values.date, values.startTime)
-    const end = canonicalizeLocalDateTime(
-      values.endDate || values.date,
-      values.endTime
+    const start = resolveScheduleEndpoint(
+      values.date,
+      values.startTime,
+      values.scheduleTimezone,
+      values.startOccurrence
     )
+    const end = resolveScheduleEndpoint(
+      values.endDate || values.date,
+      values.endTime,
+      values.scheduleTimezone,
+      values.endOccurrence
+    )
+    if (values.fallbackRequired && !values.fallbackAcknowledged) {
+      context.addIssue({
+        code: 'custom',
+        path: ['fallbackAcknowledged'],
+        message: 'Confirm the scheduling timezone before saving.',
+      })
+    }
     if (!start) {
       context.addIssue({
         code: 'custom',
         path: ['startTime'],
-        message: 'Enter a valid start time.',
+        message: scheduleEndpointError(
+          values.date,
+          values.startTime,
+          values.scheduleTimezone
+        ),
       })
     }
     if (!end) {
       context.addIssue({
         code: 'custom',
         path: ['endTime'],
-        message: 'Enter a valid end time.',
+        message: scheduleEndpointError(
+          values.endDate || values.date,
+          values.endTime,
+          values.scheduleTimezone
+        ),
       })
     }
-    if (start && end && new Date(start).getTime() >= new Date(end).getTime()) {
+    if (start && end && compareInstants(start, end) >= 0) {
       context.addIssue({
         code: 'custom',
         path: ['endTime'],
@@ -219,6 +234,11 @@ const initialFormValues: MeetingFormValues = {
   endDate: '',
   startTime: '',
   endTime: '',
+  scheduleTimezone: '',
+  startOccurrence: '',
+  endOccurrence: '',
+  fallbackRequired: false,
+  fallbackAcknowledged: false,
   roomId: '',
   participantIds: [],
   dateOnlyPrefill: false,
@@ -230,6 +250,7 @@ export function MeetingCreationDialog({
   initialScheduleDate,
   onCommitted,
 }: MeetingCreationDialogProps) {
+  const regional = useRegionalPresentation()
   const queryClient = useQueryClient()
   const form = useForm<MeetingFormValues>({
     resolver: zodResolver(meetingFormSchema),
@@ -278,17 +299,43 @@ export function MeetingCreationDialog({
     control: form.control,
     name: 'participantIds',
   })
-  const schedule = getScheduleValues({ date, endDate, startTime, endTime })
-  const currentScheduleFingerprint = getSchedulingFingerprint({
-    title,
-    description,
+  const scheduleTimezone = useWatch({
+    control: form.control,
+    name: 'scheduleTimezone',
+  })
+  const startOccurrence = useWatch({
+    control: form.control,
+    name: 'startOccurrence',
+  })
+  const endOccurrence = useWatch({
+    control: form.control,
+    name: 'endOccurrence',
+  })
+  const schedule = getScheduleValues({
     date,
     endDate,
     startTime,
     endTime,
-    roomId,
-    participantIds,
+    scheduleTimezone,
+    startOccurrence,
+    endOccurrence,
   })
+  const currentScheduleFingerprint = getSchedulingFingerprint(
+    {
+      title,
+      description,
+      date,
+      endDate,
+      startTime,
+      endTime,
+      scheduleTimezone,
+      startOccurrence,
+      endOccurrence,
+      roomId,
+      participantIds,
+    },
+    schedule
+  )
   const [roomLookupOpen, setRoomLookupOpen] = useState(false)
   const [roomLookupSearch, setRoomLookupSearch] = useState('')
   const [roomLookupPage, setRoomLookupPage] = useState(1)
@@ -341,6 +388,14 @@ export function MeetingCreationDialog({
 
   useEffect(() => {
     if (open && !wasOpen.current) {
+      if (!form.getValues('scheduleTimezone')) {
+        if (regional.status === 'loading') return
+        form.setValue('scheduleTimezone', regional.timezone)
+        form.setValue(
+          'fallbackRequired',
+          regional.status === 'unavailable' || regional.timezoneFallback
+        )
+      }
       if (
         isValidLocalDateKey(initialScheduleDate) &&
         phase === 'idle' &&
@@ -394,6 +449,9 @@ export function MeetingCreationDialog({
     open,
     pendingScheduleCandidate,
     phase,
+    regional.status,
+    regional.timezone,
+    regional.timezoneFallback,
     retainWorkflowOnClose,
   ])
 
@@ -952,6 +1010,7 @@ export function MeetingCreationDialog({
 
   const saveDraft = async (values: MeetingFormValues) => {
     if (
+      !values.scheduleTimezone ||
       busy ||
       draftRecovery ||
       creationIntent ||
@@ -985,6 +1044,7 @@ export function MeetingCreationDialog({
 
   const createAndSchedule = async (values: MeetingFormValues) => {
     if (
+      !values.scheduleTimezone ||
       busy ||
       draftRecovery ||
       creationIntent ||
@@ -1343,6 +1403,7 @@ export function MeetingCreationDialog({
             variant='secondary'
             onClick={handleSaveDraftClick}
             disabled={
+              !scheduleTimezone ||
               workflowLocked ||
               warningReviewPending ||
               organizerUnavailable ||
@@ -1358,6 +1419,7 @@ export function MeetingCreationDialog({
             type='button'
             onClick={handleCreateAndScheduleClick}
             disabled={
+              !scheduleTimezone ||
               workflowLocked ||
               warningReviewPending ||
               organizerUnavailable ||
@@ -1557,7 +1619,7 @@ function createSchedulingCandidate(
     ...(participantUserIds ? { participantUserIds } : {}),
   }) as ReturnType<typeof buildCreateMeetingPayload>
   return Object.freeze({
-    fingerprint: getSchedulingFingerprint(values),
+    fingerprint: getSchedulingFingerprint(values, schedule),
     payload: frozenPayload,
     schedule: Object.freeze({ ...schedule }),
   })

@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { RegionalCivilDate } from '@/components/regional-timestamp'
 import { invalidateMeetingArtifacts } from '@/features/meetings/intelligence/query-invalidation'
 import {
   actionCommand,
@@ -365,7 +366,7 @@ function ReviewContent({
         State: {item.status} · Assignee:{' '}
         {item.assignee?.displayName ?? 'Unassigned'}
         {item.assignee && !item.assignee.active ? ' (inactive)' : ''} · Due:{' '}
-        {item.dueDate ?? 'none'}
+        <RegionalCivilDate value={item.dueDate} fallback='none' />
       </p>
       {item.evidence.limitation && <p>{item.evidence.limitation}</p>}
       {showEvidence &&

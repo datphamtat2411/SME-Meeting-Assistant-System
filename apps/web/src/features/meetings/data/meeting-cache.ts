@@ -1,4 +1,5 @@
 import type { InfiniteData, QueryClient } from '@tanstack/react-query'
+import { compareInstants } from '@/lib/regional-time'
 import { invalidateMeetingArtifacts } from '../intelligence/query-invalidation'
 import type { MeetingDetailResponse, MeetingView } from './detail-api'
 import type { MeetingListResponse } from './list-api'
@@ -67,13 +68,11 @@ export function sameMeetingInstant(
 ) {
   if (first === second) return true
   if (!first || !second) return false
-  const firstTime = Date.parse(first)
-  const secondTime = Date.parse(second)
-  return (
-    Number.isFinite(firstTime) &&
-    Number.isFinite(secondTime) &&
-    firstTime === secondTime
-  )
+  try {
+    return compareInstants(first, second) === 0
+  } catch {
+    return false
+  }
 }
 
 export function affectsRoomAvailability(

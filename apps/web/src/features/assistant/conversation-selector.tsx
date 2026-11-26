@@ -12,6 +12,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { RequestEmpty, RequestLoading } from '@/components/request-state'
 import type { AssistantConversation } from './assistant-api'
 import { AssistantError } from './assistant-error'
@@ -220,7 +221,7 @@ export function ConversationSelector({
                 className='text-xs font-normal text-muted-foreground'
                 dateTime={item.updatedAt}
               >
-                {new Date(item.updatedAt).toLocaleString()}
+                <RegionalTimestamp value={item.updatedAt} />
               </time>
             </Button>
           ))

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, ListChecks, TriangleAlert } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { formatPresentationInstant } from '@/lib/presentation-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -68,6 +69,7 @@ function ManagementReport({
   identity: AuthContext
   access: AuthorizedMemberDirectoryAccess
 }) {
+  const { locale } = useRegionalPresentation()
   const queryClient = useQueryClient()
   const contextKey = getSessionContextKey(identity)
   const [preset, setPreset] = useState('30')
@@ -299,18 +301,20 @@ function ManagementReport({
                 Applied period:{' '}
                 {formatPresentationInstant(
                   data.period.fromInclusive,
-                  data.timezone
+                  data.timezone,
+                  locale
                 )}{' '}
                 to{' '}
                 {formatPresentationInstant(
                   data.period.toExclusive,
-                  data.timezone
+                  data.timezone,
+                  locale
                 )}{' '}
                 (exclusive)
               </p>
               <p>
                 Reporting timezone: {data.timezone} · As of{' '}
-                {formatPresentationInstant(data.asOf, data.timezone)}
+                {formatPresentationInstant(data.asOf, data.timezone, locale)}
               </p>
               <p>
                 Scope:{' '}
@@ -319,7 +323,11 @@ function ManagementReport({
                       (unit) => unit.id === applied.orgUnitId
                     )?.name ?? 'Selected managed unit')
                   : 'All managed units'}{' '}
-                ({data.scope.organizationalUnitIds.length})
+                (
+                {new Intl.NumberFormat(locale).format(
+                  data.scope.organizationalUnitIds.length
+                )}
+                )
               </p>
               {report.isFetching && <p role='status'>Refreshing report…</p>}
             </div>
@@ -373,7 +381,9 @@ function ManagementReport({
                       style={{ width: (status.count / max) * 100 + '%' }}
                     />
                   </div>
-                  <span className='tabular-nums'>{status.count}</span>
+                  <span className='tabular-nums'>
+                    {new Intl.NumberFormat(locale).format(status.count)}
+                  </span>
                 </div>
               ))}
               <p className='text-xs text-muted-foreground'>

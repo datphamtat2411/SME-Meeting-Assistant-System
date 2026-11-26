@@ -57,7 +57,7 @@ afterEach(() => {
 describe('Calendar meeting query', () => {
   it('uses the shared meeting-list cache hierarchy and an isolated infinite-query shape', () => {
     const options = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 10, 1),
+      month: '2026-11',
       filters: { relationship: 'all' },
     })
 
@@ -70,20 +70,42 @@ describe('Calendar meeting query', () => {
 
   it('includes the month and every server-affecting filter in the query identity', () => {
     const base = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 10, 1),
+      month: '2026-11',
       filters: { relationship: 'all' },
     })
     const keyword = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 10, 1),
+      month: '2026-11',
       filters: { relationship: 'all', q: 'roadmap' },
     })
     const nextMonth = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 11, 1),
+      month: '2026-12',
       filters: { relationship: 'all' },
     })
 
     expect(base.queryKey).not.toEqual(keyword.queryKey)
     expect(base.queryKey).not.toEqual(nextMonth.queryKey)
+  })
+
+  it('keys the Calendar query by the actual timezone-dependent interval', () => {
+    const input = {
+      month: '2026-12',
+      filters: { relationship: 'all' as const },
+    }
+    const tokyo = calendarMeetingsInfiniteQueryOptions({
+      ...input,
+      timezone: 'Asia/Tokyo',
+    })
+    const newYork = calendarMeetingsInfiniteQueryOptions({
+      ...input,
+      timezone: 'America/New_York',
+    })
+    expect(tokyo.queryKey).not.toEqual(newYork.queryKey)
+    expect(tokyo.queryKey[3]).toMatchObject({
+      from: '2026-11-30T15:00:00.000Z',
+    })
+    expect(newYork.queryKey[3]).toMatchObject({
+      from: '2026-12-01T05:00:00.000Z',
+    })
   })
 
   it('sends selected-month boundaries and canonical server filters with cancellation', async () => {
@@ -107,7 +129,7 @@ describe('Calendar meeting query', () => {
         }
       })
     const options = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 10, 1),
+      month: '2026-11',
       filters: {
         relationship: 'participant',
         status: 'CANCELLED',
@@ -224,7 +246,7 @@ describe('Calendar meeting query', () => {
     const aggregate = aggregateCalendarPages(pages)
     const queryClient = new QueryClient()
     const options = calendarMeetingsInfiniteQueryOptions({
-      month: new Date(2026, 10, 1),
+      month: '2026-11',
       filters: { relationship: 'all' },
     })
 

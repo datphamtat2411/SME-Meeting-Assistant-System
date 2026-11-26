@@ -14,11 +14,11 @@ import { normalizeCoreApiError } from '@/lib/core-api'
 import {
   formatPresentationDate,
   formatPresentationInstant,
-  presentationTimeZone,
 } from '@/lib/presentation-time'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { RegionalCivilDate } from '@/components/regional-timestamp'
 import {
   RequestEmpty,
   RequestError,
@@ -33,6 +33,7 @@ import {
 } from '@/features/meetings/data/detail-api'
 import { roomDetail } from '@/features/rooms/room-api'
 import { preferencesQuery } from '@/features/settings/preferences-api'
+import { resolveRegionalPreferences } from '@/features/settings/regional-preferences'
 import {
   personalDashboardQuery,
   type PersonalDashboard as PersonalProjection,
@@ -189,7 +190,13 @@ function MyActionItems({ identity }: { identity: AuthContext }) {
                 </p>
               )}
               <p className='text-xs text-muted-foreground'>
-                {item.dueDate ? 'Due ' + item.dueDate : 'No due date'}
+                {item.dueDate ? (
+                  <>
+                    Due <RegionalCivilDate value={item.dueDate} />
+                  </>
+                ) : (
+                  'No due date'
+                )}
               </p>
               {item.capabilities.canAccessMeeting &&
               !item.meeting.restricted ? (
@@ -287,8 +294,9 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
     reconciledMismatch.current = mismatch
     void refreshPersonal()
   }, [mismatch, refreshPersonal])
-  const zone = presentationTimeZone(preferences.data?.timezone, data?.timezone)
-  const locale = preferences.data?.locale
+  const { timezone: zone, locale } = resolveRegionalPreferences(
+    preferences.data ?? { timezone: null, locale: null }
+  )
   const format: FormatInstant = (value) =>
     formatPresentationInstant(value, zone, locale)
   const businessFormat: FormatInstant = (value) =>
@@ -432,7 +440,10 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
                         {activeParticipants && (
                           <p className='flex items-center gap-2'>
                             <Users className='size-4 shrink-0 text-muted-foreground' />
-                            {activeParticipants.length} active participants
+                            {new Intl.NumberFormat(locale).format(
+                              activeParticipants.length
+                            )}{' '}
+                            active participants
                           </p>
                         )}
                         {organizer?.displayName && (

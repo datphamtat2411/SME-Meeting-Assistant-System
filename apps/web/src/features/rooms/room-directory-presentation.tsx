@@ -1,4 +1,5 @@
 import { MapPin, Pencil, Search, Users } from 'lucide-react'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -76,13 +77,18 @@ function RoomLocation({ room }: { room: Room }) {
 }
 
 function RoomCapacity({ room }: { room: Room }) {
+  const { locale } = useRegionalPresentation()
   return (
     <div className='flex items-center gap-2'>
       <Users
         aria-hidden='true'
         className='size-4 shrink-0 text-muted-foreground'
       />
-      <span>{room.capacity === null ? 'Not set' : room.capacity}</span>
+      <span>
+        {room.capacity === null
+          ? 'Not set'
+          : room.capacity.toLocaleString(locale)}
+      </span>
     </div>
   )
 }

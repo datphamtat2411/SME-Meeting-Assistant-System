@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Search as SearchIcon,
 } from 'lucide-react'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
 import {
   Command,
@@ -29,7 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { dateInputValue } from '../data/date-filters'
+import { dateInputToOffsetDateTime, dateInputValue } from '../data/date-filters'
 import {
   defaultMeetingSort,
   organizerFilterOptionByIdQueryOptions,
@@ -90,6 +91,31 @@ export function MeetingFilters({
   onSortChange: (value: MeetingSort) => void
   onReset: () => void
 }) {
+  const regional = useRegionalPresentation()
+  const [dateError, setDateError] = useState<string>()
+  const fromDate = dateInputValue(search.from, false, regional.timezone)
+  const toDate = dateInputValue(search.to, true, regional.timezone)
+  const partialFrom = Boolean(search.from && !fromDate)
+  const partialTo = Boolean(search.to && !toDate)
+  const changeDate = (key: 'from' | 'to', value: string) => {
+    if (
+      value &&
+      !dateInputToOffsetDateTime(value, key === 'to', regional.timezone)
+    ) {
+      setDateError('Choose a valid calendar day in the displayed timezone.')
+      return
+    }
+    setDateError(undefined)
+    if (key === 'from') onFromChange(value)
+    else onToChange(value)
+  }
+  const formatBoundary = (value: string) =>
+    new Intl.DateTimeFormat(regional.locale, {
+      dateStyle: 'medium',
+      timeStyle: 'long',
+      timeZone: regional.timezone,
+      calendar: 'gregory',
+    }).format(new Date(value))
   const [roomLookupOpen, setRoomLookupOpen] = useState(false)
   const [organizerLookupOpen, setOrganizerLookupOpen] = useState(false)
   const [roomLookupSearch, setRoomLookupSearch] = useState('')
@@ -188,8 +214,9 @@ export function MeetingFilters({
           From
           <Input
             type='date'
-            value={dateInputValue(search.from)}
-            onChange={(event) => onFromChange(event.target.value)}
+            value={fromDate}
+            disabled={regional.status === 'loading'}
+            onChange={(event) => changeDate('from', event.target.value)}
             aria-label='Filter meetings from date'
           />
         </label>
@@ -197,8 +224,9 @@ export function MeetingFilters({
           To
           <Input
             type='date'
-            value={dateInputValue(search.to, true)}
-            onChange={(event) => onToChange(event.target.value)}
+            value={toDate}
+            disabled={regional.status === 'loading'}
+            onChange={(event) => changeDate('to', event.target.value)}
             aria-label='Filter meetings to date'
           />
         </label>
@@ -286,11 +314,60 @@ export function MeetingFilters({
           type='button'
           variant='outline'
           className='mt-auto'
-          onClick={onReset}
+          onClick={() => {
+            setDateError(undefined)
+            onReset()
+          }}
         >
           Reset filters
         </Button>
       </div>
+      <p className='text-xs text-muted-foreground'>
+        Date filters use {regional.timezone}. The To date includes the entire
+        selected day.
+        {regional.status === 'loading' && ' Loading regional preferences…'}
+        {(regional.status === 'unavailable' || regional.timezoneFallback) &&
+          ' Using a fallback timezone.'}
+      </p>
+      {dateError && (
+        <p role='alert' className='text-sm text-destructive'>
+          {dateError}
+        </p>
+      )}
+      {(partialFrom || partialTo) && (
+        <div role='status' className='space-y-1 rounded-md border p-3 text-sm'>
+          <p>
+            The existing filter retains its exact timestamps. Select a date to
+            replace a boundary.
+          </p>
+          {partialFrom && search.from && (
+            <div>
+              From (inclusive): {formatBoundary(search.from)}{' '}
+              <Button
+                type='button'
+                variant='link'
+                size='sm'
+                onClick={() => changeDate('from', '')}
+              >
+                Clear start
+              </Button>
+            </div>
+          )}
+          {partialTo && search.to && (
+            <div>
+              To (exclusive): {formatBoundary(search.to)}{' '}
+              <Button
+                type='button'
+                variant='link'
+                size='sm'
+                onClick={() => changeDate('to', '')}
+              >
+                Clear end
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

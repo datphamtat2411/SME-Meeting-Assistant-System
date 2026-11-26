@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { act, useState } from 'react'
 import {
   QueryClient,
   QueryClientProvider,
@@ -8,11 +8,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
 import { configureSessionRevalidation } from '@/features/auth/session/session-revalidation'
+import {
+  preferencesQueryKey,
+  type Preferences,
+} from '@/features/settings/preferences-api'
+import { resolveRegionalPreferences } from '@/features/settings/regional-preferences'
 import type { MeetingView } from './data/detail-api'
 import type { MeetingListResponse } from './data/list-api'
 import { ExportPanel } from './intelligence/export-panel'
@@ -212,7 +218,10 @@ function workspaceMinutes(
   }
 }
 
-async function renderWorkspaceResults(minutes: unknown) {
+async function renderWorkspaceResults(
+  minutes: unknown,
+  regionalPreferences?: Preferences | Error
+) {
   const workspaceMeeting = {
     ...detail,
     id: workspaceMinutesMeetingId,
@@ -241,6 +250,10 @@ async function renderWorkspaceResults(minutes: unknown) {
     throw new Error(`Unexpected metadata GET ${url}`)
   })
   vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+    if (url === '/me/preferences' && regionalPreferences) {
+      if (regionalPreferences instanceof Error) throw regionalPreferences
+      return regionalPreferences
+    }
     if (url.endsWith('/media') || url.endsWith('/processing-jobs')) return []
     if (url.endsWith('/minutes')) {
       if (minutes instanceof Error) throw minutes
@@ -258,7 +271,13 @@ async function renderWorkspaceResults(minutes: unknown) {
   })
   const screen = await render(
     <QueryClientProvider client={queryClient}>
-      <MeetingWorkspacePage meetingId={workspaceMinutesMeetingId} />
+      {regionalPreferences ? (
+        <RegionalPresentationProvider>
+          <MeetingWorkspacePage meetingId={workspaceMinutesMeetingId} />
+        </RegionalPresentationProvider>
+      ) : (
+        <MeetingWorkspacePage meetingId={workspaceMinutesMeetingId} />
+      )}
     </QueryClientProvider>
   )
   return { screen, queryClient }
@@ -399,9 +418,18 @@ async function renderEditableWorkspace(
     userId: 'current-user',
     displayName: 'Current User',
   })
+  queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
+  })
   const screen = await render(
     <QueryClientProvider client={queryClient}>
-      <MeetingWorkspacePage meetingId='meeting-1' />
+      <RegionalPresentationProvider>
+        <MeetingWorkspacePage meetingId='meeting-1' />
+      </RegionalPresentationProvider>
     </QueryClientProvider>
   )
   return { queryClient, screen }
@@ -1144,6 +1172,98 @@ describe('MeetingWorkspacePage', () => {
       .not.toBeInTheDocument()
   })
 
+  it('presents lifecycle and results timestamps using reactive regional preferences', async () => {
+    // Select a zone with a different wall-clock hour from the browser.
+    const timezone =
+      new Date(detail.createdAt).getHours() === 9
+        ? 'America/New_York'
+        : 'Asia/Tokyo'
+    const preferences = {
+      timezone,
+      locale: 'ja-JP',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    }
+    const { screen, queryClient } = await renderWorkspaceResults(
+      workspaceMinutes(),
+      preferences
+    )
+
+    async function expectTimestamps(timezone: string, locale: string) {
+      const formatter = new Intl.DateTimeFormat(locale, {
+        calendar: 'gregory',
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: timezone,
+      })
+      for (const value of [
+        detail.createdAt,
+        detail.updatedAt,
+        detail.startedAt,
+        detail.endedAt,
+      ]) {
+        const expected = formatter.format(new Date(value))
+        await expect
+          .element(screen.getByText(expected, { exact: true }))
+          .toBeInTheDocument()
+      }
+      await expect
+        .element(
+          screen.getByText(
+            `Meeting ended at ${formatter.format(new Date(detail.endedAt))}; no recording or processing result is inferred.`
+          )
+        )
+        .toBeInTheDocument()
+    }
+
+    await expectTimestamps(timezone, preferences.locale)
+    await act(async () => {
+      queryClient.setQueryData(preferencesQueryKey, {
+        ...preferences,
+        timezone: 'Pacific/Honolulu',
+        locale: 'en-GB',
+      })
+    })
+    await expectTimestamps('Pacific/Honolulu', 'en-GB')
+
+    // Unsupported stored values remain stored; presentation falls back.
+    const unsupported = {
+      ...preferences,
+      timezone: 'Mars/Olympus_Mons',
+      locale: 'zz-ZZ',
+    }
+    await act(async () => {
+      queryClient.setQueryData(preferencesQueryKey, unsupported)
+    })
+    const fallback = resolveRegionalPreferences(unsupported)
+    await expectTimestamps(fallback.timezone, fallback.locale)
+    expect(queryClient.getQueryData(preferencesQueryKey)).toEqual(unsupported)
+  })
+
+  it('keeps workspace timestamps available when preferences cannot be retrieved', async () => {
+    const { screen, queryClient } = await renderWorkspaceResults(
+      workspaceMinutes(),
+      new Error('Preferences unavailable')
+    )
+    await expect
+      .poll(() => queryClient.getQueryState(preferencesQueryKey)?.status)
+      .toBe('error')
+    const { timezone, locale } = resolveRegionalPreferences({
+      timezone: null,
+      locale: null,
+    })
+    const expected = new Intl.DateTimeFormat(locale, {
+      calendar: 'gregory',
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: timezone,
+    }).format(new Date(detail.createdAt))
+    await expect
+      .element(screen.getByText(expected, { exact: true }))
+      .toBeInTheDocument()
+    expect(queryClient.getQueryData(preferencesQueryKey)).toBeUndefined()
+  })
+
   it('renders processing and review-required result states without treating them as available', async () => {
     const { screen } = await renderWorkspaceResults(
       workspaceMinutes({
@@ -1394,13 +1514,21 @@ describe('MeetingWorkspacePage', () => {
   })
 
   it('shows Meeting scheduled only after the DRAFT schedule endpoint confirms', async () => {
-    const scheduledMeeting = {
-      ...unscheduledDraftMeeting,
+    const interval = {
       scheduledStartAt: '2026-09-01T02:00:00.000Z',
       scheduledEndAt: '2026-09-01T03:00:00.000Z',
+    }
+    const patchedMeeting = { ...unscheduledDraftMeeting, ...interval }
+    const scheduledMeeting = {
+      ...patchedMeeting,
       status: 'SCHEDULED' as const,
     }
-    vi.spyOn(coreApi, 'post').mockResolvedValue({
+    // GET must observe the persisted version, including during cache refetches
+    // between PATCH and POST /schedule.
+    const detailResponses: Array<{ data: MeetingView; etag: string }> = [
+      { data: unscheduledDraftMeeting, etag: 'etag-current' },
+    ]
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
       previewOnly: true,
       canSchedule: true,
       roomConflict: false,
@@ -1409,50 +1537,95 @@ describe('MeetingWorkspacePage', () => {
     })
     const patchSpy = vi
       .spyOn(coreApi, 'patchWithMetaAndEtag')
-      .mockResolvedValue({
-        data: {
-          ...unscheduledDraftMeeting,
-          scheduledStartAt: '2026-09-01T02:00:00.000Z',
-          scheduledEndAt: '2026-09-01T03:00:00.000Z',
-        },
-        meta: {},
-        etag: 'etag-after-patch',
+      .mockImplementation(async () => {
+        const response = { data: patchedMeeting, etag: 'etag-after-patch' }
+        detailResponses[0] = response
+        return { ...response, meta: {} }
       })
+    let confirmSchedule!: () => void
+    const pendingSchedule = new Promise<void>((resolve) => {
+      confirmSchedule = resolve
+    })
     const scheduleSpy = vi
       .spyOn(coreApi, 'postWithMetaAndEtag')
-      .mockResolvedValue({
-        data: scheduledMeeting,
-        meta: {},
-        etag: 'etag-next',
+      .mockImplementation(async () => {
+        await pendingSchedule
+        const response = { data: scheduledMeeting, etag: 'etag-next' }
+        detailResponses[0] = response
+        return { ...response, meta: {} }
       })
-    const { screen } = await renderEditableWorkspace(unscheduledDraftMeeting)
+    const { screen, queryClient } = await renderEditableWorkspace(
+      unscheduledDraftMeeting,
+      activeOrganizerAndParticipants,
+      undefined,
+      detailResponses
+    )
+    queryClient.setQueryData(preferencesQueryKey, {
+      timezone: 'Asia/Ho_Chi_Minh',
+      locale: 'en-US',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit meeting' }))
-    await userEvent.fill(
-      screen.getByRole('textbox', { name: 'Date', exact: true }),
-      '2026-09-01'
-    )
-    await userEvent.fill(
-      screen.getByRole('textbox', { name: 'Start time' }),
-      '09:00'
-    )
-    await userEvent.fill(
-      screen.getByRole('textbox', { name: 'End time' }),
-      '10:00'
-    )
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Save & Schedule' })
-    )
+    try {
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Edit meeting' })
+      )
+      await userEvent.fill(
+        screen.getByRole('textbox', { name: 'Date', exact: true }),
+        '2026-09-01'
+      )
+      await userEvent.fill(
+        screen.getByRole('textbox', { name: 'Start time' }),
+        '09:00'
+      )
+      await userEvent.fill(
+        screen.getByRole('textbox', { name: 'End time' }),
+        '10:00'
+      )
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Save & Schedule' })
+      )
 
-    await expect.poll(() => toastSuccess.mock.calls.length).toBe(1)
-    expect(toastSuccess).toHaveBeenCalledWith(
-      'Meeting scheduled',
-      expect.objectContaining({
-        description: 'The meeting was successfully scheduled.',
+      await expect.poll(() => scheduleSpy.mock.calls.length).toBe(1)
+      expect(previewSpy).toHaveBeenCalledWith(
+        '/meeting-schedule-checks',
+        {
+          meetingId: 'meeting-1',
+          start: interval.scheduledStartAt,
+          end: interval.scheduledEndAt,
+        },
+        undefined
+      )
+      expect(patchSpy).toHaveBeenCalledTimes(1)
+      expect(patchSpy).toHaveBeenCalledWith('/meetings/meeting-1', interval, {
+        headers: { 'If-Match': 'etag-current' },
       })
-    )
-    expect(patchSpy).toHaveBeenCalledTimes(1)
-    expect(scheduleSpy).toHaveBeenCalledTimes(1)
+      expect(scheduleSpy).toHaveBeenCalledWith(
+        '/meetings/meeting-1/schedule',
+        interval,
+        { headers: { 'If-Match': 'etag-after-patch' } }
+      )
+      expect(toastSuccess).not.toHaveBeenCalled()
+      expect(
+        queryClient.getQueryData(['meetings', 'detail', 'meeting-1'])
+      ).toEqual({ meeting: patchedMeeting, etag: 'etag-after-patch' })
+
+      confirmSchedule()
+      await expect.poll(() => toastSuccess.mock.calls.length).toBe(1)
+      expect(toastSuccess).toHaveBeenCalledWith(
+        'Meeting scheduled',
+        expect.objectContaining({
+          description: 'The meeting was successfully scheduled.',
+        })
+      )
+      expect(scheduleSpy).toHaveBeenCalledTimes(1)
+      expect(
+        queryClient.getQueryData(['meetings', 'detail', 'meeting-1'])
+      ).toEqual({ meeting: scheduledMeeting, etag: 'etag-next' })
+    } finally {
+      confirmSchedule()
+    }
   })
 
   it('shows Meeting changes saved for a confirmed SCHEDULED metadata edit', async () => {

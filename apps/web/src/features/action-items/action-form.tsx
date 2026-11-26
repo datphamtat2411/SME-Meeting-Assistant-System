@@ -17,6 +17,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { RegionalCivilDate } from '@/components/regional-timestamp'
 import { invalidateMeetingArtifacts } from '@/features/meetings/intelligence/query-invalidation'
 import { useOptionalMeetingSession } from '@/features/meetings/media/meeting-session-context'
 import {
@@ -455,7 +456,13 @@ export function ActionForm({
                     Server assignee:{' '}
                     {conflict.latest.assignee?.displayName ?? 'Unassigned'}
                   </p>
-                  <p>Server due date: {conflict.latest.dueDate ?? 'None'}</p>
+                  <p>
+                    Server due date:{' '}
+                    <RegionalCivilDate
+                      value={conflict.latest.dueDate}
+                      fallback='None'
+                    />
+                  </p>
                   <p>Server status: {conflict.latest.status}</p>
                   <p>
                     Only the fields you originally changed will be retained.

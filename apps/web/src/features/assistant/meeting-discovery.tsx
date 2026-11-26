@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -8,6 +9,7 @@ import {
   RequestLoading,
 } from '@/components/request-state'
 import { MeetingFilters } from '@/features/meetings/components/meeting-filters'
+import { formatMeetingSchedule } from '@/features/meetings/data/meeting-schedule-format'
 import type { useAssistantMeetingDiscovery } from './use-assistant-meeting-discovery'
 
 export function MeetingSearchCard({
@@ -19,6 +21,7 @@ export function MeetingSearchCard({
   selectedMeetingId?: string
   onMeetingSelect: (meetingId: string) => void
 }) {
+  const { timezone, locale } = useRegionalPresentation()
   const {
     criteria,
     updateCriteria,
@@ -91,6 +94,14 @@ export function MeetingSearchCard({
                 <p className='mt-1 line-clamp-2 text-sm text-muted-foreground'>
                   {meeting.description || 'No description provided'}
                 </p>
+                <p className='mt-1 text-xs text-muted-foreground'>
+                  {formatMeetingSchedule(
+                    meeting.scheduledStartAt,
+                    meeting.scheduledEndAt,
+                    timezone,
+                    locale
+                  )}
+                </p>
               </Link>
               <Button
                 type='button'
@@ -108,7 +119,12 @@ export function MeetingSearchCard({
         )}
         {!invalidRange && meetingsQuery.isSuccess && (
           <div className='flex items-center justify-between text-sm text-muted-foreground'>
-            <span>{meetingsQuery.data.pagination.totalElements} result(s)</span>
+            <span>
+              {meetingsQuery.data.pagination.totalElements.toLocaleString(
+                locale
+              )}{' '}
+              result(s)
+            </span>
             <div className='flex items-center gap-2'>
               <Button
                 size='sm'

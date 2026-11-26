@@ -32,6 +32,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import {
   RequestEmpty,
   RequestError,
@@ -178,16 +179,6 @@ function sortCoverageRegions(
       left.endMs - right.endMs ||
       left.id.localeCompare(right.id)
   )
-}
-
-function displayDate(value: string | null): string {
-  if (!value) return 'Not finalized by Core'
-  const timestamp = Date.parse(value)
-  if (!Number.isFinite(timestamp)) return value
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(timestamp)
 }
 
 function statusBadgeVariant(
@@ -2193,7 +2184,13 @@ function ProvenanceCard({
           />
           <ProvenanceRow
             label='Finalized'
-            value={displayDate(transcript.finalizedAt)}
+            value={
+              transcript.finalizedAt ? (
+                <RegionalTimestamp value={transcript.finalizedAt} />
+              ) : (
+                'Not finalized by Core'
+              )
+            }
           />
           <ProvenanceRow
             label='Content revision'
@@ -2211,7 +2208,7 @@ function ProvenanceRow({
   mono = false,
 }: {
   label: string
-  value: string
+  value: React.ReactNode
   mono?: boolean
 }) {
   return (

@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import {
   RequestEmpty,
   RequestError,
@@ -30,7 +31,6 @@ import {
 import {
   ConflictColumn,
   CurrentSummary,
-  formatDate,
   PreviewColumn,
   VersionRow,
 } from './summary-presentation'
@@ -736,7 +736,7 @@ function SummaryPanelContent({
                 </h3>
                 <p className='text-xs text-muted-foreground'>
                   {selectedVersion.sourceType} · created{' '}
-                  {formatDate(selectedVersion.createdAt)}
+                  <RegionalTimestamp value={selectedVersion.createdAt} />
                   {selectedVersion.isStale ? ' · source is stale' : ''}
                 </p>
               </div>

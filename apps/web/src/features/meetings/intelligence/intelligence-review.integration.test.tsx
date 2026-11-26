@@ -1,8 +1,11 @@
+import { act } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { DecisionsPanel } from './decisions-panel'
 import { summaryQuery } from './summary-api'
 import { SummaryPanel } from './summary-panel'
@@ -139,6 +142,58 @@ describe('intelligence review integrity', () => {
         screen.getByRole('button', { name: 'Activate reviewed version' })
       )
       .toBeDisabled()
+  })
+
+  it('formats decision creation timestamps with the current regional preferences', async () => {
+    const queryClient = client()
+    const preferences = {
+      timezone: 'Asia/Tokyo',
+      locale: 'ja-JP',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    }
+    vi.spyOn(coreApi, 'get').mockResolvedValue(preferences)
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(page([proposal]))
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockRejectedValue(
+      new CoreApiError({
+        message: 'Transcript not available',
+        status: 404,
+        kind: 'http',
+      })
+    )
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <RegionalPresentationProvider>
+          <DecisionsPanel meetingId={meetingId} canManageDecisions />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+    const expected = (timezone: string, locale: string) =>
+      'Created ' +
+      new Intl.DateTimeFormat(locale, {
+        calendar: 'gregory',
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: timezone,
+      }).format(new Date(proposal.createdAt))
+
+    await expect
+      .element(
+        screen.getByText(expected('Asia/Tokyo', 'ja-JP'), { exact: true })
+      )
+      .toBeInTheDocument()
+    await act(async () => {
+      queryClient.setQueryData(preferencesQueryKey, {
+        ...preferences,
+        timezone: 'America/New_York',
+        locale: 'en-GB',
+      })
+    })
+    await expect
+      .element(
+        screen.getByText(expected('America/New_York', 'en-GB'), { exact: true })
+      )
+      .toBeInTheDocument()
   })
 
   it('blocks an obsolete proposal review even when the record leaves the filtered collection', async () => {

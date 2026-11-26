@@ -3,6 +3,7 @@ import { AlertTriangle, ExternalLink } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { RequestError, RequestLoading } from '@/components/request-state'
 import { type Decision, type DecisionStatus } from './decision-api'
 
@@ -11,11 +12,6 @@ export type EvidenceNavigate = (
   segmentId: string,
   contentRevision?: number
 ) => void
-
-function formatDate(value: string) {
-  const date = new Date(value)
-  return Number.isNaN(date.valueOf()) ? value : date.toLocaleString()
-}
 
 function statusVariant(status: DecisionStatus) {
   return status === 'CONFIRMED'
@@ -54,7 +50,7 @@ export function DecisionCard({
         </Badge>
         <Badge variant='outline'>{decision.sourceType}</Badge>
         <span className='text-xs text-muted-foreground'>
-          Created {formatDate(decision.createdAt)}
+          Created <RegionalTimestamp value={decision.createdAt} />
         </span>
         {decision.isStale && (
           <Badge variant='destructive'>Stale evidence</Badge>

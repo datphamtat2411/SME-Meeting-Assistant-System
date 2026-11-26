@@ -33,6 +33,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { RegionalCivilDate } from '@/components/regional-timestamp'
 import {
   RequestEmpty,
   RequestError,
@@ -502,7 +503,9 @@ function ActionTable({
                     <span className='text-muted-foreground'>Unassigned</span>
                   )}
                 </TableCell>
-                <TableCell>{item.dueDate ?? '—'}</TableCell>
+                <TableCell>
+                  <RegionalCivilDate value={item.dueDate} fallback='—' />
+                </TableCell>
                 <TableCell>
                   <Badge
                     variant={
