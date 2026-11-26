@@ -629,7 +629,11 @@ class AssistantWorkspaceController extends ChangeNotifier {
         _pending.remove(selected.id);
         _drafts.remove(selected.id);
         _draftMeetings.remove(selected.id);
+        _listGeneration++;
+        listLoading = false;
         _conversations.clear();
+        _nextPage = 0;
+        listHasMore = true;
         listFailure = error;
         conversation = null;
         _historyDepth = 0;

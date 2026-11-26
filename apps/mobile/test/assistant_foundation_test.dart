@@ -7,12 +7,14 @@ import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
+import 'package:sme_meeting_assistant/features/assistant/assistant_evidence_page.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_evidence_resolver.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_page.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_message_view.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_repository.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_workspace_controller.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
 
 import 'action_item_foundation_test.dart' show itemJson;
 import 'support/meeting_test_support.dart';
@@ -1068,6 +1070,214 @@ void main() {
     await tester.pump();
   });
 
+  testWidgets('citation route verifies once and clears on meeting revocation', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final held = Completer<http.StreamedResponse>();
+    var artifactReads = 0;
+    var deny = false;
+    final conversation = _conversation()..['title'] = 'Evidence conversation';
+    final rawMessage = _message()
+      ..['citations'] = [
+        _citation()
+          ..['sourceType'] = 'SUMMARY'
+          ..['sourceRevision'] = 2,
+      ];
+    final client = MeetingTestHttpClient((request) async {
+      final path = request.url.path;
+      if (path.endsWith('/meetings/$testMeetingId')) {
+        if (deny) return meetingApiFailure(403, 'AUTHZ_FORBIDDEN');
+        return meetingApiSuccess(
+          meetingTestJson(),
+          headers: {'etag': testMeetingEtag},
+        );
+      }
+      if (path.endsWith('/conversations')) {
+        return meetingApiSuccess([conversation]);
+      }
+      if (path.endsWith('/conversations/$_conversationId')) {
+        return meetingApiSuccess(
+          _detail(messages: [rawMessage])..['conversation'] = conversation,
+        );
+      }
+      if (path.endsWith('/summary')) {
+        artifactReads++;
+        return held.future;
+      }
+      throw StateError('Unexpected request: $path');
+    });
+    final api = createMeetingTestApi(client);
+    await tester.runAsync(() => signInMeetingTestApi(api));
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+    );
+    addTearDown(dependencies.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AssistantPage(dependencies: dependencies, active: true),
+        ),
+      ),
+    );
+    final entry = find.text('Evidence conversation');
+    await pumpUntil(
+      tester,
+      () => entry.evaluate().isNotEmpty,
+      reason: 'conversation collection',
+    );
+    await tester.tap(entry);
+    final evidence = find.text('Bằng chứng · 1 nguồn');
+    await pumpUntil(
+      tester,
+      () => evidence.evaluate().isNotEmpty,
+      reason: 'canonical Assistant message',
+    );
+    final owner = dependencies.assistantWorkspace;
+    owner.saveDraft(_conversationId, 'Private draft');
+    await tester.ensureVisible(evidence);
+    await tester.tap(evidence);
+    await tester.pumpAndSettle();
+    final openSource = find.byTooltip('Mở nguồn tham chiếu');
+    await tester.ensureVisible(openSource);
+    await tester.tap(openSource);
+    await pumpUntil(
+      tester,
+      () =>
+          find.byType(AssistantEvidencePage).evaluate().isNotEmpty &&
+          artifactReads == 1,
+      reason: 'destination owns verification while source read is pending',
+    );
+    expect(find.text('Canonical summary'), findsNothing);
+    held.complete(
+      await meetingApiSuccess(
+        {
+          'id': _sourceId,
+          'meetingId': testMeetingId,
+          'versionNumber': 2,
+          'sourceType': 'AI_GENERATED',
+          'qualityStatus': 'READY',
+          'content': 'Canonical summary',
+          'isStale': false,
+          'createdAt': _timestamp,
+          'aiWarnings': [],
+        },
+        headers: {'etag': '"summary"'},
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Canonical summary').evaluate().isNotEmpty,
+      reason: 'verified source rendered',
+    );
+    expect(find.text('Weekly review'), findsOneWidget);
+    expect(artifactReads, 1);
+    deny = true;
+    dependencies.meetingInvalidation.invalidate(
+      sessionScope: owner.scope,
+      meetingId: testMeetingId,
+    );
+    await tester.pump();
+    expect(find.text('Canonical summary'), findsNothing);
+    await pumpUntil(
+      tester,
+      () =>
+          find.text('Không thể truy cập nội dung cuộc họp này.').evaluate().isNotEmpty,
+      reason: 'meeting access revoked',
+    );
+    expect(owner.draftFor(_conversationId), isEmpty);
+    expect(artifactReads, 1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
+  testWidgets('contextual entry is fenced after leaving its originating tab', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final held = Completer<http.StreamedResponse>();
+    var holdNext = false;
+    var entered = false;
+    final client = MeetingTestHttpClient((request) async {
+      final path = request.url.path;
+      if (path.endsWith('/meetings/$testMeetingId')) {
+        if (holdNext) {
+          holdNext = false;
+          entered = true;
+          return held.future;
+        }
+        return meetingApiSuccess(
+          meetingTestJson(),
+          headers: {'etag': testMeetingEtag},
+        );
+      }
+      if (path.endsWith('/participants') ||
+          path.endsWith('/media') ||
+          path.endsWith('/processing-jobs') ||
+          path.endsWith('/conversations')) {
+        return meetingApiSuccess([]);
+      }
+      return meetingApiFailure(404, 'RESOURCE_NOT_FOUND');
+    });
+    final api = createMeetingTestApi(client);
+    await tester.runAsync(() => signInMeetingTestApi(api));
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+    );
+    addTearDown(dependencies.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MeetingDetailPage(
+          dependencies: dependencies,
+          meetingId: testMeetingId,
+        ),
+      ),
+    );
+    final entry = find.text('Hỏi trợ lý về cuộc họp này');
+    await pumpUntil(
+      tester,
+      () => entry.evaluate().isNotEmpty,
+      reason: 'meeting overview ready',
+    );
+    await tester.ensureVisible(entry);
+    holdNext = true;
+    await tester.tap(entry);
+    await pumpUntil(tester, () => entered, reason: 'entry verification pending');
+    await tester.tap(find.text('Thành viên'));
+    await tester.pump();
+    await tester.tap(find.text('Tổng quan'));
+    await tester.pump();
+    held.complete(
+      await meetingApiSuccess(
+        meetingTestJson(),
+        headers: {'etag': testMeetingEtag},
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          find.widgetWithText(FilledButton, 'Hỏi trợ lý về cuộc họp này')
+              .evaluate()
+              .any((element) => (element.widget as FilledButton).onPressed != null),
+      reason: 'old entry intent released',
+    );
+    expect(find.byType(AssistantPage), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
   group('Assistant workspace ownership', () {
     test('stale host cannot release the new active presentation', () async {
       final repository = await _repository(
@@ -1160,6 +1370,15 @@ void main() {
             if (path.endsWith('/conversations')) {
               return meetingApiSuccess([]);
             }
+            if (path.endsWith('/turns/by-key')) {
+              return meetingApiSuccess({
+                'turn': _turn(processing: true),
+                'recoveryEligible': true,
+              });
+            }
+            if (request.method == 'POST') {
+              return meetingApiSuccess(_turn(processing: true), status: 202);
+            }
             if (path.endsWith(siblingId)) {
               return meetingApiSuccess(
                 _detail(messages: [])..['conversation'] = sibling,
@@ -1188,6 +1407,8 @@ void main() {
         await controller.open(
           AssistantConversation.fromJson(sibling, response: _result(sibling)),
         );
+        await controller.submit('Pending sibling question');
+        expect(controller.pending?.turn?.turnId, _turnId);
         controller.saveDraft(siblingId, 'Sibling draft');
         await controller.open(
           AssistantConversation.fromJson(unrelated, response: _result(unrelated)),
@@ -1200,6 +1421,14 @@ void main() {
         expect(controller.messages, isEmpty);
         expect(controller.draftFor(siblingId), meetingDenied ? '' : 'Sibling draft');
         expect(controller.draftFor(unrelatedId), 'Unrelated draft');
+        await controller.open(
+          AssistantConversation.fromJson(sibling, response: _result(sibling)),
+        );
+        if (meetingDenied) {
+          expect(controller.pending, isNull);
+        } else {
+          expect(controller.pending?.turn?.turnId, _turnId);
+        }
       });
     }
 
