@@ -409,10 +409,7 @@ void main() {
     final staleConfirm = find.descendant(of: dialog, matching: confirm);
     expect(tester.widget<FilledButton>(staleConfirm).onPressed, isNull);
     expect(
-      find.descendant(
-        of: dialog,
-        matching: find.textContaining('Test User'),
-      ),
+      find.descendant(of: dialog, matching: find.textContaining('Test User')),
       findsNothing,
     );
     await tester.tap(find.widgetWithText(TextButton, 'Quay lại'));
@@ -716,10 +713,9 @@ void main() {
                 canonical['official'] == true &&
                 canonical['assigneeUserId'] == testUserId;
           }
-          return meetingApiSuccess(
-            [if (include) canonical],
-            meta: pageMeta(total: include ? 1 : 0),
-          );
+          return meetingApiSuccess([
+            if (include) canonical,
+          ], meta: pageMeta(total: include ? 1 : 0));
         }
         return meetingApiSuccess(canonical, headers: {'etag': '"v1"'});
       });
@@ -752,10 +748,7 @@ void main() {
       personal.addListener(observe);
       final detail = controllerFor(repository);
       await detail.refresh();
-      expect(
-        await detail.command(command, reviewed: detail.snapshot!),
-        isTrue,
-      );
+      expect(await detail.command(command, reviewed: detail.snapshot!), isTrue);
       await revalidated.future;
       expect(review.state.isConfirmedEmpty, isTrue);
       expect(personal.state.failure, isNull);
