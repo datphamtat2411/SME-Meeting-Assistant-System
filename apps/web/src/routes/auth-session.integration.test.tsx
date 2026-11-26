@@ -479,7 +479,9 @@ describe('session restoration and protected routing', () => {
           })
         )
         .toBeVisible()
-      await expect.element(screen.getByText('42', { exact: true })).toBeVisible()
+      await expect
+        .element(screen.getByText('42', { exact: true }))
+        .toBeVisible()
 
       releaseOld(oldDashboard)
       await oldResponse
@@ -494,7 +496,9 @@ describe('session restoration and protected routing', () => {
       await expect
         .element(screen.getByText('99', { exact: true }))
         .not.toBeInTheDocument()
-      await expect.element(screen.getByText('42', { exact: true })).toBeVisible()
+      await expect
+        .element(screen.getByText('42', { exact: true }))
+        .toBeVisible()
     } finally {
       releaseOld(oldDashboard)
       dispose()
