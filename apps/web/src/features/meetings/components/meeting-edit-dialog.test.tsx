@@ -467,11 +467,7 @@ describe('MeetingEditDialog', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
     await expect
-      .element(
-        screen.getByText(
-          'End time must be after start time and use a valid interval.'
-        )
-      )
+      .element(screen.getByText('End time must be after start time.'))
       .toBeInTheDocument()
     expect(patchSpy).not.toHaveBeenCalled()
     expect(

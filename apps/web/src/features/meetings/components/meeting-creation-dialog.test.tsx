@@ -531,6 +531,99 @@ describe('MeetingCreationDialog', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
+  it('pins the editor timezone and requires an explicit DST occurrence before scheduling', async () => {
+    mockRoomQueries()
+    const queryClient = createQueryClient()
+    const preferences = {
+      timezone: 'America/New_York',
+      locale: 'en-US',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    }
+    queryClient.setQueryData(preferencesQueryKey, preferences)
+    const start = '2026-11-01T06:30:00.000Z'
+    const end = '2026-11-01T07:30:00.000Z'
+    const draft = {
+      ...draftMeeting,
+      scheduledStartAt: start,
+      scheduledEndAt: end,
+    }
+    const postSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValueOnce({ data: draft, meta: {}, etag: 'draft-etag' })
+      .mockResolvedValueOnce({
+        data: { ...draft, status: 'SCHEDULED' as const },
+        meta: {},
+        etag: 'scheduled-etag',
+      })
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'DST meeting'
+    )
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-11-01'
+    )
+    await userEvent.fill(screen.getByLabelText('Start time'), '01:30')
+    await userEvent.fill(screen.getByLabelText('End time'), '02:30')
+    await expect
+      .element(screen.getByLabelText('Start time UTC offset'))
+      .toHaveValue('')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+    expect(postSpy).not.toHaveBeenCalled()
+    expect(previewSpy).not.toHaveBeenCalled()
+
+    queryClient.setQueryData(preferencesQueryKey, {
+      ...preferences,
+      timezone: 'Asia/Tokyo',
+    })
+    await expect
+      .element(screen.getByText(/This editor retains America\/New_York/))
+      .toBeInTheDocument()
+    await userEvent.selectOptions(
+      screen.getByLabelText('Start time UTC offset'),
+      '2026-11-01T06:30:00Z'
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+    await expect
+      .element(screen.getByText('Meeting scheduled'))
+      .toBeInTheDocument()
+
+    expect(previewSpy).toHaveBeenCalledWith(
+      '/meeting-schedule-checks',
+      expect.objectContaining({ start, end }),
+      expect.anything()
+    )
+    expect(postSpy).toHaveBeenCalledTimes(2)
+    expect(postSpy.mock.calls[0]?.[1]).toMatchObject({
+      scheduledStartAt: start,
+      scheduledEndAt: end,
+    })
+    expect(postSpy.mock.calls[1]?.[1]).toEqual({
+      scheduledStartAt: start,
+      scheduledEndAt: end,
+    })
+  })
+
   it('keeps the created draft and retries scheduling without a second create', async () => {
     mockRoomQueries()
     const postSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
