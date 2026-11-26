@@ -635,7 +635,9 @@ describe('MeetingWorkspacePage', () => {
       await expect.poll(() => sessionStorage.getItem(key)).toBeNull()
       await expect
         .element(
-          screen.getByText('Export is unavailable for the current meeting access.')
+          screen.getByText(
+            'Export is unavailable for the current meeting access.'
+          )
         )
         .toBeVisible()
       expect(membershipRead.mock.calls.length).toBeGreaterThan(reads)
