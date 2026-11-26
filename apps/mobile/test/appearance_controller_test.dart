@@ -71,6 +71,23 @@ void main() {
     controller.dispose();
   });
 
+  test('outdated write failure does not replace newer status', () async {
+    final preferences = ControlledWrites();
+    final controller = AppearanceController(preferences: preferences);
+    final first = controller.setMode(ThemeMode.dark);
+    await Future<void>.delayed(Duration.zero);
+    final latest = controller.setMode(ThemeMode.light);
+    preferences.writes.first.completeError(StateError('old write failed'));
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.mode, ThemeMode.light);
+    expect(controller.persistenceStatus, AppearancePersistenceStatus.saving);
+    expect(preferences.modes, [ThemeMode.dark, ThemeMode.light]);
+    preferences.writes.last.complete();
+    await Future.wait([first, latest]);
+    expect(controller.persistenceStatus, AppearancePersistenceStatus.saved);
+    controller.dispose();
+  });
+
   test('failed write retains active appearance and permits retry', () async {
     final preferences = ControlledWrites();
     final controller = AppearanceController(preferences: preferences);

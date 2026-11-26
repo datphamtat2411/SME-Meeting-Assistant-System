@@ -35,6 +35,16 @@ List<Map<String, dynamic>> objectsOf(dynamic value) {
   return value.map(objectOf).toList(growable: false);
 }
 
+/// Evidence about one protected PATCH attempt, independent of token refreshes.
+/// A started dispatch is not proof that Core API received or committed it.
+class ProtectedMutationAttempt {
+  bool _dispatchStarted = false;
+  bool _authenticationRejected = false;
+
+  bool get dispatchStarted => _dispatchStarted;
+  bool get authenticationRejected => _authenticationRejected;
+}
+
 /// Feature-facing API compatibility facade.
 ///
 /// Authentication state and credentials belong exclusively to
@@ -192,12 +202,14 @@ class ApiClient extends ChangeNotifier {
     Map<String, dynamic> body, {
     Map<String, String>? headers,
     AuthenticatedSessionScope? sessionScope,
+    ProtectedMutationAttempt? attempt,
   }) => _request(
     'PATCH',
     path,
     body: body,
     headers: headers,
     sessionScope: sessionScope,
+    attempt: attempt,
   );
 
   Future<ApiResult> delete(
@@ -214,6 +226,7 @@ class ApiClient extends ChangeNotifier {
     Map<String, String>? headers,
     CoreApiTimeoutPolicy? timeoutPolicy,
     AuthenticatedSessionScope? sessionScope,
+    ProtectedMutationAttempt? attempt,
   }) async {
     final coordinator = sessionCoordinator;
     final epoch = sessionScope?.lifecycleEpoch ?? coordinator._lifecycleEpoch;
@@ -237,6 +250,7 @@ class ApiClient extends ChangeNotifier {
         headers: headers,
         timeoutPolicy: timeoutPolicy,
         expectedScope: sessionScope,
+        attempt: attempt,
       );
     } on ApiFailure catch (failure) {
       if (!_coordinatorStillOwnsRequest(
@@ -247,6 +261,7 @@ class ApiClient extends ChangeNotifier {
         throw coordinator._sessionChanged();
       }
       if (!_isAuthentication401(failure)) rethrow;
+      attempt?._authenticationRejected = true;
 
       final current = coordinator._snapshotForEpoch(requestEpoch);
       if (current == null) rethrow;
@@ -317,6 +332,7 @@ class ApiClient extends ChangeNotifier {
     Map<String, String>? headers,
     CoreApiTimeoutPolicy? timeoutPolicy,
     AuthenticatedSessionScope? expectedScope,
+    ProtectedMutationAttempt? attempt,
   }) async {
     final dispatchCredential = coordinator._credentialForDispatch(
       credential,
@@ -324,6 +340,7 @@ class ApiClient extends ChangeNotifier {
       expectedScope: expectedScope,
     );
     try {
+      attempt?._dispatchStarted = true;
       final response = await _requestExecutor.send(
         method,
         path,

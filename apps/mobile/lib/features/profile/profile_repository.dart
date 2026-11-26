@@ -3,6 +3,7 @@ import 'profile_models.dart';
 
 enum ProfileFailureCategory {
   authentication,
+  credentialStorage,
   authorization,
   unavailable,
   conflict,
@@ -20,8 +21,11 @@ enum ProfileFailureCategory {
 enum ProfileMutationOutcome { notDispatched, rejected, unknown, confirmed }
 
 class ProfileFailure extends ApiFailure {
-  ProfileFailure(ApiFailure source, {required this.outcome})
-    : category = _category(source),
+  ProfileFailure(
+    ApiFailure source, {
+    required this.outcome,
+    this.authFailure,
+  }) : category = _category(source, authFailure),
       super(
         source.status,
         source.code,
@@ -38,8 +42,20 @@ class ProfileFailure extends ApiFailure {
 
   final ProfileFailureCategory category;
   final ProfileMutationOutcome outcome;
+  final AuthSessionFailure? authFailure;
 
-  static ProfileFailureCategory _category(ApiFailure error) {
+  static ProfileFailureCategory _category(
+    ApiFailure error,
+    AuthSessionFailure? authFailure,
+  ) {
+    if (authFailure?.category == AuthFailureCategory.credentialStorage) {
+      return ProfileFailureCategory.credentialStorage;
+    }
+    if (authFailure?.category == AuthFailureCategory.sessionInvalidated ||
+        authFailure?.category == AuthFailureCategory.unsafeCredential ||
+        authFailure?.category == AuthFailureCategory.rotationOutcomeUnknown) {
+      return ProfileFailureCategory.authentication;
+    }
     if (error.invalidResponse) return ProfileFailureCategory.invalidResponse;
     if (error.status == 401) return ProfileFailureCategory.authentication;
     if (error.status == 403) return ProfileFailureCategory.authorization;
@@ -71,8 +87,23 @@ class ProfileFailure extends ApiFailure {
 
   bool get requiresReconciliation =>
       outcome == ProfileMutationOutcome.unknown ||
-      category == ProfileFailureCategory.conflict ||
-      category == ProfileFailureCategory.missingPrecondition;
+      outcome == ProfileMutationOutcome.rejected &&
+          (category == ProfileFailureCategory.conflict ||
+              category == ProfileFailureCategory.missingPrecondition);
+
+  static ProfileFailure fromAuth(
+    AuthSessionFailure failure,
+    ProfileMutationOutcome outcome,
+  ) => ProfileFailure(
+    failure.apiFailure ??
+        ApiFailure(
+          failure.status ?? 0,
+          failure.machineCode ?? 'AUTH_SESSION_CHANGED',
+          failure.message,
+        ),
+    outcome: outcome,
+    authFailure: failure,
+  );
 
   static ProfileFailure local(int status, String code, String message) =>
       ProfileFailure(
@@ -104,6 +135,7 @@ class ProfileRepository {
       );
     }
     final scope = original.sessionScope;
+    final attempt = ProtectedMutationAttempt();
     return _request(
       scope,
       () => api.patch(
@@ -111,9 +143,10 @@ class ProfileRepository {
         {'displayName': name},
         headers: {'If-Match': original.etag},
         sessionScope: scope,
+        attempt: attempt,
       ),
       (response) => ProfileSnapshot.fromResult(response, scope),
-      mutation: true,
+      attempt: attempt,
     );
   }
 
@@ -163,19 +196,27 @@ class ProfileRepository {
   Future<PreferencesSnapshot> _updatePreference(
     AuthenticatedSessionScope scope,
     Map<String, dynamic> body,
-  ) => _request(
-    scope,
-    () => api.patch('/me/preferences', body, sessionScope: scope),
-    (response) =>
-        PreferencesSnapshot(UserPreferences.fromResult(response), scope),
-    mutation: true,
-  );
+  ) {
+    final attempt = ProtectedMutationAttempt();
+    return _request(
+      scope,
+      () => api.patch(
+        '/me/preferences',
+        body,
+        sessionScope: scope,
+        attempt: attempt,
+      ),
+      (response) =>
+          PreferencesSnapshot(UserPreferences.fromResult(response), scope),
+      attempt: attempt,
+    );
+  }
 
   Future<T> _request<T>(
     AuthenticatedSessionScope scope,
     Future<ApiResult> Function() send,
     T Function(ApiResult) decode, {
-    bool mutation = false,
+    ProtectedMutationAttempt? attempt,
   }) async {
     if (!api.isCurrentAuthenticatedSession(scope)) {
       throw ProfileFailure.local(
@@ -189,33 +230,46 @@ class ProfileRepository {
       api.requireCurrentAuthenticatedSession(scope);
       return decode(response);
     } on ApiFailure catch (failure) {
-      final rejected =
-          failure.status >= 400 &&
-          failure.status < 500 &&
-          failure.status != 408 &&
-          !failure.invalidResponse &&
-          !failure.transportFailure &&
-          !failure.remoteOutcomeAmbiguous;
-      throw ProfileFailure(
-        failure,
-        outcome: !mutation
-            ? ProfileMutationOutcome.notDispatched
-            : rejected
-            ? ProfileMutationOutcome.rejected
-            : ProfileMutationOutcome.unknown,
-      );
+      throw ProfileFailure(failure, outcome: _outcome(attempt, failure));
     } on AuthSessionException catch (error) {
-      throw ProfileFailure(
-        error.failure.apiFailure ??
-            ApiFailure(
-              401,
-              error.failure.machineCode ?? 'AUTH_SESSION_CHANGED',
-              error.failure.message,
-            ),
-        outcome: mutation
-            ? ProfileMutationOutcome.unknown
-            : ProfileMutationOutcome.notDispatched,
+      throw ProfileFailure.fromAuth(error.failure, _outcome(attempt));
+    } on TokenStoreException catch (error) {
+      throw ProfileFailure.fromAuth(
+        const AuthFailureClassifier().credentialStorageFailure(error),
+        _outcome(attempt),
+      );
+    } on TokenStoreStateException {
+      throw ProfileFailure.fromAuth(
+        const AuthFailureClassifier().unsafeStoredCredential(
+          'STORED_CREDENTIAL_UNSAFE',
+          'Phiên đã lưu không thể được sử dụng an toàn.',
+        ),
+        _outcome(attempt),
       );
     }
+  }
+
+  ProfileMutationOutcome _outcome(
+    ProtectedMutationAttempt? attempt, [
+    ApiFailure? failure,
+  ]) {
+    if (attempt == null || !attempt.dispatchStarted) {
+      return ProfileMutationOutcome.notDispatched;
+    }
+    if (attempt.authenticationRejected) {
+      // The original PATCH was rejected; a failed credential recovery is
+      // secondary and cannot turn that rejection into an unknown commit.
+      return ProfileMutationOutcome.rejected;
+    }
+    if (failure != null &&
+        failure.status >= 400 &&
+        failure.status < 500 &&
+        failure.status != 408 &&
+        !failure.invalidResponse &&
+        !failure.transportFailure &&
+        !failure.remoteOutcomeAmbiguous) {
+      return ProfileMutationOutcome.rejected;
+    }
+    return ProfileMutationOutcome.unknown;
   }
 }

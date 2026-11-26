@@ -168,6 +168,10 @@ class ProfileController extends _AccountResource<ProfileSnapshot> {
           if (current) _identityRefreshFailed = true;
         } on AuthSessionException {
           if (current) _identityRefreshFailed = true;
+        } on TokenStoreException {
+          if (current) _identityRefreshFailed = true;
+        } on TokenStoreStateException {
+          if (current) _identityRefreshFailed = true;
         }
       },
     );

@@ -38,6 +38,9 @@ Future<http.StreamedResponse> _profileResponse(String name, String etag) =>
 Future<ApiClient> _authenticated(
   Future<http.StreamedResponse> Function(http.BaseRequest) handle, {
   Future<http.StreamedResponse> Function()? reloadIdentity,
+  Future<http.StreamedResponse> Function()? refreshResponse,
+  CredentialStorage? storage,
+  DateTime Function()? now,
 }) async {
   var identityReads = 0;
   final client = RecordingHttpClient((request) {
@@ -80,6 +83,10 @@ Future<ApiClient> _authenticated(
         }),
       );
     }
+    if (path.endsWith('/auth/refresh')) {
+      if (refreshResponse != null) return refreshResponse();
+      throw StateError('Unexpected credential refresh.');
+    }
     if (path.endsWith('/auth/logout')) {
       return jsonResponse(200, successEnvelope(null));
     }
@@ -88,13 +95,35 @@ Future<ApiClient> _authenticated(
   final api = ApiClient(
     baseUri: Uri.parse('https://api.example.test/api/v1'),
     httpClient: client,
-    credentialStorage: InMemoryCredentialStorage(),
-    now: () => DateTime.utc(2026, 11, 24),
+    credentialStorage: storage ?? InMemoryCredentialStorage(),
+    now: now ?? () => DateTime.utc(2026, 11, 24),
   );
   addTearDown(api.dispose);
   await api.initialize();
   await api.signIn('user@example.test', 'password');
   return api;
+}
+
+Future<http.StreamedResponse> _rateLimitResponse() => streamedResponse(
+  429,
+  body: utf8.encode(
+    jsonEncode(errorEnvelope('RATE_LIMIT_EXCEEDED', 'Wait before retrying')),
+  ),
+  headers: {
+    'content-type': 'application/json',
+    'retry-after': '30',
+    'x-request-id': 'rate-limit-request',
+  },
+);
+
+class _FailingCredentialStorage extends InMemoryCredentialStorage {
+  bool failWrites = false;
+
+  @override
+  Future<void> write({required String key, required String value}) async {
+    if (failWrites) throw const CredentialDurabilityException();
+    await super.write(key: key, value: value);
+  }
 }
 
 void main() {
@@ -263,5 +292,336 @@ void main() {
     expect(controller.current, isFalse);
     expect(controller.snapshot, isNull);
     expect(await controller.updateMeetingEmail(false), isFalse);
+  });
+
+  test('duplicate mutations are single-flight per resource', () async {
+    final started = Completer<void>();
+    final delayed = Completer<http.StreamedResponse>();
+    var patches = 0;
+    final api = await _authenticated((request) async {
+      if (request.method == 'GET') {
+        return jsonResponse(200, successEnvelope(_preferences()));
+      }
+      patches++;
+      started.complete();
+      return delayed.future;
+    });
+    final controller = PreferencesController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await controller.refresh();
+    final pending = controller.updateMeetingEmail(false);
+    await started.future;
+    expect(controller.saving, isTrue);
+    expect(await controller.updateActionItemEmail(false), isFalse);
+    expect(patches, 1);
+    delayed.complete(
+      await jsonResponse(200, successEnvelope(_preferences(meeting: false))),
+    );
+    expect(await pending, isTrue);
+    expect(controller.saving, isFalse);
+  });
+
+  for (final status in [412, 428]) {
+    test('profile $status requires reconciliation without replay', () async {
+      var patches = 0;
+      final api = await _authenticated((request) async {
+        if (request.method == 'GET') {
+          return _profileResponse('Original', '"v1"');
+        }
+        patches++;
+        return jsonResponse(
+          status,
+          errorEnvelope('RESOURCE_PRECONDITION', 'Precondition failed'),
+        );
+      });
+      final controller = ProfileController(ProfileRepository(api: api));
+      addTearDown(controller.dispose);
+      await controller.refresh();
+      final original = controller.snapshot!;
+      expect(await controller.updateName(original, 'New name'), isFalse);
+      expect(controller.outcome, ProfileMutationOutcome.rejected);
+      expect(
+        controller.failure!.category,
+        status == 412
+            ? ProfileFailureCategory.conflict
+            : ProfileFailureCategory.missingPrecondition,
+      );
+      expect(controller.snapshot, same(original));
+      expect(controller.needsReconciliation, isTrue);
+      expect(await controller.updateName(original, 'New name'), isFalse);
+      expect(patches, 1);
+      await controller.refresh();
+      expect(controller.canMutate, isTrue);
+      expect(patches, 1);
+    });
+  }
+
+  test('resource denial clears only the denied resource', () async {
+    var denied = false;
+    final api = await _authenticated((request) async {
+      if (request.url.path.endsWith('/me/profile')) {
+        return _profileResponse('Original', '"v1"');
+      }
+      if (denied) {
+        return jsonResponse(403, errorEnvelope('AUTHZ_FORBIDDEN', 'Denied'));
+      }
+      return jsonResponse(200, successEnvelope(_preferences()));
+    });
+    final repository = ProfileRepository(api: api);
+    final profile = ProfileController(repository);
+    final preferences = PreferencesController(repository);
+    addTearDown(profile.dispose);
+    addTearDown(preferences.dispose);
+    await profile.refresh();
+    await preferences.refresh();
+    final original = profile.snapshot;
+    denied = true;
+    expect(await preferences.updateMeetingEmail(false), isFalse);
+    expect(preferences.failure!.category, ProfileFailureCategory.authorization);
+    expect(preferences.snapshot, isNull);
+    expect(preferences.canMutate, isFalse);
+    expect(profile.snapshot, same(original));
+    expect(profile.canMutate, isTrue);
+  });
+
+  test('transient read failure retains the accessible snapshot', () async {
+    var unavailable = false;
+    final api = await _authenticated((request) async {
+      if (unavailable) {
+        return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Unavailable'));
+      }
+      return jsonResponse(200, successEnvelope(_preferences()));
+    });
+    final controller = PreferencesController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await controller.refresh();
+    final original = controller.snapshot;
+    unavailable = true;
+    await controller.refresh();
+    expect(controller.failure!.category, ProfileFailureCategory.server);
+    expect(controller.snapshot, same(original));
+    expect(controller.canMutate, isTrue);
+    expect(controller.loading, isFalse);
+  });
+
+  test('resource rate limit preserves diagnostics', () async {
+    final api = await _authenticated((request) async {
+      if (request.method == 'GET') {
+        return jsonResponse(200, successEnvelope(_preferences()));
+      }
+      return _rateLimitResponse();
+    });
+    final controller = PreferencesController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await controller.refresh();
+    expect(await controller.updateMeetingEmail(false), isFalse);
+    final failure = controller.failure!;
+    expect(failure.category, ProfileFailureCategory.rateLimited);
+    expect(failure.outcome, ProfileMutationOutcome.rejected);
+    expect(failure.status, 429);
+    expect(failure.code, 'RATE_LIMIT_EXCEEDED');
+    expect(failure.requestId, commonMeta['requestId']);
+    expect(failure.responseRequestId, 'rate-limit-request');
+    expect(failure.retryAfter, '30');
+    expect(failure.retryAfterDuration(), const Duration(seconds: 30));
+    expect(controller.needsReconciliation, isFalse);
+  });
+
+  test('malformed mutation success requires reconciliation', () async {
+    final api = await _authenticated((request) async {
+      if (request.method == 'GET') {
+        return jsonResponse(200, successEnvelope(_preferences()));
+      }
+      return jsonResponse(
+        200,
+        successEnvelope({..._preferences(), 'meetingEmailEnabled': 'false'}),
+      );
+    });
+    final controller = PreferencesController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await controller.refresh();
+    final original = controller.snapshot;
+    expect(await controller.updateMeetingEmail(false), isFalse);
+    expect(
+      controller.failure!.category,
+      ProfileFailureCategory.invalidResponse,
+    );
+    expect(controller.outcome, ProfileMutationOutcome.unknown);
+    expect(controller.snapshot, same(original));
+    expect(controller.needsReconciliation, isTrue);
+    expect(controller.canMutate, isFalse);
+  });
+
+  test('late read failure cannot overwrite a confirmed mutation', () async {
+    final started = Completer<void>();
+    final delayed = Completer<http.StreamedResponse>();
+    var reads = 0;
+    final api = await _authenticated((request) async {
+      if (request.method == 'GET') {
+        if (++reads == 1) {
+          return jsonResponse(200, successEnvelope(_preferences()));
+        }
+        started.complete();
+        return delayed.future;
+      }
+      return jsonResponse(200, successEnvelope(_preferences(meeting: false)));
+    });
+    final controller = PreferencesController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await controller.refresh();
+    final pending = controller.refresh();
+    await started.future;
+    expect(await controller.updateMeetingEmail(false), isTrue);
+    delayed.complete(
+      await jsonResponse(403, errorEnvelope('AUTHZ_FORBIDDEN', 'Denied')),
+    );
+    await pending;
+    expect(controller.failure, isNull);
+    expect(controller.snapshot!.preferences.meetingEmailEnabled, isFalse);
+  });
+
+  test('refresh rate limit before PATCH means not dispatched', () async {
+    var now = DateTime.utc(2026, 11, 24);
+    var patches = 0;
+    final api = await _authenticated(
+      (request) async {
+        if (request.method == 'GET') {
+          return jsonResponse(200, successEnvelope(_preferences()));
+        }
+        patches++;
+        return jsonResponse(200, successEnvelope(_preferences()));
+      },
+      now: () => now,
+      refreshResponse: _rateLimitResponse,
+    );
+    final controller = PreferencesController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await controller.refresh();
+    now = now.add(const Duration(minutes: 10));
+    expect(await controller.updateMeetingEmail(false), isFalse);
+    expect(controller.outcome, ProfileMutationOutcome.notDispatched);
+    expect(controller.failure!.category, ProfileFailureCategory.rateLimited);
+    expect(controller.failure!.retryAfter, '30');
+    expect(controller.needsReconciliation, isFalse);
+    expect(controller.snapshot, isNotNull);
+    expect(patches, 0);
+  });
+
+  test('failed renewal after a rejected PATCH does not imply commit', () async {
+    var patches = 0;
+    final api = await _authenticated(
+      (request) async {
+        if (request.method == 'GET') {
+          return jsonResponse(200, successEnvelope(_preferences()));
+        }
+        patches++;
+        return jsonResponse(
+          401,
+          errorEnvelope('AUTH_SESSION_EXPIRED', 'Expired'),
+        );
+      },
+      refreshResponse: _rateLimitResponse,
+    );
+    final controller = PreferencesController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await controller.refresh();
+    expect(await controller.updateMeetingEmail(false), isFalse);
+    expect(controller.outcome, ProfileMutationOutcome.rejected);
+    expect(controller.failure!.retryAfter, '30');
+    expect(controller.needsReconciliation, isFalse);
+    expect(patches, 1);
+  });
+
+  test('credential storage failure cannot escape the repository', () async {
+    var now = DateTime.utc(2026, 11, 24);
+    var patches = 0;
+    final storage = _FailingCredentialStorage();
+    final api = await _authenticated(
+      (request) async {
+        patches++;
+        return jsonResponse(200, successEnvelope(_preferences()));
+      },
+      now: () => now,
+      storage: storage,
+    );
+    final scope = api.requireAuthenticatedSessionScope();
+    storage.failWrites = true;
+    now = now.add(const Duration(minutes: 10));
+    await expectLater(
+      ProfileRepository(api: api).updateMeetingEmail(scope, false),
+      throwsA(
+        isA<ProfileFailure>().having(
+          (failure) => failure.outcome,
+          'outcome',
+          ProfileMutationOutcome.notDispatched,
+        ),
+      ),
+    );
+    expect(api.sessionState.isAuthenticated, isFalse);
+    expect(
+      api.sessionState.failure!.category,
+      AuthFailureCategory.credentialStorage,
+    );
+    expect(patches, 0);
+  });
+
+  test('identity storage failure cannot escape a confirmed PATCH', () async {
+    final storage = _FailingCredentialStorage();
+    var patches = 0;
+    final api = await _authenticated(
+      (request) async {
+        if (request.method == 'GET') {
+          return _profileResponse('Original', '"v1"');
+        }
+        patches++;
+        storage.failWrites = true;
+        return _profileResponse('New name', '"v2"');
+      },
+      storage: storage,
+      reloadIdentity: () => jsonResponse(
+        401,
+        errorEnvelope('AUTH_SESSION_EXPIRED', 'Expired'),
+      ),
+    );
+    final controller = ProfileController(ProfileRepository(api: api));
+    addTearDown(controller.dispose);
+    await controller.refresh();
+    final original = controller.snapshot!;
+    await controller.updateName(original, 'New name');
+    expect(patches, 1);
+    expect(api.sessionState.isAuthenticated, isFalse);
+    expect(controller.snapshot, isNull);
+    expect(controller.saving, isFalse);
+  });
+
+  test('pending mutation cannot publish into a replacement session', () async {
+    final started = Completer<void>();
+    final delayed = Completer<http.StreamedResponse>();
+    final api = await _authenticated((request) async {
+      if (request.method == 'GET') {
+        return jsonResponse(200, successEnvelope(_preferences()));
+      }
+      started.complete();
+      return delayed.future;
+    });
+    final repository = ProfileRepository(api: api);
+    final previous = PreferencesController(repository);
+    addTearDown(previous.dispose);
+    await previous.refresh();
+    final pending = previous.updateMeetingEmail(false);
+    await started.future;
+    await api.signOut();
+    await api.signIn('user@example.test', 'password');
+    final current = PreferencesController(repository);
+    addTearDown(current.dispose);
+    await current.refresh();
+    delayed.complete(
+      await jsonResponse(200, successEnvelope(_preferences(meeting: false))),
+    );
+    expect(await pending, isFalse);
+    expect(previous.snapshot, isNull);
+    expect(previous.current, isFalse);
+    expect(current.snapshot!.preferences.meetingEmailEnabled, isTrue);
+    expect(current.failure, isNull);
   });
 }

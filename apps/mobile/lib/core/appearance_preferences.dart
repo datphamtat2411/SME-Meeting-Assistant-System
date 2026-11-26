@@ -9,12 +9,16 @@ abstract interface class AppearancePreferences {
 
 class SharedPreferencesAppearancePreferences implements AppearancePreferences {
   final String key;
+  final Future<SharedPreferences> Function() _loadStore;
   Future<SharedPreferences>? _preferences;
 
-  SharedPreferencesAppearancePreferences({this.key = 'theme'});
+  SharedPreferencesAppearancePreferences({
+    this.key = 'theme',
+    Future<SharedPreferences> Function()? loadStore,
+  }) : _loadStore = loadStore ?? SharedPreferences.getInstance;
 
   Future<SharedPreferences> get _store async {
-    final pending = _preferences ??= SharedPreferences.getInstance();
+    final pending = _preferences ??= Future<SharedPreferences>.sync(_loadStore);
     try {
       return await pending;
     } catch (_) {
@@ -25,8 +29,8 @@ class SharedPreferencesAppearancePreferences implements AppearancePreferences {
 
   @override
   Future<ThemeMode?> loadThemeMode() async {
-    final value = (await _store).getString(key);
-    return _modeFromName(value);
+    final value = (await _store).get(key);
+    return _modeFromName(value is String ? value : null);
   }
 
   @override
