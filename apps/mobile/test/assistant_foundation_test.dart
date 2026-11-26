@@ -762,40 +762,42 @@ void main() {
   });
 
   group('Assistant evidence presentation', () {
-    testWidgets('citation interaction is typed and redaction removes evidence',
-        (tester) async {
-      final visible = AssistantMessage.fromJson(
-        _message(),
-        response: _result(_message()),
-        meetingId: testMeetingId,
-      );
-      final hiddenRaw = _message(visibility: 'SOURCE_UNAVAILABLE');
-      final hidden = AssistantMessage.fromJson(
-        hiddenRaw,
-        response: _result(hiddenRaw),
-        meetingId: testMeetingId,
-      );
-      AssistantCitation? opened;
-      Widget surface(AssistantMessage message) => MaterialApp(
-        home: Scaffold(
-          body: SingleChildScrollView(
-            child: AssistantMessageView(
-              message: message,
-              onOpenCitation: (citation) => opened = citation,
+    testWidgets(
+      'citation interaction is typed and redaction removes evidence',
+      (tester) async {
+        final visible = AssistantMessage.fromJson(
+          _message(),
+          response: _result(_message()),
+          meetingId: testMeetingId,
+        );
+        final hiddenRaw = _message(visibility: 'SOURCE_UNAVAILABLE');
+        final hidden = AssistantMessage.fromJson(
+          hiddenRaw,
+          response: _result(hiddenRaw),
+          meetingId: testMeetingId,
+        );
+        AssistantCitation? opened;
+        Widget surface(AssistantMessage message) => MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: AssistantMessageView(
+                message: message,
+                onOpenCitation: (citation) => opened = citation,
+              ),
             ),
           ),
-        ),
-      );
-      await tester.pumpWidget(surface(visible));
-      await tester.tap(find.text('Bằng chứng · 1 nguồn'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Mở nguồn tham chiếu'));
-      expect(opened?.sourceId, _sourceId);
-      await tester.pumpWidget(surface(hidden));
-      await tester.pumpAndSettle();
-      expect(find.byTooltip('Mở nguồn tham chiếu'), findsNothing);
-      expect(find.text('Đã thống nhất.'), findsNothing);
-    });
+        );
+        await tester.pumpWidget(surface(visible));
+        await tester.tap(find.text('Bằng chứng · 1 nguồn'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Mở nguồn tham chiếu'));
+        expect(opened?.sourceId, _sourceId);
+        await tester.pumpWidget(surface(hidden));
+        await tester.pumpAndSettle();
+        expect(find.byTooltip('Mở nguồn tham chiếu'), findsNothing);
+        expect(find.text('Đã thống nhất.'), findsNothing);
+      },
+    );
   });
 
   group('Assistant workspace recovery', () {
@@ -820,8 +822,10 @@ void main() {
             );
           }
           return meetingApiSuccess(
-            _detail(messages: [])..['conversation'] =
-                request.url.path.endsWith(otherId) ? other : _conversation(),
+            _detail(messages: [])
+              ..['conversation'] = request.url.path.endsWith(otherId)
+                  ? other
+                  : _conversation(),
           );
         }),
       );
@@ -844,49 +848,51 @@ void main() {
       expect(writes, 1);
     });
 
-    test('automatic status monitoring resolves a turn without POST replay',
-        () async {
-      var reads = 0;
-      var writes = 0;
-      final settled = Completer<void>();
-      final repository = await _repository(
-        MeetingTestHttpClient((request) async {
-          if (request.url.path.endsWith('/conversations')) {
-            return meetingApiSuccess([]);
+    test(
+      'automatic status monitoring resolves a turn without POST replay',
+      () async {
+        var reads = 0;
+        var writes = 0;
+        final settled = Completer<void>();
+        final repository = await _repository(
+          MeetingTestHttpClient((request) async {
+            if (request.url.path.endsWith('/conversations')) {
+              return meetingApiSuccess([]);
+            }
+            if (request.url.path.endsWith('/turns/by-key')) {
+              reads++;
+              return meetingApiSuccess({
+                'turn': _turn(processing: reads == 1),
+                'recoveryEligible': false,
+              });
+            }
+            if (request.method == 'POST') {
+              writes++;
+              return meetingApiSuccess(_turn(processing: true), status: 202);
+            }
+            return meetingApiSuccess(
+              _detail(messages: reads >= 2 ? [_userMessage(), _message()] : []),
+            );
+          }),
+        );
+        final controller = AssistantWorkspaceController(repository);
+        addTearDown(controller.dispose);
+        controller.addListener(() {
+          if (reads >= 2 &&
+              controller.pending == null &&
+              !settled.isCompleted) {
+            settled.complete();
           }
-          if (request.url.path.endsWith('/turns/by-key')) {
-            reads++;
-            return meetingApiSuccess({
-              'turn': _turn(processing: reads == 1),
-              'recoveryEligible': false,
-            });
-          }
-          if (request.method == 'POST') {
-            writes++;
-            return meetingApiSuccess(_turn(processing: true), status: 202);
-          }
-          return meetingApiSuccess(
-            _detail(
-              messages: reads >= 2 ? [_userMessage(), _message()] : [],
-            ),
-          );
-        }),
-      );
-      final controller = AssistantWorkspaceController(repository);
-      addTearDown(controller.dispose);
-      controller.addListener(() {
-        if (reads >= 2 && controller.pending == null && !settled.isCompleted) {
-          settled.complete();
-        }
-      });
-      controller.setActive(true);
-      await controller.open(_typedConversation());
-      await controller.submit('Câu hỏi');
-      await settled.future.timeout(const Duration(seconds: 15));
-      expect(reads, 2);
-      expect(writes, 1);
-      expect(controller.messages.length, 2);
-    });
+        });
+        controller.setActive(true);
+        await controller.open(_typedConversation());
+        await controller.submit('Câu hỏi');
+        await settled.future.timeout(const Duration(seconds: 15));
+        expect(reads, 2);
+        expect(writes, 1);
+        expect(controller.messages.length, 2);
+      },
+    );
 
     test('TLS failure before dispatch does not lock the composer', () async {
       var writes = 0;
@@ -907,8 +913,10 @@ void main() {
       controller.setActive(true);
       await controller.open(_typedConversation());
       await controller.submit('Câu hỏi');
-      expect(controller.pending?.failure?.outcome,
-          AssistantMutationOutcome.notDispatched);
+      expect(
+        controller.pending?.failure?.outcome,
+        AssistantMutationOutcome.notDispatched,
+      );
       expect(controller.pending?.canEdit, isTrue);
       expect(controller.editRejectedQuestion(), 'Câu hỏi');
       expect(controller.canSend, isTrue);
@@ -918,7 +926,8 @@ void main() {
     test('incremental reconciliation retains contiguous older history', () async {
       var submitted = false;
       Map<String, dynamic> userAt(int index) => _userMessage()
-        ..['id'] = 'aaaaaaaa-aaaa-4aaa-8aaa-${index.toRadixString(16).padLeft(12, '0')}';
+        ..['id'] =
+            'aaaaaaaa-aaaa-4aaa-8aaa-${index.toRadixString(16).padLeft(12, '0')}';
       final initial = List.generate(50, (index) => userAt(index + 2));
       final older = [userAt(0), userAt(1)];
       final repository = await _repository(
@@ -980,7 +989,10 @@ void main() {
       expect(controller.canAbandonCreation, isTrue);
       await controller.abandonCreation();
       expect(controller.creation, isNull);
-      expect(await controller.create(testMeetingId, 'Another intent'), isNotNull);
+      expect(
+        await controller.create(testMeetingId, 'Another intent'),
+        isNotNull,
+      );
       expect(keys[0], keys[1]);
       expect(keys[2], isNot(keys[0]));
     });

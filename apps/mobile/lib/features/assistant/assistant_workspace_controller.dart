@@ -146,11 +146,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       (creationFailure?.outcome == AssistantMutationOutcome.rejected ||
           creationFailure?.outcome == AssistantMutationOutcome.notDispatched);
   bool get canAbandonCreation =>
-      current &&
-      _active &&
-      creation != null &&
-      !creating &&
-      _creationUncertain;
+      current && _active && creation != null && !creating && _creationUncertain;
 
   void _publish() {
     if (current) notifyListeners();
@@ -781,13 +777,14 @@ class AssistantWorkspaceController extends ChangeNotifier {
     _cooldownTimer?.cancel();
     if (!current || !_active) return;
     final now = DateTime.now();
-    final deadlines = [
-      _creationRetryAt,
-      _askRetryAt,
-      pending?.retryAt,
-      pending?.statusRetryAt,
-    ].whereType<DateTime>().where((value) => value.isAfter(now)).toList()
-      ..sort();
+    final deadlines =
+        [
+            _creationRetryAt,
+            _askRetryAt,
+            pending?.retryAt,
+            pending?.statusRetryAt,
+          ].whereType<DateTime>().where((value) => value.isAfter(now)).toList()
+          ..sort();
     if (deadlines.isEmpty) return;
     _cooldownTimer = Timer(deadlines.first.difference(now), () {
       _publish();
@@ -888,6 +885,5 @@ DateTime? _retryDeadline(AssistantFailure error) {
 
 DateTime? _laterDeadline(DateTime? previous, DateTime? candidate) =>
     candidate != null && (previous == null || candidate.isAfter(previous))
-        ? candidate
-        : previous;
-
+    ? candidate
+    : previous;

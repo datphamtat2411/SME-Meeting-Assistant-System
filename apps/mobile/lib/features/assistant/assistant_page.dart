@@ -535,8 +535,9 @@ class _AssistantPageState extends State<AssistantPage>
                           ),
                         ),
                 )
-              : messages.isEmpty && pending == null &&
-                  state.historyFailure == null
+              : messages.isEmpty &&
+                    pending == null &&
+                    state.historyFailure == null
               ? _suggestions(context)
               : ListView.builder(
                   key: ValueKey(selected.id),
@@ -728,7 +729,9 @@ class _AssistantPageState extends State<AssistantPage>
                         ? _controller.checkPending
                         : null,
                     child: Text(
-                      pending.terminal ? 'Đồng bộ lịch sử' : 'Kiểm tra trạng thái',
+                      pending.terminal
+                          ? 'Đồng bộ lịch sử'
+                          : 'Kiểm tra trạng thái',
                     ),
                   ),
                 if (pending.statusRetryAt != null &&
