@@ -9,7 +9,7 @@ import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_evidence_resolver.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_page.dart';
-import 'package:sme_meeting_assistant/core/meeting_models.dart';
+import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_message_view.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_repository.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_workspace_controller.dart';
