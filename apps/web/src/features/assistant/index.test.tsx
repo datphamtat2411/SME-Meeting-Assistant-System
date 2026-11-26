@@ -319,6 +319,7 @@ function setupReads(
                 messages: [],
               }
             : baseDetail)
+        if (value instanceof Error) throw value
         return { data: value, meta: {} } as never
       }
       throw new Error(`Unexpected GET ${url}`)
@@ -1279,12 +1280,39 @@ describe('AssistantPage', () => {
     }
   )
 
+  it('contains previously loaded history when a refresh denies access', async () => {
+    let revoked = false
+    setupReads({
+      onDetail: () => revoked
+        ? coreError(404, 'Conversation no longer available')
+        : undefined,
+    })
+    const screen = await renderPage()
+    await openConversation(screen)
+    await expect
+      .element(screen.getByText('The launch is planned for Friday.').first())
+      .toBeVisible()
+    revoked = true
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh history' }))
+    await expect
+      .element(screen.getByText('Conversation unavailable'))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('The launch is planned for Friday.').first())
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Assistant question' }))
+      .not.toBeInTheDocument()
+  })
+
   it('reports stale-source outcomes without fabricating success', async () => {
     setupReads()
     const post = vi
       .spyOn(coreApi, 'post')
       .mockRejectedValueOnce(
-        coreError(409, 'Assistant evidence is no longer current.')
+        coreError(409, 'Assistant evidence is no longer current.', {
+          code: 'ASSISTANT_SOURCE_STALE',
+        })
       )
     const screen = await renderPage()
     await openConversation(screen)

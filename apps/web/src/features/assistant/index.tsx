@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type FormEvent,
   type ReactNode,
 } from 'react'
@@ -17,6 +18,7 @@ import {
 import { Link } from '@tanstack/react-router'
 import { Bot, LoaderCircle, RefreshCw, Search, ShieldAlert } from 'lucide-react'
 import { CoreApiError, normalizeCoreApiError } from '@/lib/core-api'
+import { getRequestRecoveryGeneration } from '@/lib/request-recovery'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -31,9 +33,25 @@ import {
   RequestError,
   RequestLoading,
 } from '@/components/request-state'
+import { getAuthLifecycleSnapshot, subscribeAuthLifecycle } from '@/features/auth/session/auth-lifecycle'
 import { meetingListQueryOptions } from '@/features/meetings/data/list-api'
 import {
+  assistantAccessError,
+  assertAssistantAccessCurrent,
+  beginAssistantQuestion,
+  captureAssistantAccess,
+  containAssistantAccessFailure,
+  isAssistantAccessCurrent,
+  retryAssistantAccess,
+  useAssistantAccessRevision,
+  type AssistantAccessToken,
+} from './assistant-access'
+import {
   assistantConversationDetailQueryOptions,
+  assistantQuestionLength,
+  isBlankAssistantQuestion,
+  normalizeAssistantQuestion,
+  ASSISTANT_QUESTION_LIMIT,
   assistantConversationHistoryQueryOptions,
   assistantConversationsInfiniteQueryOptions,
   createAssistantConversation,
@@ -59,11 +77,13 @@ type Submission = {
 
 type AssistantUiScope = {
   generation: number
+  session: number
   meetingId?: string
   conversationId?: string
 }
 
 type CreateOperation = {
+  access: AssistantAccessToken
   operationId: number
   scope: AssistantUiScope
   meetingId: string
@@ -71,6 +91,7 @@ type CreateOperation = {
 }
 
 type QuestionOperation = {
+  access: AssistantAccessToken
   operationId: number
   scope: AssistantUiScope
   submission: Submission
@@ -114,7 +135,16 @@ type ConversationHistoryQuery = {
 }
 
 export function AssistantPage() {
+  const generation = useSyncExternalStore(
+    subscribeAuthLifecycle,
+    () => getAuthLifecycleSnapshot().generation
+  )
+  return <AssistantWorkspace key={generation} />
+}
+
+function AssistantWorkspace() {
   const queryClient = useQueryClient()
+  useAssistantAccessRevision(queryClient)
   const [input, setInput] = useState('')
   const [q, setQ] = useState('')
   const [page, setPage] = useState(1)
@@ -140,7 +170,10 @@ export function AssistantPage() {
   const [historyRefreshError, setHistoryRefreshError] = useState<unknown>()
   const [isRefreshingHistory, setIsRefreshingHistory] = useState(false)
 
-  const scopeRef = useRef<AssistantUiScope>({ generation: 0 })
+  const scopeRef = useRef<AssistantUiScope>({
+    generation: 0,
+    session: getRequestRecoveryGeneration(),
+  })
   const createOperationRef = useRef<number | undefined>(undefined)
   const questionOperationRef = useRef<number | undefined>(undefined)
   const refreshOperationRef = useRef<number | undefined>(undefined)
@@ -151,19 +184,27 @@ export function AssistantPage() {
   const meetingsQuery = useQuery(
     meetingListQueryOptions({ q, page, pageSize: 20, sort: 'createdAt,desc' })
   )
-  const conversationsQuery = useInfiniteQuery(
-    assistantConversationsInfiniteQueryOptions()
+  const listAccessError = assistantAccessError(queryClient)
+  const detailAccessError = assistantAccessError(
+    queryClient,
+    selectedConversationId
   )
-  const detailQuery = useInfiniteQuery(
-    assistantConversationHistoryQueryOptions(selectedConversationId)
-  )
+  const conversationsQuery = useInfiniteQuery({
+    ...assistantConversationsInfiniteQueryOptions(),
+    enabled: !listAccessError,
+  })
+  const detailQuery = useInfiniteQuery({
+    ...assistantConversationHistoryQueryOptions(selectedConversationId),
+    enabled: Boolean(selectedConversationId) && !detailAccessError,
+    refetchOnMount: 'always',
+  })
 
   const selectedMeeting = meetingsQuery.data?.meetings.find(
     (meeting) => meeting.id === selectedMeetingId
   )
   const allConversations = useMemo(
-    () => uniqueConversations(conversationsQuery.data?.pages ?? []),
-    [conversationsQuery.data]
+    () => listAccessError ? [] : uniqueConversations(conversationsQuery.data?.pages ?? []),
+    [conversationsQuery.data, listAccessError]
   )
   const selectedConversations = useMemo(
     () =>
@@ -174,9 +215,17 @@ export function AssistantPage() {
   )
 
   const createMutation = useMutation({
-    mutationFn: (operation: CreateOperation) =>
-      createAssistantConversation(operation.meetingId, operation.title),
+    mutationFn: async (operation: CreateOperation) => {
+      assertAssistantAccessCurrent(queryClient, operation.access)
+      const conversation = await createAssistantConversation(
+        operation.meetingId,
+        operation.title
+      )
+      assertAssistantAccessCurrent(queryClient, operation.access)
+      return conversation
+    },
     onSuccess: (conversation, operation) => {
+      if (!isAssistantAccessCurrent(queryClient, operation.access)) return
       queryClient.setQueryData(
         ['assistant', 'conversation', conversation.id, 'summary'],
         conversation
@@ -212,9 +261,11 @@ export function AssistantPage() {
       setCreateError(undefined)
     },
     onError: (error, operation) => {
+      if (containAssistantAccessFailure(queryClient, operation.access, error)) return
       if (isCurrentScope(operation.scope)) setCreateError(error)
     },
     onSettled: (_data, _error, operation) => {
+      if (operation.scope.session !== getRequestRecoveryGeneration()) return
       if (createOperationRef.current !== operation.operationId) return
       createOperationRef.current = undefined
       setIsCreating(false)
@@ -222,22 +273,38 @@ export function AssistantPage() {
   })
 
   const questionMutation = useMutation({
-    mutationFn: (operation: QuestionOperation) =>
-      submitAssistantQuestion(
+    mutationFn: async (operation: QuestionOperation) => {
+      assertAssistantAccessCurrent(queryClient, operation.access)
+      const turn = await submitAssistantQuestion(
         operation.submission.conversationId,
         operation.submission.question,
         operation.submission.idempotencyKey
-      ),
+      )
+      assertAssistantAccessCurrent(queryClient, operation.access)
+      if (turn.citations.some((citation) =>
+        citation.meetingId !== operation.submission.meetingId
+      )) {
+        throw new CoreApiError({
+          code: 'MALFORMED_RESPONSE',
+          kind: 'malformed',
+          message: 'Core returned Assistant evidence for a different meeting.',
+        })
+      }
+      return turn
+    },
   })
 
   const isCurrentScope = useCallback((expected: AssistantUiScope) => {
     const current = scopeRef.current
     return (
       current.generation === expected.generation &&
+      current.session === expected.session &&
+      expected.session === getRequestRecoveryGeneration() &&
+      !assistantAccessError(queryClient, expected.conversationId) &&
       current.meetingId === expected.meetingId &&
       current.conversationId === expected.conversationId
     )
-  }, [])
+  }, [queryClient])
 
   const cacheHistoryPages = useCallback(
     (
@@ -257,14 +324,21 @@ export function AssistantPage() {
         const pages = [...byPage.values()].sort(
           (left, right) => left.page - right.page
         )
+        const fresh = new Map(
+          incomingPages.flatMap((detail) =>
+            detail.messages.map((message) => [message.id, message] as const)
+          )
+        )
         const seenMessageIds = new Set<string>()
         const deduplicatedPages = pages.map((detail) => ({
           ...detail,
-          messages: detail.messages.filter((message) => {
-            if (seenMessageIds.has(message.id)) return false
-            seenMessageIds.add(message.id)
-            return true
-          }),
+          messages: detail.messages
+            .filter((message) => {
+              if (seenMessageIds.has(message.id)) return false
+              seenMessageIds.add(message.id)
+              return true
+            })
+            .map((message) => fresh.get(message.id) ?? message),
         }))
         return {
           pages: deduplicatedPages,
@@ -277,10 +351,12 @@ export function AssistantPage() {
 
   const fetchNewestHistory = useCallback(
     async (currentConversationId: string) => {
+      const access = captureAssistantAccess(queryClient, currentConversationId)
       const newest = await queryClient.fetchQuery({
         ...assistantConversationDetailQueryOptions(currentConversationId, 0),
         staleTime: 0,
       })
+      assertAssistantAccessCurrent(queryClient, access)
       cacheHistoryPages(currentConversationId, [newest])
       return newest
     },
@@ -320,8 +396,9 @@ export function AssistantPage() {
 
   const createConversation = () => {
     const currentScope = scopeRef.current
-    if (!currentScope.meetingId) return
+    if (!currentScope.meetingId || assistantAccessError(queryClient)) return
     const operation: CreateOperation = {
+      access: captureAssistantAccess(queryClient),
       operationId: ++createSequenceRef.current,
       scope: { ...currentScope },
       meetingId: currentScope.meetingId,
@@ -339,6 +416,7 @@ export function AssistantPage() {
   ): AssistantUiScope {
     const nextScope: AssistantUiScope = {
       generation: scopeRef.current.generation + 1,
+      session: getRequestRecoveryGeneration(),
       meetingId,
       conversationId,
     }
@@ -373,6 +451,7 @@ export function AssistantPage() {
   }
 
   function openConversation(conversation: AssistantConversation) {
+    retryAssistantAccess(queryClient, conversation.id)
     const scope = clearConversationState(
       conversation.meetingId,
       conversation.id
@@ -409,17 +488,18 @@ export function AssistantPage() {
     if (
       !activeScope.meetingId ||
       !activeScope.conversationId ||
+      !isCurrentScope(activeScope) ||
       questionOperationRef.current !== undefined
     ) {
       return
     }
 
-    const normalizedQuestion = question.trim()
-    if (!retrySameQuestion && !normalizedQuestion) {
+    const normalizedQuestion = normalizeAssistantQuestion(question)
+    if (!retrySameQuestion && isBlankAssistantQuestion(normalizedQuestion)) {
       setQuestionValidationError('Enter a question before submitting.')
       return
     }
-    if (!retrySameQuestion && [...normalizedQuestion].length > 4096) {
+    if (!retrySameQuestion && assistantQuestionLength(normalizedQuestion) > ASSISTANT_QUESTION_LIMIT) {
       setQuestionValidationError(
         'Questions must be at most 4096 Unicode code points.'
       )
@@ -444,6 +524,7 @@ export function AssistantPage() {
               idempotencyKey: newAssistantIdempotencyKey(),
             }
     const operation: QuestionOperation = {
+      access: beginAssistantQuestion(queryClient, current.conversationId),
       operationId: ++questionSequenceRef.current,
       scope: activeScope,
       submission: current,
@@ -460,24 +541,17 @@ export function AssistantPage() {
     setIsSubmitting(true)
     try {
       const turn = await questionMutation.mutateAsync(operation)
-      const acceptedTurnCache: AcceptedTurnCache = {
-        turn,
-        submission: current,
+      if (!isAssistantAccessCurrent(queryClient, operation.access)) return
+      const latestKey = ['assistant', 'turn', current.conversationId, 'latest-accepted']
+      if (turn.state === 'PROCESSING') {
+        // Only the accepted processing identity is needed when reopening.
+        queryClient.setQueryData<AcceptedTurnCache>(latestKey, {
+          turn: { ...turn, answer: null, claims: [], citations: [] },
+          submission: current,
+        })
+      } else {
+        queryClient.removeQueries({ queryKey: latestKey, exact: true })
       }
-      queryClient.setQueryData(
-        [
-          'assistant',
-          'turn',
-          current.conversationId,
-          'by-idempotency-key',
-          current.idempotencyKey,
-        ],
-        acceptedTurnCache
-      )
-      queryClient.setQueryData(
-        ['assistant', 'turn', current.conversationId, 'latest-accepted'],
-        acceptedTurnCache
-      )
       void queryClient.invalidateQueries({
         queryKey: assistantConversationHistoryQueryOptions(
           current.conversationId
@@ -528,9 +602,12 @@ export function AssistantPage() {
       setSubmission(undefined)
       submissionRef.current = undefined
     } catch (error) {
-      if (isCurrentScope(operation.scope)) setSubmissionError(error)
+      if (!containAssistantAccessFailure(queryClient, operation.access, error) &&
+        isAssistantAccessCurrent(queryClient, operation.access) &&
+        isCurrentScope(operation.scope)) setSubmissionError(error)
     } finally {
-      if (questionOperationRef.current === operation.operationId) {
+      if (operation.scope.session === getRequestRecoveryGeneration() &&
+        questionOperationRef.current === operation.operationId) {
         questionOperationRef.current = undefined
         setIsSubmitting(false)
       }
@@ -539,7 +616,7 @@ export function AssistantPage() {
 
   async function refreshConversation() {
     const currentScope = { ...scopeRef.current }
-    if (!currentScope.conversationId) return
+    if (!currentScope.conversationId || !isCurrentScope(currentScope)) return
     const operationId = ++refreshSequenceRef.current
     refreshOperationRef.current = operationId
     setHistoryRefreshError(undefined)
@@ -568,7 +645,8 @@ export function AssistantPage() {
     } catch (error) {
       if (isCurrentScope(currentScope)) setHistoryRefreshError(error)
     } finally {
-      if (refreshOperationRef.current === operationId) {
+      if (currentScope.session === getRequestRecoveryGeneration() &&
+        refreshOperationRef.current === operationId) {
         refreshOperationRef.current = undefined
         setIsRefreshingHistory(false)
       }
@@ -622,9 +700,6 @@ export function AssistantPage() {
           .sort((left, right) => left.page - right.page)
           .find((detail) => findAssistantTurnMessage(detail, accepted.turn))
         if (matchingPage) {
-          cacheHistoryPages(accepted.conversationId, [
-            ...observedPages.values(),
-          ])
           finishProcessingTurn(accepted)
           return
         }
@@ -656,9 +731,7 @@ export function AssistantPage() {
             observedPages.set(nextPage, older)
             const olderMatch = findAssistantTurnMessage(older, accepted.turn)
             if (olderMatch) {
-              cacheHistoryPages(accepted.conversationId, [
-                ...observedPages.values(),
-              ])
+              cacheHistoryPages(accepted.conversationId, [older])
               finishProcessingTurn(accepted)
               return
             }
@@ -708,7 +781,7 @@ export function AssistantPage() {
     setQ(input.trim())
   }
 
-  const questionCount = [...question].length
+  const questionCount = assistantQuestionLength(question)
   const selectedConversation =
     allConversations.find(
       (conversation) => conversation.id === selectedConversationId
@@ -735,6 +808,18 @@ export function AssistantPage() {
         </div>
 
         <AssistantConversationCard
+          listAccessError={listAccessError}
+          detailAccessError={detailAccessError}
+          onListAccessRetry={() => {
+            retryAssistantAccess(queryClient)
+            clearConversationState(selectedMeetingId)
+            void conversationsQuery.refetch()
+          }}
+          onDetailAccessRetry={() => {
+            retryAssistantAccess(queryClient, selectedConversationId)
+            clearConversationState(selectedMeetingId, selectedConversationId)
+            void detailQuery.refetch()
+          }}
           meetings={meetingsQuery.data?.meetings ?? []}
           selectedMeetingId={selectedMeetingId}
           selectedMeetingTitle={selectedMeeting?.title}
@@ -875,6 +960,10 @@ export function AssistantPage() {
 }
 
 function AssistantConversationCard({
+  listAccessError,
+  detailAccessError,
+  onListAccessRetry,
+  onDetailAccessRetry,
   meetings,
   selectedMeetingId,
   selectedMeetingTitle,
@@ -911,6 +1000,10 @@ function AssistantConversationCard({
   onRefresh,
   onResumePolling,
 }: {
+  listAccessError?: CoreApiError
+  detailAccessError?: CoreApiError
+  onListAccessRetry: () => void
+  onDetailAccessRetry: () => void
   meetings: Array<{ id: string; title: string }>
   selectedMeetingId?: string
   selectedMeetingTitle?: string
@@ -959,7 +1052,9 @@ function AssistantConversationCard({
         </p>
       </CardHeader>
       <CardContent className='space-y-5'>
-        {conversationsQuery.isPending && !conversationsQuery.data ? (
+        {listAccessError ? (
+          <AssistantError error={listAccessError} onRetry={onListAccessRetry} />
+        ) : conversationsQuery.isPending && !conversationsQuery.data ? (
           <RequestLoading label='Loading Assistant conversations…' />
         ) : conversationsQuery.isError && !conversationsQuery.data ? (
           <AssistantError
@@ -1096,7 +1191,9 @@ function AssistantConversationCard({
           </>
         )}
 
-        {selectedConversationId && (
+        {selectedConversationId && !listAccessError && (detailAccessError ? (
+          <AssistantError error={detailAccessError} onRetry={onDetailAccessRetry} />
+        ) : (
           <div className='space-y-4 border-t pt-5'>
             <div className='flex flex-wrap items-center justify-between gap-3'>
               <div>
@@ -1118,7 +1215,7 @@ function AssistantConversationCard({
                 <RefreshCw className='size-4' /> Refresh history
               </Button>
             </div>
-            {detailQuery.isPending && !detailQuery.data ? (
+            {(detailQuery.isPending || (detailQuery.isFetching && !detailQuery.isFetchingNextPage)) ? (
               <RequestLoading label='Loading conversation history…' />
             ) : detailQuery.isError && !detailQuery.data ? (
               <AssistantError
@@ -1186,7 +1283,6 @@ function AssistantConversationCard({
                 <Textarea
                   aria-label='Assistant question'
                   value={question}
-                  maxLength={4096}
                   onChange={(event) => onQuestionChange(event.target.value)}
                   placeholder='Ask a question grounded in the authorized meeting evidence'
                   disabled={questionBusy}
@@ -1203,14 +1299,14 @@ function AssistantConversationCard({
                 )}
                 <Button
                   type='submit'
-                  disabled={questionBusy || !question.trim()}
+                  disabled={questionBusy || isBlankAssistantQuestion(question) || questionCount > ASSISTANT_QUESTION_LIMIT}
                 >
                   {questionMutationLabel(questionBusy, processingTurn)}
                 </Button>
               </div>
             </form>
           </div>
-        )}
+        ))}
       </CardContent>
     </Card>
   )
@@ -1242,7 +1338,7 @@ function chronologicalHistoryMessages(
   const newestCopyById = new Map<string, AssistantMessage>()
   for (const page of pages) {
     for (const message of page.messages) {
-      if (!newestCopyById.has(message.id)) {
+      if (!newestCopyById.has(message.id) || message.visibility === 'SOURCE_UNAVAILABLE') {
         newestCopyById.set(message.id, message)
       }
     }
@@ -1412,7 +1508,12 @@ function assistantErrorTitle(error: CoreApiError): string {
   if (error.status === 401) return 'Authentication required'
   if (error.status === 403) return 'Assistant access denied'
   if (error.status === 404) return 'Conversation unavailable'
-  if (error.status === 409) return 'Assistant evidence is stale'
+  if (error.code === 'ASSISTANT_SOURCE_STALE') return 'Assistant evidence is stale'
+  if (error.code === 'ASSISTANT_TURN_IN_PROGRESS') return 'An Assistant turn is already processing'
+  if (error.code === 'ASSISTANT_IDEMPOTENCY_CONFLICT') return 'Assistant request identity conflicts'
+  if (error.code === 'ASSISTANT_CONVERSATION_INACTIVE') return 'Conversation is inactive'
+  if (error.code === 'ASSISTANT_TURN_FAILED') return 'Assistant turn failed'
+  if (error.status === 409) return 'Assistant operation conflicts with current state'
   if (error.status === 429) return 'Assistant admission is limited'
   if (error.status === 503) return 'Assistant is currently unavailable.'
   if (error.kind === 'malformed') return 'Assistant response was invalid.'
@@ -1430,8 +1531,23 @@ function assistantErrorMessage(error: CoreApiError): string {
   if (error.status === 404) {
     return 'This conversation or meeting is no longer available to your account.'
   }
-  if (error.status === 409) {
+  if (error.code === 'ASSISTANT_SOURCE_STALE') {
     return 'Assistant evidence is stale or unavailable. Refresh history before asking again.'
+  }
+  if (error.code === 'ASSISTANT_TURN_IN_PROGRESS') {
+    return 'A previous question is still processing. Refresh history before submitting another question.'
+  }
+  if (error.code === 'ASSISTANT_IDEMPOTENCY_CONFLICT') {
+    return 'This request identity belongs to a different question.'
+  }
+  if (error.code === 'ASSISTANT_CONVERSATION_INACTIVE') {
+    return 'This conversation no longer accepts new questions.'
+  }
+  if (error.code === 'ASSISTANT_TURN_FAILED') {
+    return 'Core confirmed that this turn failed. Replaying its request identity will not restart inference.'
+  }
+  if (error.status === 409) {
+    return 'The operation conflicts with the current conversation state. Refresh history before proceeding.'
   }
   if (error.status === 422) {
     return error.message

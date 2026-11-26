@@ -1,6 +1,11 @@
 import { z } from 'zod'
-import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query'
+import {
+  infiniteQueryOptions,
+  queryOptions,
+  type QueryClient,
+} from '@tanstack/react-query'
 import { CoreApiError, coreApi, type ApiResponseData } from '@/lib/core-api'
+import { readAssistantProtected } from './assistant-access'
 
 const assistantAnswerStatuses = [
   'GROUNDED',
@@ -228,8 +233,10 @@ export function assistantConversationsQueryOptions(
   const size = options.size ?? ASSISTANT_PAGE_SIZE
   return queryOptions({
     queryKey: ['assistant', 'conversations', page, size] as const,
-    queryFn: ({ signal }: { signal: AbortSignal }) =>
-      fetchAssistantConversations({ page, size, signal }),
+    queryFn: ({ signal, client }: { signal: AbortSignal; client: QueryClient }) =>
+      readAssistantProtected(client, undefined, () =>
+        fetchAssistantConversations({ page, size, signal })
+      ),
     retry: false,
   })
 }
@@ -243,10 +250,15 @@ export function assistantConversationsInfiniteQueryOptions(
     queryFn: ({
       pageParam,
       signal,
+      client,
     }: {
       pageParam: number
       signal: AbortSignal
-    }) => fetchAssistantConversations({ page: pageParam, size, signal }),
+      client: QueryClient
+    }) =>
+      readAssistantProtected(client, undefined, () =>
+        fetchAssistantConversations({ page: pageParam, size, signal })
+      ),
     getNextPageParam: (
       lastPage: AssistantConversation[],
       allPages: AssistantConversation[][]
@@ -334,12 +346,14 @@ export function assistantConversationDetailQueryOptions(
       page,
       size,
     ] as const,
-    queryFn: ({ signal }: { signal: AbortSignal }) =>
-      fetchAssistantConversationDetail(conversationId as string, {
-        page,
-        size,
-        signal,
-      }),
+    queryFn: ({ signal, client }: { signal: AbortSignal; client: QueryClient }) =>
+      readAssistantProtected(client, conversationId, () =>
+        fetchAssistantConversationDetail(conversationId as string, {
+          page,
+          size,
+          signal,
+        })
+      ),
     enabled: Boolean(conversationId),
     retry: false,
   })
@@ -361,15 +375,19 @@ export function assistantConversationHistoryQueryOptions(
     queryFn: ({
       pageParam,
       signal,
+      client,
     }: {
       pageParam: number
       signal: AbortSignal
+      client: QueryClient
     }) =>
-      fetchAssistantConversationDetail(conversationId as string, {
-        page: pageParam,
-        size,
-        signal,
-      }),
+      readAssistantProtected(client, conversationId, () =>
+        fetchAssistantConversationDetail(conversationId as string, {
+          page: pageParam,
+          size,
+          signal,
+        })
+      ),
     getNextPageParam: (lastPage: AssistantConversationDetail) =>
       lastPage.hasMore ? lastPage.page + 1 : undefined,
     enabled: Boolean(conversationId),
