@@ -7,6 +7,7 @@ import { userEvent } from 'vitest/browser'
 import { CoreApiError } from '@/lib/core-api'
 import { MeetingSessionProvider } from '../media/meeting-session-context'
 import { ExportPanel } from './export-panel'
+import { invalidateMeetingArtifacts } from './query-invalidation'
 
 const exportMocks = vi.hoisted(() => ({
   createMinutesExport: vi.fn(),
@@ -114,8 +115,17 @@ vi.mock('./export-api', () => ({
   }),
   accessMinutesExport: exportMocks.accessMinutesExport,
   fetchExportStatus: exportMocks.fetchExportStatus,
-  exportStatusQuery: (exportId: string) => ({
-    queryKey: ['export', exportId],
+  exportStatusQuery: (
+    exportId: string,
+    expected: { meetingId?: string; format?: string; scope?: string }
+  ) => ({
+    queryKey: [
+      'export',
+      exportId,
+      expected.meetingId,
+      expected.format,
+      expected.scope,
+    ],
     queryFn: () => exportMocks.fetchExportStatus(exportId),
     retry: false,
   }),
@@ -238,15 +248,11 @@ function ExportContextHarness() {
   )
 }
 
-function renderContextHarness() {
+function renderContextHarness(
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   return render(
-    <QueryClientProvider
-      client={
-        new QueryClient({
-          defaultOptions: { queries: { retry: false } },
-        })
-      }
-    >
+    <QueryClientProvider client={client}>
       <ExportContextHarness />
     </QueryClientProvider>
   )
@@ -374,6 +380,52 @@ describe('ExportPanel authorization and download boundary', () => {
     )
     expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
     expect(exportMocks.recoverMinutesExport).not.toHaveBeenCalled()
+  })
+
+  it('withholds cached current freshness after an inactive source invalidation', async () => {
+    const visibility = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockReturnValue('visible')
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const screen = await renderContextHarness(client)
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await expect
+      .element(screen.getByRole('button', { name: 'Download' }))
+      .toBeVisible()
+
+    visibility.mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    invalidateMeetingArtifacts(client, authorizationMocks.value.meetingId, {
+      intelligence: 'none',
+    })
+    await expect
+      .element(screen.getByText('Freshness must be verified again.'))
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('button', { name: 'Download' }))
+      .not.toBeInTheDocument()
+    expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
+
+    exportMocks.fetchExportStatus.mockResolvedValue({
+      exportId,
+      meetingId: authorizationMocks.value.meetingId,
+      format: 'PDF',
+      status: 'READY',
+      freshness: 'STALE',
+    })
+    visibility.mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    await expect
+      .element(
+        screen.getByText('This export is outdated. Generate a new version.')
+      )
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('button', { name: 'Download' }))
+      .not.toBeInTheDocument()
+    expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
   })
 
   it('distinguishes unknown freshness from a confirmed stale artifact', async () => {

@@ -40,6 +40,7 @@ import tools.jackson.databind.ObjectMapper;
 @SpringBootTest(properties={
     "app.exports.worker.enabled=true",
     "app.exports.worker.poll-delay-ms=3600000",
+    "app.exports.worker.max-attempts=2",
     "app.exports.public-admission-enabled=true",
     "app.media.outbox.enabled=false"
 })
@@ -57,6 +58,7 @@ class ExportHttpIntegrationTests {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
+    @Autowired ExportGenerationStateMachine generation;
     @MockitoBean MinutesAssembler minutes;
 
     @Test
@@ -87,6 +89,55 @@ class ExportHttpIntegrationTests {
         mvc.perform(get("/api/v1/exports/{id}",exportId)
                 .principal(principal(outsider)))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void statusDistinguishesRetryableAndExhaustedFailureForTheSameDurableExport()
+            throws Exception {
+        UUID actor=user("EMPLOYEE"), target=meeting(actor);
+        when(minutes.current(target)).thenReturn(snapshot(target,actor,"COMPLETE"));
+        MvcResult admission=mvc.perform(post("/api/v1/meetings/{id}/exports",target)
+                .principal(principal(actor)).contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key","http-retry-disposition")
+                .content("{\"format\":\"PDF\"}"))
+                .andExpect(status().isAccepted()).andReturn();
+        UUID id=UUID.fromString(json.readTree(admission.getResponse().getContentAsString())
+                .path("data").path("exportId").asText());
+
+        // Isolated durable-state fixtures, scoped to this admitted export only.
+        // Worker execution and storage integrity are covered by the worker tests.
+        setFailedAttempt(id,1);
+        assertRetryDisposition(actor,id,"FAILED",1,true);
+        assertThat(generation.requeueFailed(id)).isTrue();
+        assertRetryDisposition(actor,id,"PENDING",1,false);
+
+        setFailedAttempt(id,2);
+        assertRetryDisposition(actor,id,"FAILED",2,false);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM meeting_exports WHERE meeting_id=?",
+                Long.class,target)).isEqualTo(1L);
+    }
+
+    private void setFailedAttempt(UUID id,int attempt) {
+        assertThat(jdbc.update("""
+            UPDATE meeting_exports
+               SET status='FAILED',generation_attempt=?,
+                   last_error_code='EXPORT_STORAGE_UNAVAILABLE',
+                   claim_token=NULL,lease_expires_at=NULL,row_version=row_version+1
+             WHERE id=? AND status='PENDING'
+            """,attempt,id)).isEqualTo(1);
+    }
+
+    private void assertRetryDisposition(UUID actor,UUID id,String state,
+            int attempt,boolean eligible) throws Exception {
+        MvcResult response=mvc.perform(get("/api/v1/exports/{id}",id)
+                .principal(principal(actor))).andExpect(status().isOk()).andReturn();
+        var data=json.readTree(response.getResponse().getContentAsString()).path("data");
+        assertThat(data.path("exportId").asText()).isEqualTo(id.toString());
+        assertThat(data.path("status").asText()).isEqualTo(state);
+        assertThat(data.path("attemptCount").asInt()).isEqualTo(attempt);
+        assertThat(data.path("retryEligible").isBoolean()).isTrue();
+        assertThat(data.path("retryEligible").asBoolean()).isEqualTo(eligible);
     }
 
     @Test

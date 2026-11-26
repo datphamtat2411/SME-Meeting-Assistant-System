@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   isProtectedResourceAccessFailure,
@@ -104,8 +110,19 @@ export function useExportStatusObservation({
     statusQuery.isSuccess,
   ])
 
+  // A disabled observer reports isStale=false even when its query was
+  // invalidated. Observe explicit invalidation, not the time-based stale flag.
+  const subscribeInvalidation = useCallback(
+    (notify: () => void) => queryClient.getQueryCache().subscribe(notify),
+    [queryClient]
+  )
+  const invalidated = useSyncExternalStore(
+    subscribeInvalidation,
+    () => queryClient.getQueryState(options.queryKey)?.isInvalidated ?? false
+  )
   const status =
     canObserve && !statusQuery.isError ? statusQuery.data : undefined
+  const freshnessNeedsVerification = status?.status === 'READY' && invalidated
   const terminal = isTerminalExportStatus(status)
   const tracking =
     canObserve &&
@@ -163,5 +180,12 @@ export function useExportStatusObservation({
     void statusQuery.refetch()
   }
 
-  return { statusQuery, status, terminal, paused, refreshStatus }
+  return {
+    statusQuery,
+    status,
+    terminal,
+    paused,
+    refreshStatus,
+    freshnessNeedsVerification,
+  }
 }

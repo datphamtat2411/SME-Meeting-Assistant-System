@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { coreApi } from '@/lib/core-api'
+import { invalidateMeetingArtifacts } from './query-invalidation'
 import { useExportStatusObservation } from './use-export-status-observation'
 
 vi.mock('./export-observation-policy', async (importOriginal) => ({
@@ -43,8 +44,7 @@ function Observer() {
   )
 }
 
-function renderObserver() {
-  const client = new QueryClient()
+function renderObserver(client = new QueryClient()) {
   return render(
     <QueryClientProvider client={client}>
       <Observer />
@@ -89,4 +89,35 @@ it('stops at the observation budget and explicitly resumes the same operation', 
   expect(get.mock.calls.every(([url]) => url === '/exports/' + exportId)).toBe(
     true
   )
+})
+
+it('rejects an in-flight pre-mutation status even before the first observation succeeds', async () => {
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+  const client = new QueryClient()
+  const ready = {
+    ...pending,
+    status: 'READY',
+    attemptCount: 1,
+    readyAt: '2026-11-24T10:01:00Z',
+    freshness: 'STALE',
+    freshnessCheckedAt: '2026-11-24T10:02:00Z',
+  }
+  let resolveOld!: (value: typeof ready) => void
+  const old = new Promise<typeof ready>((resolve) => {
+    resolveOld = resolve
+  })
+  const get = vi
+    .spyOn(coreApi, 'get')
+    .mockImplementationOnce(() => old)
+    .mockResolvedValue(ready)
+  const screen = await renderObserver(client)
+  await expect.poll(() => get.mock.calls.length).toBe(1)
+  invalidateMeetingArtifacts(client, meetingId, { intelligence: 'none' })
+  await expect.element(screen.getByText('READY')).toBeVisible()
+  const key = ['export', exportId, meetingId, 'PDF', 'test-session']
+  expect(client.getQueryData(key)).toMatchObject({ freshness: 'STALE' })
+  resolveOld({ ...ready, freshness: 'CURRENT' })
+  await old
+  expect(client.getQueryData(key)).toMatchObject({ freshness: 'STALE' })
+  expect(get).toHaveBeenCalledTimes(2)
 })

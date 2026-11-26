@@ -1,4 +1,4 @@
-import type { QueryClient } from '@tanstack/react-query'
+import type { QueryClient, QueryFilters } from '@tanstack/react-query'
 import { isMeetingActionQuery } from '../data/meeting-query-scope'
 
 /** Reconcile canonical Minutes and exact export freshness for one meeting. */
@@ -22,10 +22,14 @@ export function invalidateMeetingArtifacts(
   }
   if (options.transcript) keys.push(['transcript', meetingId])
   for (const queryKey of keys) void client.invalidateQueries({ queryKey })
-  void client.invalidateQueries({
+  const exports: QueryFilters = {
     predicate: (query) =>
       query.queryKey[0] === 'export' && query.queryKey[2] === meetingId,
-  })
+  }
+  // Invalidation alone can join a pre-mutation initial fetch with no cached
+  // data. Cancel that observation before requesting authoritative freshness.
+  void client.cancelQueries(exports)
+  void client.invalidateQueries(exports)
   if (options.actions)
     void client.invalidateQueries({
       predicate: (query) => {

@@ -151,14 +151,20 @@ function FormatExportCard({
   const label = format === 'PDF' ? 'PDF' : 'Markdown'
   const statusScope = JSON.stringify([scope, meetingId, operation?.exportId])
   const downloadChannel = 'export-download-' + format
-  const { statusQuery, status, terminal, paused, refreshStatus } =
-    useExportStatusObservation({
-      exportId: operation?.exportId,
-      meetingId,
-      format,
-      scope,
-      canObserve,
-    })
+  const {
+    statusQuery,
+    status,
+    terminal,
+    paused,
+    refreshStatus,
+    freshnessNeedsVerification,
+  } = useExportStatusObservation({
+    exportId: operation?.exportId,
+    meetingId,
+    format,
+    scope,
+    canObserve,
+  })
 
   const noteReady = owner.noteReady
   const intentId = operation?.intentId
@@ -367,16 +373,25 @@ function FormatExportCard({
           Tracking paused. Refresh to continue observing the same export.
         </p>
       )}
-      {status?.status === 'READY' && status.freshness === 'STALE' && (
-        <p className='text-sm text-muted-foreground'>
-          This export is outdated. Generate a new version.
+      {freshnessNeedsVerification && (
+        <p role='status' className='text-sm text-muted-foreground'>
+          Freshness must be verified again.
         </p>
       )}
-      {status?.status === 'READY' && status.freshness === 'UNKNOWN' && (
-        <p className='text-sm text-muted-foreground'>
-          Freshness could not be verified. Verify again before downloading.
-        </p>
-      )}
+      {!freshnessNeedsVerification &&
+        status?.status === 'READY' &&
+        status.freshness === 'STALE' && (
+          <p className='text-sm text-muted-foreground'>
+            This export is outdated. Generate a new version.
+          </p>
+        )}
+      {!freshnessNeedsVerification &&
+        status?.status === 'READY' &&
+        status.freshness === 'UNKNOWN' && (
+          <p className='text-sm text-muted-foreground'>
+            Freshness could not be verified. Verify again before downloading.
+          </p>
+        )}
       {status?.status === 'FAILED' && (
         <p className='text-sm text-muted-foreground'>
           {terminal
@@ -384,11 +399,13 @@ function FormatExportCard({
             : 'The original export may be retried by the server. Continue tracking it rather than creating another document.'}
         </p>
       )}
-      {status?.status === 'READY' && status.freshness === 'CURRENT' && (
-        <p className='text-sm text-muted-foreground'>
-          Current document. Access will be verified again before download.
-        </p>
-      )}
+      {!freshnessNeedsVerification &&
+        status?.status === 'READY' &&
+        status.freshness === 'CURRENT' && (
+          <p className='text-sm text-muted-foreground'>
+            Current document. Access will be verified again before download.
+          </p>
+        )}
       <div className='flex flex-wrap gap-2'>
         <Button
           type='button'
@@ -407,7 +424,8 @@ function FormatExportCard({
         >
           {actionLabel}
         </Button>
-        {status?.status === 'READY' && status.freshness === 'UNKNOWN' && (
+        {(freshnessNeedsVerification ||
+          (status?.status === 'READY' && status.freshness === 'UNKNOWN')) && (
           <Button
             type='button'
             size='sm'
@@ -418,16 +436,18 @@ function FormatExportCard({
             Verify freshness
           </Button>
         )}
-        {status?.status === 'READY' && status.freshness === 'CURRENT' && (
-          <Button
-            type='button'
-            size='sm'
-            disabled={!canDownload || download.isPending || busy}
-            onClick={() => download.mutate(status.exportId)}
-          >
-            <Download className='size-4' /> Download
-          </Button>
-        )}
+        {!freshnessNeedsVerification &&
+          status?.status === 'READY' &&
+          status.freshness === 'CURRENT' && (
+            <Button
+              type='button'
+              size='sm'
+              disabled={!canDownload || download.isPending || busy}
+              onClick={() => download.mutate(status.exportId)}
+            >
+              <Download className='size-4' /> Download
+            </Button>
+          )}
       </div>
       {previousReadyId && (
         <div className='space-y-2 border-t pt-3 text-sm'>
