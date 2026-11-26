@@ -1,10 +1,10 @@
-import { Activity } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, redirect, useRouter } from '@tanstack/react-router'
 import {
   getSessionRevalidationGeneration,
   prepareRequestRecoveryRetry,
 } from '@/lib/request-recovery'
+import { WorkspaceVisibilityBoundary } from '@/context/workspace-visibility-boundary'
 import { AuthenticatedLayout } from '@/components/layout/authenticated-layout'
 import { AuthenticatedRouteFallback } from '@/components/layout/authenticated-route-fallback'
 import { toUserPresentation } from '@/components/layout/data/user-presentation'
@@ -140,23 +140,17 @@ function AuthenticatedRoute() {
 
   return (
     <>
-      <Activity
+      <WorkspaceVisibilityBoundary
         key={getSessionContextKey(
           shielded && cachedUser ? cachedUser : verifiedUser
         )}
-        mode={shielded ? 'hidden' : 'visible'}
+        hidden={shielded}
       >
-        <div
-          className='contents'
-          inert={shielded}
-          aria-hidden={shielded || undefined}
-        >
-          <AuthenticatedLayout
-            user={toUserPresentation(verifiedUser)}
-            identity={verifiedIdentity}
-          />
-        </div>
-      </Activity>
+        <AuthenticatedLayout
+          user={toUserPresentation(verifiedUser)}
+          identity={verifiedIdentity}
+        />
+      </WorkspaceVisibilityBoundary>
       {shielded && (
         <SessionGate
           state={revalidation === 'checking' ? 'pending' : 'unavailable'}

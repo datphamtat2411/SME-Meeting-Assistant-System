@@ -2,6 +2,7 @@ import * as React from 'react'
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu'
 import { CheckIcon, ChevronRightIcon, CircleIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { usePortalContainer } from '@/context/workspace-visibility-boundary'
 
 function DropdownMenu({
   ...props
@@ -12,8 +13,13 @@ function DropdownMenu({
 function DropdownMenuPortal({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Portal>) {
+  const container = usePortalContainer()
   return (
-    <DropdownMenuPrimitive.Portal data-slot='dropdown-menu-portal' {...props} />
+    <DropdownMenuPrimitive.Portal
+      data-slot='dropdown-menu-portal'
+      {...props}
+      container={container ?? props.container}
+    />
   )
 }
 
@@ -34,7 +40,7 @@ function DropdownMenuContent({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   return (
-    <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPortal>
       <DropdownMenuPrimitive.Content
         data-slot='dropdown-menu-content'
         sideOffset={sideOffset}
@@ -44,7 +50,7 @@ function DropdownMenuContent({
         )}
         {...props}
       />
-    </DropdownMenuPrimitive.Portal>
+    </DropdownMenuPortal>
   )
 }
 
