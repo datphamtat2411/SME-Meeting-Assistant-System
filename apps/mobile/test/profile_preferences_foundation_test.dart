@@ -1601,11 +1601,7 @@ void main() {
     // unmount the off-screen profile retry control. Re-mount it before
     // inspecting the cooldown UI; the controller must remain rate-limited.
     final accountScroll = find.byType(Scrollable).first;
-    await tester.scrollUntilVisible(
-      retry,
-      -160,
-      scrollable: accountScroll,
-    );
+    await tester.scrollUntilVisible(retry, -160, scrollable: accountScroll);
     expect(retry.hitTestable(), findsOneWidget);
     expect(tester.widget<TextButton>(retry).onPressed, isNull);
 
