@@ -18,6 +18,7 @@ import {
   type AuthContext,
 } from '@/features/auth/session/current-user'
 import { useCurrentUserVerification } from '@/features/auth/session/current-user-verification'
+import { getSessionRevalidationRevision } from '@/features/auth/session/session-revalidation'
 import {
   meetingDetailQueryOptions,
   meetingParticipantsQueryOptions,
@@ -138,7 +139,7 @@ export function MeetingAuthorizationProvider({
   // must re-establish the scope before protected queries resume.
   const sessionFailureRevision =
     queryClient.getQueryState(currentUserQueryKey)?.errorUpdateCount ?? 0
-  const scopeToken = `${scopeIdentity}:${sessionFailureRevision}`
+  const scopeToken = `${scopeIdentity}:${sessionFailureRevision}:${getSessionRevalidationRevision()}`
   const [readyScopeToken, setReadyScopeToken] = useState('')
   const scopeReady = Boolean(
     hasVerifiedSession && readyScopeToken === scopeToken

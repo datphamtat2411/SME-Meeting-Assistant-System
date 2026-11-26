@@ -1,4 +1,4 @@
-import { CalendarDays, MapPin, Users } from 'lucide-react'
+import { CalendarDays, FileDown, MapPin, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { AuthContext } from '@/features/auth/session/current-user'
 import { MeetingLifecycleActions } from './components/meeting-lifecycle-actions'
@@ -26,6 +26,7 @@ export function MeetingWorkspaceHeader({
   organizer,
   canEdit,
   onEdit,
+  onExportMinutes,
 }: {
   meeting: MeetingView
   etag: string
@@ -36,6 +37,7 @@ export function MeetingWorkspaceHeader({
   organizer: WorkspaceLookupState<OrganizerFilterOption>
   canEdit: boolean
   onEdit: () => void
+  onExportMinutes?: () => void
 }) {
   return (
     <section className='space-y-5'>
@@ -61,6 +63,11 @@ export function MeetingWorkspaceHeader({
               currentUserId={currentUser.userId}
               allowedActions={capabilities.canManageMeeting ? undefined : []}
             />
+            {capabilities.canReadMeetingContent && onExportMinutes && (
+              <Button type='button' variant='outline' onClick={onExportMinutes}>
+                <FileDown className='size-4' /> Export minutes
+              </Button>
+            )}
             {canEdit && (
               <Button type='button' variant='outline' onClick={onEdit}>
                 Edit meeting

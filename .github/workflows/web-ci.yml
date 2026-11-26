@@ -63,6 +63,9 @@ jobs:
           pnpm exec prettier --write . > /dev/null
           git diff --no-color
 
+      - name: Verify Web transport security
+        run: pnpm run test:transport:node
+
       - name: Build Web
         run: pnpm run build
 

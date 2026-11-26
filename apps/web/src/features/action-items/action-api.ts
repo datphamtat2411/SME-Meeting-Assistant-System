@@ -171,16 +171,41 @@ function parseActions(value: unknown): ActionItem[] {
   return parsed.data.map((item) => parseAction(item))
 }
 
-export function actionItemsQuery(filter: ActionFilter) {
-  const params = serializeActionFilter(filter)
+export function actionItemsQuery(
+  filter: ActionFilter,
+  size = 20,
+  owner?: { actorId: string; scope: string }
+) {
+  const params = serializeActionFilter(filter, size)
   return queryOptions({
-    queryKey: ['action-items', 'list', params, filter.meetingId] as const,
+    queryKey: [
+      'action-items',
+      'list',
+      params,
+      filter.meetingId,
+      ...(owner ? [owner.scope, owner.actorId] : []),
+    ] as const,
     queryFn: async ({ signal }): Promise<ActionPage> => {
       const response = await coreApi.getWithMeta<unknown>('/action-items', {
         params,
         signal,
       })
       const items = parseActions(response.data)
+      if (
+        owner &&
+        items.some(
+          (item) =>
+            (params.assignee === 'me' &&
+              item.assigneeUserId !== owner.actorId) ||
+            (params.status !== undefined && item.status !== params.status) ||
+            (params.official !== undefined &&
+              String(item.isOfficial) !== params.official)
+        )
+      ) {
+        throw malformedActionResponse(
+          'Core API returned Action Items outside the requested assigned-work scope.'
+        )
+      }
       if (
         filter.meetingId &&
         items.some((item) => item.meetingId !== filter.meetingId)
@@ -207,6 +232,7 @@ export function actionItemsQuery(filter: ActionFilter) {
         })(),
       }
     },
+    meta: owner ? { featureErrorBoundary: true } : undefined,
     retry: false,
   })
 }

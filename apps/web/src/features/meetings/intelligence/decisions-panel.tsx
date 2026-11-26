@@ -449,7 +449,13 @@ function DecisionsPanelContent({
   })
 
   async function reconcileCreation(ownsScope = captureCreateReconciliation()) {
+    if (!ownsScope()) return
     setReconcilingCreation(true)
+    // The command may have committed even though its receipt was lost.
+    // Reobserve dependent projections without claiming a successful creation.
+    invalidateMeetingArtifacts(queryClient, meetingId, {
+      intelligence: 'none',
+    })
     try {
       await queryClient.invalidateQueries({
         queryKey: ['meeting-intelligence', meetingId, 'decisions'],

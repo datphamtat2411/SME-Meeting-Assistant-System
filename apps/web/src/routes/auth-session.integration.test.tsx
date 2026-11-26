@@ -10,6 +10,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
+import { containProtectedState } from '@/protected-state-containment'
 import { routeTree } from '@/routeTree.gen'
 import '@/styles/index.css'
 import { beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
@@ -32,6 +33,7 @@ import {
 import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import {
   configureSessionRevalidation,
+  getSessionContextKey,
   revalidateBrowserSession,
 } from '@/features/auth/session/session-revalidation'
 
@@ -54,6 +56,31 @@ const identity = {
     lastSeenAt: null,
     absoluteExpiresAt: '2027-01-01T00:00:00Z',
   },
+}
+const dashboardAsOf = '2026-11-26T08:00:00Z'
+const dashboard = {
+  asOf: dashboardAsOf,
+  timezone: 'Asia/Ho_Chi_Minh',
+  upcomingWindow: {
+    fromInclusive: dashboardAsOf,
+    toExclusive: '2026-12-10T08:00:00Z',
+    limit: 10,
+  },
+  recentWindow: {
+    fromInclusive: '2026-10-27T08:00:00Z',
+    toExclusive: dashboardAsOf,
+    limit: 10,
+  },
+  meetingCountsByState: {},
+  upcomingMeetings: [],
+  recentMeetings: [],
+  assignedActionItems: { open: 0, inProgress: 0, done: 0, overdue: 0 },
+}
+const preferences = {
+  timezone: 'Asia/Ho_Chi_Minh',
+  locale: 'en-US',
+  meetingEmailEnabled: true,
+  actionItemEmailEnabled: true,
 }
 const organizationUnitId = '11111111-1111-4111-8111-111111111111'
 const organizationUnit = {
@@ -150,7 +177,15 @@ describe('session restoration and protected routing', () => {
     resetCsrfToken()
     resetAuthLifecycleAfterSignIn()
     getCurrentUser = vi.spyOn(coreApi, 'get')
-    getCurrentUser.mockResolvedValue(identity as never)
+    getCurrentUser.mockImplementation(async (url) => {
+      if (url === '/dashboard/me') return dashboard as never
+      if (url === '/me/preferences') return preferences as never
+      return identity as never
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/action-items') return emptyPage(0, 5) as never
+      throw new Error('Unexpected Core GET with meta: ' + url)
+    })
   })
 
   it('renders the canonical shell identity after restoring a deep link', async () => {
@@ -384,6 +419,103 @@ describe('session restoration and protected routing', () => {
     }
   )
 
+  it('discards a pending dashboard response when the verified actor changes', async () => {
+    let verifiedIdentity = identity
+    let oldSignal: { aborted: boolean } | undefined
+    let releaseOld!: (value: typeof dashboard) => void
+    const oldResponse = new Promise<typeof dashboard>((resolve) => {
+      releaseOld = resolve
+    })
+    const replacement = {
+      ...identity,
+      userId: '66666666-6666-4666-8666-666666666666',
+      displayName: 'Replacement Operator',
+      session: {
+        ...identity.session,
+        id: '77777777-7777-4777-8777-777777777777',
+      },
+    }
+    const oldDashboard = {
+      ...dashboard,
+      assignedActionItems: { ...dashboard.assignedActionItems, done: 99 },
+    }
+    const replacementDashboard = {
+      ...dashboard,
+      assignedActionItems: { ...dashboard.assignedActionItems, done: 42 },
+    }
+    getCurrentUser.mockImplementation(async (url, config) => {
+      if (url === '/dashboard/me') {
+        if (verifiedIdentity.userId === identity.userId) {
+          oldSignal = config?.signal
+          return oldResponse
+        }
+        return replacementDashboard
+      }
+      if (url === '/me/preferences') return preferences
+      if (url === '/auth/me') return verifiedIdentity
+      throw new Error('Unexpected Core GET ' + url)
+    })
+    const { queryClient, screen } = await renderRoute('/')
+    const dispose = configureSessionRevalidation({
+      queryClient,
+      onContainment: () => containProtectedState(queryClient),
+      onChanged: () => undefined,
+    })
+    try {
+      await expect
+        .element(
+          screen.getByRole('heading', {
+            name: 'Welcome back, ' + identity.displayName,
+          })
+        )
+        .toBeVisible()
+      await expect.poll(() => Boolean(oldSignal)).toBe(true)
+
+      const previousExportKey = 'sme:meeting-minutes-export:previous-session'
+      sessionStorage.setItem(previousExportKey, '{}')
+      const previousReportKey = [
+        'dashboard',
+        'management',
+        getSessionContextKey(identity),
+      ]
+      queryClient.setQueryData(previousReportKey, { protected: true })
+      verifiedIdentity = replacement
+      await revalidateBrowserSession()
+      expect(sessionStorage.getItem(previousExportKey)).toBeNull()
+      expect(queryClient.getQueryData(previousReportKey)).toBeUndefined()
+      await expect
+        .element(
+          screen.getByRole('heading', {
+            name: 'Welcome back, ' + replacement.displayName,
+          })
+        )
+        .toBeVisible()
+      await expect
+        .element(screen.getByText('42', { exact: true }))
+        .toBeVisible()
+
+      releaseOld(oldDashboard)
+      await oldResponse
+      await expect.poll(() => oldSignal?.aborted).toBe(true)
+      expect(
+        queryClient.getQueryData([
+          'dashboard',
+          'me',
+          getSessionContextKey(identity),
+        ])
+      ).toBeUndefined()
+      await expect
+        .element(screen.getByText('99', { exact: true }))
+        .not.toBeInTheDocument()
+      await expect
+        .element(screen.getByText('42', { exact: true }))
+        .toBeVisible()
+    } finally {
+      releaseOld(oldDashboard)
+      dispose()
+    }
+  })
+
   it('reacts to actor and role replacement and removes obsolete Member access', async () => {
     const administrator = {
       ...identity,
@@ -480,7 +612,7 @@ describe('session restoration and protected routing', () => {
     const { queryClient, screen } = await renderRoute('/members')
     const dispose = configureSessionRevalidation({
       queryClient,
-      onContainment: () => queryClient.clear(),
+      onContainment: () => containProtectedState(queryClient),
       onChanged: () => undefined,
     })
 
@@ -639,7 +771,15 @@ describe('session restoration and protected routing', () => {
 
   it('revalidates identity when navigating between protected routes', async () => {
     const { router, screen } = await renderRoute('/')
-    await expect.element(screen.getByText('Canonical User')).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('heading', { name: 'Dashboard', exact: true }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Scheduled meetings'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Canonical User', { exact: true }))
+      .toBeInTheDocument()
     const initialChecks = getCurrentUser.mock.calls.length
 
     await router.navigate({ to: '/calendar' })

@@ -240,10 +240,21 @@ export function ActionForm({
                 ? error.message
                 : 'Current state is unavailable.',
           })
+        } finally {
+          if (submission.owns()) {
+            invalidateMeetingArtifacts(qc, reviewed.meetingId, {
+              actions: true,
+              intelligence: 'none',
+            })
+          }
         }
         return
       }
       if (submission.creation && (uncertain || submission.recovering)) {
+        invalidateMeetingArtifacts(qc, submission.creation.payload.meetingId, {
+          actions: true,
+          intelligence: 'none',
+        })
         setUnresolvedCreate(submission.creation.payload)
         toast.error('Creation outcome is uncertain', {
           description:

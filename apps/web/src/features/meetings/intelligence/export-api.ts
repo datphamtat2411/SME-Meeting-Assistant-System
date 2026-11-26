@@ -2,17 +2,20 @@ import { z } from 'zod'
 import { queryOptions } from '@tanstack/react-query'
 import { CoreApiError, coreApi, normalizeCoreApiError } from '@/lib/core-api'
 
+const instant = z.string().datetime({ offset: true })
+
 export const exportStatusSchema = z.object({
   exportId: z.string().uuid(),
   meetingId: z.string().uuid(),
   format: z.enum(['PDF', 'MARKDOWN']),
   status: z.enum(['PENDING', 'GENERATING', 'READY', 'FAILED']),
-  attemptCount: z.number(),
-  createdAt: z.string(),
-  readyAt: z.string().nullable(),
+  attemptCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  createdAt: instant,
+  readyAt: instant.nullable(),
   safeErrorCode: z.string().nullable(),
+  retryEligible: z.boolean().optional(),
   freshness: z.enum(['CURRENT', 'STALE', 'NOT_APPLICABLE', 'UNKNOWN']),
-  freshnessCheckedAt: z.string().nullable(),
+  freshnessCheckedAt: instant.nullable(),
 })
 export type ExportStatus = z.infer<typeof exportStatusSchema>
 
@@ -77,6 +80,77 @@ export async function createMinutesExport(
     throw error
   }
 }
+const exportRecoverySchema = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('RECOVERED'),
+    admission: exportAdmissionSchema,
+  }),
+  z.object({
+    outcome: z.literal('UNAVAILABLE'),
+    admission: z.null().optional(),
+  }),
+])
+
+export async function recoverMinutesExport(
+  meetingId: string,
+  format: ExportStatus['format'],
+  idempotencyKey: string
+): Promise<ExportAdmission | null> {
+  const result = exportRecoverySchema.safeParse(
+    await coreApi.post<unknown>(
+      '/meetings/' + encodeURIComponent(meetingId) + '/exports/recover',
+      { format },
+      { headers: { 'Idempotency-Key': idempotencyKey } }
+    )
+  )
+  if (!result.success) {
+    throw malformedExportResponse(
+      'Export recovery response could not be verified.',
+      result.error
+    )
+  }
+  if (result.data.outcome === 'UNAVAILABLE') return null
+  const admission = result.data.admission
+  if (admission.meetingId !== meetingId || admission.format !== format) {
+    throw malformedExportResponse(
+      'Export recovery response belongs to a different intent.'
+    )
+  }
+  return admission
+}
+
+const exportCapabilitiesSchema = z.object({
+  meetingId: z.string().uuid(),
+  admission: z.boolean(),
+  recovery: z.boolean(),
+  status: z.boolean(),
+  access: z.boolean(),
+})
+
+export function exportCapabilitiesQuery(meetingId: string, scope: string) {
+  return queryOptions({
+    queryKey: ['export', 'capabilities', meetingId, scope],
+    queryFn: async ({ signal }) => {
+      const result = exportCapabilitiesSchema.safeParse(
+        await coreApi.get<unknown>(
+          '/meetings/' +
+            encodeURIComponent(meetingId) +
+            '/exports/capabilities',
+          { signal }
+        )
+      )
+      if (!result.success || result.data.meetingId !== meetingId) {
+        throw malformedExportResponse(
+          'Export service availability could not be verified.'
+        )
+      }
+      return result.data
+    },
+    meta: { featureErrorBoundary: true },
+    retry: false,
+  })
+}
+
 export function parseExportStatus(
   value: unknown,
   expected?: {
@@ -107,28 +181,55 @@ export function parseExportStatus(
       'Core API returned export status for a different format.'
     )
   }
+  const { status, readyAt, freshness, freshnessCheckedAt } = parsed.data
+  if (
+    (parsed.data.retryEligible === true && status !== 'FAILED') ||
+    (status === 'READY' &&
+      (readyAt === null || freshness === 'NOT_APPLICABLE')) ||
+    (status !== 'READY' &&
+      (freshness !== 'NOT_APPLICABLE' || freshnessCheckedAt !== null)) ||
+    ((freshness === 'CURRENT' || freshness === 'STALE') &&
+      freshnessCheckedAt === null)
+  ) {
+    throw malformedExportResponse(
+      'Core API returned inconsistent export status and freshness.'
+    )
+  }
   return parsed.data
+}
+
+export async function fetchExportStatus(
+  exportId: string,
+  expected?: {
+    meetingId?: string
+    format?: ExportStatus['format']
+  },
+  signal?: AbortSignal
+) {
+  return parseExportStatus(
+    await coreApi.get<unknown>('/exports/' + encodeURIComponent(exportId), {
+      signal,
+    }),
+    { exportId, ...expected }
+  )
 }
 
 export function exportStatusQuery(
   exportId: string,
-  expected?: { meetingId?: string; format?: ExportStatus['format'] }
+  expected?: {
+    meetingId?: string
+    format?: ExportStatus['format']
+    scope?: string
+  }
 ) {
-  const expectedMeetingId = expected?.meetingId
-  const expectedFormat = expected?.format
+  const meetingId = expected?.meetingId
+  const format = expected?.format
+  const scope = expected?.scope
   return queryOptions({
-    queryKey: ['export', exportId, expectedMeetingId, expectedFormat],
-    queryFn: async ({ signal }) =>
-      parseExportStatus(
-        await coreApi.get<unknown>('/exports/' + encodeURIComponent(exportId), {
-          signal,
-        }),
-        {
-          exportId,
-          meetingId: expectedMeetingId,
-          format: expectedFormat,
-        }
-      ),
+    queryKey: ['export', exportId, meetingId, format, scope],
+    queryFn: ({ signal }) =>
+      fetchExportStatus(exportId, { meetingId, format }, signal),
+    meta: { featureErrorBoundary: true },
     retry: false,
   })
 }

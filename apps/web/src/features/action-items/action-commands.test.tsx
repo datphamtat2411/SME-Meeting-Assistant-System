@@ -231,6 +231,14 @@ describe('Action Item reviewed operation ownership', () => {
 
   it('reconciles a malformed command receipt without replaying the command', async () => {
     const client = reviewClient()
+    const keys = [
+      ['dashboard', 'me', 'actor-scope'],
+      ['dashboard', 'management', 'manager-scope'],
+      ['minutes', officialOpenItem.meetingId],
+      ['export', 'pdf', officialOpenItem.meetingId, 'PDF', 'actor-scope'],
+      ['action-items', 'list', { assignee: 'me' }, undefined, 'actor-scope'],
+    ]
+    for (const key of keys) client.setQueryData(key, { observed: true })
     const latest: ActionItem = {
       ...officialOpenItem,
       status: 'DONE',
@@ -272,6 +280,9 @@ describe('Action Item reviewed operation ownership', () => {
       .toBeDisabled()
     expect(detail).toHaveBeenCalledTimes(2)
     expect(post).toHaveBeenCalledOnce()
+    for (const key of keys) {
+      expect(client.getQueryState(key)?.isInvalidated).toBe(true)
+    }
   })
 
   it('requires a new editor review after editing authority is lost and restored', async () => {

@@ -49,6 +49,12 @@ function setState(next: SessionRevalidationState): void {
   for (const listener of listeners) listener()
 }
 
+// A protected workspace must establish fresh resource observations after a
+// mandatory verification, even if the verified actor and session are unchanged.
+export function getSessionRevalidationRevision(): number {
+  return revision
+}
+
 export function getSessionRevalidationState(): SessionRevalidationState {
   return state
 }
@@ -290,6 +296,39 @@ export function requestSessionRevalidation(): void {
 export function retrySessionRevalidation(): Promise<void> {
   if (signInPending) return signInPending
   return state === 'checking' && active ? active : revalidateBrowserSession()
+}
+
+// Keep at most one attempted resource per feature channel and QueryClient.
+// The marker survives protected route remounts, preventing denial/refetch loops.
+const scopeReconciliations = new WeakMap<QueryClient, Map<string, string>>()
+
+export function reconcileProtectedScope(
+  queryClient: QueryClient,
+  channel: string,
+  scope: string
+): Promise<void> {
+  let attempts = scopeReconciliations.get(queryClient)
+  if (!attempts) {
+    attempts = new Map()
+    scopeReconciliations.set(queryClient, attempts)
+  }
+  if (attempts.get(channel) === scope) return Promise.resolve()
+  attempts.set(channel, scope)
+  return retrySessionRevalidation()
+}
+
+export function resetProtectedScopeReconciliation(
+  queryClient: QueryClient,
+  channel: string,
+  scope: string
+): void {
+  const attempts = scopeReconciliations.get(queryClient)
+  if (attempts?.get(channel) === scope) attempts.delete(channel)
+}
+
+export function isProtectedResourceAccessFailure(error: unknown): boolean {
+  const status = normalizeCoreApiError(error).status
+  return status === 401 || status === 403 || status === 404
 }
 
 export async function waitForSessionRevalidation(): Promise<SessionRevalidationState> {

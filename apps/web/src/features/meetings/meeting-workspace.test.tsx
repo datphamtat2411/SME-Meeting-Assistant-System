@@ -12,8 +12,10 @@ import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
+import { configureSessionRevalidation } from '@/features/auth/session/session-revalidation'
 import type { MeetingView } from './data/detail-api'
 import type { MeetingListResponse } from './data/list-api'
+import { ExportPanel } from './intelligence/export-panel'
 import { LiveMeetingPage } from './live-meeting'
 import { MeetingSessionProvider } from './media/meeting-session-context'
 import { MeetingAuthorizationProvider } from './meeting-authorization-context'
@@ -163,9 +165,9 @@ function workspaceMinutes(
     schemaVersion: 1,
     assembledAt: '2026-11-25T12:00:00Z',
     sourceFingerprint: 'a'.repeat(64),
-    completeness: 'COMPLETE',
+    completeness: 'PARTIAL',
     proposalsIncluded: false,
-    warnings: [],
+    warnings: ['SUMMARY_NOT_AVAILABLE', 'TRANSCRIPT_NOT_AVAILABLE'],
     meeting: {
       id: workspaceMinutesMeetingId,
       title: 'Workspace result fixture',
@@ -196,8 +198,13 @@ function workspaceMinutes(
     transcript: {
       availability: 'NOT_AVAILABLE',
       id: null,
+      processingJobId: null,
       versionNumber: null,
+      languageCode: null,
       status: null,
+      contentRevision: null,
+      durationMs: null,
+      suspiciousSegments: 0,
       unresolvedSegments: 0,
       unresolvedCoverageRegions: 0,
       ...overrides.transcript,
@@ -512,6 +519,138 @@ describe('MeetingWorkspacePage', () => {
     vi.unstubAllGlobals()
     toastError.mockReset()
     toastSuccess.mockReset()
+  })
+
+  it('rechecks meeting membership and retires export recovery after an export status denial', async () => {
+    const actor = workspaceIdentity('dddddddd-dddd-4ddd-8ddd-dddddddddddd')
+    const meetingId = workspaceMinutesMeetingId
+    const exportId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    const key = `sme:meeting-minutes-export:v3:${actor.userId}:${actor.session.id}:${meetingId}`
+    let revoked = false
+    sessionStorage.setItem(
+      key,
+      JSON.stringify({
+        actorId: actor.userId,
+        sessionId: actor.session.id,
+        meetingId,
+        PDF: { idempotencyKey: 'existing-export-request', exportId },
+      })
+    )
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: {
+        ...detail,
+        id: meetingId,
+        organizerUserId: workspaceSummaryId,
+        roomId: null,
+      },
+      meta: {},
+      etag: 'workspace-export',
+    })
+    const membershipRead = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (url) => {
+        if (url.endsWith('/participants')) {
+          return {
+            data: revoked
+              ? []
+              : [
+                  {
+                    ...participants[0],
+                    meetingId,
+                    userId: actor.userId,
+                  },
+                ],
+            meta: {},
+          } as never
+        }
+        throw new Error('Unexpected metadata GET ' + url)
+      })
+    const get = vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url === '/auth/me') return actor as never
+      if (url.endsWith('/exports/capabilities')) {
+        return {
+          meetingId,
+          admission: true,
+          recovery: true,
+          status: true,
+          access: true,
+        } as never
+      }
+      if (url.endsWith('/minutes')) return workspaceMinutes() as never
+      if (url === '/exports/' + exportId) {
+        if (revoked) {
+          throw new CoreApiError({
+            status: 404,
+            kind: 'http',
+            message: 'Export unavailable',
+          })
+        }
+        return {
+          exportId,
+          meetingId,
+          format: 'PDF',
+          status: 'PENDING',
+          attemptCount: 0,
+          createdAt: '2026-11-25T12:00:00Z',
+          readyAt: null,
+          safeErrorCode: null,
+          freshness: 'NOT_APPLICABLE',
+          freshnessCheckedAt: null,
+          retryEligible: false,
+        } as never
+      }
+      if (url.endsWith('/media') || url.endsWith('/processing-jobs')) {
+        return [] as never
+      }
+      throw new Error('Unexpected GET ' + url)
+    })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(currentUserQueryKey, actor)
+    const dispose = configureSessionRevalidation({
+      queryClient: client,
+      onContainment: () => client.clear(),
+      onChanged: () => undefined,
+    })
+    try {
+      const screen = await render(
+        <QueryClientProvider client={client}>
+          <MeetingAuthorizationProvider meetingId={meetingId}>
+            <MeetingSessionProvider meetingId={meetingId}>
+              <ExportPanel meetingId={meetingId} canExport />
+            </MeetingSessionProvider>
+          </MeetingAuthorizationProvider>
+        </QueryClientProvider>
+      )
+      await expect.element(screen.getByText('Queued')).toBeVisible()
+      const reads = membershipRead.mock.calls.length
+      const verificationReads = get.mock.calls.filter(
+        ([url]) => url === '/auth/me'
+      ).length
+      revoked = true
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Refresh PDF status' })
+      )
+      await expect.poll(() => sessionStorage.getItem(key)).toBeNull()
+      await expect
+        .element(
+          screen.getByText(
+            'Export is unavailable for the current meeting access.'
+          )
+        )
+        .toBeVisible()
+      expect(membershipRead.mock.calls.length).toBeGreaterThan(reads)
+      expect(
+        get.mock.calls.filter(([url]) => url === '/auth/me').length
+      ).toBeGreaterThan(verificationReads)
+      expect(client.getQueriesData({ queryKey: ['export', exportId] })).toEqual(
+        []
+      )
+    } finally {
+      dispose()
+      sessionStorage.removeItem(key)
+    }
   })
 
   it('renders authorized operational metadata without mock intelligence or fabricated participant names', async () => {
@@ -961,8 +1100,13 @@ describe('MeetingWorkspacePage', () => {
           transcript: {
             availability: 'NOT_AVAILABLE',
             id: null,
+            processingJobId: null,
             versionNumber: null,
+            languageCode: null,
             status: null,
+            contentRevision: null,
+            durationMs: null,
+            suspiciousSegments: 0,
             unresolvedSegments: 0,
             unresolvedCoverageRegions: 0,
           },
@@ -1047,8 +1191,16 @@ describe('MeetingWorkspacePage', () => {
             id: workspaceSummaryId,
             content: 'A confirmed decision',
             status: 'CONFIRMED',
-            sourceType: 'HUMAN_CONFIRMED',
+            sourceType: 'MANUAL',
             version: 1,
+            transcriptId: null,
+            contentRevision: null,
+            isStale: false,
+            confirmedByUserId: workspaceMinutesMeetingId,
+            confirmedAt: '2026-11-25T12:00:00Z',
+            evidenceSegmentIds: [],
+            aiUncertainty: null,
+            aiWarnings: [],
           },
         ],
       })
@@ -1067,7 +1219,7 @@ describe('MeetingWorkspacePage', () => {
       .not.toBeInTheDocument()
   })
 
-  it('keeps failed and unknown availability distinct from confirmed absence', async () => {
+  it('rejects an unknown canonical availability instead of claiming verified results', async () => {
     const { screen } = await renderWorkspaceResults(
       workspaceMinutes({
         summary: { availability: 'FUTURE_BACKEND_STATE' },
@@ -1081,13 +1233,10 @@ describe('MeetingWorkspacePage', () => {
     )
 
     await expect
-      .element(screen.getByText('Failed', { exact: true }))
+      .element(screen.getByText('Unable to verify', { exact: true }).last())
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('Summary unknown status', { exact: true }))
-      .toBeInTheDocument()
-    await expect
-      .element(screen.getByText('Transcript not available', { exact: true }))
+      .element(screen.getByText('No summary available', { exact: true }))
       .not.toBeInTheDocument()
   })
 
@@ -1551,6 +1700,21 @@ describe('MeetingWorkspacePage', () => {
     await userEvent.click(
       screen.getByRole('option', { name: /New participant/ })
     )
+    const dependentKeys = [
+      ['dashboard', 'me', 'actor-scope'],
+      ['dashboard', 'management', 'manager-scope'],
+      ['export', 'pdf-a', 'meeting-1', 'PDF', 'actor-scope'],
+    ]
+    const unrelatedExport = [
+      'export',
+      'pdf-b',
+      'meeting-2',
+      'PDF',
+      'actor-scope',
+    ]
+    for (const key of [...dependentKeys, unrelatedExport]) {
+      queryClient.setQueryData(key, { observed: true })
+    }
     await userEvent.click(
       screen.getByRole('button', { name: 'Add participant' })
     )
@@ -1567,6 +1731,12 @@ describe('MeetingWorkspacePage', () => {
     expect(
       queryClient.getQueryData(['meetings', 'participants', 'meeting-1'])
     ).toEqual(refreshedParticipants)
+    for (const key of dependentKeys) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+    }
+    expect(queryClient.getQueryState(unrelatedExport)?.isInvalidated).toBe(
+      false
+    )
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ['meetings', 'list'],
     })

@@ -13,7 +13,13 @@ import {
   subscribeAuthLifecycle,
 } from '@/features/auth/session/auth-lifecycle'
 import {
+  isProtectedResourceAccessFailure,
+  reconcileProtectedScope,
+  resetProtectedScopeReconciliation,
+} from '@/features/auth/session/session-revalidation'
+import {
   createMinutesExport,
+  recoverMinutesExport,
   type ExportAdmission,
 } from '../intelligence/export-api'
 import type { MeetingAuthorizationContextValue } from '../meeting-authorization-context'
@@ -27,6 +33,9 @@ export type ExportOperation = {
   format: ExportFormat
   idempotencyKey: string
   exportId?: string
+  intentCreatedAt?: string
+  previousReadyId?: string
+  recoveryUnavailable?: boolean
   intentId: string
   lifecycleGeneration: number
   ownerGeneration: number
@@ -42,17 +51,25 @@ export type ExportAdmissionFailure = {
 export type ExportOperationOwnerValue = {
   operations: ExportOperations
   pending: Record<ExportFormat, boolean>
-  lastFailure: ExportAdmissionFailure | null
+  failures: Record<ExportFormat, ExportAdmissionFailure | null>
   admit: (
     format: ExportFormat,
-    options?: { allowReplacement?: boolean }
+    options?: {
+      allowReplacement?: boolean
+      previousReadyId?: string
+      confirmNewIntent?: boolean
+    }
   ) => boolean
+  noteReady: (format: ExportFormat, intentId: string) => void
   isCurrent: (format: ExportFormat, intentId: string) => boolean
 }
 
 const formats: ExportFormat[] = ['PDF', 'MARKDOWN']
 const exportIdSchema = z.string().uuid()
-const idempotencyKeySchema = z.string().min(1).max(200)
+const idempotencyKeySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/)
+const intentTimestampSchema = z.string().datetime({ offset: true })
 
 function emptyOperations(): ExportOperations {
   return { PDF: undefined, MARKDOWN: undefined }
@@ -114,11 +131,20 @@ function readPersistedOperation(
         ? String(record.exportId)
         : undefined
   if (record.exportId !== undefined && !exportId) return undefined
+  const previousReadyId = exportIdSchema.safeParse(record.previousReadyId)
+  const timestamp = intentTimestampSchema.safeParse(record.intentCreatedAt)
   return {
     ...scope,
     format,
     idempotencyKey: idempotencyKey.data,
     ...(exportId ? { exportId } : {}),
+    ...(previousReadyId.success && previousReadyId.data !== exportId
+      ? { previousReadyId: previousReadyId.data }
+      : {}),
+    ...(timestamp.success ? { intentCreatedAt: timestamp.data } : {}),
+    ...(record.recoveryUnavailable === true && !exportId
+      ? { recoveryUnavailable: true }
+      : {}),
     intentId: createIntentId(format, idempotencyKey.data),
     lifecycleGeneration,
     ownerGeneration,
@@ -167,6 +193,17 @@ function loadPersistedOperations(
   }
 }
 
+function persistedMetadata(operation: ExportOperation | undefined) {
+  if (!operation) return undefined
+  return {
+    idempotencyKey: operation.idempotencyKey,
+    exportId: operation.exportId,
+    intentCreatedAt: operation.intentCreatedAt,
+    previousReadyId: operation.previousReadyId,
+    recoveryUnavailable: operation.recoveryUnavailable,
+  }
+}
+
 function persistOperations(
   scope: { actorId: string; sessionId: string; meetingId: string } | undefined,
   operations: ExportOperations
@@ -179,22 +216,8 @@ function persistOperations(
         actorId: scope.actorId,
         sessionId: scope.sessionId,
         meetingId: scope.meetingId,
-        PDF: operations.PDF
-          ? {
-              idempotencyKey: operations.PDF.idempotencyKey,
-              ...(operations.PDF.exportId
-                ? { exportId: operations.PDF.exportId }
-                : {}),
-            }
-          : undefined,
-        MARKDOWN: operations.MARKDOWN
-          ? {
-              idempotencyKey: operations.MARKDOWN.idempotencyKey,
-              ...(operations.MARKDOWN.exportId
-                ? { exportId: operations.MARKDOWN.exportId }
-                : {}),
-            }
-          : undefined,
+        PDF: persistedMetadata(operations.PDF),
+        MARKDOWN: persistedMetadata(operations.MARKDOWN),
       })
     )
   } catch {
@@ -252,9 +275,12 @@ export function useExportOperationOwner({
     PDF: false,
     MARKDOWN: false,
   })
-  const [lastFailure, setLastFailure] = useState<ExportAdmissionFailure | null>(
-    null
-  )
+  const [failures, setFailures] = useState<
+    Record<ExportFormat, ExportAdmissionFailure | null>
+  >({
+    PDF: null,
+    MARKDOWN: null,
+  })
 
   useLayoutEffect(() => {
     authorizationRef.current = authorization
@@ -336,7 +362,7 @@ export function useExportOperationOwner({
       operationsRef.current = emptyOperations()
       setOperations(emptyOperations())
       setPending({ PDF: false, MARKDOWN: false })
-      setLastFailure(null)
+      setFailures({ PDF: null, MARKDOWN: null })
     },
     [queryClient]
   )
@@ -458,7 +484,11 @@ export function useExportOperationOwner({
   const admit = useCallback(
     (
       format: ExportFormat,
-      options: { allowReplacement?: boolean } = {}
+      options: {
+        allowReplacement?: boolean
+        previousReadyId?: string
+        confirmNewIntent?: boolean
+      } = {}
     ): boolean => {
       const scope = currentScope()
       if (
@@ -480,31 +510,52 @@ export function useExportOperationOwner({
       }
       const current = operationsRef.current[format]
       if (current?.exportId && !options.allowReplacement) return false
-      const recovery = Boolean(current?.idempotencyKey && !current.exportId)
+      if (options.confirmNewIntent && !current?.recoveryUnavailable)
+        return false
+      const recovery = Boolean(
+        current?.idempotencyKey &&
+        !current.exportId &&
+        !options.confirmNewIntent
+      )
       const key =
         recovery && current ? current.idempotencyKey : crypto.randomUUID()
       const operation: ExportOperation = {
         ...scope,
         format,
         idempotencyKey: key,
+        intentCreatedAt: recovery
+          ? current?.intentCreatedAt
+          : new Date().toISOString(),
+        previousReadyId:
+          current?.exportId && options.previousReadyId === current.exportId
+            ? current.exportId
+            : current?.previousReadyId,
         intentId: recovery
           ? (current?.intentId ?? createIntentId(format, key))
           : createIntentId(format, key),
         ownerGeneration: ownerGeneration.current,
       }
+      const reconciliationChannel = 'export-admission-' + format
+      const reconciliationScope = JSON.stringify([
+        scope.actorId,
+        scope.sessionId,
+        meetingId,
+      ])
+      resetProtectedScopeReconciliation(
+        queryClient,
+        reconciliationChannel,
+        reconciliationScope
+      )
       executing.current[format] = operation
       storeOperations({ ...operationsRef.current, [format]: operation }, scope)
-      setLastFailure((failure) => (failure?.format === format ? null : failure))
+      setFailures((previous) => ({ ...previous, [format]: null }))
       setPending((currentPending) => ({
         ...currentPending,
         [format]: true,
       }))
-      void createMinutesExport(
-        meetingId,
-        operation.format,
-        operation.idempotencyKey
-      )
-        .then((data: ExportAdmission) => {
+      const request = recovery ? recoverMinutesExport : createMinutesExport
+      void request(meetingId, operation.format, operation.idempotencyKey)
+        .then((data: ExportAdmission | null) => {
           if (!accepts(operation)) return
           const current = operationsRef.current[format]
           if (
@@ -514,13 +565,22 @@ export function useExportOperationOwner({
           ) {
             return
           }
+          if (data === null) {
+            storeOperations({
+              ...operationsRef.current,
+              [format]: { ...current, recoveryUnavailable: true },
+            })
+            return
+          }
           storeOperations({
             ...operationsRef.current,
-            [format]: { ...current, exportId: data.exportId },
+            [format]: {
+              ...current,
+              exportId: data.exportId,
+              recoveryUnavailable: false,
+            },
           })
-          setLastFailure((failure) =>
-            failure?.format === format ? null : failure
-          )
+          setFailures((previous) => ({ ...previous, [format]: null }))
         })
         .catch((error: unknown) => {
           if (!accepts(operation)) return
@@ -533,10 +593,20 @@ export function useExportOperationOwner({
           if (!uncertain && !recovery) {
             storeOperations({
               ...operationsRef.current,
-              [format]: undefined,
+              [format]: current,
             })
           }
-          setLastFailure({ format, error })
+          setFailures((previous) => ({
+            ...previous,
+            [format]: { format, error },
+          }))
+          if (isProtectedResourceAccessFailure(error)) {
+            void reconcileProtectedScope(
+              queryClient,
+              reconciliationChannel,
+              reconciliationScope
+            )
+          }
           if (failure.status === 409 || failure.status === 422) {
             void queryClient.invalidateQueries({
               queryKey: ['minutes', meetingId],
@@ -572,6 +642,24 @@ export function useExportOperationOwner({
     [accepts]
   )
 
+  const noteReady = useCallback(
+    (format: ExportFormat, intentId: string) => {
+      const operation = operationsRef.current[format]
+      if (
+        !operation ||
+        operation.intentId !== intentId ||
+        !operation.previousReadyId ||
+        !accepts(operation)
+      )
+        return
+      storeOperations({
+        ...operationsRef.current,
+        [format]: { ...operation, previousReadyId: undefined },
+      })
+    },
+    [accepts, storeOperations]
+  )
+
   function visible(operation: ExportOperation | undefined) {
     return contentAuthorized &&
       operation?.actorId === actorId &&
@@ -588,8 +676,9 @@ export function useExportOperationOwner({
       MARKDOWN: visible(operations.MARKDOWN),
     },
     pending,
-    lastFailure,
+    failures,
     admit,
+    noteReady,
     isCurrent,
   }
 }
