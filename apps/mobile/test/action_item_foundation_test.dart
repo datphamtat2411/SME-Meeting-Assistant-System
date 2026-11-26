@@ -427,10 +427,7 @@ void main() {
     ]) {
       final client = MeetingTestHttpClient((request) async {
         if (request.method == 'GET') {
-          return meetingApiSuccess(
-            itemJson(),
-            headers: const {'etag': '"v1"'},
-          );
+          return meetingApiSuccess(itemJson(), headers: const {'etag': '"v1"'});
         }
         if (category == ActionItemFailureCategory.timeout) {
           throw TimeoutException('Lost response');
