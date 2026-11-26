@@ -48,6 +48,7 @@ class AppDependencies {
     existing?.dispose();
     return _assistantWorkspace = AssistantWorkspaceController(assistant);
   }
+
   late final ActionItemWorkflowOwner actionItemWorkflows;
   late final MeetingInvalidationSignal meetingInvalidation;
   late final MeetingRepository meetings;

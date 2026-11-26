@@ -49,8 +49,7 @@ class _AssistantPageState extends State<AssistantPage>
 
   bool get _eligible =>
       mounted && widget.active && _foreground && _routeVisible;
-  bool get _presenting =>
-      _eligible && _controller.ownsPresentation(this);
+  bool get _presenting => _eligible && _controller.ownsPresentation(this);
   bool _matchesContext(String meetingId) =>
       widget.contextualMeeting == null ||
       widget.contextualMeeting!.id.toLowerCase() == meetingId.toLowerCase();
@@ -138,7 +137,8 @@ class _AssistantPageState extends State<AssistantPage>
         _contextVerified = true;
       } on Object catch (error) {
         if (_eligible && generation == _contextGeneration) {
-          if (error is ApiFailure && (error.status == 403 || error.status == 404)) {
+          if (error is ApiFailure &&
+              (error.status == 403 || error.status == 404)) {
             _controller.forgetMeeting(contextual.id);
           }
           _contextFailure = error;
@@ -233,7 +233,8 @@ class _AssistantPageState extends State<AssistantPage>
     final pickerSelection = _selection;
     setState(() => _choosingMeeting = true);
     try {
-      final meeting = widget.contextualMeeting ??
+      final meeting =
+          widget.contextualMeeting ??
           await Navigator.push<Meeting>(
             context,
             MaterialPageRoute<Meeting>(
@@ -270,7 +271,9 @@ class _AssistantPageState extends State<AssistantPage>
 
   Future<void> _retryCreation() async {
     final command = _controller.creation;
-    if (!_presenting || command == null || !_matchesContext(command.meetingId)) {
+    if (!_presenting ||
+        command == null ||
+        !_matchesContext(command.meetingId)) {
       return;
     }
     final selection = _selection;
@@ -411,14 +414,16 @@ class _AssistantPageState extends State<AssistantPage>
 
   void _send() {
     final question = _input.text.trim();
-    if (!_presenting || !_controller.canSend || question.isEmpty || question.length > 4096) {
+    if (!_presenting ||
+        !_controller.canSend ||
+        question.isEmpty ||
+        question.length > 4096) {
       return;
     }
     FocusScope.of(context).unfocus();
     final submission = _controller.submit(question);
     if (_controller.pending?.request.question == question) {
       _input.clear();
-
     }
     unawaited(submission);
   }
@@ -516,8 +521,8 @@ class _AssistantPageState extends State<AssistantPage>
         .where((item) => _matchesContext(item.meetingId))
         .toList(growable: false);
     final contextual = widget.contextualMeeting;
-    final foreignCreation = state.creation != null &&
-        !_matchesContext(state.creation!.meetingId);
+    final foreignCreation =
+        state.creation != null && !_matchesContext(state.creation!.meetingId);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -569,9 +574,9 @@ class _AssistantPageState extends State<AssistantPage>
                           Text(
                             contextual == null
                                 ? 'Chọn một cuộc họp để tìm quyết định, công việc '
-                                    'và những thông tin đã thảo luận.'
+                                      'và những thông tin đã thảo luận.'
                                 : 'Hỏi về quyết định, công việc và nội dung '
-                                    'của cuộc họp này.',
+                                      'của cuộc họp này.',
                             style: TextStyle(color: colors.onPrimaryContainer),
                           ),
                           const SizedBox(height: 14),
@@ -823,7 +828,8 @@ class _AssistantPageState extends State<AssistantPage>
                       message: message,
                       onOpenCitation: _openingEvidence
                           ? null
-                          : (citation) => unawaited(_openCitation(message, citation)),
+                          : (citation) =>
+                                unawaited(_openCitation(message, citation)),
                     );
                   },
                 ),
@@ -955,7 +961,7 @@ class _AssistantPageState extends State<AssistantPage>
                     AssistantTurnState.processing => 'Đang xử lý',
                   }
                 : pending.turn?.state == AssistantTurnState.processing &&
-                    !pending.reclaimUncertain
+                      !pending.reclaimUncertain
                 ? 'AI đang xử lý câu hỏi'
                 : 'Chưa xác nhận được kết quả',
             style: Theme.of(context).textTheme.titleSmall,

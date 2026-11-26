@@ -252,7 +252,9 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
       }
       if (!allowed) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Không thể truy cập nội dung cuộc họp.')),
+          const SnackBar(
+            content: Text('Không thể truy cập nội dung cuộc họp.'),
+          ),
         );
         return;
       }
@@ -293,10 +295,14 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
     final canAsk = MeetingCapabilityPolicy.evaluate(
       callerId: widget.api.userId,
       meeting: meeting,
-      callerIsActiveParticipant: state.participantsLoaded &&
-          state.participants.any((participant) =>
-              participant.isActive &&
-              participant.userId.toLowerCase() == widget.api.userId?.toLowerCase()),
+      callerIsActiveParticipant:
+          state.participantsLoaded &&
+          state.participants.any(
+            (participant) =>
+                participant.isActive &&
+                participant.userId.toLowerCase() ==
+                    widget.api.userId?.toLowerCase(),
+          ),
     ).canReadMedia;
     final validInterval = MeetingScheduleDraft(
       start: meeting.scheduledStartAt,

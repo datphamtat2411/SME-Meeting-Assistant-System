@@ -42,7 +42,9 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
       mounted &&
       _visible &&
       _foreground &&
-      widget.dependencies.api.isCurrentAuthenticatedSession(widget.target.scope);
+      widget.dependencies.api.isCurrentAuthenticatedSession(
+        widget.target.scope,
+      );
 
   @override
   void initState() {
@@ -198,7 +200,8 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
         const StatePill('READY', label: 'Đã đối chiếu nguồn'),
         SectionHeading(
           title,
-          subtitle: 'Revision ${widget.target.citation.sourceRevision} · Chỉ đọc',
+          subtitle:
+              'Revision ${widget.target.citation.sourceRevision} · Chỉ đọc',
         ),
         if (detail != null) Text(detail),
       ],
@@ -213,7 +216,8 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
         if (index == 0) {
           return _heading(
             'Bản chép lời',
-            detail: 'Đang xem bản chép lời được trích dẫn. Trích dẫn này '
+            detail:
+                'Đang xem bản chép lời được trích dẫn. Trích dẫn này '
                 'không xác định một đoạn hoặc thời điểm cụ thể.',
           );
         }

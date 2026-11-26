@@ -132,9 +132,10 @@ class AssistantEvidenceResolver {
           summary.meetingId,
           summary.versionNumber,
           !summary.isStale &&
-              const {'READY', 'READY_WITH_WARNINGS'}.contains(
-                summary.qualityStatus,
-              ),
+              const {
+                'READY',
+                'READY_WITH_WARNINGS',
+              }.contains(summary.qualityStatus),
         );
         artifact = SummaryEvidence(summary);
       case AssistantSourceType.decision:
@@ -209,9 +210,7 @@ class AssistantEvidenceResolver {
         if (!message.citations.any(
           (value) => _matchesCitation(value, target.citation),
         )) {
-          throw const AssistantEvidenceFailure(
-            AssistantEvidenceIssue.obsolete,
-          );
+          throw const AssistantEvidenceFailure(AssistantEvidenceIssue.obsolete);
         }
         return;
       }

@@ -838,49 +838,57 @@ void main() {
           }
           if (path.endsWith('/conversations/$_conversationId')) {
             return meetingApiSuccess(
-              _detail(messages: [
-                if (redact)
-                  _message(visibility: 'SOURCE_UNAVAILABLE')
-                else
-                  rawMessage,
-              ]),
+              _detail(
+                messages: [
+                  if (redact)
+                    _message(visibility: 'SOURCE_UNAVAILABLE')
+                  else
+                    rawMessage,
+                ],
+              ),
             );
           }
           artifactReads++;
           if (path.endsWith('/transcript')) {
-            return meetingApiSuccess({
-              'id': _sourceId,
-              'meetingId': testMeetingId,
-              'versionNumber': 1,
-              'languageCode': 'vi',
-              'status': 'READY',
-              'contentRevision': revision,
-              'finalizedAt': _timestamp,
-              'segments': [
-                {
-                  'id': _assistantMessageId,
-                  'ordinal': 0,
-                  'text': 'Canonical transcript',
-                  'startMs': 0,
-                  'endMs': 1000,
-                  'qualityStatus': 'ACCEPTED',
-                  'version': 0,
-                },
-              ],
-            }, headers: {'etag': '"transcript"'});
+            return meetingApiSuccess(
+              {
+                'id': _sourceId,
+                'meetingId': testMeetingId,
+                'versionNumber': 1,
+                'languageCode': 'vi',
+                'status': 'READY',
+                'contentRevision': revision,
+                'finalizedAt': _timestamp,
+                'segments': [
+                  {
+                    'id': _assistantMessageId,
+                    'ordinal': 0,
+                    'text': 'Canonical transcript',
+                    'startMs': 0,
+                    'endMs': 1000,
+                    'qualityStatus': 'ACCEPTED',
+                    'version': 0,
+                  },
+                ],
+              },
+              headers: {'etag': '"transcript"'},
+            );
           }
           if (path.endsWith('/summary')) {
-            return meetingApiSuccess({
-              'id': _sourceId,
-              'meetingId': testMeetingId,
-              'versionNumber': revision,
-              'sourceType': 'AI_GENERATED',
-              'qualityStatus': 'READY',
-              'content': 'Canonical summary',
-              'isStale': false,
-              'createdAt': _timestamp,
-              'aiWarnings': [],
-            }, headers: {'etag': '"summary"'});
+            return meetingApiSuccess(
+              {
+                'id': _sourceId,
+                'meetingId': testMeetingId,
+                'versionNumber': revision,
+                'sourceType': 'AI_GENERATED',
+                'qualityStatus': 'READY',
+                'content': 'Canonical summary',
+                'isStale': false,
+                'createdAt': _timestamp,
+                'aiWarnings': [],
+              },
+              headers: {'etag': '"summary"'},
+            );
           }
           if (path.endsWith('/decisions')) {
             final page = int.parse(request.url.queryParameters['page']!);
@@ -939,7 +947,10 @@ void main() {
           results: dependencies.results,
           actionItems: dependencies.actionItems,
         );
-        final artifact = await resolver.verify(target, stillCurrent: () => true);
+        final artifact = await resolver.verify(
+          target,
+          stillCurrent: () => true,
+        );
         expect(artifact, switch (type) {
           'TRANSCRIPT' => isA<TranscriptEvidence>(),
           'SUMMARY' => isA<SummaryEvidence>(),
@@ -950,9 +961,13 @@ void main() {
         revision++;
         await expectLater(
           resolver.verify(target, stillCurrent: () => true),
-          throwsA(isA<AssistantEvidenceFailure>().having(
-            (error) => error.issue, 'issue', AssistantEvidenceIssue.obsolete,
-          )),
+          throwsA(
+            isA<AssistantEvidenceFailure>().having(
+              (error) => error.issue,
+              'issue',
+              AssistantEvidenceIssue.obsolete,
+            ),
+          ),
         );
         revision--;
         final before = artifactReads;
@@ -973,7 +988,9 @@ void main() {
     }
   });
 
-  testWidgets('contextual entry shares workspace and fixes meeting scope', (tester) async {
+  testWidgets('contextual entry shares workspace and fixes meeting scope', (
+    tester,
+  ) async {
     final other = _conversation()
       ..['id'] = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
       ..['meetingId'] = testRoomId
@@ -996,7 +1013,9 @@ void main() {
         return meetingApiSuccess([other, local]);
       }
       if (path.endsWith('/conversations/$_conversationId')) {
-        return meetingApiSuccess(_detail(messages: [])..['conversation'] = local);
+        return meetingApiSuccess(
+          _detail(messages: [])..['conversation'] = local,
+        );
       }
       throw StateError('Unexpected request: $path');
     });
@@ -1010,13 +1029,17 @@ void main() {
     addTearDown(dependencies.dispose);
     final meeting = Meeting.fromJson(meetingTestJson());
     final owner = dependencies.assistantWorkspace;
-    await tester.pumpWidget(MaterialApp(
-      home: Scaffold(body: AssistantPage(
-        dependencies: dependencies,
-        active: true,
-        contextualMeeting: meeting,
-      )),
-    ));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AssistantPage(
+            dependencies: dependencies,
+            active: true,
+            contextualMeeting: meeting,
+          ),
+        ),
+      ),
+    );
     await pumpUntil(
       tester,
       () => find.text('This meeting conversation').evaluate().isNotEmpty,
@@ -1082,9 +1105,9 @@ void main() {
             entered.complete();
             return held.future;
           }
-          return meetingApiSuccess(_detail(messages: [
-            _message(visibility: 'SOURCE_UNAVAILABLE'),
-          ]));
+          return meetingApiSuccess(
+            _detail(messages: [_message(visibility: 'SOURCE_UNAVAILABLE')]),
+          );
         }),
       );
       final controller = AssistantWorkspaceController(repository);
@@ -1096,8 +1119,10 @@ void main() {
       invalidated = true;
       controller.addListener(() {
         if (!controller.historyVerified) return;
-        expect(controller.messages.single.visibility,
-            AssistantMessageVisibility.sourceUnavailable);
+        expect(
+          controller.messages.single.visibility,
+          AssistantMessageVisibility.sourceUnavailable,
+        );
         if (!settled.isCompleted) settled.complete();
       });
       controller.invalidateMeeting(testMeetingId);
