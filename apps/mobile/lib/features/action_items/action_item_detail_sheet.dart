@@ -208,8 +208,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
       'Đề xuất sẽ không trở thành công việc chính thức. Lịch sử vẫn được giữ.',
     ActionItemCommand.start => 'Bắt đầu thực hiện công việc này.',
     ActionItemCommand.complete => 'Xác nhận công việc đã hoàn thành.',
-    ActionItemCommand.cancel =>
-      'Công việc sẽ không còn là nghĩa vụ đang thực hiện. Lịch sử vẫn được giữ.',
+    ActionItemCommand.cancel => 'Công việc sẽ không còn là nghĩa vụ đang thực hiện. Lịch sử vẫn được giữ.',
     ActionItemCommand.reopen =>
       'Công việc sẽ trở lại trạng thái cần làm với người phụ trách hiện tại.',
   };
@@ -219,8 +218,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
       return confirmCommand(
         context,
         title: 'Rời chi tiết công việc?',
-        description:
-            'Chưa xác định kết quả thao tác. Công việc có thể đã thay đổi trên máy chủ.',
+        description: 'Chưa xác định kết quả thao tác. Công việc có thể đã thay đổi trên máy chủ.',
         confirmLabel: 'Rời chi tiết',
       );
     }
@@ -266,10 +264,7 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         ActionItemStatusIndicators(item: item),
-        if (proposed) ...[
-          const SizedBox(height: 12),
-          _proposalReview(item),
-        ],
+        if (proposed) ...[const SizedBox(height: 12), _proposalReview(item)],
         const SizedBox(height: 12),
         Text(item.title, style: Theme.of(context).textTheme.headlineSmall),
         if (item.details != null) ...[

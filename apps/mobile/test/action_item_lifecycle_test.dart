@@ -180,74 +180,89 @@ void main() {
   });
 
   for (final status in ['DONE', 'OPEN', 'CANCELLED']) {
-    test('unknown completion observes $status without claiming success', () async {
-      var reads = 0;
-      var writes = 0;
-      final client = MeetingTestHttpClient((request) async {
-        if (request.method == 'POST') {
-          writes++;
-          return meetingApiFailure(500, 'INTERNAL_ERROR');
-        }
-        reads++;
-        if (reads == 2) return meetingApiFailure(503, 'INTERNAL_ERROR');
-        return meetingApiSuccess(
-          itemJson(status: reads == 1 ? 'OPEN' : status, version: reads),
-          headers: {'etag': '"v$reads"'},
+    test(
+      'unknown completion observes $status without claiming success',
+      () async {
+        var reads = 0;
+        var writes = 0;
+        final client = MeetingTestHttpClient((request) async {
+          if (request.method == 'POST') {
+            writes++;
+            return meetingApiFailure(500, 'INTERNAL_ERROR');
+          }
+          reads++;
+          if (reads == 2) return meetingApiFailure(503, 'INTERNAL_ERROR');
+          return meetingApiSuccess(
+            itemJson(status: reads == 1 ? 'OPEN' : status, version: reads),
+            headers: {'etag': '"v$reads"'},
+          );
+        });
+        final detail = controllerFor(await repositoryFor(client));
+        await detail.refresh();
+        final reviewed = detail.snapshot!;
+        expect(
+          await detail.command(ActionItemCommand.complete, reviewed: reviewed),
+          isFalse,
         );
-      });
-      final detail = controllerFor(await repositoryFor(client));
-      await detail.refresh();
-      final reviewed = detail.snapshot!;
-      expect(
-        await detail.command(ActionItemCommand.complete, reviewed: reviewed),
-        isFalse,
-      );
-      expect(detail.lifecycleOperation!.phase, ActionItemLifecyclePhase.unknown);
-      expect(detail.lifecycleOperation!.observedStatus, isNull);
-      expect(detail.revalidationRequired, isTrue);
-      expect(
-        await detail.command(ActionItemCommand.complete, reviewed: reviewed),
-        isFalse,
-      );
-      await detail.refresh();
-      expect(detail.revalidationRequired, isFalse);
-      expect(detail.lifecycleOperation!.phase, ActionItemLifecyclePhase.unknown);
-      expect(detail.lifecycleOperation!.observedStatus!.apiValue, status);
-      expect(writes, 1);
-    });
+        expect(
+          detail.lifecycleOperation!.phase,
+          ActionItemLifecyclePhase.unknown,
+        );
+        expect(detail.lifecycleOperation!.observedStatus, isNull);
+        expect(detail.revalidationRequired, isTrue);
+        expect(
+          await detail.command(ActionItemCommand.complete, reviewed: reviewed),
+          isFalse,
+        );
+        await detail.refresh();
+        expect(detail.revalidationRequired, isFalse);
+        expect(
+          detail.lifecycleOperation!.phase,
+          ActionItemLifecyclePhase.unknown,
+        );
+        expect(detail.lifecycleOperation!.observedStatus!.apiValue, status);
+        expect(writes, 1);
+      },
+    );
   }
 
-  test('missing precondition and validation failures close freshness', () async {
-    for (final status in [428, 422]) {
-      var reads = 0;
-      final client = MeetingTestHttpClient((request) async {
-        if (request.method == 'POST') {
-          return meetingApiFailure(status, 'ACTION_ITEM_INVALID_TRANSITION');
-        }
-        reads++;
-        if (reads > 1) return meetingApiFailure(503, 'INTERNAL_ERROR');
-        return meetingApiSuccess(
-          proposal(assigneeId: testUserId),
-          headers: {'etag': '"v1"'},
+  test(
+    'missing precondition and validation failures close freshness',
+    () async {
+      for (final status in [428, 422]) {
+        var reads = 0;
+        final client = MeetingTestHttpClient((request) async {
+          if (request.method == 'POST') {
+            return meetingApiFailure(status, 'ACTION_ITEM_INVALID_TRANSITION');
+          }
+          reads++;
+          if (reads > 1) return meetingApiFailure(503, 'INTERNAL_ERROR');
+          return meetingApiSuccess(
+            proposal(assigneeId: testUserId),
+            headers: {'etag': '"v1"'},
+          );
+        });
+        final detail = controllerFor(await repositoryFor(client));
+        await detail.refresh();
+        final reviewed = detail.snapshot!;
+        expect(
+          await detail.command(ActionItemCommand.confirm, reviewed: reviewed),
+          isFalse,
         );
-      });
-      final detail = controllerFor(await repositoryFor(client));
-      await detail.refresh();
-      final reviewed = detail.snapshot!;
-      expect(
-        await detail.command(ActionItemCommand.confirm, reviewed: reviewed),
-        isFalse,
-      );
-      expect(reads, 2);
-      expect(detail.revalidationRequired, isTrue);
-      expect(detail.unresolved, isFalse);
-      expect(detail.lifecycleOperation!.phase, ActionItemLifecyclePhase.rejected);
-      expect(
-        detail.canExecuteCommand(ActionItemCommand.confirm, reviewed),
-        isFalse,
-      );
-    }
-  });
+        expect(reads, 2);
+        expect(detail.revalidationRequired, isTrue);
+        expect(detail.unresolved, isFalse);
+        expect(
+          detail.lifecycleOperation!.phase,
+          ActionItemLifecyclePhase.rejected,
+        );
+        expect(
+          detail.canExecuteCommand(ActionItemCommand.confirm, reviewed),
+          isFalse,
+        );
+      }
+    },
+  );
 
   test('semantic command mismatch is ambiguous, not success', () async {
     final client = MeetingTestHttpClient((request) async {
