@@ -480,7 +480,8 @@ Future<void> _fillContextualCreation(WidgetTester tester) async {
   );
   await pumpUntil(
     tester,
-    () => find.widgetWithText(OutlinedButton, 'Current meeting')
+    () => find
+        .widgetWithText(OutlinedButton, 'Current meeting')
         .evaluate()
         .isNotEmpty,
     reason: 'verified contextual meeting',
@@ -488,7 +489,7 @@ Future<void> _fillContextualCreation(WidgetTester tester) async {
   final meeting = find.widgetWithText(OutlinedButton, 'Current meeting');
   expect(tester.widget<OutlinedButton>(meeting).onPressed, isNull);
   await tester.enterText(find.byType(TextFormField).first, 'Contextual task');
-  tester.testTextInput.receiveAction(TextInputAction.done);
+  await tester.testTextInput.receiveAction(TextInputAction.done);
   await tester.pumpAndSettle();
   final assignee = find.text('Chọn người phụ trách *');
   await tester.ensureVisible(assignee);
@@ -542,12 +543,9 @@ void main() {
       }
       expect(request.url.path, endsWith('/action-items'));
       expect(request.url.queryParameters['meetingId'], testMeetingId);
-      return meetingApiSuccess(
-        [
-          if (writes.isNotEmpty) {...itemJson(), 'title': 'Contextual task'},
-        ],
-        meta: pageMeta(total: writes.isEmpty ? 0 : 1),
-      );
+      return meetingApiSuccess([
+        if (writes.isNotEmpty) {...itemJson(), 'title': 'Contextual task'},
+      ], meta: pageMeta(total: writes.isEmpty ? 0 : 1));
     });
     await _mountActionResults(tester, client);
     final create = find.byTooltip('Tạo công việc');
@@ -589,10 +587,9 @@ void main() {
       if (request.url.path.endsWith('/creation-meetings')) {
         reads++;
         if (reads == 3) return pending.future;
-        return meetingApiSuccess(
-          [_creationMeeting(testMeetingId)],
-          meta: pageMeta(),
-        );
+        return meetingApiSuccess([
+          _creationMeeting(testMeetingId),
+        ], meta: pageMeta());
       }
       if (request.method == 'POST') {
         writes++;
@@ -618,10 +615,9 @@ void main() {
       const ResultsCapabilities(canRead: false, canMutate: false),
     );
     pending.complete(
-      await meetingApiSuccess(
-        [_creationMeeting(testMeetingId)],
-        meta: pageMeta(),
-      ),
+      await meetingApiSuccess([
+        _creationMeeting(testMeetingId),
+      ], meta: pageMeta()),
     );
     await pumpUntil(
       tester,
@@ -768,6 +764,7 @@ void main() {
       () => find.text('Current Action Item').evaluate().isNotEmpty,
       reason: 'fresh Action Item detail',
     );
+    await tester.pumpAndSettle();
     expect(reads, 1);
     expect(find.text('Older Minutes title'), findsNothing);
     expect(tester.takeException(), isNull);

@@ -31,7 +31,7 @@ void main() {
   testWidgets('Dashboard metric reuses global collection and clears filters', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(1000, 1400);
+    tester.view.physicalSize = const Size(650, 1400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -65,10 +65,9 @@ void main() {
       }
       if (path.endsWith('/action-items')) {
         queries.add(request.url.queryParameters);
-        return meetingApiSuccess(
-          [itemJson(restricted: restricted)],
-          meta: pageMeta(),
-        );
+        return meetingApiSuccess([
+          itemJson(restricted: restricted),
+        ], meta: pageMeta());
       }
       if (path.endsWith('/meetings/$testMeetingId')) {
         meetingReads++;
@@ -201,15 +200,17 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.byType(ResultsPanel), findsNothing);
+    expect(find.text('Không thể truy cập cuộc họp'), findsOneWidget);
     await tester.pageBack();
     await tester.pumpAndSettle();
-    await tester.pageBack();
+    await tester.tap(find.byTooltip('Quay lại'));
     await tester.pumpAndSettle();
     restricted = true;
     await tester.tap(find.text('Send report'));
     await pumpUntil(
       tester,
-      () => find.textContaining('Cuộc họp giới hạn quyền').evaluate().isNotEmpty,
+      () =>
+          find.textContaining('Cuộc họp giới hạn quyền').evaluate().isNotEmpty,
       reason: 'restricted verified detail',
     );
     expect(openMeeting, findsNothing);

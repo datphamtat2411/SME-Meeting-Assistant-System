@@ -135,26 +135,29 @@ void main() {
     expect(pages, [0, 1]);
   });
 
-  test('exact lookup returns absent only after exhausting the search', () async {
-    final pages = <int>[];
-    final client = MeetingTestHttpClient((request) async {
-      final page = int.parse(request.url.queryParameters['page']!);
-      pages.add(page);
-      return meetingApiSuccess(
-        page == 0 ? _titleMatches() : [_eligibleMeeting(testRoomId)],
-        meta: _eligiblePageMeta(page, 21),
+  test(
+    'exact lookup returns absent only after exhausting the search',
+    () async {
+      final pages = <int>[];
+      final client = MeetingTestHttpClient((request) async {
+        final page = int.parse(request.url.queryParameters['page']!);
+        pages.add(page);
+        return meetingApiSuccess(
+          page == 0 ? _titleMatches() : [_eligibleMeeting(testRoomId)],
+          meta: _eligiblePageMeta(page, 21),
+        );
+      });
+      final repository = await repositoryFor(client);
+      expect(
+        await repository.findCreationMeeting(
+          testMeetingId,
+          sessionScope: repository.captureSession(),
+        ),
+        isNull,
       );
-    });
-    final repository = await repositoryFor(client);
-    expect(
-      await repository.findCreationMeeting(
-        testMeetingId,
-        sessionScope: repository.captureSession(),
-      ),
-      isNull,
-    );
-    expect(pages, [0, 1]);
-  });
+      expect(pages, [0, 1]);
+    },
+  );
 
   test('exact lookup fails on inconsistent pagination', () async {
     final client = MeetingTestHttpClient((request) async {
@@ -180,10 +183,7 @@ void main() {
     final client = MeetingTestHttpClient((request) async {
       reads++;
       allowed = false;
-      return meetingApiSuccess(
-        _titleMatches(),
-        meta: _eligiblePageMeta(0, 21),
-      );
+      return meetingApiSuccess(_titleMatches(), meta: _eligiblePageMeta(0, 21));
     });
     final repository = await repositoryFor(client);
     await expectLater(
