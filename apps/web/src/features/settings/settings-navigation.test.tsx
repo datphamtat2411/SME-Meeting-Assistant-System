@@ -89,8 +89,12 @@ const preferences = {
 }
 
 function mockSettingsReads() {
+  vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+    data: profile,
+    etag: '"profile-v1"',
+    meta: {},
+  })
   return vi.spyOn(coreApi, 'get').mockImplementation((url) => {
-    if (url === '/me/profile') return Promise.resolve(profile) as never
     if (url === '/me/preferences') return Promise.resolve(preferences) as never
     return Promise.reject(new Error('Unexpected GET: ' + url)) as never
   })
@@ -203,7 +207,10 @@ describe('settings navigation and cleanup', () => {
     await expect
       .element(screen.getByRole('switch', { name: 'Action item emails' }))
       .toHaveAttribute('aria-checked', 'false')
-    expect(get.mock.calls.map(([url]) => url)).toContain('/me/profile')
+    expect(coreApi.getWithMetaAndEtag).toHaveBeenCalledWith(
+      '/me/profile',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
     expect(get.mock.calls.map(([url]) => url)).toContain('/me/preferences')
     await expect.element(screen.getByText('Username')).not.toBeInTheDocument()
     await expect
@@ -216,12 +223,16 @@ describe('settings navigation and cleanup', () => {
 
   it('saves profile changes through the API and invalidates identity data', async () => {
     mockSettingsReads()
-    const patch = vi.spyOn(coreApi, 'patch')
+    const patch = vi.spyOn(coreApi, 'patchWithMetaAndEtag')
     patch.mockImplementation((url, value) => {
       if (url === '/me/profile') {
         return Promise.resolve({
-          ...profile,
-          displayName: (value as { displayName: string }).displayName,
+          data: {
+            ...profile,
+            displayName: (value as { displayName: string }).displayName,
+          },
+          etag: '"profile-v2"',
+          meta: {},
         }) as never
       }
       return Promise.reject(new Error('Unexpected PATCH: ' + url)) as never
@@ -238,9 +249,11 @@ describe('settings navigation and cleanup', () => {
     await userEvent.click(save)
 
     await vi.waitFor(() =>
-      expect(patch).toHaveBeenCalledWith('/me/profile', {
-        displayName: 'Updated Employee',
-      })
+      expect(patch).toHaveBeenCalledWith(
+        '/me/profile',
+        { displayName: 'Updated Employee' },
+        { headers: { 'If-Match': '"profile-v1"' } }
+      )
     )
     await vi.waitFor(() =>
       expect(invalidate).toHaveBeenCalledWith({
@@ -303,7 +316,7 @@ describe('settings navigation and cleanup', () => {
 
   it('shows an API failure and supports a real retry instead of hiding it', async () => {
     const get = vi
-      .spyOn(coreApi, 'get')
+      .spyOn(coreApi, 'getWithMetaAndEtag')
       .mockRejectedValueOnce(
         new CoreApiError({
           message: 'Profile service unavailable',
@@ -312,7 +325,7 @@ describe('settings navigation and cleanup', () => {
           kind: 'server',
         })
       )
-      .mockResolvedValueOnce(profile as never)
+      .mockResolvedValueOnce({ data: profile, etag: '"profile-v1"', meta: {} })
     const { screen } = await renderApiSettings(<ProfileForm />)
 
     await expect
