@@ -173,6 +173,9 @@ void main() {
         () => find.text('Thử xác minh lại').evaluate().isNotEmpty,
         reason: 'verification remains fail-closed',
       );
+      // The deferred link from the invalidated protected context is gone.
+      expect(find.textContaining('Hãy mở lại email'), findsOneWidget);
+      expect(proceed, findsNothing);
       await delivery.send(
         'https://meeting.example.invalid/account-setup#token=during-gate',
       );
@@ -189,13 +192,21 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Đặt lại mật khẩu thành công'), findsOneWidget);
       expect(find.text('Kích hoạt tài khoản'), findsNothing);
-      expect(find.textContaining('Hãy mở lại email'), findsOneWidget);
+      // A fresh delivery during verification is still deferred until the
+      // original terminal outcome is acknowledged.
+      expect(tester.widget<TextButton>(proceed).onPressed, isNull);
       expect(_credentialRequests(harness.client), hasLength(1));
       await tester.ensureVisible(find.text('Tiếp tục phiên hiện tại'));
       await tester.tap(find.text('Tiếp tục phiên hiện tại'));
       await tester.pumpAndSettle();
       expect(harness.api.signedIn, isTrue);
       expect(await _readRefreshCredential(credentials), 'refresh-1');
+      expect(_credentialRequests(harness.client), hasLength(1));
+      expect(find.text('Kích hoạt tài khoản'), findsNothing);
+      expect(tester.widget<TextButton>(proceed).onPressed, isNotNull);
+      await tester.tap(proceed);
+      await tester.pumpAndSettle();
+      expect(find.text('Kích hoạt tài khoản'), findsOneWidget);
       expect(_credentialRequests(harness.client), hasLength(1));
       await tester.pumpWidget(const SizedBox.shrink());
     },

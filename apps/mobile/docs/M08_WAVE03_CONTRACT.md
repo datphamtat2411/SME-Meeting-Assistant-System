@@ -43,7 +43,10 @@ finish the operation before continuing a deferred link. Active recording,
 import, submission/upload and unsafe session transitions block entry.
 The same guards are rechecked before credential mutation dispatch. Existing
 session containment remains authoritative even when work is active.
-Incompatible session navigation changes discard stale link context.
+Incompatible session navigation changes discard stale link context. A fresh
+link received during the verification gate remains deferred; after successful
+verification it cannot replace the terminal outcome and requires explicit
+continuation after that outcome is acknowledged.
 Deferred links are not restored from persistent storage or auto-opened on idle.
 
 The account route reuses Wave 02 credential workflows; the host continues to
