@@ -11,11 +11,11 @@ import {
   resetCsrfToken,
   setCsrfToken,
 } from '@/lib/core-api'
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import {
   beginAuthLifecycleLogout,
   resetAuthLifecycleAfterSignIn,
 } from '@/features/auth/session/auth-lifecycle'
-import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import type { AssistantSelection } from './assistant-selection'
 import { AssistantPage } from './index'

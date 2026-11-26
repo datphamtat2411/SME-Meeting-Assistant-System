@@ -14,7 +14,7 @@ import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { coreApi } from '@/lib/core-api'
 import {
-  calendarMonthKey,
+  currentCalendarMonth,
   isCalendarSearchCanonical,
   normalizeCalendarSearch,
   resolveCalendarState,
@@ -65,12 +65,12 @@ function CalendarRouterHarness() {
         {`${state.monthKey}|${state.view}|${serializedFilters}`}
       </output>
       <CalendarToolbar
-        month={state.month}
+        month={state.monthKey}
         view={state.view}
         filters={state.filters}
         onNavigateMonth={(offset) =>
           update({
-            month: calendarMonthKey(shiftCalendarMonth(state.month, offset)),
+            month: shiftCalendarMonth(state.monthKey, offset),
           })
         }
         onToday={() => update({ month: undefined })}
@@ -165,7 +165,7 @@ describe('Calendar router state', () => {
       '/calendar?month=2026-13&view=week&relationship=organization&status=PROCESSING&roomId=%20%20&q=%20%20'
     )
     const screen = await renderCalendarRouter(router)
-    const expectedMonth = calendarMonthKey(new Date())
+    const expectedMonth = currentCalendarMonth()
 
     await expect
       .element(screen.getByTestId('calendar-router-state'))

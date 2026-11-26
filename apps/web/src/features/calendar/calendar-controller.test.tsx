@@ -55,7 +55,7 @@ function apiPage(
 
 function CalendarDataProbe({ q }: { q?: string }) {
   const data = useCalendarMeetingData({
-    month: new Date(2026, 10, 1),
+    month: '2026-11',
     filters: { relationship: 'all', ...(q ? { q } : {}) },
   })
 
@@ -90,7 +90,7 @@ function CalendarDataProbe({ q }: { q?: string }) {
 function CalendarFilterSwitchProbe() {
   const [q, setQ] = useState('first-filter')
   const data = useCalendarMeetingData({
-    month: new Date(2026, 10, 1),
+    month: '2026-11',
     filters: { relationship: 'all', q },
   })
   return (

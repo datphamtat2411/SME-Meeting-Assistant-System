@@ -562,6 +562,7 @@ function MeetingEditSession({
   }
 
   const setFailure = (error: unknown, operation: string) => {
+    clearPreview()
     setBackendFieldErrors(error)
     const normalized = normalizeCoreApiError(error)
     setErrorMessage(
@@ -869,11 +870,39 @@ function MeetingEditSession({
         return
       }
 
-      if (
-        patchedResult &&
-        (await reviewIfSnapshotChanged(patchedResult, scheduleIntent))
-      ) {
-        return
+      if (patchedResult) {
+        const confirmed = patchedResult.meeting
+        if (
+          (confirmed.roomId ?? undefined) !== candidate.roomId ||
+          !sameOffsetDateTime(
+            confirmed.scheduledStartAt,
+            candidate.schedule.scheduledStartAt
+          ) ||
+          !sameOffsetDateTime(
+            confirmed.scheduledEndAt,
+            candidate.schedule.scheduledEndAt
+          )
+        ) {
+          clearPreview()
+          setLatestDetail(patchedResult)
+          setErrorMessage(
+            'Draft changes were saved, but the confirmed schedule or room differs from the checked values. Review the latest draft before scheduling.'
+          )
+          setPhase('idle')
+          operationInFlight.current = false
+          return
+        }
+        form.reset(
+          toMeetingEditFormValues(
+            confirmed,
+            scheduleTimezone,
+            form.getValues('fallbackRequired'),
+            form.getValues('fallbackAcknowledged')
+          )
+        )
+        if (await reviewIfSnapshotChanged(patchedResult, scheduleIntent)) {
+          return
+        }
       }
       setPhase('scheduling')
       const scheduled = await scheduleMeeting(base.meeting.id, mutationEtag, {
@@ -1427,7 +1456,7 @@ function MeetingEditSession({
               ) : null}
               {phase === 'saving' ? 'Saving...' : 'Save changes'}
             </Button>
-            {workingMeeting.status === 'DRAFT' && (
+            {(latestDetail?.meeting.status ?? workingMeeting.status) === 'DRAFT' && (
               <Button
                 type='button'
                 onClick={handleSaveAndScheduleClick}

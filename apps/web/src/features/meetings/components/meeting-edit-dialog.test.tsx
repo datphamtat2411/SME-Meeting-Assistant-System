@@ -480,6 +480,7 @@ describe('MeetingEditDialog', () => {
   })
 
   it('PATCHes a DRAFT before scheduling and uses the refreshed ETag', async () => {
+    await setBrowserTimeZone(vietnamTimeZone)
     mockRoomQueries()
     const scheduled = {
       ...draftMeeting,
@@ -557,6 +558,64 @@ describe('MeetingEditDialog', () => {
       },
       { headers: { 'If-Match': 'etag-after-patch' } }
     )
+  })
+
+  it('requires review when a draft PATCH confirms a different interval than the preview', async () => {
+    await setBrowserTimeZone(utcTimeZone)
+    mockRoomQueries()
+    const confirmed = {
+      ...draftMeeting,
+      title: 'Scheduled draft',
+      scheduledStartAt: '2026-09-01T09:00:00.000Z',
+      scheduledEndAt: '2026-09-01T11:00:00.000Z',
+    }
+    vi.spyOn(coreApi, 'patchWithMetaAndEtag').mockResolvedValueOnce({
+      data: confirmed,
+      meta: {},
+      etag: 'etag-after-patch',
+    })
+    const scheduleSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
+    vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
+          <MeetingEditDialog
+            open
+            onOpenChange={vi.fn()}
+            meeting={draftMeeting}
+            etag='etag-current'
+          />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Scheduled draft'
+    )
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
+    await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
+    await userEvent.fill(screen.getByLabelText('End time'), '10:00')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save & Schedule' })
+    )
+
+    await expect
+      .element(screen.getByText(/confirmed schedule or room differs/))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Review and keep my edits' }))
+      .toBeEnabled()
+    expect(scheduleSpy).not.toHaveBeenCalled()
   })
 
   it('reschedules SCHEDULED meetings through PATCH without calling /schedule', async () => {

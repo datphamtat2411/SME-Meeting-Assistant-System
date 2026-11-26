@@ -121,7 +121,7 @@ const segment = (
 
 describe('Calendar toolbar', () => {
   const baseProps = {
-    month: new Date(2026, 11, 1),
+    month: '2026-12',
     view: 'month' as const,
     filters: { relationship: 'all' as const },
     onNavigateMonth: vi.fn(),
@@ -221,7 +221,7 @@ describe('Calendar month view', () => {
   it('shows a month-shaped skeleton while the first page is loading', async () => {
     const screen = await render(
       <CalendarMonthView
-        month={new Date(2026, 10, 1)}
+        month='2026-11'
         segments={[]}
         state={{ kind: 'loading' }}
       />
@@ -237,7 +237,6 @@ describe('Calendar month view', () => {
   })
 
   it('renders a Monday-first month grid, selected-day interaction, and accessible overflow', async () => {
-    const date = new Date(2026, 10, 1)
     const meetings = Array.from({ length: 5 }, (_, index) =>
       (() => {
         const startHour = String(9 + index).padStart(2, '0')
@@ -256,7 +255,7 @@ describe('Calendar month view', () => {
     const onDaySelect = vi.fn()
     const screen = await render(
       <CalendarMonthView
-        month={date}
+        month='2026-11'
         segments={segments}
         state={readyState({
           loadedCount: 5,
@@ -299,7 +298,7 @@ describe('Calendar month view', () => {
   it('marks adjacent-month dates as not loaded rather than empty scheduling days', async () => {
     const screen = await render(
       <CalendarMonthView
-        month={new Date(2026, 10, 1)}
+        month='2026-11'
         segments={[]}
         state={readyState()}
       />
@@ -315,7 +314,7 @@ describe('Calendar agenda view', () => {
   it('shows agenda-shaped placeholders while the first page is loading', async () => {
     const screen = await render(
       <CalendarAgendaView
-        month={new Date(2026, 10, 1)}
+        month='2026-11'
         segments={[]}
         state={{ kind: 'loading' }}
       />
@@ -382,7 +381,7 @@ describe('Calendar agenda view', () => {
     ]
     const screen = await render(
       <CalendarAgendaView
-        month={new Date(2026, 10, 1)}
+        month='2026-11'
         segments={segments}
         state={readyState({ loadedCount: 1, totalCount: 1 })}
       />
@@ -439,7 +438,7 @@ describe('Calendar agenda view', () => {
   it('does not show an empty state for failed or incomplete requests', async () => {
     const failed = await render(
       <CalendarAgendaView
-        month={new Date(2026, 10, 1)}
+        month='2026-11'
         segments={[]}
         state={{
           kind: 'error',
@@ -458,7 +457,7 @@ describe('Calendar agenda view', () => {
     const onRetry = vi.fn()
     const screen = await render(
       <CalendarAgendaView
-        month={new Date(2026, 10, 1)}
+        month='2026-11'
         segments={[]}
         state={readyState({
           loadedCount: 1,
@@ -485,7 +484,7 @@ describe('Calendar agenda view', () => {
   it('describes the default empty state as the accessible result set', async () => {
     const screen = await render(
       <CalendarAgendaView
-        month={new Date(2026, 10, 1)}
+        month='2026-11'
         segments={[]}
         state={readyState({ loadedCount: 0, totalCount: 0 })}
       />
