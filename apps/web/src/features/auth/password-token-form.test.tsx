@@ -10,11 +10,13 @@ import { SignUp } from './sign-up'
 const completeAccountSetup = vi.hoisted(() => vi.fn())
 const resetAccountPassword = vi.hoisted(() => vi.fn())
 const requestSessionRevalidation = vi.hoisted(() => vi.fn())
+const retrySessionRevalidation = vi.hoisted(() => vi.fn())
+const sessionState = vi.hoisted(() => ({ value: 'unauthenticated' }))
 
 vi.mock('./session/session-revalidation', () => ({
   requestSessionRevalidation,
-  retrySessionRevalidation: vi.fn(),
-  useSessionRevalidation: () => 'unauthenticated',
+  retrySessionRevalidation,
+  useSessionRevalidation: () => sessionState.value,
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -47,6 +49,7 @@ describe('password-token callback surfaces', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    sessionState.value = 'unauthenticated'
     completeAccountSetup.mockResolvedValue(undefined)
     resetAccountPassword.mockResolvedValue(undefined)
   })
@@ -144,6 +147,48 @@ describe('password-token callback surfaces', () => {
     expect(completeAccountSetup).not.toHaveBeenCalled()
     expect(requestSessionRevalidation).toHaveBeenCalledOnce()
     expect(window.location.hash).toBe('')
+  })
+
+  it('reconciles a dispatched reset even after the callback is abandoned', async () => {
+    let finish!: () => void
+    resetAccountPassword.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { finish = resolve })
+    )
+    window.history.replaceState({}, '', '/reset-password#token=abandoned')
+    const screen = await render(<PasswordReset />)
+    const password = 'a sufficiently long reset password'
+    await userEvent.fill(screen.getByLabelText('New password'), password)
+    await userEvent.fill(screen.getByLabelText('Confirm password'), password)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reset password' })
+    )
+    await expect.poll(() => resetAccountPassword.mock.calls.length).toBe(1)
+    await screen.unmount()
+    finish()
+    await expect.poll(() => requestSessionRevalidation.mock.calls.length).toBe(1)
+  })
+
+  it('keeps confirmed reset completion when session verification is unavailable', async () => {
+    sessionState.value = 'unavailable'
+    window.history.replaceState({}, '', '/reset-password#token=unavailable')
+    const screen = await render(<PasswordReset />)
+    const password = 'a sufficiently long reset password'
+    await userEvent.fill(screen.getByLabelText('New password'), password)
+    await userEvent.fill(screen.getByLabelText('Confirm password'), password)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reset password' })
+    )
+    await expect
+      .element(screen.getByRole('status'))
+      .toHaveTextContent(/password was set successfully/i)
+    await expect
+      .element(screen.getByText(/browser session could not be verified/i))
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retry session verification' })
+    )
+    expect(retrySessionRevalidation).toHaveBeenCalledOnce()
+    expect(resetAccountPassword).toHaveBeenCalledOnce()
   })
 
   it('revalidates after an uncertain reset without permitting another submission', async () => {

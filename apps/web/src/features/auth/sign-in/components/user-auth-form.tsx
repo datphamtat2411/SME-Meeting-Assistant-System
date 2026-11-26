@@ -91,7 +91,13 @@ export function UserAuthForm({
           'Too many sign-in attempts. Please wait a moment and try again.'
         )
       } else if (apiError.code === 'SESSION_COORDINATION_TIMEOUT') {
-        setSubmitError('Another session operation is still in progress. Try again shortly.')
+        setSubmitError(
+          'Another session operation is still in progress. Try again shortly.'
+        )
+      } else if (apiError.code === 'RECOVERY_UNAVAILABLE') {
+        setSubmitError(
+          'Secure session coordination is unavailable. Reopen the app in a supported browser.'
+        )
       } else if (apiError.isNetworkError) {
         setSubmitError(
           'Unable to connect to the service. Check your connection and try again.'

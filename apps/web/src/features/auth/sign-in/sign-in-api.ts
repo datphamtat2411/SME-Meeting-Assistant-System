@@ -88,6 +88,13 @@ export async function signIn(
         kind: 'network',
       })
     }
+    if (error instanceof Error && 'code' in error && error.code === 'RECOVERY_UNAVAILABLE') {
+      throw new CoreApiError({
+        message: 'Secure session coordination is unavailable in this browser.',
+        code: 'RECOVERY_UNAVAILABLE',
+        kind: 'network',
+      })
+    }
     throw error
   } finally {
     clearTimeout(timer)

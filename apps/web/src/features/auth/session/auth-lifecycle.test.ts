@@ -96,6 +96,25 @@ describe('auth lifecycle coordinator', () => {
     coordinator.dispose()
   })
 
+  it('establishes a new recovery barrier for logout after a new sign-in', async () => {
+    const beginRecoveryBarrier = vi.fn(() => immediateBarrier())
+    const coordinator = createAuthLifecycleCoordinator(
+      {
+        logout: async () => undefined,
+        beginRecoveryBarrier,
+        withRecoveryLock: async (callback) => callback(),
+      },
+      { broadcast: null, storage: null, storageEventTarget: null }
+    )
+
+    await coordinator.startLogout()
+    coordinator.resetAfterSignIn()
+    await coordinator.startLogout()
+
+    expect(beginRecoveryBarrier).toHaveBeenCalledTimes(2)
+    coordinator.dispose()
+  })
+
   it('keeps an unconfirmed operation retryable without claiming revocation', async () => {
     const logout = vi
       .fn<() => Promise<void>>()

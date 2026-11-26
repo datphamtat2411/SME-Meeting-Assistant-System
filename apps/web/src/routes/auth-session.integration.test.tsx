@@ -29,6 +29,10 @@ import {
   resetAuthLifecycleAfterSignIn,
 } from '@/features/auth/session/auth-lifecycle'
 import { currentUserQueryKey } from '@/features/auth/session/current-user'
+import {
+  configureSessionRevalidation,
+  revalidateBrowserSession,
+} from '@/features/auth/session/session-revalidation'
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -457,6 +461,69 @@ describe('session restoration and protected routing', () => {
     await expect
       .element(screen.getByRole('button', { name: 'Save member' }))
       .toBeDisabled()
+  })
+
+  it('shields a mounted draft during mandatory verification and restores it only for the same context', async () => {
+    const administrator = {
+      ...identity,
+      globalRole: 'ADMINISTRATOR' as const,
+      directoryManagementScope: { allUnits: true, unitIds: [] },
+    }
+    getCurrentUser.mockResolvedValue(administrator as never)
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (_url, config) =>
+      emptyPage(
+        Number(config?.params?.page ?? 0),
+        Number(config?.params?.size ?? 20)
+      )
+    )
+    const { queryClient, screen } = await renderRoute('/members')
+    const dispose = configureSessionRevalidation({
+      queryClient,
+      onContainment: () => queryClient.clear(),
+      onChanged: () => undefined,
+    })
+
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    try {
+      await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
+      const name = screen.getByRole('textbox', { name: 'Name' })
+      await userEvent.fill(name, 'Private unsaved draft')
+      getCurrentUser.mockImplementationOnce(async () => {
+        await pending
+        return administrator as never
+      })
+
+      const checking = revalidateBrowserSession()
+      try {
+        await expect
+          .element(screen.getByText('Checking your session'))
+          .toBeVisible()
+        await expect
+          .element(screen.getByRole('dialog', { name: 'Create account' }))
+          .not.toBeVisible()
+        await expect
+          .element(screen.getByRole('heading', { name: 'Members' }))
+          .not.toBeVisible()
+      } finally {
+        release()
+        await checking
+      }
+      await expect.element(name).toHaveValue('Private unsaved draft')
+
+      getCurrentUser.mockResolvedValue(identity as never)
+      await revalidateBrowserSession()
+      await expect
+        .element(screen.getByRole('dialog', { name: 'Create account' }))
+        .not.toBeInTheDocument()
+      await expect.element(screen.getByText('Access Forbidden')).toBeVisible()
+    } finally {
+      dispose()
+      resetAuthLifecycleAfterSignIn()
+      await screen.unmount()
+    }
   })
 
   it.each([

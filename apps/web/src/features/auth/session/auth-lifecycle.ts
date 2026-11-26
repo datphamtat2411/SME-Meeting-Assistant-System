@@ -549,6 +549,7 @@ export function createAuthLifecycleCoordinator(
     },
 
     resetAfterSignIn() {
+      barrier = undefined
       state = 'idle'
       operationId = undefined
       generation += 1

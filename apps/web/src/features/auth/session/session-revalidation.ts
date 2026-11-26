@@ -185,11 +185,12 @@ export function beginBrowserSessionSignIn(): (completed: boolean) => void {
 /** Runs outside the reset form so navigation cannot suppress reconciliation. */
 export function revalidateBrowserSession(): Promise<void> {
   const config = options
-  if (!config || isAuthLifecycleBlocking()) return Promise.resolve()
+  if (!config) return Promise.resolve()
   if (signInPending) {
     deferredRevalidation = true
     return signInPending
   }
+  if (isAuthLifecycleBlocking()) return Promise.resolve()
   const ticket = ++revision
   const lifecycleGeneration = getRequestRecoveryGeneration()
   const barrier = beginRequestRecoveryRevalidation()

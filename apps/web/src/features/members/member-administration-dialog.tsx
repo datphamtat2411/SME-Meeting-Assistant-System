@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import type { FieldErrors } from '@/lib/core-api'
@@ -178,8 +178,16 @@ export function MemberAdministrationDialog({
     mode: 'onSubmit',
   })
 
+  const initializedSession = useRef<MemberEditorSession | null | undefined>(undefined)
   useEffect(() => {
-    if (session && session.phase !== 'ready') return
+    if (session && session.phase !== 'ready') {
+      initializedSession.current = undefined
+      return
+    }
+    // React Activity reconnects effects after temporary session verification.
+    // Reinitialize only for a new editor session, not an effect reconnect.
+    if (initializedSession.current === session) return
+    initializedSession.current = session
     const initialValues =
       session?.mode === 'edit' &&
       session.status === 'ready' &&

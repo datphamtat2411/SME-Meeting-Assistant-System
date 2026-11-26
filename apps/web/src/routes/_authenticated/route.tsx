@@ -88,13 +88,21 @@ export const Route = createFileRoute('/_authenticated')({
 // eslint-disable-next-line react-refresh/only-export-components
 function AuthenticatedRoute() {
   const { currentUser } = Route.useRouteContext()
+  const queryClient = useQueryClient()
   const lifecycleState = useAuthLifecycleState()
   const verification = useCurrentUserVerification()
   const revalidation = useSessionRevalidation()
-  const verifiedUser = verification.identity ?? currentUser
-  const verifiedIdentity = verification.isVerified
-    ? verification.identity
-    : undefined
+  const cachedUser = queryClient.getQueryData<AuthContext>(currentUserQueryKey)
+  const verifiedUser =
+    revalidation === 'verified' && cachedUser
+      ? cachedUser
+      : (verification.identity ?? currentUser)
+  const verifiedIdentity =
+    verification.isVerified &&
+    verification.identity &&
+    getSessionContextKey(verification.identity) === getSessionContextKey(verifiedUser)
+      ? verification.identity
+      : undefined
 
   if (lifecycleState !== 'idle') {
     return (
@@ -121,7 +129,7 @@ function AuthenticatedRoute() {
   const shielded =
     revalidation === 'checking' || revalidation === 'unavailable'
   // Do not mount a stale route context if the cache has already been contained.
-  if (shielded && !verification.identity) {
+  if (shielded && !cachedUser) {
     return (
       <SessionGate
         state={revalidation === 'checking' ? 'pending' : 'unavailable'}
@@ -133,10 +141,14 @@ function AuthenticatedRoute() {
   return (
     <>
       <Activity
-        key={getSessionContextKey(verifiedUser)}
+        key={getSessionContextKey(shielded && cachedUser ? cachedUser : verifiedUser)}
         mode={shielded ? 'hidden' : 'visible'}
       >
-        <div className='contents' inert={shielded} aria-hidden={shielded || undefined}>
+        <div
+          className='contents'
+          inert={shielded}
+          aria-hidden={shielded || undefined}
+        >
           <AuthenticatedLayout
             user={toUserPresentation(verifiedUser)}
             identity={verifiedIdentity}

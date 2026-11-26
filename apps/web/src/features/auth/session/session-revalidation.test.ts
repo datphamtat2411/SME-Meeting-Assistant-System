@@ -9,13 +9,19 @@ import {
 } from '@/lib/core-api'
 import { isSessionRevalidationRequired, RECOVERY_LOCK_NAME } from '@/lib/request-recovery'
 import { signIn } from '../sign-in/sign-in-api'
-import { resetAuthLifecycleAfterSignIn } from './auth-lifecycle'
+import {
+  beginAuthLifecycleLogout,
+  configureAuthLifecycle,
+  resetAuthLifecycleAfterSignIn,
+  SESSION_REVALIDATION_STORAGE_KEY,
+} from './auth-lifecycle'
 import { currentUserQueryKey, type AuthContext } from './current-user'
 import {
   configureSessionRevalidation,
   getSessionRevalidationState,
   revalidateBrowserSession,
   retrySessionRevalidation,
+  waitForSessionRevalidation,
 } from './session-revalidation'
 
 const identity: AuthContext = {
@@ -100,6 +106,7 @@ describe('mandatory browser-session revalidation', () => {
 
   afterEach(() => {
     dispose()
+    configureAuthLifecycle({})
     resetAuthLifecycleAfterSignIn()
     resetCsrfToken()
     coreApiAxios.defaults.adapter = originalAdapter
@@ -286,6 +293,64 @@ describe('mandatory browser-session revalidation', () => {
     expect(requests.indexOf('/auth/refresh')).toBeLessThan(requests.indexOf('/auth/login'))
     expect(client.getQueryData(['meetings'])).toBeUndefined()
     expect(await coreApi.get('/auth/me')).toEqual(other)
+  })
+
+  it('reconciles an actual received storage signal once and coordinates renewal', async () => {
+    configureAuthLifecycle({
+      onRevalidation: () => void revalidateBrowserSession(),
+    })
+    client.setQueryData(currentUserQueryKey, identity)
+    setCsrfToken('test-csrf')
+    let renewed = false
+    transport(async (config) => {
+      if (config.url === '/auth/refresh') {
+        renewed = true
+        return success(config, {
+          sessionStatus: 'ACTIVE',
+          csrfToken: 'rotated-proof',
+        })
+      }
+      return renewed ? success(config, identity) : reject(config, 401)
+    })
+    const signal = JSON.stringify({
+      sourceId: 'remote-test-tab',
+      operationId: 'password-reset-revalidation-test',
+      status: 'session-revalidation',
+    })
+    for (let i = 0; i < 2; i++) {
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: SESSION_REVALIDATION_STORAGE_KEY,
+        newValue: signal,
+      }))
+    }
+    await expect(waitForSessionRevalidation()).resolves.toBe('verified')
+    expect(requests.filter((path) => path === '/auth/refresh')).toHaveLength(1)
+    expect(contain).not.toHaveBeenCalled()
+    expect(requests).not.toContain('/auth/logout')
+  })
+
+  it('does not restore protected state when explicit logout overlaps verification', async () => {
+    const entered = deferred()
+    const release = deferred()
+    client.setQueryData(currentUserQueryKey, identity)
+    client.setQueryData(['meetings'], ['private meeting'])
+    setCsrfToken('test-csrf')
+    configureAuthLifecycle({ onContainment: contain })
+    transport(async (config) => {
+      if (config.url === '/auth/logout') return success(config, null)
+      entered.resolve()
+      await release.promise
+      return success(config, identity)
+    })
+    const checking = revalidateBrowserSession()
+    await entered.promise
+    const logout = beginAuthLifecycleLogout()
+    release.resolve()
+    await checking
+    await expect(logout).resolves.toMatchObject({ state: 'confirmed' })
+    expect(client.getQueryData(currentUserQueryKey)).toBeUndefined()
+    expect(client.getQueryData(['meetings'])).toBeUndefined()
+    expect(requests).not.toContain('/auth/refresh')
   })
 
   it('cannot overwrite a newer sign-in with a late verification result', async () => {

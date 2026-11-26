@@ -1085,7 +1085,10 @@ export function createRequestRecoveryCoordinator(
 
       const renewal = await startRenewal()
       if (authLifecycleBarrier && !isAuthLifecycleExemptRequest(config)) {
-        return { type: 'failure', failure: authLifecycleBlockedFailure(normalized) }
+        return {
+          type: 'failure',
+          failure: authLifecycleBlockedFailure(normalized),
+        }
       }
       if (isStaleLifecycleResponse(config)) {
         return { type: 'failure', failure: authLifecycleStaleResponseFailure() }
