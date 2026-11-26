@@ -488,14 +488,16 @@ describe('session restoration and protected routing', () => {
       release = resolve
     })
     try {
+      // Radix makes the background inaccessible while a modal is open.
+      // Capture the workspace heading before opening it.
+      const heading = screen.getByRole('heading', { name: 'Members' })
+      await expect.element(heading).toBeVisible()
+      const headingElement = heading.element()
       await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
       const name = screen.getByRole('textbox', { name: 'Name' })
       await userEvent.fill(name, 'Private unsaved draft')
       const dialog = screen.getByRole('dialog', { name: 'Create account' })
-      const heading = screen.getByRole('heading', { name: 'Members' })
       await expect.element(dialog).toBeVisible()
-      await expect.element(heading).toBeVisible()
-      const headingElement = heading.element()
       getCurrentUser.mockImplementationOnce(async () => {
         await pending
         return administrator as never
