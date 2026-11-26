@@ -44,6 +44,10 @@ function validMinutes() {
         sourceType: 'HUMAN_CONFIRMED',
         version: 1,
         confirmedByUserId: '22222222-2222-4222-8222-222222222222',
+        confirmedAt: '2026-11-25T08:00:00Z',
+        transcriptId: null,
+        contentRevision: null,
+        aiUncertainty: null,
         evidenceSegmentIds: [],
         isStale: false,
         aiWarnings: [],
@@ -95,6 +99,26 @@ describe('canonical Minutes adapter', () => {
     expect(() =>
       parseMinutes(validMinutes(), '66666666-6666-4666-8666-666666666666')
     ).toThrowError(/different meeting/i)
+  })
+
+  it('rejects missing trust-critical decision fields rather than defaulting them', () => {
+    const valid = validMinutes()
+    const decision = valid.confirmedDecisions[0]
+    for (const field of ['isStale', 'aiWarnings', 'evidenceSegmentIds'] as const) {
+      expect(() => parseMinutes({
+        ...valid,
+        confirmedDecisions: [{ ...decision, [field]: undefined }],
+      })).toThrow(CoreApiError)
+    }
+  })
+
+  it('rejects malformed quality counters and preserves optional display enrichment', () => {
+    const valid = validMinutes()
+    expect(parseMinutes(valid).displayMetadata.assigneeDisplayNames).toEqual({})
+    expect(() => parseMinutes({
+      ...valid,
+      transcript: { ...valid.transcript, unresolvedSegments: -1 },
+    })).toThrow(CoreApiError)
   })
 
   it('rejects malformed fingerprints and unconfirmed work', () => {

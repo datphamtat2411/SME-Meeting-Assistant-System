@@ -1,11 +1,19 @@
 import { z } from 'zod'
 import { queryOptions } from '@tanstack/react-query'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import {
+  isValidOffsetDateTime,
+  meetingLifecycleStatuses,
+} from '../data/list-api'
+
+const instant = z.string().refine(isValidOffsetDateTime)
+const revision = z.number().int().nonnegative()
+const count = revision.max(Number.MAX_SAFE_INTEGER)
 
 const summarySchema = z.object({
   availability: z.string(),
   id: z.string().uuid().nullable(),
-  versionNumber: z.number().int().nullable(),
+  versionNumber: revision.nullable(),
   content: z.string().nullable(),
   sourceType: z.string().nullable(),
   qualityStatus: z.string().nullable(),
@@ -20,15 +28,15 @@ const actionSchema = z
   .object({
     id: z.string().uuid(),
     title: z.string(),
-    details: z.string().nullable().optional(),
+    details: z.string().nullable(),
     status: z.enum(['PROPOSED', 'OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED']),
     sourceType: z.string(),
     assigneeUserId: z.string().uuid().nullable(),
-    dueDate: z.string().nullable(),
-    version: z.number().int().nonnegative().optional(),
-    createdAt: z.string().optional(),
-    confirmedByUserId: z.string().uuid().nullable().optional(),
-    confirmedAt: z.string().nullable().optional(),
+    dueDate: z.iso.date().nullable(),
+    version: revision,
+    createdAt: instant,
+    confirmedByUserId: z.string().uuid().nullable(),
+    confirmedAt: instant.nullable(),
   })
   .passthrough()
 
@@ -39,21 +47,21 @@ const decisionSchema = z
     status: z.string(),
     sourceType: z.string(),
     version: z.number().int().nonnegative(),
-    transcriptId: z.string().uuid().nullable().optional(),
-    contentRevision: z.number().int().nonnegative().nullable().optional(),
-    confirmedByUserId: z.string().uuid().nullable().optional(),
-    evidenceSegmentIds: z.array(z.string().uuid()).default([]),
-    isStale: z.boolean().default(false),
-    aiWarnings: z.array(z.string()).default([]),
-    aiUncertainty: z.string().nullable().optional(),
-    confirmedAt: z.string().nullable().optional(),
+    transcriptId: z.string().uuid().nullable(),
+    contentRevision: revision.nullable(),
+    confirmedByUserId: z.string().uuid().nullable(),
+    evidenceSegmentIds: z.array(z.string().uuid()),
+    isStale: z.boolean(),
+    aiWarnings: z.array(z.string()),
+    aiUncertainty: z.string().nullable(),
+    confirmedAt: instant.nullable(),
   })
   .passthrough()
 
 export const minutesSchema = z
   .object({
     schemaVersion: z.literal(1),
-    assembledAt: z.string(),
+    assembledAt: instant,
     sourceFingerprint: z.string().regex(/^[0-9a-f]{64}$/i),
     completeness: z.enum(['COMPLETE', 'PARTIAL', 'NEEDS_REVIEW']),
     proposalsIncluded: z.boolean(),
@@ -63,11 +71,11 @@ export const minutesSchema = z
       title: z.string(),
       description: z.string().nullable(),
       organizerUserId: z.string().uuid(),
-      status: z.string(),
-      scheduledStartAt: z.string().nullable(),
-      scheduledEndAt: z.string().nullable(),
-      startedAt: z.string().nullable(),
-      endedAt: z.string().nullable(),
+      status: z.enum(meetingLifecycleStatuses),
+      scheduledStartAt: instant.nullable(),
+      scheduledEndAt: instant.nullable(),
+      startedAt: instant.nullable(),
+      endedAt: instant.nullable(),
     }),
     summary: summarySchema,
     confirmedDecisions: z.array(decisionSchema),
@@ -76,20 +84,20 @@ export const minutesSchema = z
       .object({
         availability: z.string(),
         id: z.string().uuid().nullable(),
-        processingJobId: z.string().uuid().nullable().optional(),
-        versionNumber: z.number().nullable(),
-        languageCode: z.string().nullable().optional(),
+        processingJobId: z.string().uuid().nullable(),
+        versionNumber: revision.nullable(),
+        languageCode: z.string().nullable(),
         status: z.string().nullable(),
-        contentRevision: z.number().int().nonnegative().nullable().optional(),
-        durationMs: z.number().nonnegative().nullable().optional(),
-        suspiciousSegments: z.number().int().nonnegative().optional(),
-        unresolvedSegments: z.number(),
-        unresolvedCoverageRegions: z.number(),
+        contentRevision: revision.nullable(),
+        durationMs: count.nullable(),
+        suspiciousSegments: count,
+        unresolvedSegments: count,
+        unresolvedCoverageRegions: count,
       })
       .passthrough(),
     displayMetadata: z
       .object({
-        assigneeDisplayNames: z.record(z.string(), z.string()),
+        assigneeDisplayNames: z.record(z.string().uuid(), z.string().trim().min(1)),
       })
       .default({ assigneeDisplayNames: {} }),
   })
