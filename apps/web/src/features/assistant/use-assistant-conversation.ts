@@ -72,6 +72,7 @@ export function useAssistantConversation() {
   const queryClient = useQueryClient()
   useAssistantAccessRevision(queryClient)
   const [selectedMeetingId, setSelectedMeetingId] = useState<string>()
+  const selectedMeetingRef = useRef<string | undefined>(undefined)
   const [selectedConversationId, setSelectedConversationId] = useState<
     string | undefined
   >()
@@ -171,11 +172,12 @@ export function useAssistantConversation() {
         }
         return
       }
-      if (!isCurrentScope(operation.scope)) return
+      if (!isCurrentScope(operation.scope) || selectedMeetingRef.current !== operation.meetingId) return
       scopeRef.current = {
         ...operation.scope,
         generation: operation.scope.generation + 1,
         conversationId: conversation.id,
+        meetingId: conversation.meetingId,
       }
       setSelectedConversationId(conversation.id)
       setConversationTitle('')
@@ -280,15 +282,16 @@ export function useAssistantConversation() {
 
   const createConversation = () => {
     const currentScope = scopeRef.current
-    if (!currentScope.meetingId || assistantAccessError(queryClient)) return
+    const meetingId = selectedMeetingRef.current
+    if (!meetingId || createOperationRef.current !== undefined || assistantAccessError(queryClient)) return
     const operation: CreateOperation = {
       access: captureAssistantCreationAccess(
         queryClient,
-        currentScope.meetingId
+        meetingId
       ),
       operationId: ++createSequenceRef.current,
       scope: { ...currentScope },
-      meetingId: currentScope.meetingId,
+      meetingId,
       title: conversationTitle || undefined,
     }
     createOperationRef.current = operation.operationId
@@ -308,6 +311,7 @@ export function useAssistantConversation() {
       conversationId,
     }
     scopeRef.current = nextScope
+    selectedMeetingRef.current = meetingId
     setSelectedMeetingId(meetingId)
     setSelectedConversationId(conversationId)
     setConversationTitle('')
@@ -334,7 +338,10 @@ export function useAssistantConversation() {
   }
 
   function selectMeeting(meetingId: string) {
-    clearConversationState(meetingId || undefined)
+    selectedMeetingRef.current = meetingId || undefined
+    setSelectedMeetingId(meetingId || undefined)
+    setConversationTitle('')
+    setCreateError(undefined)
   }
 
   function openConversation(conversation: AssistantConversation) {

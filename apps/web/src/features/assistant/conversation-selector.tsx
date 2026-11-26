@@ -6,11 +6,14 @@ import { RequestEmpty, RequestLoading } from '@/components/request-state'
 import type { AssistantConversation } from './assistant-api'
 import { AssistantError } from './assistant-error'
 import type { ConversationListQuery } from './assistant-types'
+import { MeetingScopePicker } from './meeting-scope-picker'
 
 export function ConversationSelector({
   listAccessError,
   onListAccessRetry,
-  meetings,
+  selectedMeetingReady,
+  selectedMeetingError,
+  onMeetingRetry,
   selectedMeetingId,
   selectedMeetingTitle,
   conversations,
@@ -28,7 +31,9 @@ export function ConversationSelector({
 }: {
   listAccessError?: CoreApiError
   onListAccessRetry: () => void
-  meetings: Array<{ id: string; title: string }>
+  selectedMeetingReady: boolean
+  selectedMeetingError?: unknown
+  onMeetingRetry: () => void
   selectedMeetingId?: string
   selectedMeetingTitle?: string
   conversations: AssistantConversation[]
@@ -56,22 +61,19 @@ export function ConversationSelector({
   ) : (
     <>
       <div className='grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]'>
-        <label className='space-y-1.5 text-sm font-medium'>
-          <span>Meeting scope</span>
-          <select
-            aria-label='Assistant meeting'
-            className='flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50'
-            value={selectedMeetingId ?? ''}
-            onChange={(event) => onMeetingChange(event.target.value)}
-          >
-            <option value=''>Select an authorized meeting</option>
-            {meetings.map((meeting) => (
-              <option key={meeting.id} value={meeting.id}>
-                {meeting.title}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className='space-y-2'>
+          <MeetingScopePicker
+            selectedMeetingId={selectedMeetingId}
+            selectedMeetingTitle={selectedMeetingTitle}
+            onMeetingChange={onMeetingChange}
+          />
+          {selectedMeetingError != null && (
+            <AssistantError
+              error={selectedMeetingError}
+              onRetry={onMeetingRetry}
+            />
+          )}
+        </div>
         <label className='space-y-1.5 text-sm font-medium'>
           <span>Conversation title (optional)</span>
           <Input
@@ -80,7 +82,7 @@ export function ConversationSelector({
             value={conversationTitle}
             onChange={(event) => onConversationTitleChange(event.target.value)}
             placeholder='Questions about this meeting'
-            disabled={!selectedMeetingId || createPending}
+            disabled={!selectedMeetingReady || createPending}
           />
         </label>
       </div>
@@ -95,7 +97,7 @@ export function ConversationSelector({
           <Button
             type='button'
             onClick={onCreate}
-            disabled={!selectedMeetingId || createPending}
+            disabled={!selectedMeetingReady || createPending}
           >
             {createPending && <LoaderCircle className='size-4 animate-spin' />}
             Create conversation

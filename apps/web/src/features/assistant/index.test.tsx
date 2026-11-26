@@ -332,6 +332,19 @@ function setupReads(
 }
 
 async function renderPage(options: { strict?: boolean } = {}) {
+  vi.spyOn(coreApi, 'getWithMetaAndEtag').mockImplementation(async (url) => {
+    const source = url.endsWith(otherMeetingId) ? otherMeeting : meeting
+    if (url !== `/meetings/${source.id}`) throw new Error(`Unexpected GET ${url}`)
+    return {
+      data: {
+        ...source,
+        cancellationReason: null,
+        createdByUserId: source.organizerUserId,
+      },
+      etag: '"meeting-0"',
+      meta: {},
+    } as never
+  })
   return render(
     <QueryClientProvider
       client={
@@ -371,6 +384,30 @@ describe('AssistantPage', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('keeps structured discovery independent of the selected conversation', async () => {
+    const { get } = setupReads()
+    const screen = await renderPage()
+    await openConversation(screen)
+    await expect
+      .element(screen.getByText('The launch is planned for Friday.').first())
+      .toBeVisible()
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Search meeting titles' }),
+      'another meeting'
+    )
+    await expect.poll(() =>
+      get.mock.calls.some(([url, options]) =>
+        url === '/meetings' && options?.params?.q === 'another meeting'
+      )
+    ).toBe(true)
+    await expect
+      .element(screen.getByText('The launch is planned for Friday.').first())
+      .toBeVisible()
+    await expect.element(
+      screen.getByRole('combobox', { name: 'Assistant meeting' })
+    ).toHaveValue(meetingId)
   })
 
   it('keeps page mount read-only and explicitly opens an authorized conversation', async () => {
@@ -1250,7 +1287,7 @@ describe('AssistantPage', () => {
     await expect.element(screen.getByText('Planning questions')).toBeVisible()
     await expect
       .element(screen.getByText('The launch is planned for Friday.').first())
-      .not.toBeInTheDocument()
+      .toBeVisible()
   })
 
   it.each([

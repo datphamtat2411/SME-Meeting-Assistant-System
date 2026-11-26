@@ -13,7 +13,10 @@ import { ConversationPanel } from './conversation-panel'
 import { ConversationSelector } from './conversation-selector'
 import { MeetingSearchCard } from './meeting-discovery'
 import { useAssistantConversation } from './use-assistant-conversation'
-import { useAssistantMeetingDiscovery } from './use-assistant-meeting-discovery'
+import {
+  useAssistantMeetingContext,
+  useAssistantMeetingDiscovery,
+} from './use-assistant-meeting-discovery'
 
 export function AssistantPage() {
   const generation = useSyncExternalStore(
@@ -27,10 +30,10 @@ export function AssistantPage() {
 function AssistantWorkspace() {
   const discovery = useAssistantMeetingDiscovery()
   const conversation = useAssistantConversation()
-  const meetings = discovery.meetingsQuery.data?.meetings ?? []
-  const selectedMeetingTitle = meetings.find(
-    (meeting) => meeting.id === conversation.selectedMeetingId
-  )?.title
+  const selected = useAssistantMeetingContext(conversation.selectedMeetingId)
+  const active = useAssistantMeetingContext(
+    conversation.panel.selectedConversation?.meetingId
+  )
 
   return (
     <>
@@ -63,12 +66,14 @@ function AssistantWorkspace() {
           <CardContent className='space-y-5'>
             <ConversationSelector
               {...conversation.selector}
-              meetings={meetings}
-              selectedMeetingTitle={selectedMeetingTitle}
+              selectedMeetingTitle={selected.meeting?.title}
+              selectedMeetingReady={Boolean(selected.meeting)}
+              selectedMeetingError={selected.query.error}
+              onMeetingRetry={() => void selected.query.refetch()}
             />
             <ConversationPanel
               {...conversation.panel}
-              selectedMeetingTitle={selectedMeetingTitle}
+              selectedMeetingTitle={active.meeting?.title}
             />
           </CardContent>
         </Card>

@@ -1,9 +1,8 @@
 import { Link } from '@tanstack/react-router'
-import { Search } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
+import { MeetingFilters } from '@/features/meetings/components/meeting-filters'
 import {
   RequestEmpty,
   RequestError,
@@ -20,27 +19,52 @@ export function MeetingSearchCard({
   selectedMeetingId?: string
   onMeetingSelect: (meetingId: string) => void
 }) {
-  const { input, setInput, page, setPage, meetingsQuery, submitSearch } =
-    discovery
+  const {
+    criteria,
+    updateCriteria,
+    setDate,
+    reset,
+    invalidRange,
+    page,
+    setPage,
+    meetingsQuery,
+  } = discovery
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Search meetings</CardTitle>
-        <form className='flex gap-2' onSubmit={submitSearch}>
-          <Input
-            aria-label='Search meeting titles'
-            placeholder='Search by meeting title or description'
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-          />
-          <Button type='submit'>
-            <Search className='size-4' /> Search
-          </Button>
-        </form>
+        <MeetingFilters
+          search={criteria}
+          onSearchChange={(q) => updateCriteria({ q })}
+          onStatusChange={(status) =>
+            updateCriteria({ status: status === 'all' ? undefined : status })
+          }
+          onRelationshipChange={(relationship) =>
+            updateCriteria({
+              relationship: relationship === 'all' ? undefined : relationship,
+            })
+          }
+          onFromChange={(value) => setDate('from', value)}
+          onToChange={(value) => setDate('to', value)}
+          onRoomChange={(roomId) =>
+            updateCriteria({ roomId: roomId === 'all' ? undefined : roomId })
+          }
+          onOrganizerChange={(organizerId) =>
+            updateCriteria({
+              organizerId: organizerId === 'all' ? undefined : organizerId,
+            })
+          }
+          onSortChange={(sort) => updateCriteria({ sort })}
+          onReset={reset}
+        />
       </CardHeader>
       <CardContent className='space-y-3'>
-        {meetingsQuery.isPending ? (
+        {invalidRange ? (
+          <p role='alert' className='text-sm text-destructive'>
+            The start date must not be after the end date.
+          </p>
+        ) : meetingsQuery.isPending ? (
           <RequestLoading />
         ) : meetingsQuery.isError ? (
           <RequestError
@@ -82,7 +106,7 @@ export function MeetingSearchCard({
             </div>
           ))
         )}
-        {meetingsQuery.data && (
+        {!invalidRange && meetingsQuery.isSuccess && (
           <div className='flex items-center justify-between text-sm text-muted-foreground'>
             <span>{meetingsQuery.data.pagination.totalElements} result(s)</span>
             <div className='flex items-center gap-2'>
