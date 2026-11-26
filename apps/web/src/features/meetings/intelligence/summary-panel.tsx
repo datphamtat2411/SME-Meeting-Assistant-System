@@ -1,4 +1,3 @@
-import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Columns2, FileText, RefreshCw } from 'lucide-react'
@@ -6,6 +5,7 @@ import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import {
   RequestEmpty,
   RequestError,

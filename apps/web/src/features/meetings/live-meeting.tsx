@@ -1,5 +1,3 @@
-import { useRegionalPresentation } from '@/context/regional-presentation'
-import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -16,6 +14,7 @@ import {
   Users,
 } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -29,6 +28,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import {
   currentUserQueryKey,
   type AuthContext,
@@ -233,7 +233,12 @@ function LiveMeetingDetail({
         <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
           <span className='inline-flex items-center gap-1.5'>
             <CalendarDays className='size-4' />
-            {formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt, timezone, locale)}
+            {formatSchedule(
+              meeting.scheduledStartAt,
+              meeting.scheduledEndAt,
+              timezone,
+              locale
+            )}
           </span>
           <span className='inline-flex items-center gap-1.5'>
             <MapPin className='size-4' />
@@ -292,7 +297,12 @@ function LiveMeetingDetail({
               />
               <LiveMetric
                 label='Scheduled window'
-                value={formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt, timezone, locale)}
+                value={formatSchedule(
+                  meeting.scheduledStartAt,
+                  meeting.scheduledEndAt,
+                  timezone,
+                  locale
+                )}
               />
               <LiveMetric
                 label='Recording'
@@ -433,7 +443,9 @@ function LifecycleSummary({ meeting }: { meeting: MeetingView }) {
             className='flex items-start justify-between gap-4 text-sm'
           >
             <span className='text-muted-foreground'>{label}</span>
-            <span className='font-medium'><RegionalTimestamp value={value} /></span>
+            <span className='font-medium'>
+              <RegionalTimestamp value={value} />
+            </span>
           </div>
         ))}
         {meeting.cancellationReason && (

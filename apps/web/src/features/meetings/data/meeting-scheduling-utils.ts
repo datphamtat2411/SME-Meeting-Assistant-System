@@ -40,7 +40,11 @@ export function resolveScheduleEndpoint(
     if (existing?.date === date && existing.time === time) {
       if (!occurrence) return original
       const selected = instantCivilFields(occurrence, timezone)
-      if (selected?.date === date && selected.time === time && selected.offset === existing.offset) {
+      if (
+        selected?.date === date &&
+        selected.time === time &&
+        selected.offset === existing.offset
+      ) {
         return original
       }
     }
@@ -53,11 +57,18 @@ export function resolveScheduleEndpoint(
     : undefined
 }
 
-export function scheduleEndpointError(date: string, time: string, timezone: string) {
-  if (!timezone) return 'Wait for regional preferences before entering a schedule.'
+export function scheduleEndpointError(
+  date: string,
+  time: string,
+  timezone: string
+) {
+  if (!timezone)
+    return 'Wait for regional preferences before entering a schedule.'
   const result = resolveWallTime(date, time, timezone)
-  if (result.kind === 'gap') return 'This local time does not exist in the scheduling timezone. Choose another time.'
-  if (result.kind === 'ambiguous') return 'This local time occurs twice. Choose its UTC offset.'
+  if (result.kind === 'gap')
+    return 'This local time does not exist in the scheduling timezone. Choose another time.'
+  if (result.kind === 'ambiguous')
+    return 'This local time occurs twice. Choose its UTC offset.'
   return 'Enter a valid local date and time.'
 }
 
@@ -85,8 +96,20 @@ export function getScheduleValues(
     values.scheduleTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
 
   return scheduleFromInstants(
-    resolveScheduleEndpoint(date, startTime, timezone, values.startOccurrence, values.originalStartAt),
-    resolveScheduleEndpoint(endDate, endTime, timezone, values.endOccurrence, values.originalEndAt)
+    resolveScheduleEndpoint(
+      date,
+      startTime,
+      timezone,
+      values.startOccurrence,
+      values.originalStartAt
+    ),
+    resolveScheduleEndpoint(
+      endDate,
+      endTime,
+      timezone,
+      values.endOccurrence,
+      values.originalEndAt
+    )
   )
 }
 

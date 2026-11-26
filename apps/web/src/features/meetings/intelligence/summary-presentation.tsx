@@ -1,9 +1,9 @@
-import { RegionalTimestamp } from '@/components/regional-timestamp'
-import { useRegionalPresentation } from '@/context/regional-presentation'
 import { AlertTriangle } from 'lucide-react'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { type SummarySnapshot, type SummaryVersion } from './summary-api'
 
 export function CurrentSummary({
@@ -36,7 +36,9 @@ export function CurrentSummary({
         {summary.isStale && <Badge variant='destructive'>Stale source</Badge>}
       </div>
       <div className='grid gap-2 text-xs text-muted-foreground sm:grid-cols-2'>
-        <span>Created <RegionalTimestamp value={summary.createdAt} /></span>
+        <span>
+          Created <RegionalTimestamp value={summary.createdAt} />
+        </span>
         <span>
           Transcript revision {summary.contentRevision ?? 'not available'}
         </span>
@@ -74,8 +76,9 @@ export function CurrentSummary({
           />
           <div className='flex flex-wrap items-center justify-between gap-2'>
             <span className='text-xs text-muted-foreground'>
-              {draft.length.toLocaleString(locale)} / {(20_000).toLocaleString(locale)} characters · editing
-              version {editorSnapshot.summary.versionNumber}
+              {draft.length.toLocaleString(locale)} /{' '}
+              {(20_000).toLocaleString(locale)} characters · editing version{' '}
+              {editorSnapshot.summary.versionNumber}
             </span>
             <div className='flex gap-2'>
               <Button

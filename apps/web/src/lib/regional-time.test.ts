@@ -110,9 +110,9 @@ describe('regional instant presentation', () => {
     expect(formatRegionalInstant(value, 'Asia/Tokyo', 'en-GB', options)).toBe(
       '1 Dec 2026, 11:00'
     )
-    expect(formatRegionalInstant(value, 'America/New_York', 'en-GB', options)).toBe(
-      '30 Nov 2026, 21:00'
-    )
+    expect(
+      formatRegionalInstant(value, 'America/New_York', 'en-GB', options)
+    ).toBe('30 Nov 2026, 21:00')
     expect(formatRegionalInstant('invalid', 'UTC', 'en-GB')).toBeUndefined()
   })
 })

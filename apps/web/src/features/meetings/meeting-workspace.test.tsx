@@ -1,5 +1,3 @@
-import { RegionalPresentationProvider } from '@/context/regional-presentation'
-import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { useState } from 'react'
 import {
   QueryClient,
@@ -10,10 +8,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import type { MeetingView } from './data/detail-api'
 import type { MeetingListResponse } from './data/list-api'
 import { LiveMeetingPage } from './live-meeting'

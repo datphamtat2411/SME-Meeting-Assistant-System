@@ -137,7 +137,10 @@ export function formatRegionalInstant(
   value: string,
   timezone: string,
   locale: string,
-  options: Intl.DateTimeFormatOptions = { dateStyle: 'medium', timeStyle: 'short' }
+  options: Intl.DateTimeFormatOptions = {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }
 ) {
   try {
     const instant = Temporal.Instant.from(value)

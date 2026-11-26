@@ -1,7 +1,7 @@
-import { useRegionalPresentation } from '@/context/regional-presentation'
-import { formatRegionalInstant } from '@/lib/regional-time'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { formatRegionalInstant } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -83,7 +83,9 @@ export function MinutesPanel({
       ? (assigneeDisplayNames[id] ?? names[id] ?? 'Name unavailable')
       : 'Unassigned'
   const time = (value: string | null) =>
-    value ? (formatRegionalInstant(value, timezone, locale) ?? 'Time unavailable') : 'Not recorded'
+    value
+      ? (formatRegionalInstant(value, timezone, locale) ?? 'Time unavailable')
+      : 'Not recorded'
   return (
     <Card>
       <CardHeader className='border-b'>

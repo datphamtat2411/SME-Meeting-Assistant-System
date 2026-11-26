@@ -1,14 +1,14 @@
-import { RegionalPresentationProvider } from '@/context/regional-presentation'
-import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { dateInputToOffsetDateTime, dateInputValue } from './data/date-filters'
 import { MeetingsPage } from './index'
 
@@ -189,12 +189,12 @@ describe('MeetingsPage', () => {
       defaultOptions: { queries: { retry: false } },
     })
     queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
-  queryClient.setQueryData(preferencesQueryKey, {
-    timezone: null,
-    locale: null,
-    meetingEmailEnabled: true,
-    actionItemEmailEnabled: true,
-  })
+    queryClient.setQueryData(preferencesQueryKey, {
+      timezone: null,
+      locale: null,
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <RegionalPresentationProvider>
@@ -265,12 +265,12 @@ describe('MeetingsPage', () => {
       defaultOptions: { queries: { retry: false } },
     })
     queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
-  queryClient.setQueryData(preferencesQueryKey, {
-    timezone: null,
-    locale: null,
-    meetingEmailEnabled: true,
-    actionItemEmailEnabled: true,
-  })
+    queryClient.setQueryData(preferencesQueryKey, {
+      timezone: null,
+      locale: null,
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <RegionalPresentationProvider>
@@ -359,12 +359,12 @@ describe('MeetingsPage', () => {
       },
     } as AuthContext)
     queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
-  queryClient.setQueryData(preferencesQueryKey, {
-    timezone: null,
-    locale: null,
-    meetingEmailEnabled: true,
-    actionItemEmailEnabled: true,
-  })
+    queryClient.setQueryData(preferencesQueryKey, {
+      timezone: null,
+      locale: null,
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <RegionalPresentationProvider>
@@ -501,12 +501,12 @@ describe('MeetingsPage', () => {
       },
     } as AuthContext)
     queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
-  queryClient.setQueryData(preferencesQueryKey, {
-    timezone: null,
-    locale: null,
-    meetingEmailEnabled: true,
-    actionItemEmailEnabled: true,
-  })
+    queryClient.setQueryData(preferencesQueryKey, {
+      timezone: null,
+      locale: null,
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <RegionalPresentationProvider>
@@ -638,12 +638,12 @@ describe('MeetingsPage', () => {
       },
     } as AuthContext)
     queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
-  queryClient.setQueryData(preferencesQueryKey, {
-    timezone: null,
-    locale: null,
-    meetingEmailEnabled: true,
-    actionItemEmailEnabled: true,
-  })
+    queryClient.setQueryData(preferencesQueryKey, {
+      timezone: null,
+      locale: null,
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <RegionalPresentationProvider>
@@ -730,12 +730,12 @@ describe('MeetingsPage', () => {
       defaultOptions: { queries: { retry: false } },
     })
     queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
-  queryClient.setQueryData(preferencesQueryKey, {
-    timezone: null,
-    locale: null,
-    meetingEmailEnabled: true,
-    actionItemEmailEnabled: true,
-  })
+    queryClient.setQueryData(preferencesQueryKey, {
+      timezone: null,
+      locale: null,
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <RegionalPresentationProvider>
@@ -809,12 +809,12 @@ describe('MeetingsPage', () => {
       defaultOptions: { queries: { retry: false } },
     })
     queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
-  queryClient.setQueryData(preferencesQueryKey, {
-    timezone: null,
-    locale: null,
-    meetingEmailEnabled: true,
-    actionItemEmailEnabled: true,
-  })
+    queryClient.setQueryData(preferencesQueryKey, {
+      timezone: null,
+      locale: null,
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <RegionalPresentationProvider>
@@ -869,12 +869,12 @@ describe('MeetingsPage', () => {
       defaultOptions: { queries: { retry: false } },
     })
     queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
-  queryClient.setQueryData(preferencesQueryKey, {
-    timezone: null,
-    locale: null,
-    meetingEmailEnabled: true,
-    actionItemEmailEnabled: true,
-  })
+    queryClient.setQueryData(preferencesQueryKey, {
+      timezone: null,
+      locale: null,
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <RegionalPresentationProvider>
@@ -913,12 +913,12 @@ describe('MeetingsPage', () => {
       defaultOptions: { queries: { retry: false } },
     })
     queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
-  queryClient.setQueryData(preferencesQueryKey, {
-    timezone: null,
-    locale: null,
-    meetingEmailEnabled: true,
-    actionItemEmailEnabled: true,
-  })
+    queryClient.setQueryData(preferencesQueryKey, {
+      timezone: null,
+      locale: null,
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <RegionalPresentationProvider>
