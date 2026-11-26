@@ -157,6 +157,14 @@ describe('canonical Minutes adapter', () => {
         transcript: { ...valid.transcript, unresolvedSegments: 1 },
       })
     ).toThrow(CoreApiError)
+    expect(() =>
+      parseMinutes({
+        ...valid,
+        confirmedDecisions: [
+          { ...valid.confirmedDecisions[0], isStale: true },
+        ],
+      })
+    ).toThrow(CoreApiError)
   })
 
   it('accepts a genuinely partial snapshot and preserves review warnings', () => {

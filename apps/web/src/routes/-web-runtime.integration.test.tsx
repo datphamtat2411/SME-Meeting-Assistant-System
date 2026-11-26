@@ -152,6 +152,9 @@ const participant = {
 
 type FixtureOptions = {
   identity?: unknown
+  dashboard?: unknown
+  actionItemsError?: unknown
+  actionItemsOpen?: unknown
   meetingList?: unknown
   meetingListError?: unknown
   meetingDetail?: unknown
@@ -177,7 +180,7 @@ function apiError(status: number, message = `Core response ${status}`) {
 function installCoreFixtures(options: FixtureOptions = {}) {
   const get = vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
     if (url === '/auth/me') return (options.identity ?? identity) as never
-    if (url === '/dashboard/me') return dashboard as never
+    if (url === '/dashboard/me') return (options.dashboard ?? dashboard) as never
     if (url === '/me/profile') return profile as never
     if (url === '/me/preferences') return preferences as never
     if (url.endsWith(`/meetings/${meetingId}/media`)) return [] as never
@@ -186,12 +189,23 @@ function installCoreFixtures(options: FixtureOptions = {}) {
 
   const getWithMeta = vi
     .spyOn(coreApi, 'getWithMeta')
-    .mockImplementation(async (url) => {
+    .mockImplementation(async (url, config) => {
       if (url === '/meetings') {
         if (options.meetingListError) throw options.meetingListError
         return (options.meetingList ?? meetingList) as never
       }
-      if (url === '/action-items') return emptyActionItemList as never
+      if (url === '/action-items') {
+        if (
+          config?.params?.status === 'IN_PROGRESS' &&
+          options.actionItemsError
+        ) {
+          throw options.actionItemsError
+        }
+        if (config?.params?.status === 'OPEN' && options.actionItemsOpen) {
+          return options.actionItemsOpen as never
+        }
+        return emptyActionItemList as never
+      }
       if (url === '/rooms') return emptyList as never
       if (url === '/users') return emptyList as never
       if (url === '/organizational-units') return emptyList as never
@@ -388,6 +402,13 @@ describe('integrated generated Web runtime', () => {
         .toBeInTheDocument()
       if (path === '/') {
         await expect
+          .element(
+            screen.getByRole('heading', {
+              name: 'Welcome back, ' + identity.displayName,
+            })
+          )
+          .toBeVisible()
+        await expect
           .element(screen.getByText('Scheduled meetings'))
           .toBeInTheDocument()
         await expect
@@ -446,6 +467,176 @@ describe('integrated generated Web runtime', () => {
       expect(coreApi.getWithMeta).not.toHaveBeenCalled()
     }
   )
+
+  it('restores the featured meeting with bounded authorized enrichment and contains access loss', async () => {
+    const scheduled = {
+      ...meeting,
+      title: 'Next planning meeting',
+      status: 'SCHEDULED',
+      startedAt: null,
+      scheduledStartAt: '2026-11-24T10:00:00Z',
+      scheduledEndAt: '2026-11-24T11:00:00Z',
+    }
+    const options: FixtureOptions = {
+      dashboard: {
+        ...dashboard,
+        meetingCountsByState: { SCHEDULED: 1 },
+        upcomingMeetings: [scheduled],
+      },
+      meetingDetail: scheduled,
+    }
+    const { getWithMetaAndEtag } = installCoreFixtures(options)
+    const { queryClient, screen } = await renderGeneratedRoute('/')
+    await expect
+      .element(screen.getByRole('heading', { name: scheduled.title }))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('1 active participants'))
+      .toBeVisible()
+    await expect.element(screen.getByText('No room assigned')).toBeVisible()
+    await expect
+      .element(screen.getByRole('link', { name: 'Open meeting workspace' }))
+      .toHaveAttribute('href', '/meetings/' + meetingId)
+    const time = (value: string) =>
+      new Intl.DateTimeFormat('en-US', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: preferences.timezone,
+      }).format(new Date(value))
+    await expect
+      .element(
+        screen.getByText(
+          time(scheduled.scheduledStartAt) +
+            ' – ' +
+            time(scheduled.scheduledEndAt),
+          { exact: true }
+        )
+      )
+      .toBeVisible()
+    expect(
+      getWithMetaAndEtag.mock.calls.filter(([url]) =>
+        url.startsWith('/meetings/')
+      )
+    ).toHaveLength(1)
+
+    options.meetingDetailError = apiError(403)
+    await queryClient.invalidateQueries({
+      queryKey: ['meetings', 'detail', meetingId],
+    })
+    await expect
+      .element(
+        screen.getByText('You do not have permission to access this resource.')
+      )
+      .toBeVisible()
+    await expect
+      .element(screen.getByText(scheduled.title, { exact: true }))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('link', { name: 'Open meeting workspace' }))
+      .not.toBeInTheDocument()
+  })
+
+  it('contains a failed assigned-work query without masking canonical metrics', async () => {
+    installCoreFixtures({ actionItemsError: apiError(503, 'Work unavailable') })
+    const { screen } = await renderGeneratedRoute('/')
+    await expect.element(screen.getByText('Work unavailable')).toBeVisible()
+    await expect
+      .element(screen.getByText('Pending action items'))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('No pending assigned work'))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry' }))
+      .toBeVisible()
+  })
+
+  it('keeps restricted assigned work visible without linking protected meeting context', async () => {
+    const assigned = {
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      meetingId,
+      title: 'Authorized assigned work',
+      details: null,
+      status: 'OPEN',
+      assigneeUserId: userId,
+      dueDate: '2026-11-24',
+      overdue: true,
+      sourceType: 'MANUAL',
+      processingJobId: null,
+      transcriptId: null,
+      contentRevision: null,
+      createdByUserId: userId,
+      confirmedByUserId: null,
+      confirmedAt: null,
+      completedByUserId: null,
+      completedAt: null,
+      cancelledByUserId: null,
+      cancelledAt: null,
+      version: 1,
+      createdAt: dashboardAsOf,
+      updatedAt: dashboardAsOf,
+      isOfficial: true,
+      capabilities: {
+        canEdit: false,
+        canAssign: false,
+        canConfirm: false,
+        canReject: false,
+        canStart: true,
+        canComplete: true,
+        canCancel: false,
+        canReopen: false,
+        canAccessMeeting: false,
+        canAccessEvidence: false,
+      },
+      assignee: { id: userId, displayName: identity.displayName, active: true },
+      meeting: { id: meetingId, label: 'Restricted meeting', restricted: true },
+      evidence: {
+        availability: 'RESTRICTED',
+        transcriptId: null,
+        contentRevision: null,
+        freshness: 'RESTRICTED',
+        references: [],
+        limitation: null,
+      },
+    }
+    const { getWithMeta } = installCoreFixtures({
+      actionItemsOpen: {
+        data: [assigned],
+        meta: {
+          pagination: {
+            ...pagination,
+            size: 5,
+            totalElements: 1,
+            totalPages: 1,
+          },
+        },
+      },
+    })
+    const { screen } = await renderGeneratedRoute('/')
+    await expect.element(screen.getByText(assigned.title)).toBeVisible()
+    await expect.element(screen.getByText('Due 2026-11-24')).toBeVisible()
+    await expect
+      .element(screen.getByText('Overdue', { exact: true }))
+      .toBeVisible()
+    await expect.element(screen.getByText('Restricted meeting')).toBeVisible()
+    await expect
+      .element(screen.getByRole('link', { name: 'Restricted meeting' }))
+      .not.toBeInTheDocument()
+    for (const status of ['OPEN', 'IN_PROGRESS']) {
+      expect(getWithMeta).toHaveBeenCalledWith(
+        '/action-items',
+        expect.objectContaining({
+          params: expect.objectContaining({
+            status,
+            assignee: 'me',
+            official: 'true',
+            size: '5',
+            sort: 'dueDate,asc',
+          }),
+        })
+      )
+    }
+  })
 
   it('navigates through dashboard, meetings, detail, live, and browser history', async () => {
     const writes = [

@@ -36,13 +36,13 @@ import {
   personalDashboardQuery,
   type PersonalDashboard as PersonalProjection,
 } from './dashboard-api'
+import { Metric } from './dashboard-metric'
 import {
   actionPreviewLimit,
   mergeAssignedWork,
   orderedRecent,
   orderedUpcoming,
 } from './dashboard-presentation'
-import { Metric } from './dashboard-metric'
 
 type MeetingCard = PersonalProjection['upcomingMeetings'][number]
 type FormatInstant = (value: string | null) => string
@@ -283,7 +283,9 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
           <p className='text-sm text-muted-foreground'>
             {formatPresentationDate(new Date(), zone, locale)}
           </p>
-          <h1 className='sr-only'>Dashboard</h1>
+          <h1 className='mt-1 text-xs font-medium text-muted-foreground'>
+            Dashboard
+          </h1>
           <h2 className='mt-1 text-3xl font-bold break-words'>
             Welcome back, {identity.displayName}
           </h2>

@@ -120,7 +120,13 @@ export const minutesSchema = z
       minutes.completeness === 'COMPLETE' &&
       (minutes.summary.availability !== 'AVAILABLE' ||
         minutes.transcript.availability !== 'AVAILABLE' ||
-        minutes.warnings.length > 0)
+        minutes.warnings.length > 0 ||
+        minutes.confirmedDecisions.some(
+          (decision) =>
+            decision.isStale ||
+            decision.aiUncertainty === 'MATERIAL' ||
+            decision.aiWarnings.length > 0
+        ))
     ) {
       context.addIssue({
         code: 'custom',
