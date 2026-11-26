@@ -11,7 +11,8 @@ export function isSupportedTimezone(value: string): boolean {
 export function isTimezoneSelection(value: string): boolean {
   return (
     value.length <= 64 &&
-    (value === 'UTC' || value === 'GMT' ||
+    (value === 'UTC' ||
+      value === 'GMT' ||
       /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)+$/.test(value)) &&
     isSupportedTimezone(value)
   )
@@ -39,16 +40,18 @@ export function resolveRegionalPreferences(
   stored: { timezone: string | null; locale: string | null },
   browser = Intl.DateTimeFormat().resolvedOptions()
 ) {
-  const timezone = stored.timezone && isSupportedTimezone(stored.timezone)
-    ? stored.timezone
-    : browser.timeZone && isSupportedTimezone(browser.timeZone)
-      ? browser.timeZone
-      : 'UTC'
-  const locale = stored.locale && supportsLocale(stored.locale)
-    ? stored.locale
-    : browser.locale && supportsLocale(browser.locale)
-      ? browser.locale
-      : 'en-US'
+  const timezone =
+    stored.timezone && isSupportedTimezone(stored.timezone)
+      ? stored.timezone
+      : browser.timeZone && isSupportedTimezone(browser.timeZone)
+        ? browser.timeZone
+        : 'UTC'
+  const locale =
+    stored.locale && supportsLocale(stored.locale)
+      ? stored.locale
+      : browser.locale && supportsLocale(browser.locale)
+        ? browser.locale
+        : 'en-US'
   return {
     timezone,
     locale,
@@ -60,26 +63,81 @@ export function resolveRegionalPreferences(
 // The fallback covers commonly used regional hubs when enumeration is absent.
 // Search also accepts a runtime-recognized IANA identifier outside this list.
 const fallbackTimezones = [
-  'Africa/Abidjan', 'Africa/Accra', 'Africa/Addis_Ababa', 'Africa/Cairo',
-  'Africa/Casablanca', 'Africa/Johannesburg', 'Africa/Lagos', 'Africa/Nairobi',
-  'America/Anchorage', 'America/Argentina/Buenos_Aires', 'America/Bogota',
-  'America/Caracas', 'America/Chicago', 'America/Denver', 'America/Halifax',
-  'America/Lima', 'America/Los_Angeles', 'America/Mexico_City',
-  'America/New_York', 'America/Phoenix', 'America/Santiago',
-  'America/Sao_Paulo', 'America/Toronto', 'America/Vancouver',
-  'Asia/Almaty', 'Asia/Amman', 'Asia/Baghdad', 'Asia/Bangkok', 'Asia/Beirut',
-  'Asia/Colombo', 'Asia/Dhaka', 'Asia/Dubai', 'Asia/Ho_Chi_Minh',
-  'Asia/Hong_Kong', 'Asia/Jakarta', 'Asia/Jerusalem', 'Asia/Karachi',
-  'Asia/Kathmandu', 'Asia/Kolkata', 'Asia/Kuala_Lumpur', 'Asia/Manila',
-  'Asia/Riyadh', 'Asia/Seoul', 'Asia/Shanghai', 'Asia/Singapore',
-  'Asia/Taipei', 'Asia/Tehran', 'Asia/Tokyo', 'Asia/Yangon',
-  'Atlantic/Azores', 'Australia/Adelaide', 'Australia/Brisbane',
-  'Australia/Darwin', 'Australia/Perth', 'Australia/Sydney',
-  'Europe/Amsterdam', 'Europe/Athens', 'Europe/Berlin', 'Europe/Brussels',
-  'Europe/Dublin', 'Europe/Helsinki', 'Europe/Istanbul', 'Europe/Lisbon',
-  'Europe/London', 'Europe/Madrid', 'Europe/Moscow', 'Europe/Paris',
-  'Europe/Prague', 'Europe/Rome', 'Europe/Stockholm', 'Europe/Warsaw',
-  'Europe/Zurich', 'Pacific/Auckland', 'Pacific/Fiji', 'Pacific/Honolulu',
+  'Africa/Abidjan',
+  'Africa/Accra',
+  'Africa/Addis_Ababa',
+  'Africa/Cairo',
+  'Africa/Casablanca',
+  'Africa/Johannesburg',
+  'Africa/Lagos',
+  'Africa/Nairobi',
+  'America/Anchorage',
+  'America/Argentina/Buenos_Aires',
+  'America/Bogota',
+  'America/Caracas',
+  'America/Chicago',
+  'America/Denver',
+  'America/Halifax',
+  'America/Lima',
+  'America/Los_Angeles',
+  'America/Mexico_City',
+  'America/New_York',
+  'America/Phoenix',
+  'America/Santiago',
+  'America/Sao_Paulo',
+  'America/Toronto',
+  'America/Vancouver',
+  'Asia/Almaty',
+  'Asia/Amman',
+  'Asia/Baghdad',
+  'Asia/Bangkok',
+  'Asia/Beirut',
+  'Asia/Colombo',
+  'Asia/Dhaka',
+  'Asia/Dubai',
+  'Asia/Ho_Chi_Minh',
+  'Asia/Hong_Kong',
+  'Asia/Jakarta',
+  'Asia/Jerusalem',
+  'Asia/Karachi',
+  'Asia/Kathmandu',
+  'Asia/Kolkata',
+  'Asia/Kuala_Lumpur',
+  'Asia/Manila',
+  'Asia/Riyadh',
+  'Asia/Seoul',
+  'Asia/Shanghai',
+  'Asia/Singapore',
+  'Asia/Taipei',
+  'Asia/Tehran',
+  'Asia/Tokyo',
+  'Asia/Yangon',
+  'Atlantic/Azores',
+  'Australia/Adelaide',
+  'Australia/Brisbane',
+  'Australia/Darwin',
+  'Australia/Perth',
+  'Australia/Sydney',
+  'Europe/Amsterdam',
+  'Europe/Athens',
+  'Europe/Berlin',
+  'Europe/Brussels',
+  'Europe/Dublin',
+  'Europe/Helsinki',
+  'Europe/Istanbul',
+  'Europe/Lisbon',
+  'Europe/London',
+  'Europe/Madrid',
+  'Europe/Moscow',
+  'Europe/Paris',
+  'Europe/Prague',
+  'Europe/Rome',
+  'Europe/Stockholm',
+  'Europe/Warsaw',
+  'Europe/Zurich',
+  'Pacific/Auckland',
+  'Pacific/Fiji',
+  'Pacific/Honolulu',
 ]
 
 export function timezoneOptions(): string[] {
@@ -93,12 +151,45 @@ export function timezoneOptions(): string[] {
 }
 
 export const localeOptions = [
-  'vi-VN', 'en-US', 'en-GB', 'en-AU', 'en-CA', 'en-IN', 'en-SG',
-  'ar-SA', 'bn-BD', 'cs-CZ', 'da-DK', 'de-DE', 'el-GR', 'es-ES',
-  'es-MX', 'fi-FI', 'fr-CA', 'fr-FR', 'he-IL', 'hi-IN', 'id-ID',
-  'it-IT', 'ja-JP', 'ko-KR', 'ms-MY', 'nb-NO', 'nl-NL', 'pl-PL',
-  'pt-BR', 'pt-PT', 'ro-RO', 'ru-RU', 'sv-SE', 'th-TH', 'tr-TR',
-  'uk-UA', 'zh-CN', 'zh-HK', 'zh-TW',
+  'vi-VN',
+  'en-US',
+  'en-GB',
+  'en-AU',
+  'en-CA',
+  'en-IN',
+  'en-SG',
+  'ar-SA',
+  'bn-BD',
+  'cs-CZ',
+  'da-DK',
+  'de-DE',
+  'el-GR',
+  'es-ES',
+  'es-MX',
+  'fi-FI',
+  'fr-CA',
+  'fr-FR',
+  'he-IL',
+  'hi-IN',
+  'id-ID',
+  'it-IT',
+  'ja-JP',
+  'ko-KR',
+  'ms-MY',
+  'nb-NO',
+  'nl-NL',
+  'pl-PL',
+  'pt-BR',
+  'pt-PT',
+  'ro-RO',
+  'ru-RU',
+  'sv-SE',
+  'th-TH',
+  'tr-TR',
+  'uk-UA',
+  'zh-CN',
+  'zh-HK',
+  'zh-TW',
 ]
 
 export function localeLabel(value: string): string {

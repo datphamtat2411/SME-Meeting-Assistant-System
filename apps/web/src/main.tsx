@@ -65,9 +65,9 @@ const queryClient = new QueryClient({
     },
   },
   queryCache: new QueryCache({
-    onError: (error) => {
+    onError: (error, query) => {
       const apiError = normalizeCoreApiError(error)
-      if (apiError.recoveryOutcome) return
+      if (apiError.recoveryOutcome || query.meta?.handlesOwnErrors) return
 
       if (apiError.status === 500) {
         toast.error('Internal Server Error!')

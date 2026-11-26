@@ -1,9 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { coreApi } from '@/lib/core-api'
-import {
-  patchPreferences,
-  preferencesPatchSchema,
-} from './preferences-api'
+import { patchPreferences, preferencesPatchSchema } from './preferences-api'
 import {
   isLocaleTag,
   isTimezoneSelection,
@@ -43,7 +40,9 @@ describe('preferences contract', () => {
       actionItemEmailEnabled: false,
     }
     const patch = vi.spyOn(coreApi, 'patch').mockResolvedValue(response)
-    await expect(patchPreferences({ locale: 'en-us' })).resolves.toEqual(response)
+    await expect(patchPreferences({ locale: 'en-us' })).resolves.toEqual(
+      response
+    )
     expect(patch).toHaveBeenCalledWith('/me/preferences', { locale: 'en-us' })
   })
 
@@ -58,10 +57,15 @@ describe('preferences contract', () => {
       timezoneFallback: false,
     })
     expect(stored).toEqual({ timezone: 'Asia/Tokyo', locale: null })
-    expect(resolveRegionalPreferences({
-      timezone: 'Unknown/Region',
-      locale: 'zz-ZZ',
-    }, browser)).toMatchObject({
+    expect(
+      resolveRegionalPreferences(
+        {
+          timezone: 'Unknown/Region',
+          locale: 'zz-ZZ',
+        },
+        browser
+      )
+    ).toMatchObject({
       timezone: 'UTC',
       locale: 'en-GB',
       timezoneFallback: true,

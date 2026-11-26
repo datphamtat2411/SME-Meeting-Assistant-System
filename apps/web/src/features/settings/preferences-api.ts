@@ -1,12 +1,16 @@
 import { z } from 'zod'
-import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  queryOptions,
+  useMutation,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { CoreApiError, coreApi, normalizeCoreApiError } from '@/lib/core-api'
+import { isLocaleTag, isTimezoneSelection } from './regional-preferences'
 import {
   isSettingsSessionCurrent,
   requireSettingsSession,
   settingsSessionGeneration,
 } from './settings-session'
-import { isLocaleTag, isTimezoneSelection } from './regional-preferences'
 
 export const preferencesSchema = z.object({
   timezone: z.string().min(1).max(64).nullable(),
@@ -24,9 +28,12 @@ export const preferencesPatchSchema = z
     actionItemEmailEnabled: z.boolean().optional(),
   })
   .strict()
-  .refine((patch) => Object.values(patch).some((value) => value !== undefined), {
-    message: 'At least one changed preference is required.',
-  })
+  .refine(
+    (patch) => Object.values(patch).some((value) => value !== undefined),
+    {
+      message: 'At least one changed preference is required.',
+    }
+  )
 export type PreferencesPatch = z.infer<typeof preferencesPatchSchema>
 
 export const preferencesQueryKey = ['me', 'preferences'] as const
@@ -48,8 +55,11 @@ export const preferencesQuery = () =>
   queryOptions({
     queryKey: preferencesQueryKey,
     queryFn: async ({ signal }) =>
-      parsePreferences(await coreApi.get<unknown>('/me/preferences', { signal })),
+      parsePreferences(
+        await coreApi.get<unknown>('/me/preferences', { signal })
+      ),
     retry: false,
+    meta: { handlesOwnErrors: true },
   })
 
 export async function patchPreferences(patch: PreferencesPatch) {

@@ -66,7 +66,14 @@ export function ProfileForm() {
       <RequestError error={query.error} retry={() => void query.refetch()} />
     )
   }
-  return <ProfileEditor key={query.data.profile.id} snapshot={query.data} />
+  return (
+    <>
+      {query.isError && (
+        <RequestError error={query.error} retry={() => void query.refetch()} />
+      )}
+      <ProfileEditor key={query.data.profile.id} snapshot={query.data} />
+    </>
+  )
 }
 
 function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
@@ -98,7 +105,7 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
     try {
       requireSettingsSession(generation)
       await qc.cancelQueries({ queryKey: profileQueryKey })
-      const latest = await qc.fetchQuery(myProfileQuery())
+      const latest = await qc.fetchQuery({ ...myProfileQuery(), staleTime: 0 })
       requireSettingsSession(generation)
       setRecovery('review')
       return latest

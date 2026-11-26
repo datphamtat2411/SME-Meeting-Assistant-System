@@ -57,7 +57,14 @@ export function AccountForm() {
       <RequestError error={query.error} retry={() => void query.refetch()} />
     )
   }
-  return <AccountEditor preferences={query.data} />
+  return (
+    <>
+      {query.isError && (
+        <RequestError error={query.error} retry={() => void query.refetch()} />
+      )}
+      <AccountEditor preferences={query.data} />
+    </>
+  )
 }
 
 function AccountEditor({ preferences }: { preferences: Preferences }) {
@@ -99,7 +106,7 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
     try {
       requireSettingsSession(generation)
       await qc.cancelQueries({ queryKey: preferencesQueryKey })
-      const latest = await qc.fetchQuery(preferencesQuery())
+      const latest = await qc.fetchQuery({ ...preferencesQuery(), staleTime: 0 })
       requireSettingsSession(generation)
       reset(regionalDraft(latest), { keepDirtyValues: !discard })
       setReconcile(false)
@@ -136,7 +143,8 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
     try {
       const confirmed = await mutation.mutateAsync(input)
       if (!isSettingsSessionCurrent(input.generation)) return
-      const latest = qc.getQueryData<Preferences>(preferencesQueryKey) ?? confirmed
+      const latest =
+        qc.getQueryData<Preferences>(preferencesQueryKey) ?? confirmed
       reset(regionalDraft(latest))
       toast.success('Account preferences saved')
     } catch (error) {
@@ -201,7 +209,8 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
                 disabled={busy}
               />
               <FormDescription>
-                Choose date, time and number formats, not the interface language.
+                Choose date, time and number formats, not the interface
+                language.
               </FormDescription>
               <FormMessage />
             </FormItem>
@@ -240,10 +249,10 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
           )}
         </section>
         <p className='text-sm text-muted-foreground'>
-          Saved time zone: {preferences.timezone ?? 'Browser default'}.
-          Saved regional format: {preferences.locale ?? 'Browser default'}.
-          These settings are used in this preview; schedule integration is not
-          yet available.
+          Saved time zone: {preferences.timezone ?? 'Browser default'}. Saved
+          regional format: {preferences.locale ?? 'Browser default'}. These
+          settings are used in this preview; schedule integration is not yet
+          available.
         </p>
         {form.formState.errors.root?.message && (
           <p role='alert' className='text-sm text-destructive'>

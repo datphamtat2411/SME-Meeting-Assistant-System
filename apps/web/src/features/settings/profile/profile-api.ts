@@ -53,6 +53,7 @@ export const myProfileQuery = () =>
         await coreApi.getWithMetaAndEtag<unknown>('/me/profile', { signal })
       ),
     retry: false,
+    meta: { handlesOwnErrors: true },
   })
 
 export async function updateMyProfile(

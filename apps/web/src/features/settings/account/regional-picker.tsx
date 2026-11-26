@@ -43,8 +43,7 @@ export function RegionalPicker({
     (option + ' ' + formatLabel(option)).toLowerCase().includes(normalized)
   )
   const custom = search.trim()
-  const canAdd =
-    !!custom && !values.includes(custom) && validateCustom(custom)
+  const canAdd = !!custom && !values.includes(custom) && validateCustom(custom)
   const showDefault = 'use browser default'.includes(normalized)
 
   function select(next: string | null) {
@@ -97,7 +96,9 @@ export function RegionalPicker({
                 value='browser-default'
                 onSelect={() => select(null)}
               >
-                <Check className={cn('size-4', value !== null && 'opacity-0')} />
+                <Check
+                  className={cn('size-4', value !== null && 'opacity-0')}
+                />
                 Use browser default
               </CommandItem>
             )}
@@ -107,7 +108,9 @@ export function RegionalPicker({
                 value={option}
                 onSelect={() => select(option)}
               >
-                <Check className={cn('size-4', value !== option && 'opacity-0')} />
+                <Check
+                  className={cn('size-4', value !== option && 'opacity-0')}
+                />
                 {formatLabel(option)}
               </CommandItem>
             ))}

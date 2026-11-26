@@ -103,7 +103,7 @@ function mockSettingsReads() {
 async function renderApiSettings(children: ReactNode) {
   const queryClient = new QueryClient({
     defaultOptions: {
-      queries: { retry: false },
+      queries: { retry: false, staleTime: 10_000 },
       mutations: { retry: false },
     },
   })
@@ -264,13 +264,11 @@ describe('settings navigation and cleanup', () => {
   })
 
   it('preserves a dirty profile and requires review after a stale update', async () => {
-    const read = vi
-      .spyOn(coreApi, 'getWithMetaAndEtag')
-      .mockResolvedValue({
-        data: profile,
-        etag: '"profile-v1"',
-        meta: {},
-      })
+    const read = vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: profile,
+      etag: '"profile-v1"',
+      meta: {},
+    })
     const latest = { ...profile, displayName: 'Changed elsewhere' }
     const patch = vi
       .spyOn(coreApi, 'patchWithMetaAndEtag')
