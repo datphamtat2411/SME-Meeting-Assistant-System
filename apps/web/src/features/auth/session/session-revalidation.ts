@@ -144,9 +144,8 @@ export function revalidateBrowserSession(): Promise<void> {
   const ticket = ++revision
   const lifecycleGeneration = getRequestRecoveryGeneration()
   const barrier = beginRequestRecoveryRevalidation()
-  const established = config.queryClient.getQueryData<AuthContext>(
-    currentUserQueryKey
-  )
+  const established =
+    config.queryClient.getQueryData<AuthContext>(currentUserQueryKey)
   const predecessor = active
   setState('checking')
   const cancellation = config.queryClient.cancelQueries()

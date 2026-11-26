@@ -58,9 +58,8 @@ export const Route = createFileRoute('/_authenticated')({
         !isAuthLifecycleBlocking() &&
         generation !== getSessionRevalidationGeneration()
       ) {
-        const verified = context.queryClient.getQueryData<AuthContext>(
-          currentUserQueryKey
-        )
+        const verified =
+          context.queryClient.getQueryData<AuthContext>(currentUserQueryKey)
         if (verified) return { currentUser: verified }
       }
       const failure = classifySessionFailure(error)

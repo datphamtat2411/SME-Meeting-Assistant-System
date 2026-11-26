@@ -961,7 +961,8 @@ export function createRequestRecoveryCoordinator(
   function isStaleLifecycleResponse(config: RecoveryRequestConfig): boolean {
     if (isAuthLifecycleExemptRequest(config)) return false
     const requestGeneration = config[AUTH_LIFECYCLE_GENERATION_MARKER]
-    const verificationGeneration = config[SESSION_REVALIDATION_GENERATION_MARKER]
+    const verificationGeneration =
+      config[SESSION_REVALIDATION_GENERATION_MARKER]
     if (
       requiresRevalidatedSession(config) &&
       (revalidationRequired ||

@@ -88,7 +88,8 @@ export async function fetchCurrentUser(
     timeout: options.timeout,
   }
   if (options.recoveryDisabled) config[RECOVERY_DISABLED_MARKER] = true
-  if (options.revalidationProbe) config[SESSION_REVALIDATION_PROBE_MARKER] = true
+  if (options.revalidationProbe)
+    config[SESSION_REVALIDATION_PROBE_MARKER] = true
 
   const response = await coreApi.get<unknown>('/auth/me', {
     ...config,
