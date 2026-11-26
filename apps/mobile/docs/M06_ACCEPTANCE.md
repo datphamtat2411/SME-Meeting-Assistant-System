@@ -95,11 +95,15 @@ unless another suite is named.
 - API PersonalDashboardHttpIntegrationTests and MeetingMinutesHttpIntegrationTests
   exercise canonical projections and independent access. The above Mobile
   tests cover fixture-based consumers, not an actual deployed multi-client
-  business transaction. A combined live mutation-to-projection journey
+  business transaction. Candidate confirmation/rejection integration tests
+  drive real shared invalidation into three collections, deferred Minutes
+  and Dashboard consumers. A combined live mutation-to-projection journey
   remains a separate manual acceptance check.
 - Existing small-screen restricted-detail widget coverage checks overflow and
-  protected presentation. Long content, keyboard, theme, accessibility and
-  device lifecycle checks remain pending unless separately verified.
+  protected presentation. Candidate widget coverage exercises long content,
+  a narrow dark layout and simulated keyboard insets with a reachable submit
+  control. Physical keyboard, screen-reader, broader accessibility and
+  device lifecycle checks remain pending.
 
 ## Wave 05 targeted hardening
 
@@ -121,8 +125,10 @@ meeting-scoped detail invalidation, repeated conflicts with independent
 server edits, competing real detail controllers using shared admission
 (including independent resource progress), and manual creation through
 cancellation preserving canonical identity and completion attribution.
-All are candidate assertions until CI executes them. No existing test is
-weakened or removed.
+Additional candidate cases cover both confirmation and rejection across
+actual collection controllers and the dependency-owned Minutes/Dashboard
+invalidation path, plus narrow dark keyboard form usability. All candidate
+assertions require CI execution. No existing test is weakened or removed.
 
 ## Verification ledger
 

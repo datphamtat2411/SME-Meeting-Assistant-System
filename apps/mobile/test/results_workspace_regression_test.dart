@@ -5,7 +5,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
+import 'package:sme_meeting_assistant/features/action_items/action_item_collection.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_create_sheet.dart';
+import 'package:sme_meeting_assistant/features/action_items/action_item_detail.dart';
+import 'package:sme_meeting_assistant/features/dashboard/dashboard_controller.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_creation.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_models.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
@@ -1590,6 +1593,204 @@ void main() {
     await workspace.loadTranscript(force: true);
     expect(repository.reads, 2);
   });
+
+  for (final command in [ActionItemCommand.confirm, ActionItemCommand.reject]) {
+    test(
+      '$command updates canonical collections, Minutes and Dashboard',
+      () async {
+        var canonical = itemJson(
+          status: 'PROPOSED',
+          source: 'AI_EXTRACTED',
+          official: false,
+        );
+        final confirmed = command == ActionItemCommand.confirm;
+        var dashboardReads = 0;
+        var writes = 0;
+        late final _Repository minutesRepository;
+        final client = MeetingTestHttpClient((request) async {
+          final path = request.url.path;
+          if (request.method == 'POST') {
+            writes++;
+            expect(request.url.pathSegments.last, command.name);
+            expect(request.headers['If-Match'], '"v1"');
+            canonical = {
+              ...itemJson(
+                status: confirmed ? 'OPEN' : 'CANCELLED',
+                source: 'AI_EXTRACTED',
+                official: confirmed,
+                version: 2,
+              ),
+              if (confirmed) 'confirmedByUserId': testUserId,
+              if (confirmed) 'confirmedAt': '2026-11-24T12:00:00Z',
+            };
+            minutesRepository.minutesActions = [
+              if (confirmed)
+                MinutesAction(
+                  id: itemId,
+                  title: 'Send report',
+                  details: null,
+                  status: 'OPEN',
+                  sourceType: 'AI_EXTRACTED',
+                  assigneeUserId: testUserId,
+                  dueDate: '2026-12-01',
+                  version: 2,
+                  createdAt: _createdAt,
+                  confirmedByUserId: testUserId,
+                  confirmedAt: _createdAt,
+                ),
+            ];
+            return meetingApiSuccess(canonical, headers: {'etag': '"v2"'});
+          }
+          if (path.endsWith('/dashboard/me')) {
+            dashboardReads++;
+            return meetingApiSuccess({
+              'assignedActionItems': {
+                'open': canonical['official'] == true ? 1 : 0,
+                'inProgress': 0,
+                'done': 0,
+                'overdue': 0,
+              },
+            });
+          }
+          if (path.endsWith('/action-items')) {
+            final query = request.url.queryParameters;
+            final bool include;
+            if (query['meetingId'] != null) {
+              expect(query['meetingId'], testMeetingId);
+              include = true;
+            } else if (query['reviewable'] == 'true') {
+              expect(query['status'], 'PROPOSED');
+              include = canonical['status'] == 'PROPOSED';
+            } else {
+              expect(query['assignee'], 'me');
+              expect(query['official'], 'true');
+              include = canonical['official'] == true;
+            }
+            return meetingApiSuccess([
+              if (include) canonical,
+            ], meta: pageMeta(total: include ? 1 : 0));
+          }
+          if (path.endsWith('/action-items/$itemId')) {
+            return meetingApiSuccess(canonical, headers: {'etag': '"v1"'});
+          }
+          throw StateError('Unexpected request $path');
+        });
+        final api = createMeetingTestApi(client);
+        await signInMeetingTestApi(api);
+        final dependencies = AppDependencies(
+          api: api,
+          appearancePreferences: InMemoryAppearancePreferences(),
+          httpClient: client,
+        );
+        minutesRepository = _Repository(api);
+        final workspace = ResultsWorkspaceController(
+          api: api,
+          repository: minutesRepository,
+          meetingId: testMeetingId,
+          meeting: Meeting.fromJson(meetingTestJson()),
+          capabilities: const ResultsCapabilities(
+            canRead: true,
+            canMutate: true,
+          ),
+          invalidation: dependencies.resultsInvalidation,
+        );
+        final review = ActionItemCollectionController(
+          repository: dependencies.actionItems,
+          criteria: const ActionItemCollectionCriteria(
+            mode: ActionItemCollectionMode.needsReview,
+          ),
+        );
+        final personal = ActionItemCollectionController(
+          repository: dependencies.actionItems,
+        );
+        final embedded = ActionItemCollectionController(
+          repository: dependencies.actionItems,
+          fixedMeetingId: testMeetingId,
+          criteria: const ActionItemCollectionCriteria(
+            mode: ActionItemCollectionMode.allAccessible,
+          ),
+        );
+        final dashboard = DashboardController(
+          api: api,
+          invalidation: dependencies.actionItemInvalidation,
+        );
+        final detail = ActionItemDetailController(
+          repository: dependencies.actionItems,
+          admission: dependencies.actionItemWorkflows.admission,
+          itemId: itemId,
+          expectedMeetingId: testMeetingId,
+        );
+        addTearDown(() async {
+          detail.dispose();
+          dashboard.dispose();
+          embedded.dispose();
+          personal.dispose();
+          review.dispose();
+          workspace.dispose();
+          await dependencies.shutdown();
+        });
+        await review.initialize();
+        await personal.initialize();
+        await embedded.initialize();
+        await workspace.loadMinutes();
+        await dashboard.refresh();
+        await detail.refresh();
+        expect(review.state.items.single.id, itemId);
+        expect(personal.state.isConfirmedEmpty, isTrue);
+        expect(embedded.state.items.single.official, isFalse);
+        expect(workspace.minutes.data!.officialActionItems, isEmpty);
+        final initialCounts =
+            dashboard.data!['assignedActionItems'] as Map<String, dynamic>;
+        expect(initialCounts['open'], 0);
+        dashboard.setActive(false);
+        final settled = Completer<void>();
+        void observe() {
+          if (review.state.isConfirmedEmpty &&
+              personal.state.phase == ActionItemCollectionPhase.idle &&
+              personal.state.items.length == (confirmed ? 1 : 0) &&
+              embedded.state.phase == ActionItemCollectionPhase.idle &&
+              embedded.state.items.single.version == 2 &&
+              !settled.isCompleted) {
+            settled.complete();
+          }
+        }
+
+        review.addListener(observe);
+        personal.addListener(observe);
+        embedded.addListener(observe);
+        expect(
+          await detail.command(command, reviewed: detail.snapshot!),
+          isTrue,
+        );
+        await settled.future;
+        expect(writes, 1);
+        expect(embedded.state.items.single.official, confirmed);
+        expect(review.state.failure, isNull);
+        expect(personal.state.failure, isNull);
+        if (confirmed) {
+          expect(personal.state.items.single.id, itemId);
+          expect(personal.state.items.single.official, isTrue);
+        }
+        expect(dashboardReads, 1);
+        expect(minutesRepository.minutesReads, 1);
+        dashboard.setActive(true);
+        await dashboard.refresh();
+        await workspace.loadMinutes();
+        expect(dashboardReads, 2);
+        expect(minutesRepository.minutesReads, 2);
+        final counts =
+            dashboard.data!['assignedActionItems'] as Map<String, dynamic>;
+        expect(counts['open'], confirmed ? 1 : 0);
+        final official = workspace.minutes.data!.officialActionItems;
+        expect(official.length, confirmed ? 1 : 0);
+        if (confirmed) {
+          expect(official.single.id, itemId);
+          expect(official.single.status, 'OPEN');
+        }
+        expect(writes, 1);
+      },
+    );
+  }
 
   test('Action Item changes reload only affected Minutes', () async {
     final client = MeetingTestHttpClient((request) async {

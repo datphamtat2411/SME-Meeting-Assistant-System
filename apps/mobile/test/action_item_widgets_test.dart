@@ -258,6 +258,83 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('creation remains usable on a narrow dark keyboard layout', (
+    tester,
+  ) async {
+    final client = MeetingTestHttpClient((request) async {
+      expect(request.method, 'GET');
+      return meetingApiSuccess([
+        {
+          'id': testMeetingId,
+          'title': List.filled(8, 'Cuộc họp dài').join(' '),
+          'canReadMeetingContext': true,
+        },
+      ], meta: _pageMeta(20, 1));
+    });
+    final repository = (await tester.runAsync(() => repositoryFor(client)))!;
+    final creation = ActionItemCreationController(repository: repository);
+    addTearDown(creation.dispose);
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetViewInsets);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: ActionItemCreatePage(
+          controller: creation,
+          initialMeetingId: testMeetingId,
+        ),
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () => find.textContaining('Cuộc họp dài').evaluate().isNotEmpty,
+      reason: 'verified long meeting label',
+    );
+    expect(find.byTooltip('Đóng'), findsOneWidget);
+    final assignee = find.text('Chọn người phụ trách *');
+    await tester.ensureVisible(assignee);
+    await tester.tap(assignee);
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Giao cho tôi'));
+    await tester.pumpAndSettle();
+    final title = find.byType(TextFormField).first;
+    final details = find.byType(TextFormField).last;
+    final longTitle = List.filled(18, 'Công việc').join(' ');
+    final longDetails = List.filled(60, 'Nội dung cần xem xét').join(' ');
+    await tester.ensureVisible(title);
+    await tester.enterText(title, longTitle);
+    await tester.ensureVisible(details);
+    await tester.enterText(details, longDetails);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 260);
+    await tester.pumpAndSettle();
+    final submit = find.widgetWithText(FilledButton, 'Tạo công việc');
+    await tester.ensureVisible(submit);
+    await tester.pumpAndSettle();
+    expect(submit.hitTestable(), findsOneWidget);
+    expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
+    expect(
+      tester.widget<TextFormField>(title).controller!.text,
+      longTitle,
+    );
+    expect(
+      tester.widget<TextFormField>(details).controller!.text,
+      longDetails,
+    );
+    expect(tester.takeException(), isNull);
+    expect(
+      client.requests.where(
+        (request) =>
+            request.method == 'POST' &&
+            request.url.path.endsWith('/action-items'),
+      ),
+      isEmpty,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('creation requires explicit meeting and assignee selection', (
     tester,
   ) async {
