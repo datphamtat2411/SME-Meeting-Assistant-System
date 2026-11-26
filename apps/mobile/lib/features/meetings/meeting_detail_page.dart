@@ -273,7 +273,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
         sessionScope: scope,
         meetingId: meeting.id,
       );
-      if (!owns()) return;
+      if (!mounted || !owns()) return;
       if (!allowed) {
         dependencies.forgetAssistantMeeting(scope, meeting.id);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -299,13 +299,11 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
         ),
       );
     } on Object catch (error) {
-      if (owns()) {
-        if (error is ApiFailure &&
-            (error.status == 403 || error.status == 404)) {
-          dependencies.forgetAssistantMeeting(scope, meeting.id);
-        }
-        showFailure(context, error);
+      if (!mounted || !owns()) return;
+      if (error is ApiFailure && (error.status == 403 || error.status == 404)) {
+        dependencies.forgetAssistantMeeting(scope, meeting.id);
       }
+      showFailure(context, error);
     } finally {
       if (mounted) setState(() => _openingAssistant = false);
     }
