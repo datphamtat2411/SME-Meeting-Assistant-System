@@ -84,26 +84,29 @@ describe('shared credential establishment form', () => {
     expect(submit).toHaveBeenCalledTimes(2)
   })
 
-  it.each([401, 403])('rejects HTTP %i without completing setup', async (status) => {
-    submit.mockRejectedValueOnce(
-      new CoreApiError({ kind: 'http', status, message: 'private detail' })
-    )
-    const screen = await renderForm()
-    const password = 'private activation password'
-    await userEvent.fill(screen.getByLabelText('New password'), password)
-    await userEvent.fill(screen.getByLabelText('Confirm password'), password)
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Activate account' })
-    )
-    await expect
-      .element(screen.getByRole('alert'))
-      .toHaveTextContent(/account request was blocked/i)
-    await expect
-      .element(screen.getByRole('alert'))
-      .not.toHaveTextContent('private detail')
-    expect(submit).toHaveBeenCalledOnce()
-    expect(complete).not.toHaveBeenCalled()
-  })
+  it.each([401, 403])(
+    'rejects HTTP %i without completing setup',
+    async (status) => {
+      submit.mockRejectedValueOnce(
+        new CoreApiError({ kind: 'http', status, message: 'private detail' })
+      )
+      const screen = await renderForm()
+      const password = 'private activation password'
+      await userEvent.fill(screen.getByLabelText('New password'), password)
+      await userEvent.fill(screen.getByLabelText('Confirm password'), password)
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Activate account' })
+      )
+      await expect
+        .element(screen.getByRole('alert'))
+        .toHaveTextContent(/account request was blocked/i)
+      await expect
+        .element(screen.getByRole('alert'))
+        .not.toHaveTextContent('private detail')
+      expect(submit).toHaveBeenCalledOnce()
+      expect(complete).not.toHaveBeenCalled()
+    }
+  )
 
   it('clears credentials when setup is unavailable', async () => {
     submit.mockRejectedValueOnce(

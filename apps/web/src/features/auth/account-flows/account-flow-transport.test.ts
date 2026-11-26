@@ -44,19 +44,13 @@ describe('account-flow transport failures', () => {
     'does not renew or replay setup on HTTP %i',
     async (status) => {
       const adapter = vi.fn<AxiosAdapter>(async (config) => {
-        throw new AxiosError(
-          'blocked',
-          'ERR_BAD_REQUEST',
+        throw new AxiosError('blocked', 'ERR_BAD_REQUEST', config, undefined, {
           config,
-          undefined,
-          {
-            config,
-            status,
-            statusText: 'Rejected',
-            headers: new AxiosHeaders(),
-            data: { code: 'AUTH_REQUIRED', message: 'private detail' },
-          }
-        )
+          status,
+          statusText: 'Rejected',
+          headers: new AxiosHeaders(),
+          data: { code: 'AUTH_REQUIRED', message: 'private detail' },
+        })
       })
       coreApiAxios.defaults.adapter = adapter
       await expect(

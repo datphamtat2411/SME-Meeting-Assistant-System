@@ -84,28 +84,31 @@ describe('ForgotPasswordForm', () => {
     expect(post).toHaveBeenCalledTimes(2)
   })
 
-  it.each([401, 403])('presents a safe rejection for HTTP %i', async (status) => {
-    const post = vi
-      .spyOn(coreApi, 'post')
-      .mockRejectedValue(
-        new CoreApiError({ kind: 'http', status, message: 'private detail' })
+  it.each([401, 403])(
+    'presents a safe rejection for HTTP %i',
+    async (status) => {
+      const post = vi
+        .spyOn(coreApi, 'post')
+        .mockRejectedValue(
+          new CoreApiError({ kind: 'http', status, message: 'private detail' })
+        )
+      const screen = await render(<ForgotPasswordForm />)
+      await userEvent.fill(
+        screen.getByRole('textbox', { name: 'Organization email' }),
+        'employee@example.com'
       )
-    const screen = await render(<ForgotPasswordForm />)
-    await userEvent.fill(
-      screen.getByRole('textbox', { name: 'Organization email' }),
-      'employee@example.com'
-    )
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Send recovery link' })
-    )
-    await expect
-      .element(screen.getByRole('alert'))
-      .toHaveTextContent(/recovery request was blocked/i)
-    await expect
-      .element(screen.getByRole('alert'))
-      .not.toHaveTextContent('private detail')
-    expect(post).toHaveBeenCalledOnce()
-  })
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Send recovery link' })
+      )
+      await expect
+        .element(screen.getByRole('alert'))
+        .toHaveTextContent(/recovery request was blocked/i)
+      await expect
+        .element(screen.getByRole('alert'))
+        .not.toHaveTextContent('private detail')
+      expect(post).toHaveBeenCalledOnce()
+    }
+  )
 
   it('maps backend email validation to the field without exposing details', async () => {
     vi.spyOn(coreApi, 'post').mockRejectedValue(

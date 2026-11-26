@@ -38,10 +38,7 @@ export function PasswordEstablishmentForm({
     if (result === 'completed') {
       form.reset()
       onCompleted()
-    } else if (
-      result?.kind === 'uncertain' ||
-      result?.kind === 'unavailable'
-    ) {
+    } else if (result?.kind === 'uncertain' || result?.kind === 'unavailable') {
       form.reset()
     } else if (result?.field === 'password') {
       form.setError('password', { type: 'server', message: result.message })
