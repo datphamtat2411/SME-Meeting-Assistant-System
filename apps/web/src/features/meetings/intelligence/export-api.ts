@@ -80,8 +80,14 @@ export async function createMinutesExport(
   }
 }
 const exportRecoverySchema = z.discriminatedUnion('outcome', [
-  z.object({ outcome: z.literal('RECOVERED'), admission: exportAdmissionSchema }),
-  z.object({ outcome: z.literal('UNAVAILABLE'), admission: z.null().optional() }),
+  z.object({
+    outcome: z.literal('RECOVERED'),
+    admission: exportAdmissionSchema,
+  }),
+  z.object({
+    outcome: z.literal('UNAVAILABLE'),
+    admission: z.null().optional(),
+  }),
 ])
 
 export async function recoverMinutesExport(
@@ -97,12 +103,17 @@ export async function recoverMinutesExport(
     )
   )
   if (!result.success) {
-    throw malformedExportResponse('Export recovery response could not be verified.', result.error)
+    throw malformedExportResponse(
+      'Export recovery response could not be verified.',
+      result.error
+    )
   }
   if (result.data.outcome === 'UNAVAILABLE') return null
   const admission = result.data.admission
   if (admission.meetingId !== meetingId || admission.format !== format) {
-    throw malformedExportResponse('Export recovery response belongs to a different intent.')
+    throw malformedExportResponse(
+      'Export recovery response belongs to a different intent.'
+    )
   }
   return admission
 }
@@ -121,12 +132,16 @@ export function exportCapabilitiesQuery(meetingId: string, scope: string) {
     queryFn: async ({ signal }) => {
       const result = exportCapabilitiesSchema.safeParse(
         await coreApi.get<unknown>(
-          '/meetings/' + encodeURIComponent(meetingId) + '/exports/capabilities',
+          '/meetings/' +
+            encodeURIComponent(meetingId) +
+            '/exports/capabilities',
           { signal }
         )
       )
       if (!result.success || result.data.meetingId !== meetingId) {
-        throw malformedExportResponse('Export service availability could not be verified.')
+        throw malformedExportResponse(
+          'Export service availability could not be verified.'
+        )
       }
       return result.data
     },
@@ -166,23 +181,38 @@ export function parseExportStatus(
   }
   const { status, readyAt, freshness, freshnessCheckedAt } = parsed.data
   if (
-    (status === 'READY' && (readyAt === null || freshness === 'NOT_APPLICABLE')) ||
-    (status !== 'READY' && (freshness !== 'NOT_APPLICABLE' || freshnessCheckedAt !== null)) ||
-    ((freshness === 'CURRENT' || freshness === 'STALE') && freshnessCheckedAt === null)
+    (status === 'READY' &&
+      (readyAt === null || freshness === 'NOT_APPLICABLE')) ||
+    (status !== 'READY' &&
+      (freshness !== 'NOT_APPLICABLE' || freshnessCheckedAt !== null)) ||
+    ((freshness === 'CURRENT' || freshness === 'STALE') &&
+      freshnessCheckedAt === null)
   ) {
-    throw malformedExportResponse('Core API returned inconsistent export status and freshness.')
+    throw malformedExportResponse(
+      'Core API returned inconsistent export status and freshness.'
+    )
   }
   return parsed.data
 }
 
 export function exportStatusQuery(
   exportId: string,
-  expected?: { meetingId?: string; format?: ExportStatus['format']; scope?: string }
+  expected?: {
+    meetingId?: string
+    format?: ExportStatus['format']
+    scope?: string
+  }
 ) {
   const expectedMeetingId = expected?.meetingId
   const expectedFormat = expected?.format
   return queryOptions({
-    queryKey: ['export', exportId, expectedMeetingId, expectedFormat, expected?.scope],
+    queryKey: [
+      'export',
+      exportId,
+      expectedMeetingId,
+      expectedFormat,
+      expected?.scope,
+    ],
     queryFn: async ({ signal }) =>
       parseExportStatus(
         await coreApi.get<unknown>('/exports/' + encodeURIComponent(exportId), {

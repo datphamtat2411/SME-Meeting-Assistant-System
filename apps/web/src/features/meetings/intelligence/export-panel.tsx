@@ -1,4 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, FileDown } from 'lucide-react'
 import { toast } from 'sonner'
@@ -8,7 +14,10 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RequestError } from '@/components/request-state'
 import { useOptionalMeetingSession } from '../media/meeting-session-context'
-import type { ExportOperationOwnerValue, ExportOperation } from '../media/use-export-operation-owner'
+import type {
+  ExportOperationOwnerValue,
+  ExportOperation,
+} from '../media/use-export-operation-owner'
 import { useOptionalMeetingAuthorization } from '../meeting-authorization-context'
 import {
   accessMinutesExport,
@@ -16,7 +25,12 @@ import {
   exportStatusQuery,
   type ExportStatus,
 } from './export-api'
-import { canRetryObservation, normalPollMs, observationBudgetMs, observationRetryDelay } from './export-observation-policy'
+import {
+  canRetryObservation,
+  normalPollMs,
+  observationBudgetMs,
+  observationRetryDelay,
+} from './export-observation-policy'
 import { minutesQuery } from './minutes-api'
 
 type ExportFormat = ExportStatus['format']
@@ -30,8 +44,15 @@ function trustedDownloadHosts() {
     .filter((host) => {
       try {
         const url = new URL('https://' + host)
-        return Boolean(host) && url.host === host && !url.username && !url.password &&
-          url.pathname === '/' && !url.search && !url.hash
+        return (
+          Boolean(host) &&
+          url.host === host &&
+          !url.username &&
+          !url.password &&
+          url.pathname === '/' &&
+          !url.search &&
+          !url.hash
+        )
       } catch {
         return false
       }
@@ -146,8 +167,11 @@ function FormatExportCard({
   const [paused, setPaused] = useState(false)
   const remaining = useRef(observationBudgetMs)
   const activeSince = useRef<number | undefined>(undefined)
-  const remainingTime = () => remaining.current -
-    (activeSince.current === undefined ? 0 : performance.now() - activeSince.current)
+  const remainingTime = () =>
+    remaining.current -
+    (activeSince.current === undefined
+      ? 0
+      : performance.now() - activeSince.current)
   const options = exportStatusQuery(operation?.exportId ?? '', {
     meetingId,
     format,
@@ -156,16 +180,28 @@ function FormatExportCard({
   const statusQuery = useQuery({
     ...options,
     enabled: (query) =>
-      canObserve && Boolean(operation?.exportId) && visible && !paused &&
+      canObserve &&
+      Boolean(operation?.exportId) &&
+      visible &&
+      !paused &&
       query.state.status !== 'error',
     retry: (failures, error) =>
       pageVisible() && canRetryObservation(failures, error, remainingTime()),
     retryDelay: observationRetryDelay,
     refetchInterval: (query) => {
-      if (!canObserve || !operation?.exportId || !visible || paused ||
-          query.state.status === 'error' || remainingTime() <= 0) return false
+      if (
+        !canObserve ||
+        !operation?.exportId ||
+        !visible ||
+        paused ||
+        query.state.status === 'error' ||
+        remainingTime() <= 0
+      )
+        return false
       const value = query.state.data
-      return !value || value.status === 'PENDING' || value.status === 'GENERATING'
+      return !value ||
+        value.status === 'PENDING' ||
+        value.status === 'GENERATING'
         ? normalPollMs
         : false
     },
@@ -174,19 +210,33 @@ function FormatExportCard({
     refetchOnReconnect: false,
     retryOnMount: false,
   })
-  const status = canObserve && !statusQuery.isError ? statusQuery.data : undefined
-  const terminal = Boolean(status && (status.status === 'READY' || status.status === 'FAILED'))
-  const tracking = canObserve && Boolean(operation?.exportId) && visible && !paused &&
-    !terminal && !statusQuery.isError
+  const status =
+    canObserve && !statusQuery.isError ? statusQuery.data : undefined
+  const terminal = Boolean(
+    status && (status.status === 'READY' || status.status === 'FAILED')
+  )
+  const tracking =
+    canObserve &&
+    Boolean(operation?.exportId) &&
+    visible &&
+    !paused &&
+    !terminal &&
+    !statusQuery.isError
 
   useEffect(() => {
     if (!tracking) return
     const started = performance.now()
     activeSince.current = started
-    const timer = window.setTimeout(() => setPaused(true), Math.max(0, remaining.current))
+    const timer = window.setTimeout(
+      () => setPaused(true),
+      Math.max(0, remaining.current)
+    )
     return () => {
       window.clearTimeout(timer)
-      remaining.current = Math.max(0, remaining.current - (performance.now() - started))
+      remaining.current = Math.max(
+        0,
+        remaining.current - (performance.now() - started)
+      )
       activeSince.current = undefined
     }
   }, [tracking])
@@ -208,25 +258,49 @@ function FormatExportCard({
       mounted.current = false
       downloadGeneration.current += 1
     }
-  }, [canDownload, canObserve, intentId, meetingId, operation?.exportId, previousReadyId])
+  }, [
+    canDownload,
+    canObserve,
+    intentId,
+    meetingId,
+    operation?.exportId,
+    previousReadyId,
+  ])
 
   const download = useMutation({
     mutationFn: async (exportId: string) => {
-      if (!operation || !canDownload || !canObserve ||
-          (exportId !== operation.exportId && exportId !== operation.previousReadyId)) return
+      if (
+        !operation ||
+        !canDownload ||
+        !canObserve ||
+        (exportId !== operation.exportId &&
+          exportId !== operation.previousReadyId)
+      )
+        return
       const ticket = ++downloadGeneration.current
-      const isCurrent = () => mounted.current &&
-        downloadGeneration.current === ticket && owner.isCurrent(format, operation.intentId)
+      const isCurrent = () =>
+        mounted.current &&
+        downloadGeneration.current === ticket &&
+        owner.isCurrent(format, operation.intentId)
       try {
         if (!isCurrent()) return
         const target = exportStatusQuery(exportId, { meetingId, format, scope })
         // Do not treat cached READY status as a fresh authorization decision.
-        const observed = await queryClient.fetchQuery({ ...target, staleTime: 0 })
+        const observed = await queryClient.fetchQuery({
+          ...target,
+          staleTime: 0,
+        })
         if (!isCurrent()) return
-        if (observed.exportId !== exportId || observed.meetingId !== meetingId ||
-            observed.format !== format || observed.status !== 'READY' ||
-            observed.freshness !== 'CURRENT') {
-          throw new Error('Verify that the document is ready and current before downloading.')
+        if (
+          observed.exportId !== exportId ||
+          observed.meetingId !== meetingId ||
+          observed.format !== format ||
+          observed.status !== 'READY' ||
+          observed.freshness !== 'CURRENT'
+        ) {
+          throw new Error(
+            'Verify that the document is ready and current before downloading.'
+          )
         }
         const capability = await accessMinutesExport(exportId)
         if (!isCurrent()) return
@@ -242,10 +316,20 @@ function FormatExportCard({
       } catch (error) {
         if (!isCurrent()) return
         const failure = normalizeCoreApiError(error)
-        if (failure.status === 401 || failure.status === 403 || failure.status === 404) {
-          toast.error('Download unavailable', { description: 'Access could not be confirmed. Refresh the workspace before retrying.' })
+        if (
+          failure.status === 401 ||
+          failure.status === 403 ||
+          failure.status === 404
+        ) {
+          toast.error('Download unavailable', {
+            description:
+              'Access could not be confirmed. Refresh the workspace before retrying.',
+          })
         } else {
-          toast.error('Download unavailable', { description: 'The document or its secure access could not be verified. Refresh its status and try again.' })
+          toast.error('Download unavailable', {
+            description:
+              'The document or its secure access could not be verified. Refresh its status and try again.',
+          })
         }
       }
     },
@@ -267,7 +351,10 @@ function FormatExportCard({
       return
     }
     const recovering = Boolean(operation && !operation.exportId)
-    if (confirmNewIntent ? !canGenerate : recovering ? !canRecover : !canGenerate) return
+    if (
+      confirmNewIntent ? !canGenerate : recovering ? !canRecover : !canGenerate
+    )
+      return
     downloadGeneration.current += 1
     owner.admit(format, {
       allowReplacement: Boolean(operation?.exportId && terminal),
@@ -280,31 +367,59 @@ function FormatExportCard({
   const observing = Boolean(operation?.exportId && !terminal)
   const busy = owner.pending[format]
   const failure = owner.failures[format]
-  const actionLabel = busy ? (recovering ? 'Checking request…' : 'Submitting…') :
-    observing ? `Refresh ${label} status` :
-    recovering ? `Recover ${label} request` :
-    terminal ? `Generate new ${label}` : `Generate ${label}`
+  const actionLabel = busy
+    ? recovering
+      ? 'Checking request…'
+      : 'Submitting…'
+    : observing
+      ? `Refresh ${label} status`
+      : recovering
+        ? `Recover ${label} request`
+        : terminal
+          ? `Generate new ${label}`
+          : `Generate ${label}`
   return (
-    <section aria-label={label + ' export'} className='space-y-3 rounded-lg border p-4'>
+    <section
+      aria-label={label + ' export'}
+      className='space-y-3 rounded-lg border p-4'
+    >
       <div className='flex flex-wrap items-start justify-between gap-2'>
         <div>
           <h3 className='font-medium'>{label} document</h3>
           <p className='text-xs text-muted-foreground'>
-            {format === 'PDF' ? 'For sharing and printing' : 'For editing and documentation'}
+            {format === 'PDF'
+              ? 'For sharing and printing'
+              : 'For editing and documentation'}
           </p>
         </div>
-        {status && <Badge variant='outline'>{statusLabels[status.status]}</Badge>}
+        {status && (
+          <Badge variant='outline'>{statusLabels[status.status]}</Badge>
+        )}
       </div>
-      {busy && <p role='status' className='text-sm text-muted-foreground'>Submitting or checking the request with Core API…</p>}
+      {busy && (
+        <p role='status' className='text-sm text-muted-foreground'>
+          Submitting or checking the request with Core API…
+        </p>
+      )}
       {!busy && recovering && !operation?.recoveryUnavailable && (
         <p className='text-sm text-muted-foreground'>
-          The original request outcome is uncertain. Recover it without creating another document.
+          The original request outcome is uncertain. Recover it without creating
+          another document.
         </p>
       )}
       {operation?.recoveryUnavailable && (
         <div className='space-y-2 rounded-md border p-3 text-sm'>
-          <p>The original receipt is unavailable. The original export may still exist. A new request may create another document.</p>
-          <Button type='button' variant='outline' size='sm' disabled={!canGenerate || busy || download.isPending} onClick={() => submit(true)}>
+          <p>
+            The original receipt is unavailable. The original export may still
+            exist. A new request may create another document.
+          </p>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            disabled={!canGenerate || busy || download.isPending}
+            onClick={() => submit(true)}
+          >
             Confirm new {label} request
           </Button>
         </div>
@@ -317,7 +432,8 @@ function FormatExportCard({
       )}
       {statusQuery.isError && canObserve && (
         <div role='alert' className='text-sm text-muted-foreground'>
-          Export status could not be verified. Automatic tracking has stopped; the server job may still be running.
+          Export status could not be verified. Automatic tracking has stopped;
+          the server job may still be running.
         </div>
       )}
       {paused && !terminal && (
@@ -326,31 +442,62 @@ function FormatExportCard({
         </p>
       )}
       {status?.status === 'READY' && status.freshness === 'STALE' && (
-        <p className='text-sm text-muted-foreground'>This export is outdated. Generate a new version.</p>
+        <p className='text-sm text-muted-foreground'>
+          This export is outdated. Generate a new version.
+        </p>
       )}
       {status?.status === 'READY' && status.freshness === 'UNKNOWN' && (
-        <p className='text-sm text-muted-foreground'>Freshness could not be verified. Verify again before downloading.</p>
+        <p className='text-sm text-muted-foreground'>
+          Freshness could not be verified. Verify again before downloading.
+        </p>
       )}
       {status?.status === 'FAILED' && (
-        <p className='text-sm text-muted-foreground'>The server could not generate this document. You can request a new export.</p>
+        <p className='text-sm text-muted-foreground'>
+          The server could not generate this document. You can request a new
+          export.
+        </p>
       )}
       {status?.status === 'READY' && status.freshness === 'CURRENT' && (
-        <p className='text-sm text-muted-foreground'>Current document. Access will be verified again before download.</p>
+        <p className='text-sm text-muted-foreground'>
+          Current document. Access will be verified again before download.
+        </p>
       )}
       <div className='flex flex-wrap gap-2'>
-        <Button type='button' size='sm' variant={format === 'PDF' ? 'default' : 'outline'} disabled={
-          busy || download.isPending ||
-          (observing ? !canObserve || statusQuery.isFetching : recovering ? !canRecover : !canGenerate)
-        } onClick={() => submit()}>
+        <Button
+          type='button'
+          size='sm'
+          variant={format === 'PDF' ? 'default' : 'outline'}
+          disabled={
+            busy ||
+            download.isPending ||
+            (observing
+              ? !canObserve || statusQuery.isFetching
+              : recovering
+                ? !canRecover
+                : !canGenerate)
+          }
+          onClick={() => submit()}
+        >
           {actionLabel}
         </Button>
         {status?.status === 'READY' && status.freshness === 'UNKNOWN' && (
-          <Button type='button' size='sm' variant='outline' disabled={!canObserve || statusQuery.isFetching} onClick={refreshStatus}>
+          <Button
+            type='button'
+            size='sm'
+            variant='outline'
+            disabled={!canObserve || statusQuery.isFetching}
+            onClick={refreshStatus}
+          >
             Verify freshness
           </Button>
         )}
         {status?.status === 'READY' && status.freshness === 'CURRENT' && (
-          <Button type='button' size='sm' disabled={!canDownload || download.isPending || busy} onClick={() => download.mutate(status.exportId)}>
+          <Button
+            type='button'
+            size='sm'
+            disabled={!canDownload || download.isPending || busy}
+            onClick={() => download.mutate(status.exportId)}
+          >
             <Download className='size-4' /> Download
           </Button>
         )}
@@ -358,7 +505,13 @@ function FormatExportCard({
       {previousReadyId && (
         <div className='space-y-2 border-t pt-3 text-sm'>
           <p>Previous ready document (current status must be verified).</p>
-          <Button type='button' variant='outline' size='sm' disabled={!canDownload || download.isPending || busy} onClick={() => download.mutate(previousReadyId)}>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            disabled={!canDownload || download.isPending || busy}
+            onClick={() => download.mutate(previousReadyId)}
+          >
             Verify and download previous {label}
           </Button>
         </div>
@@ -377,12 +530,19 @@ export function ExportPanel({
   const authorization = useOptionalMeetingAuthorization()
   const session = useOptionalMeetingSession()
   const owner = session?.exportOperations
-  const authorized = canExport && Boolean(
-    authorization?.scopeReady && authorization.canReadProtectedData &&
-    authorization.capabilities.canReadMeetingContent &&
-    !authorization.isConfirmedAccessLoss && owner
-  )
-  const scope = JSON.stringify([authorization?.identity?.userId, authorization?.identity?.session?.id])
+  const authorized =
+    canExport &&
+    Boolean(
+      authorization?.scopeReady &&
+      authorization.canReadProtectedData &&
+      authorization.capabilities.canReadMeetingContent &&
+      !authorization.isConfirmedAccessLoss &&
+      owner
+    )
+  const scope = JSON.stringify([
+    authorization?.identity?.userId,
+    authorization?.identity?.session?.id,
+  ])
   const minutes = useQuery({ ...minutesQuery(meetingId), enabled: authorized })
   const availability = useQuery({
     ...exportCapabilitiesQuery(meetingId, scope),
@@ -392,8 +552,14 @@ export function ExportPanel({
   const trusted = trustedDownloadHosts().length > 0
   const proposalsIncluded = minutes.data?.proposalsIncluded === true
   const canGenerate = Boolean(
-    authorized && capabilities?.admission && capabilities.status && capabilities.access && trusted &&
-    !minutes.isError && minutes.data?.completeness === 'COMPLETE' && !proposalsIncluded
+    authorized &&
+    capabilities?.admission &&
+    capabilities.status &&
+    capabilities.access &&
+    trusted &&
+    !minutes.isError &&
+    minutes.data?.completeness === 'COMPLETE' &&
+    !proposalsIncluded
   )
   return (
     <Card>
@@ -403,7 +569,8 @@ export function ExportPanel({
           Export meeting minutes
         </CardTitle>
         <p className='text-sm text-muted-foreground'>
-          Create official copies of the canonical meeting record. PDF and Markdown are generated by the server.
+          Create official copies of the canonical meeting record. PDF and
+          Markdown are generated by the server.
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
@@ -413,36 +580,66 @@ export function ExportPanel({
           </p>
         ) : (
           <>
-            {availability.isPending && <p role='status' className='text-sm text-muted-foreground'>Checking export availability…</p>}
+            {availability.isPending && (
+              <p role='status' className='text-sm text-muted-foreground'>
+                Checking export availability…
+              </p>
+            )}
             {availability.isError && (
-              <RequestError error={availability.error} retry={() => void availability.refetch()} />
+              <RequestError
+                error={availability.error}
+                retry={() => void availability.refetch()}
+              />
             )}
             {capabilities && !capabilities.admission && (
-              <p className='text-sm text-muted-foreground'>New export generation is disabled in this deployment.</p>
+              <p className='text-sm text-muted-foreground'>
+                New export generation is disabled in this deployment.
+              </p>
             )}
             {capabilities && !capabilities.recovery && (
-              <p className='text-sm text-muted-foreground'>Recovery is unavailable in this deployment.</p>
+              <p className='text-sm text-muted-foreground'>
+                Recovery is unavailable in this deployment.
+              </p>
             )}
             {capabilities && !capabilities.status && (
-              <p className='text-sm text-muted-foreground'>Export status observation is unavailable.</p>
+              <p className='text-sm text-muted-foreground'>
+                Export status observation is unavailable.
+              </p>
             )}
             {capabilities && (!capabilities.access || !trusted) && (
-              <p className='text-sm text-muted-foreground'>Secure downloads are not configured. Contact your administrator.</p>
+              <p className='text-sm text-muted-foreground'>
+                Secure downloads are not configured. Contact your administrator.
+              </p>
             )}
             {minutes.data && minutes.data.completeness !== 'COMPLETE' && (
-              <p className='text-sm text-amber-700'>Minutes require review before new official exports can be generated.</p>
+              <p className='text-sm text-amber-700'>
+                Minutes require review before new official exports can be
+                generated.
+              </p>
             )}
             {proposalsIncluded && (
               <p className='text-sm text-amber-700'>
-                Minutes contain unconfirmed AI proposals and are not eligible for export.
+                Minutes contain unconfirmed AI proposals and are not eligible
+                for export.
               </p>
             )}
-            {minutes.isError && <RequestError error={minutes.error} retry={() => void minutes.refetch()} />}
+            {minutes.isError && (
+              <RequestError
+                error={minutes.error}
+                retry={() => void minutes.refetch()}
+              />
+            )}
             {formats.map((format) => {
               const operation = owner.operations[format]
               return (
                 <FormatExportCard
-                  key={JSON.stringify([scope, meetingId, format, operation?.intentId, operation?.exportId])}
+                  key={JSON.stringify([
+                    scope,
+                    meetingId,
+                    format,
+                    operation?.intentId,
+                    operation?.exportId,
+                  ])}
                   format={format}
                   meetingId={meetingId}
                   scope={scope}

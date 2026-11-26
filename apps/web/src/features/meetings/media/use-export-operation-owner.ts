@@ -49,7 +49,11 @@ export type ExportOperationOwnerValue = {
   failures: Record<ExportFormat, ExportAdmissionFailure | null>
   admit: (
     format: ExportFormat,
-    options?: { allowReplacement?: boolean; previousReadyId?: string; confirmNewIntent?: boolean }
+    options?: {
+      allowReplacement?: boolean
+      previousReadyId?: string
+      confirmNewIntent?: boolean
+    }
   ) => boolean
   noteReady: (format: ExportFormat, intentId: string) => void
   isCurrent: (format: ExportFormat, intentId: string) => boolean
@@ -57,7 +61,9 @@ export type ExportOperationOwnerValue = {
 
 const formats: ExportFormat[] = ['PDF', 'MARKDOWN']
 const exportIdSchema = z.string().uuid()
-const idempotencyKeySchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/)
+const idempotencyKeySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/)
 const intentTimestampSchema = z.string().datetime({ offset: true })
 
 function emptyOperations(): ExportOperations {
@@ -127,9 +133,13 @@ function readPersistedOperation(
     format,
     idempotencyKey: idempotencyKey.data,
     ...(exportId ? { exportId } : {}),
-    ...(previousReadyId.success && previousReadyId.data !== exportId ? { previousReadyId: previousReadyId.data } : {}),
+    ...(previousReadyId.success && previousReadyId.data !== exportId
+      ? { previousReadyId: previousReadyId.data }
+      : {}),
     ...(timestamp.success ? { intentCreatedAt: timestamp.data } : {}),
-    ...(record.recoveryUnavailable === true && !exportId ? { recoveryUnavailable: true } : {}),
+    ...(record.recoveryUnavailable === true && !exportId
+      ? { recoveryUnavailable: true }
+      : {}),
     intentId: createIntentId(format, idempotencyKey.data),
     lifecycleGeneration,
     ownerGeneration,
@@ -260,7 +270,9 @@ export function useExportOperationOwner({
     PDF: false,
     MARKDOWN: false,
   })
-  const [failures, setFailures] = useState<Record<ExportFormat, ExportAdmissionFailure | null>>({
+  const [failures, setFailures] = useState<
+    Record<ExportFormat, ExportAdmissionFailure | null>
+  >({
     PDF: null,
     MARKDOWN: null,
   })
@@ -467,7 +479,11 @@ export function useExportOperationOwner({
   const admit = useCallback(
     (
       format: ExportFormat,
-      options: { allowReplacement?: boolean; previousReadyId?: string; confirmNewIntent?: boolean } = {}
+      options: {
+        allowReplacement?: boolean
+        previousReadyId?: string
+        confirmNewIntent?: boolean
+      } = {}
     ): boolean => {
       const scope = currentScope()
       if (
@@ -489,18 +505,26 @@ export function useExportOperationOwner({
       }
       const current = operationsRef.current[format]
       if (current?.exportId && !options.allowReplacement) return false
-      if (options.confirmNewIntent && !current?.recoveryUnavailable) return false
-      const recovery = Boolean(current?.idempotencyKey && !current.exportId && !options.confirmNewIntent)
+      if (options.confirmNewIntent && !current?.recoveryUnavailable)
+        return false
+      const recovery = Boolean(
+        current?.idempotencyKey &&
+        !current.exportId &&
+        !options.confirmNewIntent
+      )
       const key =
         recovery && current ? current.idempotencyKey : crypto.randomUUID()
       const operation: ExportOperation = {
         ...scope,
         format,
         idempotencyKey: key,
-        intentCreatedAt: recovery ? current?.intentCreatedAt : new Date().toISOString(),
-        previousReadyId: current?.exportId && options.previousReadyId === current.exportId
-          ? current.exportId
-          : current?.previousReadyId,
+        intentCreatedAt: recovery
+          ? current?.intentCreatedAt
+          : new Date().toISOString(),
+        previousReadyId:
+          current?.exportId && options.previousReadyId === current.exportId
+            ? current.exportId
+            : current?.previousReadyId,
         intentId: recovery
           ? (current?.intentId ?? createIntentId(format, key))
           : createIntentId(format, key),
@@ -514,11 +538,7 @@ export function useExportOperationOwner({
         [format]: true,
       }))
       const request = recovery ? recoverMinutesExport : createMinutesExport
-      void request(
-        meetingId,
-        operation.format,
-        operation.idempotencyKey
-      )
+      void request(meetingId, operation.format, operation.idempotencyKey)
         .then((data: ExportAdmission | null) => {
           if (!accepts(operation)) return
           const current = operationsRef.current[format]
@@ -538,7 +558,11 @@ export function useExportOperationOwner({
           }
           storeOperations({
             ...operationsRef.current,
-            [format]: { ...current, exportId: data.exportId, recoveryUnavailable: false },
+            [format]: {
+              ...current,
+              exportId: data.exportId,
+              recoveryUnavailable: false,
+            },
           })
           setFailures((previous) => ({ ...previous, [format]: null }))
         })
@@ -556,7 +580,10 @@ export function useExportOperationOwner({
               [format]: current,
             })
           }
-          setFailures((previous) => ({ ...previous, [format]: { format, error } }))
+          setFailures((previous) => ({
+            ...previous,
+            [format]: { format, error },
+          }))
           if (failure.status === 409 || failure.status === 422) {
             void queryClient.invalidateQueries({
               queryKey: ['minutes', meetingId],
@@ -600,7 +627,8 @@ export function useExportOperationOwner({
         operation.intentId !== intentId ||
         !operation.previousReadyId ||
         !accepts(operation)
-      ) return
+      )
+        return
       storeOperations({
         ...operationsRef.current,
         [format]: { ...operation, previousReadyId: undefined },
