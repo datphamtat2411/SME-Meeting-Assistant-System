@@ -41,8 +41,13 @@ canonical server messages. Administrators use the same member-facing flow.
   No persisted chat or pending intent data is added to Mobile.
 - SOURCE_UNAVAILABLE carries no content, claims or citations. The client
   displays source type, revision and canonical claim links. Chunk IDs are
-  opaque, not transcript segment IDs. Evidence deep links require their own
-  verified navigation contract.
+  opaque, not transcript segment IDs. Contextual Assistant shares the same
+  authenticated workspace. Read-only evidence routes independently verify the
+  originating visible citation and current canonical artifact: transcript
+  ID/contentRevision, Summary version ID/versionNumber, Decision ID/version,
+  or Action Item ID/version. Transcript navigation is artifact-level only.
+  Relevant invalidation and route/foreground changes revalidate protected
+  content. See [M07 acceptance](M07_ACCEPTANCE.md) for verification evidence.
 
 The backend requires migration V67 before keyed creation can be used.
 API HTTP/PostgreSQL tests and Flutter tests cover contract and recovery

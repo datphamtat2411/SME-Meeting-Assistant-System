@@ -997,6 +997,160 @@ void main() {
     }
   });
 
+  testWidgets('ordinary Assistant creates and sends through canonical APIs', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final conversation = _conversation()..['title'] = 'Weekly review';
+    final questions = <String>[];
+    final keys = <String?>[];
+    var creations = 0;
+    final client = MeetingTestHttpClient((request) async {
+      final path = request.url.path;
+      if (path.endsWith('/meetings')) {
+        return meetingApiSuccess(
+          [
+            {
+              ...meetingTestJson(),
+              'display': {
+                'organizerName': 'Test User',
+                'roomName': null,
+                'roomLocation': null,
+                'participantCount': 1,
+                'participantPreview': [
+                  {'userId': testUserId, 'displayName': 'Test User'},
+                ],
+              },
+            },
+          ],
+          meta: {
+            ...meetingTestMeta,
+            'pagination': {
+              'page': 0,
+              'size': 20,
+              'totalElements': 1,
+              'totalPages': 1,
+              'hasNext': false,
+              'hasPrevious': false,
+            },
+          },
+        );
+      }
+      if (path.endsWith('/assistant/conversations')) {
+        if (request.method == 'POST') {
+          creations++;
+          expect(decodeRequestBody(request)['meetingId'], testMeetingId);
+          expect(request.headers['idempotency-key'], isNotEmpty);
+          return meetingApiSuccess(conversation, status: 201);
+        }
+        return meetingApiSuccess(creations == 0 ? [] : [conversation]);
+      }
+      if (path.endsWith('/messages')) {
+        questions.add(decodeRequestBody(request)['question'] as String);
+        keys.add(request.headers['idempotency-key']);
+        return meetingApiSuccess(_turn());
+      }
+      if (path.endsWith('/conversations/$_conversationId')) {
+        return meetingApiSuccess(
+          _detail(
+            messages: questions.isEmpty ? [] : [_userMessage(), _message()],
+          )..['conversation'] = conversation,
+        );
+      }
+      if (path.endsWith('/meetings/$testMeetingId')) {
+        return meetingApiSuccess(
+          meetingTestJson(),
+          headers: {'etag': testMeetingEtag},
+        );
+      }
+      throw StateError('Unexpected request: $path');
+    });
+    final api = createMeetingTestApi(client);
+    await tester.runAsync(() => signInMeetingTestApi(api));
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+    );
+    addTearDown(dependencies.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: Scaffold(
+          body: AssistantPage(dependencies: dependencies, active: true),
+        ),
+      ),
+    );
+    final create = find.text('Hội thoại mới');
+    await pumpUntil(
+      tester,
+      () => create.evaluate().isNotEmpty,
+      reason: 'ordinary Assistant entry',
+    );
+    await tester.tap(create);
+    final meeting = find.text('Weekly review');
+    await pumpUntil(
+      tester,
+      () => meeting.evaluate().isNotEmpty,
+      reason: 'authorized meeting picker',
+    );
+    expect(creations, 0);
+    await tester.tap(meeting);
+    final composer = find.byType(TextField);
+    await pumpUntil(
+      tester,
+      () =>
+          composer.evaluate().isNotEmpty &&
+          dependencies.assistantWorkspace.canCompose,
+      reason: 'created conversation history',
+    );
+    expect(creations, 1);
+    expect(
+      dependencies.assistantWorkspace.conversation?.meetingId,
+      testMeetingId,
+    );
+    final send = find.byTooltip('Gửi câu hỏi');
+    expect(tester.widget<IconButton>(send).onPressed, isNull);
+    await tester.enterText(composer, '   ');
+    await tester.pump();
+    expect(tester.widget<IconButton>(send).onPressed, isNull);
+    await tester.enterText(composer, '  Câu hỏi  ');
+    await tester.pump();
+    await tester.tap(send);
+    await pumpUntil(
+      tester,
+      () =>
+          dependencies.assistantWorkspace.pending == null &&
+          dependencies.assistantWorkspace.messages.length == 2,
+      reason: 'canonical turn reconciliation',
+    );
+    expect(questions, ['Câu hỏi']);
+    expect(keys.single, isNotEmpty);
+    expect(find.text('Đã thống nhất.'), findsWidgets);
+    expect(tester.widget<TextField>(composer).controller!.text, isEmpty);
+    await tester.tap(find.byTooltip('Danh sách hội thoại'));
+    await pumpUntil(
+      tester,
+      () => meeting.evaluate().isNotEmpty,
+      reason: 'return to conversation collection',
+    );
+    await tester.tap(meeting);
+    await pumpUntil(
+      tester,
+      () => dependencies.assistantWorkspace.canCompose,
+      reason: 'reopen canonical history',
+    );
+    expect(dependencies.assistantWorkspace.messages.length, 2);
+    expect(creations, 1);
+    expect(questions.length, 1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
   testWidgets('contextual entry shares workspace and fixes meeting scope', (
     tester,
   ) async {
@@ -1538,6 +1692,93 @@ void main() {
         expect(controller.messages.length, 2);
       },
     );
+
+    for (final longCooldown in [false, true]) {
+      testWidgets(
+        'automatic status budget survives reactivation: $longCooldown',
+        (tester) async {
+          var reads = 0;
+          var writes = 0;
+          final repository = (await tester.runAsync(
+            () => _repository(
+              MeetingTestHttpClient((request) async {
+                if (request.url.path.endsWith('/conversations')) {
+                  return meetingApiSuccess([]);
+                }
+                if (request.url.path.endsWith('/turns/by-key')) {
+                  reads++;
+                  expect(request.method, 'GET');
+                  if (longCooldown && reads == 1) {
+                    return meetingApiFailure(
+                      429,
+                      'RATE_LIMIT_EXCEEDED',
+                      headers: {'retry-after': '121'},
+                    );
+                  }
+                  return meetingApiSuccess({
+                    'turn': _turn(processing: true),
+                    'recoveryEligible': false,
+                  });
+                }
+                if (request.method == 'POST') {
+                  writes++;
+                  return meetingApiSuccess(
+                    _turn(processing: true),
+                    status: 202,
+                  );
+                }
+                return meetingApiSuccess(
+                  _detail(messages: [_userMessage()]),
+                );
+              }),
+            ),
+          ))!;
+          final controller = AssistantWorkspaceController(
+            repository,
+            now: tester.binding.clock.now,
+          );
+          addTearDown(controller.dispose);
+          controller.setActive(true);
+          await controller.open(_typedConversation());
+          await controller.submit('Câu hỏi');
+          final command = controller.pending!;
+          expect(reads, 1);
+          expect(command.automaticChecks, 1);
+
+          if (longCooldown) {
+            await tester.pump(const Duration(seconds: 120));
+            expect(reads, 1);
+            expect(command.automaticExhausted, isTrue);
+            expect(command.canCheck, isFalse);
+            await tester.pump(const Duration(seconds: 1));
+          } else {
+            for (final delay in [2, 4, 8, ...List.filled(8, 10)]) {
+              final before = reads;
+              await tester.pump(Duration(seconds: delay - 1));
+              expect(reads, before);
+              await tester.pump(const Duration(seconds: 1));
+              await tester.pump();
+              expect(reads, before + 1);
+            }
+            expect(reads, 12);
+            expect(command.automaticExhausted, isTrue);
+          }
+          final exhaustedReads = reads;
+          controller.setActive(false);
+          controller.setActive(true);
+          await tester.pump();
+          await tester.pump(const Duration(seconds: 30));
+          expect(reads, exhaustedReads);
+          expect(controller.pending, same(command));
+          expect(command.automaticExhausted, isTrue);
+          expect(controller.historyVerified, isTrue);
+          await controller.checkPending();
+          expect(reads, exhaustedReads + 1);
+          expect(writes, 1);
+          controller.setActive(false);
+        },
+      );
+    }
 
     test('TLS failure before dispatch does not lock the composer', () async {
       var writes = 0;

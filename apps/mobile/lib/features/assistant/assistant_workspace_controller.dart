@@ -34,7 +34,10 @@ class AssistantPendingResult {
 
 /// Session-owned intent. The server alone owns canonical messages.
 class AssistantPendingTurn {
-  AssistantPendingTurn(this.request);
+  AssistantPendingTurn(this.request, {DateTime Function()? now})
+    : _now = now ?? DateTime.now;
+
+  final DateTime Function() _now;
 
   final AssistantQuestionRequest request;
   AssistantPendingResult? turn;
@@ -52,8 +55,8 @@ class AssistantPendingTurn {
   bool get automaticExhausted =>
       automaticChecks >= 12 ||
       (automaticDeadline != null &&
-          !DateTime.now().isBefore(automaticDeadline!));
-  bool get canRetry => !busy && retryAllowed && !_waiting(retryAt);
+          !_now().isBefore(automaticDeadline!));
+  bool get canRetry => !busy && retryAllowed && !_waiting(retryAt, _now());
   bool get canAbandon =>
       !busy &&
       uncertain &&
@@ -68,7 +71,7 @@ class AssistantPendingTurn {
       !busy &&
       !terminal &&
       (uncertain || turn != null) &&
-      !_waiting(statusRetryAt);
+      !_waiting(statusRetryAt, _now());
   bool get canEdit =>
       !busy &&
       !uncertain &&
@@ -80,12 +83,17 @@ class AssistantPendingTurn {
 /// Owns list, selected history and in-memory commands for one session.
 /// Separate generations fence independent list and conversation reads.
 class AssistantWorkspaceController extends ChangeNotifier {
-  AssistantWorkspaceController(this.repository, {this.verifyMeetingReadAccess})
-    : scope = repository.captureSession() {
+  AssistantWorkspaceController(
+    this.repository, {
+    this.verifyMeetingReadAccess,
+    DateTime Function()? now,
+  }) : _now = now ?? DateTime.now,
+       scope = repository.captureSession() {
     repository.api.sessionCoordinator.addListener(_sessionChanged);
   }
 
   final AssistantRepository repository;
+  final DateTime Function() _now;
   final Future<bool> Function({
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
@@ -140,7 +148,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       !historyLoading &&
       conversation?.status == AssistantConversationStatus.active &&
       pending == null;
-  bool get askCoolingDown => _waiting(_askRetryAt);
+  bool get askCoolingDown => _waiting(_askRetryAt, _now());
   DateTime? get askRetryAt => _askRetryAt;
   bool get canSend => canCompose && !askCoolingDown;
   bool get canRetryPending =>
@@ -152,13 +160,13 @@ class AssistantWorkspaceController extends ChangeNotifier {
       conversation?.status == AssistantConversationStatus.active &&
       pending?.canRetry == true;
   DateTime? get creationRetryAt => _creationRetryAt;
-  bool get creationCoolingDown => _waiting(_creationRetryAt);
+  bool get creationCoolingDown => _waiting(_creationRetryAt, _now());
   bool get canRetryCreation =>
       current &&
       _active &&
       !creating &&
       creation != null &&
-      !_waiting(_creationRetryAt);
+      !_waiting(_creationRetryAt, _now());
   bool get canDiscardCreation =>
       current &&
       _active &&
@@ -393,7 +401,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         !_active ||
         creating ||
         creation != null ||
-        _waiting(_creationRetryAt)) {
+        _waiting(_creationRetryAt, _now())) {
       return Future.value(null);
     }
     creation = AssistantCreateConversationRequest(
@@ -412,7 +420,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         !_active ||
         creating ||
         command == null ||
-        _waiting(_creationRetryAt)) {
+        _waiting(_creationRetryAt, _now())) {
       return null;
     }
     creating = true;
@@ -437,7 +445,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
             error.outcome == AssistantMutationOutcome.unknown;
         _creationRetryAt = _laterDeadline(
           _creationRetryAt,
-          _retryDeadline(error),
+          _retryDeadline(error, _now()),
         );
         if (_accessLost(error)) {
           await _confirmMeetingAccessLoss(command.meetingId);
@@ -732,6 +740,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         question: question,
         idempotencyKey: _newKey(),
       ),
+      now: _now,
     );
     _pending[selected.id] = command;
     _publish();
@@ -797,7 +806,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
                   error.outcome == AssistantMutationOutcome.rejected)) ||
           (command.turn == null &&
               error.category == AssistantFailureCategory.rateLimited);
-      final deadline = _retryDeadline(error);
+      final deadline = _retryDeadline(error, _now());
       command.retryAt = _laterDeadline(command.retryAt, deadline);
       if (error.category == AssistantFailureCategory.rateLimited) {
         _askRetryAt = _laterDeadline(_askRetryAt, deadline);
@@ -853,7 +862,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
     }
     _stopStatusMonitoring();
     if (automatic) {
-      command.automaticDeadline ??= DateTime.now().add(
+      command.automaticDeadline ??= _now().add(
         const Duration(seconds: 120),
       );
       command.automaticChecks++;
@@ -893,7 +902,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       // A missing turn is not proof a timed-out POST cannot arrive. Only
       // the original key and question may be submitted again.
       command.retryAllowed = error.status == 404 && previousTurn == null;
-      final deadline = _retryDeadline(error);
+      final deadline = _retryDeadline(error, _now());
       command.statusRetryAt = _laterDeadline(command.statusRetryAt, deadline);
       command.retryAt = _laterDeadline(command.retryAt, deadline);
       if (_accessLost(error) ||
@@ -960,7 +969,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         (!command.uncertain && command.turn == null)) {
       return;
     }
-    final now = DateTime.now();
+    final now = _now();
     command.automaticDeadline ??= now.add(const Duration(seconds: 120));
     final seconds = switch (command.automaticChecks) {
       0 || 1 => 2,
@@ -985,7 +994,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
   void _scheduleCooldownUpdate() {
     _cooldownTimer?.cancel();
     if (!current || !_active) return;
-    final now = DateTime.now();
+    final now = _now();
     final deadlines =
         [
             _creationRetryAt,
@@ -1092,11 +1101,10 @@ class AssistantWorkspaceController extends ChangeNotifier {
 bool _accessLost(Object? error) =>
     error is ApiFailure && (error.status == 403 || error.status == 404);
 
-bool _waiting(DateTime? deadline) =>
-    deadline != null && DateTime.now().isBefore(deadline);
+bool _waiting(DateTime? deadline, DateTime now) =>
+    deadline != null && now.isBefore(deadline);
 
-DateTime? _retryDeadline(AssistantFailure error) {
-  final now = DateTime.now();
+DateTime? _retryDeadline(AssistantFailure error, DateTime now) {
   final duration = error.retryAfterDuration(now: now);
   return duration == null ? null : now.add(duration);
 }

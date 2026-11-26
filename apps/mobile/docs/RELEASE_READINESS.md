@@ -10,6 +10,8 @@ For the M03-T08 meeting corrective patch, see
 For the M05 Results workspace, see [`M05_ACCEPTANCE.md`](M05_ACCEPTANCE.md).
 For M06 Action Items and its verification status, see
 [`M06_ACCEPTANCE.md`](M06_ACCEPTANCE.md).
+For M07 Assistant, see [`M07_ACCEPTANCE.md`](M07_ACCEPTANCE.md) and the
+[Assistant contract](M07_WAVE01_CONTRACT.md).
 
 ## Verified foundation capabilities
 
@@ -73,11 +75,12 @@ These checks are separate from the M01 foundation gate:
   changes, and server-side ETag revision behavior.
 - AI processing admission/status, transcript review, summary/decision
   workflows, action-item transitions, and their authorization/provenance rules.
-- Assistant end-to-end behavior. The checked Core API has public conversation
-  endpoints, but Mobile currently sends an empty conversation-create payload
-  instead of the required `meetingId`, and sends `content` instead of the
-  required message `question`. Reconcile these contracts before treating the
-  Mobile Assistant as integrated; never display fabricated AI output.
+- Assistant live end-to-end behavior with the compatible Core API, migration
+  V67, approved AI Core/provider and Qdrant configuration, and indexed test
+  knowledge. Mobile now submits `meetingId` on creation and `question` on
+  message submission, with stable intent keys, anchored history and read-only
+  turn status. Automated acceptance evidence and remaining external gates are
+  tracked in M07_ACCEPTANCE.md; fixture results are not live RAG evidence.
 
 ## Server-owned concurrency tokens
 
