@@ -1,5 +1,10 @@
-import { Activity, createContext, useContext, useState } from 'react'
-import type { ReactNode } from 'react'
+import {
+  Activity,
+  createContext,
+  useContext,
+  useState,
+  type ReactNode,
+} from 'react'
 
 const PortalContainerContext = createContext<HTMLElement | undefined>(undefined)
 

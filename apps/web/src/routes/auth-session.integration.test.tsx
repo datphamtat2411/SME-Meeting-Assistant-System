@@ -491,6 +491,11 @@ describe('session restoration and protected routing', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
       const name = screen.getByRole('textbox', { name: 'Name' })
       await userEvent.fill(name, 'Private unsaved draft')
+      const dialog = screen.getByRole('dialog', { name: 'Create account' })
+      const heading = screen.getByRole('heading', { name: 'Members' })
+      await expect.element(dialog).toBeVisible()
+      await expect.element(heading).toBeVisible()
+      const headingElement = heading.element()
       getCurrentUser.mockImplementationOnce(async () => {
         await pending
         return administrator as never
@@ -501,16 +506,24 @@ describe('session restoration and protected routing', () => {
         await expect
           .element(screen.getByText('Checking your session'))
           .toBeVisible()
+        // Role locators exclude inaccessible elements. Verify the real DOM
+        // independently so an aria-hidden but visibly leaked portal still fails.
         await expect
-          .element(screen.getByRole('dialog', { name: 'Create account' }))
-          .not.toBeVisible()
-        await expect
-          .element(screen.getByRole('heading', { name: 'Members' }))
-          .not.toBeVisible()
+          .poll(() =>
+            Array.from(document.querySelectorAll('[role="dialog"]')).some(
+              (element) => element.checkVisibility()
+            )
+          )
+          .toBe(false)
+        await expect.poll(() => headingElement.checkVisibility()).toBe(false)
+        await expect.element(dialog).not.toBeInTheDocument()
+        await expect.element(heading).not.toBeInTheDocument()
       } finally {
         release()
         await checking
       }
+      await expect.element(dialog).toBeVisible()
+      await expect.element(name).toBeVisible()
       await expect.element(name).toHaveValue('Private unsaved draft')
 
       getCurrentUser.mockResolvedValue(identity as never)
