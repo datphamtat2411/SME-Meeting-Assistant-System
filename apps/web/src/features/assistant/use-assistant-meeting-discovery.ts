@@ -1,11 +1,18 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { dateInputToOffsetDateTime } from '@/features/meetings/data/date-filters'
-import { meetingDetailQueryOptions } from '@/features/meetings/data/detail-api'
+import {
+  fetchMeetingDetail,
+  meetingDetailQueryOptions,
+} from '@/features/meetings/data/detail-api'
 import {
   meetingListQueryOptions,
   type MeetingListSearch,
 } from '@/features/meetings/data/list-api'
+import {
+  captureAssistantCreationAccess,
+  containAssistantMeetingDenial,
+} from './assistant-access'
 
 export function useAssistantMeetingDiscovery() {
   const [criteria, setCriteria] = useState<MeetingListSearch>({})
@@ -62,12 +69,45 @@ export function useAssistantScopeDiscovery() {
   return { input, setInput, page, setPage, meetingsQuery, applySearch }
 }
 
+export function isAssistantMeetingReady(
+  client: QueryClient,
+  meetingId: string
+): boolean {
+  const state = client.getQueryState(meetingDetailQueryOptions(meetingId).queryKey)
+  return (
+    state?.status === 'success' &&
+    state.fetchStatus === 'idle' &&
+    state.data?.meeting.id === meetingId
+  )
+}
+
 export function useAssistantMeetingContext(meetingId?: string) {
+  const client = useQueryClient()
   const query = useQuery({
     ...meetingDetailQueryOptions(meetingId),
+    queryFn: async ({ signal }) => {
+      const id = meetingId as string
+      const access = captureAssistantCreationAccess(client, id)
+      try {
+        return await fetchMeetingDetail(id, signal)
+      } catch (error) {
+        containAssistantMeetingDenial(client, access, error)
+        throw error
+      }
+    },
     refetchOnMount: 'always',
     staleTime: 0,
   })
+  // Shared meeting queries can also be initiated by a different observer.
+  // Only act on a fresh error from this resource, never on stale cached errors.
+  useEffect(() => {
+    if (meetingId && query.isFetchedAfterMount && query.isError)
+      containAssistantMeetingDenial(
+        client,
+        captureAssistantCreationAccess(client, meetingId),
+        query.error
+      )
+  }, [client, meetingId, query.error, query.isError, query.isFetchedAfterMount])
   const meeting =
     !query.isError && !query.isFetching && query.data?.meeting.id === meetingId
       ? query.data?.meeting

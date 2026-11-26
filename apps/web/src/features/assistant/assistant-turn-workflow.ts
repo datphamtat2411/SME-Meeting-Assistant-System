@@ -24,7 +24,12 @@ import {
 import { canRetryAssistantSubmission } from './assistant-error-policy'
 import type { Submission } from './assistant-types'
 
-type Operation = { access: AssistantAccessToken }
+type Operation = {
+  access: AssistantAccessToken
+  // A rejected intent remains rejected even when observing the conflicting
+  // durable turn, or when a later transport error replaces the last error.
+  conflict?: CoreApiError
+}
 type Intent = Operation & {
   phase: 'submitting' | 'lookup' | 'uncertain'
   submission: Submission
@@ -34,6 +39,7 @@ type Intent = Operation & {
 type KnownTurn = Operation & {
   phase: 'observing' | 'paused' | 'recoverable' | 'recovering'
   turnId: string
+  replacementTurnId?: string
   error?: unknown
   retryAt?: number
 }
@@ -84,6 +90,7 @@ export function useAssistantTurnWorkflow(
 ) {
   const client = useQueryClient()
   const records = useRef(new Map<string, TurnWorkflow>())
+  const observationRetryAt = useRef(new Map<string, Map<string, number>>())
   const [workflows, setWorkflows] = useState<ReadonlyMap<string, TurnWorkflow>>(
     new Map()
   )
@@ -123,6 +130,7 @@ export function useAssistantTurnWorkflow(
         for (const [key, value] of records.current) {
           if (!isAssistantAccessCurrent(client, value.access)) {
             records.current.delete(key)
+            observationRetryAt.current.delete(key)
             removed.push(key)
           }
         }
@@ -184,6 +192,7 @@ export function useAssistantTurnWorkflow(
         write(key, {
           phase: expired ? 'recoverable' : 'observing',
           access: operation.access,
+          conflict: operation.conflict,
           turnId: turn.turnId,
         })
         return
@@ -191,6 +200,7 @@ export function useAssistantTurnWorkflow(
       const next: Settled = {
         phase: 'settled',
         access: operation.access,
+        conflict: operation.conflict,
         turnId: turn.turnId,
         error: terminalError(turn.state),
       }
@@ -201,13 +211,30 @@ export function useAssistantTurnWorkflow(
   )
 
   useEffect(() => {
-    if (!id || !detail) return
+    if (!id || !historyReady || !detail) return
     const previous = records.current.get(id)
     if (previous && isAssistantAccessCurrent(client, previous.access)) {
-      if (previous.phase === 'recoverable' || previous.phase === 'paused') {
-        // A fresh authorized detail can resume observation of the exact
-        // durable turn. Never infer completion from history.
-        if (!pending || pending.turnId === previous.turnId) {
+      if (
+        previous.phase === 'recoverable' ||
+        previous.phase === 'paused' ||
+        previous.phase === 'observing'
+      ) {
+        const replacementTurnId =
+          pending && pending.turnId !== previous.turnId
+            ? pending.turnId
+            : undefined
+        // Resolve the previous durable identity before adopting a different
+        // pending turn. Never offer recovery for the displaced identity.
+        if (replacementTurnId || previous.replacementTurnId) {
+          if (previous.replacementTurnId !== replacementTurnId)
+            write(id, {
+              ...previous,
+              phase: 'observing',
+              replacementTurnId,
+            })
+          return
+        }
+        if (previous.phase !== 'observing') {
           if (Date.now() < (previous.retryAt ?? 0)) return
           const phase =
             pending?.leaseStatus === 'EXPIRED' ? 'recoverable' : 'observing'
@@ -225,7 +252,7 @@ export function useAssistantTurnWorkflow(
       access: captureAssistantAccess(client, id),
       turnId: pending.turnId,
     })
-  }, [client, id, detail, pending, write])
+  }, [client, id, detail, historyReady, pending, write])
 
   const lookup = useCallback(
     async (key: string, operation: Intent) => {
@@ -237,31 +264,7 @@ export function useAssistantTurnWorkflow(
           lookupAssistantTurn(key, operation.submission.idempotencyKey)
         )
         if (!owns(key, next)) return
-        if (
-          normalizeCoreApiError(operation.error).code ===
-          'ASSISTANT_IDEMPOTENCY_CONFLICT'
-        ) {
-          // The lookup identifies the conflicting durable operation, not proof
-          // that this question was accepted. Keep the conflict visible.
-          if (turn.state === 'PROCESSING') {
-            write(key, {
-              phase:
-                turn.leaseStatus === 'EXPIRED' ? 'recoverable' : 'observing',
-              access: next.access,
-              turnId: turn.turnId,
-              error: operation.error,
-            })
-          } else {
-            const settled: Settled = {
-              phase: 'settled',
-              access: next.access,
-              turnId: turn.turnId,
-              error: operation.error,
-            }
-            write(key, settled)
-            void refresh(key, settled, true)
-          }
-        } else adopt(key, next, turn)
+        adopt(key, next, turn)
       } catch (error) {
         if (!owns(key, next)) return
         // Absence is not proof of rejection; preserve the original intent.
@@ -289,7 +292,9 @@ export function useAssistantTurnWorkflow(
       const key = submission.conversationId
       if (
         previous &&
-        (!owns(key, previous) || Date.now() < (previous.retryAt ?? 0))
+        (previous.conflict ||
+          !owns(key, previous) ||
+          Date.now() < (previous.retryAt ?? 0))
       )
         return
       const current = records.current.get(key)
@@ -336,10 +341,15 @@ export function useAssistantTurnWorkflow(
           canRetryAssistantSubmission(error) ||
           failure.code === 'ASSISTANT_IDEMPOTENCY_CONFLICT'
         ) {
+          const conflict =
+            failure.code === 'ASSISTANT_IDEMPOTENCY_CONFLICT'
+              ? failure
+              : undefined
           const next: Intent = {
             ...operation,
             phase: 'uncertain',
-            error,
+            conflict,
+            error: conflict ? undefined : error,
             retryAt: failure.retryAfter ? retryAt(error) : undefined,
           }
           write(key, next)
@@ -380,16 +390,25 @@ export function useAssistantTurnWorkflow(
     let timer: ReturnType<typeof setTimeout> | undefined
     let interval = 1000
     const key = statusKey(id, operation.turnId)
+    const deadlines = observationRetryAt.current
+    const notBefore = () =>
+      Math.max(
+        operation.retryAt ?? 0,
+        deadlines.get(id)?.get(operation.turnId) ?? 0
+      )
+    const rememberDeadline = (error: unknown) => {
+      if (!normalizeCoreApiError(error).retryAfter) return
+      const turns = deadlines.get(id) ?? new Map<string, number>()
+      turns.set(operation.turnId, Math.max(notBefore(), retryAt(error)))
+      deadlines.set(id, turns)
+    }
     const pause = (error?: unknown) => {
       if (!cancelled && owns(id, operation))
         write(id, {
           ...operation,
           phase: 'paused',
           error,
-          retryAt:
-            error && normalizeCoreApiError(error).retryAfter
-              ? retryAt(error)
-              : undefined,
+          retryAt: notBefore() || undefined,
         })
     }
     const budgetTimer = setTimeout(() => {
@@ -403,6 +422,10 @@ export function useAssistantTurnWorkflow(
     }
     const poll = async () => {
       if (cancelled || !owns(id, operation) || Date.now() >= deadline) return
+      if (Date.now() < notBefore()) {
+        schedule(notBefore() - Date.now())
+        return
+      }
       try {
         const status = await client.fetchQuery({
           queryKey: key,
@@ -414,6 +437,19 @@ export function useAssistantTurnWorkflow(
           retry: false,
         })
         if (cancelled || !owns(id, operation)) return
+        if (operation.replacementTurnId) {
+          // The old status was read, not inferred from the new pending ID.
+          // Observe the newly discovered identity before permitting recovery.
+          write(id, {
+            phase: 'observing',
+            access: operation.access,
+            conflict: operation.conflict,
+            turnId: operation.replacementTurnId,
+          })
+          if (status.state === 'STALE_SOURCE')
+            invalidateAssistantHistory(client, id)
+          return
+        }
         if (status.state !== 'PROCESSING' || status.leaseStatus === 'EXPIRED') {
           adopt(id, operation, status)
           return
@@ -423,19 +459,32 @@ export function useAssistantTurnWorkflow(
       } catch (error) {
         if (cancelled || !owns(id, operation)) return
         const failure = normalizeCoreApiError(error)
+        rememberDeadline(error)
+        if (
+          operation.replacementTurnId &&
+          failure.code === 'ASSISTANT_TURN_NOT_FOUND'
+        ) {
+          write(id, {
+            phase: 'observing',
+            access: operation.access,
+            conflict: operation.conflict,
+            turnId: operation.replacementTurnId,
+          })
+          return
+        }
         if (
           failure.status === 429 ||
           failure.isNetworkError ||
           failure.isServerError
         ) {
           interval = Math.min(interval * 2, 5000)
-          const delay = Math.max(interval, retryAt(error) - Date.now())
+          const delay = Math.max(interval, notBefore() - Date.now())
           if (Date.now() + delay >= deadline) pause(error)
           else schedule(delay)
         } else pause(error)
       }
     }
-    schedule(interval)
+    schedule(Math.max(interval, notBefore() - Date.now()))
     return () => {
       cancelled = true
       clearTimeout(timer)
@@ -449,11 +498,20 @@ export function useAssistantTurnWorkflow(
       !historyReady ||
       !id ||
       !active ||
+      conversation?.status !== 'ACTIVE' ||
       active.phase !== 'recoverable' ||
+      (pending && pending.turnId !== active.turnId) ||
       !owns(id, active)
     )
       return
-    if (Date.now() < (active.retryAt ?? 0)) return
+    if (
+      Date.now() <
+      Math.max(
+        active.retryAt ?? 0,
+        observationRetryAt.current.get(id)?.get(active.turnId) ?? 0
+      )
+    )
+      return
     const operation: KnownTurn = {
       ...active,
       phase: 'recovering',
@@ -490,6 +548,7 @@ export function useAssistantTurnWorkflow(
         const next: Settled = {
           phase: 'settled',
           access: operation.access,
+          conflict: operation.conflict,
           turnId: operation.turnId,
           error,
         }
@@ -508,7 +567,7 @@ export function useAssistantTurnWorkflow(
   }
 
   const resume = () => {
-    if (!id || !active || !owns(id, active)) return
+    if (!historyReady || !id || !active || !owns(id, active)) return
     if ('retryAt' in active && Date.now() < (active.retryAt ?? 0)) return
     if (active.phase === 'paused')
       write(id, { ...active, phase: 'observing', error: undefined })
@@ -529,7 +588,11 @@ export function useAssistantTurnWorkflow(
     resume,
     retry: () => {
       if (
+        historyReady &&
+        conversation?.status === 'ACTIVE' &&
         active?.phase === 'uncertain' &&
+        !active.conflict &&
+        !pending &&
         canRetryAssistantSubmission(active.error)
       )
         void submit(active.submission, active)

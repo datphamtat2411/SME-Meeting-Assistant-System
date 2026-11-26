@@ -248,6 +248,115 @@ describe('Assistant protected operation ownership', () => {
     client.clear()
   })
 
+  it('sanitizes earlier pages when a sequential refetch discovers redaction', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const historyKey = ['assistant', 'conversation', 'a', 'history', 50]
+    const visible: AssistantConversationDetail = {
+      conversation: {
+        id: 'a',
+        meetingId: 'meeting',
+        title: null,
+        status: 'ACTIVE',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+      },
+      page: 0,
+      size: 50,
+      hasMore: true,
+      nextBeforeMessageId: 'head',
+      messages: [{
+        id: 'head',
+        role: 'ASSISTANT',
+        content: 'current answer',
+        answerStatus: 'GROUNDED',
+        visibility: 'VISIBLE',
+        claims: [],
+        citations: [],
+        createdAt: '2026-01-01T00:00:00Z',
+      }],
+    }
+    let redact = false
+    const options = {
+      queryKey: historyKey,
+      initialPageParam: null as string | null,
+      queryFn: ({ pageParam }: { pageParam: string | null }) =>
+        readAssistantHistoryProtected(client, 'a', async () =>
+          pageParam === null
+            ? visible
+            : {
+                ...visible,
+                hasMore: false,
+                nextBeforeMessageId: null,
+                messages: visible.messages.map((message) => ({
+                  ...message,
+                  id: 'older',
+                  content: redact ? null : 'old answer',
+                  visibility: redact ? 'SOURCE_UNAVAILABLE' : 'VISIBLE',
+                })),
+              }
+        ),
+      getNextPageParam: (page: AssistantConversationDetail) =>
+        page.nextBeforeMessageId ?? undefined,
+      structuralSharing: guardAssistantHistoryCache,
+      retry: false as const,
+    }
+    const observer = new InfiniteQueryObserver(client, options)
+    await observer.refetch()
+    await observer.fetchNextPage()
+    redact = true
+    const result = await observer.refetch({ throwOnError: true })
+    expect(result.data?.pages).toHaveLength(2)
+    expect(result.data?.pages[0]?.messages[0]?.content).toBe('current answer')
+    expect(result.data?.pages[1]?.messages[0]?.content).toBeNull()
+    expect(result.data?.pages[1]?.messages[0]?.visibility).toBe(
+      'SOURCE_UNAVAILABLE'
+    )
+    const old = result.data
+    invalidateAssistantHistory(client, 'a')
+    expect(() => guardAssistantHistoryCache(undefined, old)).toThrow()
+    observer.destroy()
+    client.clear()
+  })
+
+  it('fences an in-flight history read whose meeting was not cached yet', async () => {
+    const client = new QueryClient()
+    let finish!: (detail: AssistantConversationDetail) => void
+    const pending = readAssistantHistoryProtected(
+      client,
+      'a',
+      () => new Promise((resolve) => { finish = resolve })
+    )
+    const denied = new CoreApiError({
+      status: 403,
+      kind: 'http',
+      message: 'Denied',
+    })
+    containAssistantAccessFailure(
+      client,
+      captureAssistantCreationAccess(client, 'meeting-a'),
+      denied
+    )
+    finish({
+      conversation: {
+        id: 'a',
+        meetingId: 'meeting-a',
+        title: null,
+        status: 'ACTIVE',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+      },
+      page: 0,
+      size: 50,
+      hasMore: false,
+      messages: [],
+    })
+    await expect(pending).rejects.toBe(denied)
+    expect(isAssistantAccessCurrent(client, captureAssistantAccess(client, 'a'))).toBe(false)
+    client.clear()
+  })
+
   it('contains meeting creation denial without invalidating other resources', () => {
     const client = new QueryClient()
     const list = captureAssistantAccess(client)

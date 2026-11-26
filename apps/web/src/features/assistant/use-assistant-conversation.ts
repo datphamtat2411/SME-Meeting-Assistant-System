@@ -25,6 +25,7 @@ import {
 import { uniqueConversations } from './assistant-history'
 import type { AssistantSelection } from './assistant-selection'
 import { useAssistantTurnWorkflow } from './assistant-turn-workflow'
+import { isAssistantMeetingReady } from './use-assistant-meeting-discovery'
 
 export function useAssistantConversation(
   selection: AssistantSelection,
@@ -153,7 +154,12 @@ export function useAssistantConversation(
 
   async function createConversation() {
     const meetingId = selection.meetingId
-    if (!meetingId || creationRef.current || assistantAccessError(client))
+    if (
+      !meetingId ||
+      creationRef.current ||
+      assistantAccessError(client) ||
+      !isAssistantMeetingReady(client, meetingId)
+    )
       return
     if (
       uncertainCreation &&
@@ -234,6 +240,7 @@ export function useAssistantConversation(
     event.preventDefault()
     if (
       !selectedConversation ||
+      assistantAccessError(client, selectedConversation.id) ||
       turns.busy ||
       selectedConversation.status !== 'ACTIVE'
     )

@@ -162,11 +162,13 @@ export function ConversationPanel({
           </AlertDescription>
         </Alert>
       )}
+      {workflow?.conflict && <AssistantError error={workflow.conflict} />}
       {workflow?.error != null && (
         <AssistantError
           error={workflow.error}
           onRetry={
             workflow.phase === 'uncertain' &&
+            !workflow.conflict &&
             canRetryAssistantSubmission(workflow.error)
               ? onQuestionRetry
               : undefined

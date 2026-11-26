@@ -261,6 +261,7 @@ function setupReads(
       turnId: string
     ) => unknown
     lookup?: unknown
+    onLookup?: (reads: number) => unknown
     detailPages?: Record<string, Record<number, unknown>>
     detailsById?: Record<string, unknown>
     onDetail?: (
@@ -272,6 +273,7 @@ function setupReads(
 ) {
   let detailReads = 0
   let statusReads = 0
+  let lookupReads = 0
   let conversationReads = 0
   const get = vi
     .spyOn(coreApi, 'getWithMeta')
@@ -322,8 +324,11 @@ function setupReads(
         } as never
       }
       if (url.endsWith('/turns')) {
-        if (options.lookup !== undefined)
-          return { data: options.lookup, meta: {} } as never
+        lookupReads += 1
+        const value = await options.onLookup?.(lookupReads)
+        if (value instanceof Error) throw value
+        if (value !== undefined || options.lookup !== undefined)
+          return { data: value ?? options.lookup, meta: {} } as never
         throw coreError(404, 'Turn not found', {
           code: 'ASSISTANT_TURN_NOT_FOUND',
         })
@@ -399,10 +404,16 @@ function TestAssistant({ initial = {} }: { initial?: AssistantSelection }) {
 }
 
 async function renderPage(
-  options: { strict?: boolean; initial?: AssistantSelection } = {}
+  options: {
+    strict?: boolean
+    initial?: AssistantSelection
+    client?: QueryClient
+    onMeetingDetail?: (meetingId: string) => void
+  } = {}
 ) {
   vi.spyOn(coreApi, 'getWithMetaAndEtag').mockImplementation(async (url) => {
     const source = url.endsWith(otherMeetingId) ? otherMeeting : meeting
+    options.onMeetingDetail?.(source.id)
     if (url !== `/meetings/${source.id}`)
       throw new Error(`Unexpected GET ${url}`)
     return {
@@ -418,6 +429,7 @@ async function renderPage(
   return render(
     <QueryClientProvider
       client={
+        options.client ??
         new QueryClient({
           defaultOptions: { queries: { retry: false } },
         })
@@ -1598,6 +1610,55 @@ describe('AssistantPage', () => {
       `/assistant/conversations/${conversationId}/turns`,
       { headers: post.mock.calls[0]?.[2]?.headers }
     )
+  })
+
+  it('preserves a rejected conflict through failed lookup and terminal observation', async () => {
+    const turnId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    setupReads({
+      onLookup: (reads) =>
+        reads === 1
+          ? coreError(503, 'Lookup unavailable')
+          : turnStatus(conversationId, turnId),
+      onStatus: () => turnStatus(conversationId, turnId, 'COMPLETED'),
+    })
+    const post = vi.spyOn(coreApi, 'post').mockRejectedValue(
+      coreError(409, 'Conflict', {
+        code: 'ASSISTANT_IDEMPOTENCY_CONFLICT',
+      })
+    )
+    const screen = await renderPage({ initial: { conversationId, meetingId } })
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Assistant question' }),
+      'Rejected intent'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
+    await expect.element(screen.getByText('Assistant is currently unavailable.')).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: 'Retry or refresh' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Resume status checks' }))
+    await expect.element(screen.getByRole('button', { name: 'Ask Assistant' })).toBeVisible()
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('contains active history when the canonical meeting detail denies access', async () => {
+    let revoked = false
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    setupReads()
+    const screen = await renderPage({
+      initial: { conversationId, meetingId },
+      client,
+      onMeetingDetail: () => {
+        if (revoked) throw coreError(403, 'Meeting denied')
+      },
+    })
+    await expect.element(screen.getByText('The launch is planned for Friday.').first()).toBeVisible()
+    revoked = true
+    await client.refetchQueries({ queryKey: ['meetings', 'detail', meetingId] })
+    await expect.element(screen.getByRole('textbox', { name: 'Assistant question' })).not.toBeInTheDocument()
+    await expect.element(screen.getByText('The launch is planned for Friday.').first()).not.toBeInTheDocument()
+    expect(client.getQueryData(['assistant', 'conversation', conversationId, 'history', 50])).toBeUndefined()
+    client.clear()
   })
 
   it('reports malformed Assistant responses without fabricating success', async () => {

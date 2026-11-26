@@ -18,6 +18,9 @@ type AccessState = {
   listEpoch: number
   resourceEpochs: Map<string, number>
   meetingEpochs: Map<string, number>
+  conversationMeetings: Map<string, string>
+  meetingDenials: Map<string, { listEpoch: number; error: CoreApiError }>
+  historyResetEpochs: Map<string, number>
   questionEpochs: Map<string, number>
   historyEpochs: Map<string, number>
   redactedIds: Map<string, Set<string>>
@@ -40,6 +43,9 @@ function stateFor(client: QueryClient): AccessState {
       listEpoch: 0,
       resourceEpochs: new Map(),
       meetingEpochs: new Map(),
+      conversationMeetings: new Map(),
+      meetingDenials: new Map(),
+      historyResetEpochs: new Map(),
       questionEpochs: new Map(),
       historyEpochs: new Map(),
       redactedIds: new Map(),
@@ -54,6 +60,9 @@ function stateFor(client: QueryClient): AccessState {
     state.listEpoch += 1
     state.resourceEpochs.clear()
     state.meetingEpochs.clear()
+    state.conversationMeetings.clear()
+    state.meetingDenials.clear()
+    state.historyResetEpochs.clear()
     state.questionEpochs.clear()
     state.historyEpochs.clear()
     state.redactedIds.clear()
@@ -216,6 +225,9 @@ function conversationsForMeeting(
   meetingId: string
 ): Set<string> {
   const ids = new Set<string>()
+  for (const [id, meeting] of stateFor(client).conversationMeetings) {
+    if (meeting === meetingId) ids.add(id)
+  }
   const include = (conversation: AssistantConversation | undefined) => {
     if (conversation?.meetingId === meetingId) ids.add(conversation.id)
   }
@@ -294,6 +306,10 @@ export function containAssistantAccessFailure(
   const id = token.conversationId
   if (failure.status !== 401 && token.meetingId) {
     state.meetingEpochs.set(token.meetingId, token.resourceEpoch + 1)
+    state.meetingDenials.set(token.meetingId, {
+      listEpoch: state.listEpoch + 1,
+      error: failure,
+    })
     containConversationResources(
       client,
       state,
@@ -313,6 +329,20 @@ export function containAssistantAccessFailure(
     containConversationResources(client, state, new Set([id]), failure)
   }
   return true
+}
+
+// A canonical meeting-detail denial has the same scope as a meeting-scoped
+// Assistant denial, not a denial of the whole conversation collection.
+export function containAssistantMeetingDenial(
+  client: QueryClient,
+  token: AssistantAccessToken,
+  error: unknown
+): void {
+  const previous = token.meetingId
+    ? stateFor(client).meetingDenials.get(token.meetingId)
+    : undefined
+  if (previous?.error === error) return
+  containAssistantAccessFailure(client, token, error)
 }
 
 // Only an explicit user-initiated read can release a containment boundary.
@@ -370,7 +400,12 @@ function advanceHistoryEpoch(client: QueryClient, conversationId: string) {
 // asynchronous cache-write boundary, without retaining any history bodies.
 const historyResults = new WeakMap<
   AssistantConversationDetail,
-  { client: QueryClient; access: AssistantAccessToken; epoch: number }
+  {
+    client: QueryClient
+    access: AssistantAccessToken
+    epoch: number
+    resetEpoch: number
+  }
 >()
 
 function stampHistoryResult(
@@ -382,6 +417,7 @@ function stampHistoryResult(
     client,
     access: captureAssistantAccess(client, conversationId),
     epoch: assistantHistoryEpoch(client, conversationId),
+    resetEpoch: stateFor(client).historyResetEpochs.get(conversationId) ?? 0,
   })
   return detail
 }
@@ -414,18 +450,43 @@ export function guardAssistantHistoryCache(
   next: unknown
 ): unknown {
   if (next && typeof next === 'object') {
-    const pages =
-      'pages' in next && Array.isArray(next.pages) ? next.pages : [next]
-    for (const page of pages) {
-      const stamp = historyResults.get(page)
-      if (stamp && stamp.access.conversationId) {
-        assertAssistantHistoryResultCurrent(
-          stamp.client,
-          stamp.access.conversationId,
-          page
-        )
-      }
+    if ('pages' in next && Array.isArray(next.pages)) {
+      // A sequential infinite refetch can learn a redaction on a later page.
+      // Earlier pages from that same reset generation may be safely sanitized
+      // with the accumulated redactions, but never across an access/reset fence.
+      const pages = next.pages.map((page: AssistantConversationDetail) => {
+        const stamp = historyResults.get(page)
+        const id = stamp?.access.conversationId
+        if (!stamp || !id) return page
+        const state = stateFor(stamp.client)
+        if (
+          isAssistantAccessCurrent(stamp.client, stamp.access) &&
+          stamp.resetEpoch === (state.historyResetEpochs.get(id) ?? 0) &&
+          stamp.epoch !== assistantHistoryEpoch(stamp.client, id)
+        ) {
+          return stampHistoryResult(
+            stamp.client,
+            id,
+            redactKnownMessages(
+              page,
+              state.redactedIds.get(id) ?? new Set(),
+              new Map()
+            )
+          )
+        }
+        assertAssistantHistoryResultCurrent(stamp.client, id, page)
+        return page
+      })
+      return { ...next, pages }
     }
+    const page = next as AssistantConversationDetail
+    const stamp = historyResults.get(page)
+    if (stamp?.access.conversationId)
+      assertAssistantHistoryResultCurrent(
+        stamp.client,
+        stamp.access.conversationId,
+        page
+      )
   }
   return next
 }
@@ -462,8 +523,17 @@ export async function readAssistantHistoryProtected(
 ): Promise<AssistantConversationDetail> {
   const token = captureAssistantAccess(client, conversationId)
   const epoch = assistantHistoryEpoch(client, conversationId)
+  const listEpoch = stateFor(client).listEpoch
   const detail = await readAssistantProtected(client, conversationId, read)
   assertAssistantAccessCurrent(client, token)
+  const accessState = stateFor(client)
+  const meetingId = detail.conversation.meetingId
+  accessState.conversationMeetings.set(conversationId, meetingId)
+  const denial = accessState.meetingDenials.get(meetingId)
+  if (denial && denial.listEpoch > listEpoch) {
+    containAssistantAccessFailure(client, token, denial.error)
+    throw denial.error
+  }
   if (epoch !== assistantHistoryEpoch(client, conversationId)) {
     throw new CoreApiError({
       code: 'ASSISTANT_OPERATION_OBSOLETE',
@@ -522,7 +592,12 @@ function resetAssistantHistory(
   throwOnError: boolean
 ): Promise<void> {
   advanceHistoryEpoch(client, conversationId)
-  stateFor(client).redactedIds.delete(conversationId)
+  const state = stateFor(client)
+  state.historyResetEpochs.set(
+    conversationId,
+    (state.historyResetEpochs.get(conversationId) ?? 0) + 1
+  )
+  state.redactedIds.delete(conversationId)
   const pageKey = ['assistant', 'conversation', conversationId, 'page']
   const historyKey = ['assistant', 'conversation', conversationId, 'history']
   void client.cancelQueries({ queryKey: pageKey }, { revert: false })
