@@ -236,6 +236,7 @@ export function useAssistantTurnWorkflow(
         const turn = await readAssistantProtected(client, key, () =>
           lookupAssistantTurn(key, operation.submission.idempotencyKey)
         )
+        if (!owns(key, next)) return
         if (
           normalizeCoreApiError(operation.error).code ===
           'ASSISTANT_IDEMPOTENCY_CONFLICT'
@@ -517,7 +518,10 @@ export function useAssistantTurnWorkflow(
   return {
     workflow: active,
     busy: Boolean(
-      (active && active.phase !== 'settled') || (!active && pending)
+      (active && active.phase !== 'settled') ||
+        (pending &&
+          (!active ||
+            (active.phase === 'settled' && active.turnId !== pending.turnId)))
     ),
     historyRefreshError: id ? refreshErrors.get(id) : undefined,
     submit,
