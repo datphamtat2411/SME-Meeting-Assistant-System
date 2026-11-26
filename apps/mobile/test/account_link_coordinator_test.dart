@@ -7,47 +7,55 @@ import 'package:sme_meeting_assistant/features/auth/account_link.dart';
 import 'package:sme_meeting_assistant/features/auth/account_link_coordinator.dart';
 
 void main() {
-  testWidgets('a native signal during initial drain is not lost', (
-    tester,
-  ) async {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('a native signal during initial drain is not lost', () async {
     const channel = MethodChannel('test/account_links');
+    const codec = StandardMethodCodec();
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     final first = Completer<String?>();
+    final requested = Completer<void>();
+    final drained = Completer<void>();
     final deliveries = <(String, bool)>[];
     var calls = 0;
+    var failures = 0;
     String? pending;
-    messenger.setMockMethodCallHandler(channel, (call) async {
-      expect(call.method, 'takePending');
-      if (calls++ == 0) return first.future;
+    messenger.setMockMessageHandler(channel.name, (message) async {
+      expect(codec.decodeMethodCall(message).method, 'takePending');
+      if (calls++ == 0) {
+        requested.complete();
+        return codec.encodeSuccessEnvelope(await first.future);
+      }
       final value = pending;
       pending = null;
-      return value;
+      if (value == null) drained.complete();
+      return codec.encodeSuccessEnvelope(value);
     });
     final receiver = AccountLinkReceiver(
       channel: channel,
       onLink: (url, initial) => deliveries.add((url, initial)),
-      onFailure: () => fail('Native delivery unexpectedly failed.'),
+      onFailure: () => failures++,
     );
     addTearDown(() {
       receiver.dispose();
-      messenger.setMockMethodCallHandler(channel, null);
+      messenger.setMockMessageHandler(channel.name, null);
     });
     receiver.start();
-    await tester.pump();
+    await requested.future;
     pending = 'warm';
     await messenger.handlePlatformMessage(
       channel.name,
-      const StandardMethodCodec().encodeMethodCall(
-        const MethodCall('available'),
-      ),
+      codec.encodeMethodCall(const MethodCall('available')),
       (_) {},
     );
     expect(calls, 1);
     first.complete('cold');
-    await tester.pump();
+    await drained.future.timeout(const Duration(seconds: 5));
+    await Future<void>.delayed(Duration.zero);
     expect(deliveries, [('cold', true), ('warm', false)]);
     expect(calls, 3);
+    expect(failures, 0);
   });
 
   const host = 'meeting.example.invalid';

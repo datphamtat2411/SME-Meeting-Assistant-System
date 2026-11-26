@@ -243,7 +243,12 @@ class AccountSubmissionController extends ChangeNotifier {
   }
 
   bool get canSubmit {
-    if (_disposed || isSubmitting || isCompleted) return false;
+    if (_disposed ||
+        isSubmitting ||
+        isCompleted ||
+        _retryDeadlines.hasActiveSubmission) {
+      return false;
+    }
     if (retryRemaining > Duration.zero) return false;
     if (operation.establishesPassword &&
         (_failure?.kind == AccountFailureKind.uncertain ||

@@ -98,15 +98,26 @@ void main() {
       retryDeadlines: deadlines,
     );
     addTearDown(replacement.dispose);
-    var notifications = 0;
-    replacement.addListener(() => notifications++);
+    final notifications = <(bool, Duration)>[];
+    replacement.addListener(() {
+      notifications.add((
+        deadlines.hasActiveSubmission,
+        replacement.retryRemaining,
+      ));
+    });
+    expect(deadlines.hasActiveSubmission, isTrue);
+    expect(replacement.canSubmit, isFalse);
     pending.completeError(
       const ApiFailure(429, 'RATE_LIMIT_EXCEEDED', 'wait', retryAfter: '30'),
     );
     await submitted;
     expect(replacement.canSubmit, isFalse);
     expect(replacement.retryRemaining, const Duration(seconds: 30));
-    expect(notifications, 1);
+    expect(notifications, [
+      (true, const Duration(seconds: 30)),
+      (false, const Duration(seconds: 30)),
+    ]);
+    expect(deadlines.hasActiveSubmission, isFalse);
   });
 
   test('classifies safe feedback without exposing the server message', () {
@@ -276,9 +287,11 @@ void main() {
       now: now,
     );
     expect(resetUnavailable.kind, AccountFailureKind.unavailable);
-    expect(resetUnavailable.message, contains('Liên kết khôi phục'));
+    expect(resetUnavailable.message, contains('Dịch vụ đặt lại mật khẩu'));
+    expect(resetUnavailable.message, isNot(contains('hết hạn')));
     expect(setupUnavailable.kind, AccountFailureKind.unavailable);
-    expect(setupUnavailable.message, contains('Lời mời thiết lập'));
+    expect(setupUnavailable.message, contains('Dịch vụ thiết lập tài khoản'));
+    expect(setupUnavailable.message, isNot(contains('hết hạn')));
 
     final resetUncertain = AccountFlowFailure.classify(
       const ApiFailure(503, 'SERVICE_UNAVAILABLE', 'private'),

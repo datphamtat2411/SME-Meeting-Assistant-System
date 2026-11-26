@@ -36,6 +36,7 @@ void main() {
     final rejected = [
       'http://meeting.example.invalid/otp#token=a',
       'https://meeting.example.invalid.evil.test/otp#token=a',
+      'https://meetİng.example.invalid/otp#token=a',
       'https://evil.test@meeting.example.invalid/otp#token=a',
       'https://meeting.example.invalid:8443/otp#token=a',
       'https://meeting.example.invalid./otp#token=a',
