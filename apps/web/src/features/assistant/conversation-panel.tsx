@@ -28,6 +28,7 @@ export function ConversationPanel({
   selectedConversationId,
   selectedConversation,
   detailQuery,
+  historyAccessReady,
   historyRefreshError,
   historyRefreshing,
   onLoadOlderMessages,
@@ -54,6 +55,7 @@ export function ConversationPanel({
   selectedConversationId?: string
   selectedConversation?: AssistantConversation
   detailQuery: ConversationHistoryQuery
+  historyAccessReady: boolean
   historyRefreshError: unknown
   historyRefreshing: boolean
   onLoadOlderMessages: () => void
@@ -80,6 +82,14 @@ export function ConversationPanel({
     )
   }
 
+  if (!historyAccessReady) {
+    return detailQuery.isError ? (
+      <AssistantError error={detailQuery.error} onRetry={onRefresh} />
+    ) : (
+      <RequestLoading label='Loading conversation history…' />
+    )
+  }
+
   return (
     <div className='space-y-4 border-t pt-5'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
@@ -102,15 +112,7 @@ export function ConversationPanel({
           <RefreshCw className='size-4' /> Refresh history
         </Button>
       </div>
-      {detailQuery.isPending ||
-      (detailQuery.isFetching && !detailQuery.isFetchingNextPage) ? (
-        <RequestLoading label='Loading conversation history…' />
-      ) : detailQuery.isError && !detailQuery.data ? (
-        <AssistantError
-          error={detailQuery.error}
-          onRetry={() => void detailQuery.refetch()}
-        />
-      ) : detailQuery.data ? (
+      {detailQuery.data ? (
         <ConversationHistory
           messages={chronologicalHistoryMessages(detailQuery.data.pages)}
           hasMore={Boolean(detailQuery.hasNextPage)}

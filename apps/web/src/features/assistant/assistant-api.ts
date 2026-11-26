@@ -6,6 +6,7 @@ import {
 } from '@tanstack/react-query'
 import { CoreApiError, coreApi, type ApiResponseData } from '@/lib/core-api'
 import {
+  guardAssistantHistoryCache,
   readAssistantHistoryProtected,
   readAssistantProtected,
 } from './assistant-access'
@@ -370,6 +371,7 @@ export function assistantConversationDetailQueryOptions(
         })
       ),
     enabled: Boolean(conversationId),
+    structuralSharing: guardAssistantHistoryCache,
     retry: false,
   })
 }
@@ -406,6 +408,7 @@ export function assistantConversationHistoryQueryOptions(
     getNextPageParam: (lastPage: AssistantConversationDetail) =>
       lastPage.hasMore ? lastPage.page + 1 : undefined,
     enabled: Boolean(conversationId),
+    structuralSharing: guardAssistantHistoryCache,
     retry: false,
   })
 }
@@ -494,6 +497,31 @@ export async function submitAssistantQuestion(
     turnSchema,
     'Core API returned a malformed Assistant turn response.'
   )
+}
+
+// Explicit recovery never needs the original browser request payload.
+export async function recoverAssistantTurn(
+  conversationId: string,
+  turnId: string,
+  signal?: AbortSignal
+): Promise<AssistantTurn> {
+  const response = await coreApi.post<unknown>(
+    `${conversationsPath}/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/recover`,
+    undefined,
+    { ...(signal ? { signal } : {}) }
+  )
+  const turn = parseAssistantResponse(
+    { data: response, meta: {} },
+    turnSchema,
+    'Core API returned a malformed recovered Assistant turn.'
+  )
+  if (turn.turnId !== turnId) {
+    throw malformedAssistantResponse(
+      'Core API returned a different recovered Assistant turn.',
+      undefined
+    )
+  }
+  return turn
 }
 
 function parseTurnStatus(

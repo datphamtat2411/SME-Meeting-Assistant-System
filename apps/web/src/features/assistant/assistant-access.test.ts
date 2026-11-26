@@ -3,9 +3,13 @@ import { describe, expect, it } from 'vitest'
 import { CoreApiError } from '@/lib/core-api'
 import { resetRequestRecoveryState } from '@/lib/request-recovery'
 import {
+  assertAssistantHistoryResultCurrent,
   beginAssistantQuestion,
   captureAssistantAccess,
+  captureAssistantCreationAccess,
   containAssistantAccessFailure,
+  guardAssistantHistoryCache,
+  invalidateAssistantHistory,
   isAssistantAccessCurrent,
   readAssistantHistoryProtected,
   readAssistantProtected,
@@ -128,7 +132,24 @@ describe('Assistant protected operation ownership', () => {
           complete = resolve
         })
     )
+    const earlierResult = await readAssistantHistoryProtected(
+      client,
+      'a',
+      async () => visible
+    )
     await readAssistantHistoryProtected(client, 'a', async () => redacted)
+    expect(() =>
+      assertAssistantHistoryResultCurrent(client, 'a', earlierResult)
+    ).toThrow()
+    expect(() =>
+      guardAssistantHistoryCache(undefined, earlierResult)
+    ).toThrow()
+    const laterResult = await readAssistantHistoryProtected(
+      client,
+      'a',
+      async () => visible
+    )
+    expect(laterResult.messages[0]?.content).toBeNull()
     expect(client.getQueryData(pageKey)).toEqual(redacted)
     expect(client.getQueryData(historyKey)).toEqual({
       pages: [redacted],
@@ -138,6 +159,36 @@ describe('Assistant protected operation ownership', () => {
     await expect(pending).rejects.toMatchObject({
       code: 'ASSISTANT_OPERATION_OBSOLETE',
     })
+    invalidateAssistantHistory(client, 'a')
+    expect(() =>
+      assertAssistantHistoryResultCurrent(client, 'a', laterResult)
+    ).toThrow()
+  })
+
+  it('contains meeting creation denial without invalidating other resources', () => {
+    const client = new QueryClient()
+    const list = captureAssistantAccess(client)
+    const existing = captureAssistantAccess(client, 'a')
+    const deniedCreation = captureAssistantCreationAccess(client, 'meeting-a')
+    const otherCreation = captureAssistantCreationAccess(client, 'meeting-b')
+    client.setQueryData(['assistant', 'conversation', 'a', 'history'], {
+      content: 'authorized',
+    })
+    const denied = new CoreApiError({
+      status: 403,
+      kind: 'http',
+      message: 'Denied',
+    })
+    expect(containAssistantAccessFailure(client, deniedCreation, denied)).toBe(
+      true
+    )
+    expect(isAssistantAccessCurrent(client, deniedCreation)).toBe(false)
+    expect(isAssistantAccessCurrent(client, otherCreation)).toBe(true)
+    expect(isAssistantAccessCurrent(client, list)).toBe(true)
+    expect(isAssistantAccessCurrent(client, existing)).toBe(true)
+    expect(
+      client.getQueryData(['assistant', 'conversation', 'a', 'history'])
+    ).toEqual({ content: 'authorized' })
   })
 
   it('does not let an earlier question overwrite a newer operation', () => {

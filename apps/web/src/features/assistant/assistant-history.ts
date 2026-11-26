@@ -2,6 +2,8 @@ import { useCallback, useEffect } from 'react'
 import { type InfiniteData, useQueryClient } from '@tanstack/react-query'
 import {
   assertAssistantAccessCurrent,
+  assertAssistantHistoryResultCurrent,
+  assistantHistoryEpoch,
   captureAssistantAccess,
 } from './assistant-access'
 import {
@@ -62,6 +64,13 @@ export function useAssistantHistory() {
       currentConversationId: string,
       incomingPages: AssistantConversationDetail[]
     ) => {
+      for (const detail of incomingPages) {
+        assertAssistantHistoryResultCurrent(
+          queryClient,
+          currentConversationId,
+          detail
+        )
+      }
       const historyOptions = assistantConversationHistoryQueryOptions(
         currentConversationId
       )
@@ -163,6 +172,15 @@ export function useAssistantHistoryPolling({
     let timer: number | undefined
     let attempts = 0
     const observedPages = new Map<number, AssistantConversationDetail>()
+    let observedEpoch = assistantHistoryEpoch(queryClient, accepted.conversationId)
+
+    const reconcileObservationEpoch = () => {
+      const current = assistantHistoryEpoch(queryClient, accepted.conversationId)
+      if (current !== observedEpoch) {
+        observedPages.clear()
+        observedEpoch = current
+      }
+    }
 
     const poll = async () => {
       if (cancelled || !isCurrentScope(accepted.scope)) return
@@ -176,8 +194,9 @@ export function useAssistantHistoryPolling({
           staleTime: 0,
         })
         if (cancelled || !isCurrentScope(accepted.scope)) return
-        observedPages.set(0, newest)
+        reconcileObservationEpoch()
         cacheHistoryPages(accepted.conversationId, [newest])
+        observedPages.set(0, newest)
 
         const cachedPages =
           queryClient.getQueryData<
@@ -224,6 +243,12 @@ export function useAssistantHistoryPolling({
               staleTime: 0,
             })
             if (cancelled || !isCurrentScope(accepted.scope)) return
+            reconcileObservationEpoch()
+            assertAssistantHistoryResultCurrent(
+              queryClient,
+              accepted.conversationId,
+              older
+            )
             observedPages.set(nextPage, older)
             const olderMatch = findAssistantTurnMessage(older, accepted.turn)
             if (olderMatch) {

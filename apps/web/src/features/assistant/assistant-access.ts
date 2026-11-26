@@ -17,8 +17,10 @@ type AccessState = {
   epoch: number
   listEpoch: number
   resourceEpochs: Map<string, number>
+  meetingEpochs: Map<string, number>
   questionEpochs: Map<string, number>
   historyEpochs: Map<string, number>
+  redactedIds: Map<string, Set<string>>
   denied: Map<string, CoreApiError>
   listError?: CoreApiError
   revision: number
@@ -37,8 +39,10 @@ function stateFor(client: QueryClient): AccessState {
       epoch: 0,
       listEpoch: 0,
       resourceEpochs: new Map(),
+      meetingEpochs: new Map(),
       questionEpochs: new Map(),
       historyEpochs: new Map(),
+      redactedIds: new Map(),
       denied: new Map(),
       revision: 0,
       listeners: new Set(),
@@ -49,8 +53,10 @@ function stateFor(client: QueryClient): AccessState {
     state.epoch += 1
     state.listEpoch += 1
     state.resourceEpochs.clear()
+    state.meetingEpochs.clear()
     state.questionEpochs.clear()
     state.historyEpochs.clear()
+    state.redactedIds.clear()
     state.denied.clear()
     state.listError = undefined
     state.revision += 1
@@ -104,6 +110,7 @@ export type AssistantAccessToken = {
   epoch: number
   resourceEpoch: number
   conversationId?: string
+  meetingId?: string
   questionEpoch?: number
 }
 
@@ -122,6 +129,18 @@ export function captureAssistantAccess(
   }
 }
 
+// Creation is scoped to a meeting, not to the conversation-list resource.
+export function captureAssistantCreationAccess(
+  client: QueryClient,
+  meetingId: string
+): AssistantAccessToken {
+  return {
+    ...captureAssistantAccess(client),
+    meetingId,
+    resourceEpoch: stateFor(client).meetingEpochs.get(meetingId) ?? 0,
+  }
+}
+
 export function beginAssistantQuestion(
   client: QueryClient,
   conversationId: string
@@ -136,7 +155,9 @@ function matchesEpoch(
   client: QueryClient,
   token: AssistantAccessToken
 ): boolean {
-  const current = captureAssistantAccess(client, token.conversationId)
+  const current = token.meetingId
+    ? captureAssistantCreationAccess(client, token.meetingId)
+    : captureAssistantAccess(client, token.conversationId)
   return (
     current.session === token.session &&
     current.epoch === token.epoch &&
@@ -195,7 +216,10 @@ export function containAssistantAccessFailure(
   const failure = normalizeCoreApiError(error)
   const state = stateFor(client)
   const id = token.conversationId
-  if (failure.status === 401 || !id) {
+  if (failure.status !== 401 && token.meetingId) {
+    state.meetingEpochs.set(token.meetingId, token.resourceEpoch + 1)
+    notify(state)
+  } else if (failure.status === 401 || !id) {
     state.epoch += 1
     state.listEpoch += 1
     state.denied.clear()
@@ -269,25 +293,102 @@ export async function readAssistantProtected<T>(
   }
 }
 
-function historyEpoch(client: QueryClient, conversationId: string): number {
+export function assistantHistoryEpoch(
+  client: QueryClient,
+  conversationId: string
+): number {
   return stateFor(client).historyEpochs.get(conversationId) ?? 0
 }
 
 function advanceHistoryEpoch(client: QueryClient, conversationId: string) {
   stateFor(client).historyEpochs.set(
     conversationId,
-    historyEpoch(client, conversationId) + 1
+    assistantHistoryEpoch(client, conversationId) + 1
   )
 }
 
-function replaceRedactions(
+// A read's ownership follows the exact returned projection through the
+// asynchronous cache-write boundary, without retaining any history bodies.
+const historyResults = new WeakMap<
+  AssistantConversationDetail,
+  { client: QueryClient; access: AssistantAccessToken; epoch: number }
+>()
+
+function stampHistoryResult(
+  client: QueryClient,
+  conversationId: string,
+  detail: AssistantConversationDetail
+): AssistantConversationDetail {
+  historyResults.set(detail, {
+    client,
+    access: captureAssistantAccess(client, conversationId),
+    epoch: assistantHistoryEpoch(client, conversationId),
+  })
+  return detail
+}
+
+export function assertAssistantHistoryResultCurrent(
+  client: QueryClient,
+  conversationId: string,
+  detail: AssistantConversationDetail
+): void {
+  const stamp = historyResults.get(detail)
+  if (
+    !stamp ||
+    stamp.client !== client ||
+    stamp.access.conversationId !== conversationId ||
+    !isAssistantAccessCurrent(client, stamp.access) ||
+    stamp.epoch !== assistantHistoryEpoch(client, conversationId)
+  ) {
+    throw new CoreApiError({
+      code: 'ASSISTANT_OPERATION_OBSOLETE',
+      kind: 'http',
+      message: 'Assistant history changed before the result was applied.',
+    })
+  }
+}
+
+// TanStack may apply a query result after the read itself has returned.
+// Do not allow structural sharing to replace its ownership identity.
+export function guardAssistantHistoryCache(
+  _previous: unknown,
+  next: unknown
+): unknown {
+  if (next && typeof next === 'object') {
+    const pages =
+      'pages' in next && Array.isArray(next.pages) ? next.pages : [next]
+    for (const page of pages) {
+      const stamp = historyResults.get(page)
+      if (stamp && stamp.access.conversationId) {
+        assertAssistantHistoryResultCurrent(
+          stamp.client,
+          stamp.access.conversationId,
+          page
+        )
+      }
+    }
+  }
+  return next
+}
+
+function redactKnownMessages(
   detail: AssistantConversationDetail,
+  redactedIds: Set<string>,
   redactions: Map<string, AssistantMessage>
 ): AssistantConversationDetail {
   return {
     ...detail,
-    messages: detail.messages.map(
-      (message) => redactions.get(message.id) ?? message
+    messages: detail.messages.map((message) =>
+      redactions.get(message.id) ??
+      (redactedIds.has(message.id)
+        ? {
+            ...message,
+            visibility: 'SOURCE_UNAVAILABLE',
+            content: null,
+            claims: [],
+            citations: [],
+          }
+        : message)
     ),
   }
 }
@@ -300,10 +401,10 @@ export async function readAssistantHistoryProtected(
   read: () => Promise<AssistantConversationDetail>
 ): Promise<AssistantConversationDetail> {
   const token = captureAssistantAccess(client, conversationId)
-  const epoch = historyEpoch(client, conversationId)
+  const epoch = assistantHistoryEpoch(client, conversationId)
   const detail = await readAssistantProtected(client, conversationId, read)
   assertAssistantAccessCurrent(client, token)
-  if (epoch !== historyEpoch(client, conversationId)) {
+  if (epoch !== assistantHistoryEpoch(client, conversationId)) {
     throw new CoreApiError({
       code: 'ASSISTANT_OPERATION_OBSOLETE',
       kind: 'http',
@@ -316,24 +417,41 @@ export async function readAssistantHistoryProtected(
       .filter((message) => message.visibility === 'SOURCE_UNAVAILABLE')
       .map((message) => [message.id, message] as const)
   )
-  if (redactions.size > 0) {
+  const state = stateFor(client)
+  const redactedIds = state.redactedIds.get(conversationId) ?? new Set<string>()
+  const changed = [...redactions.keys()].some((id) => !redactedIds.has(id))
+  for (const id of redactions.keys()) redactedIds.add(id)
+  state.redactedIds.set(conversationId, redactedIds)
+  if (changed) {
     advanceHistoryEpoch(client, conversationId)
+    const redact = (cached: AssistantConversationDetail) =>
+      stampHistoryResult(
+        client,
+        conversationId,
+        redactKnownMessages(cached, redactedIds, redactions)
+      )
     client.setQueriesData<AssistantConversationDetail>(
       { queryKey: ['assistant', 'conversation', conversationId, 'page'] },
-      (cached) => cached && replaceRedactions(cached, redactions)
+      (cached) => cached && redact(cached)
     )
     client.setQueriesData<InfiniteData<AssistantConversationDetail>>(
       { queryKey: ['assistant', 'conversation', conversationId, 'history'] },
       (cached) =>
         cached && {
           ...cached,
-          pages: cached.pages.map((page) =>
-            replaceRedactions(page, redactions)
-          ),
+          pages: cached.pages.map(redact),
         }
     )
   }
-  return detail
+  // Redaction is monotonic within a history generation. Reopening the
+  // conversation discards that generation and performs fresh authorized reads.
+  return stampHistoryResult(
+    client,
+    conversationId,
+    redactedIds.size
+      ? redactKnownMessages(detail, redactedIds, redactions)
+      : { ...detail }
+  )
 }
 
 // A stale-source outcome does not identify every affected cached message.
@@ -343,6 +461,7 @@ export function invalidateAssistantHistory(
   conversationId: string
 ): void {
   advanceHistoryEpoch(client, conversationId)
+  stateFor(client).redactedIds.delete(conversationId)
   const pageKey = ['assistant', 'conversation', conversationId, 'page']
   const historyKey = ['assistant', 'conversation', conversationId, 'history']
   void client.cancelQueries({ queryKey: pageKey })

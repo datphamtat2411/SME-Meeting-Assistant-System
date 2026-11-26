@@ -12,6 +12,7 @@ import {
   assertAssistantAccessCurrent,
   beginAssistantQuestion,
   captureAssistantAccess,
+  captureAssistantCreationAccess,
   containAssistantAccessFailure,
   invalidateAssistantHistory,
   isAssistantAccessCurrent,
@@ -117,6 +118,12 @@ export function useAssistantConversation() {
     refetchOnMount: 'always',
   })
 
+  const historyAccessReady =
+    Boolean(detailQuery.data) &&
+    !detailAccessError &&
+    (!detailQuery.isError || detailQuery.isFetchNextPageError) &&
+    (!detailQuery.isFetching || detailQuery.isFetchingNextPage)
+
   const allConversations = useMemo(
     () =>
       listAccessError
@@ -179,9 +186,9 @@ export function useAssistantConversation() {
       setCreateError(undefined)
     },
     onError: (error, operation) => {
-      if (containAssistantAccessFailure(queryClient, operation.access, error))
-        return
-      if (isCurrentScope(operation.scope)) setCreateError(error)
+      const wasCurrent = isAssistantAccessCurrent(queryClient, operation.access)
+      containAssistantAccessFailure(queryClient, operation.access, error)
+      if (wasCurrent && isCurrentScope(operation.scope)) setCreateError(error)
     },
     onSettled: (_data, _error, operation) => {
       if (operation.scope.session !== getRequestRecoveryGeneration()) return
@@ -267,7 +274,7 @@ export function useAssistantConversation() {
     const currentScope = scopeRef.current
     if (!currentScope.meetingId || assistantAccessError(queryClient)) return
     const operation: CreateOperation = {
-      access: captureAssistantAccess(queryClient),
+      access: captureAssistantCreationAccess(queryClient, currentScope.meetingId),
       operationId: ++createSequenceRef.current,
       scope: { ...currentScope },
       meetingId: currentScope.meetingId,
@@ -321,6 +328,9 @@ export function useAssistantConversation() {
 
   function openConversation(conversation: AssistantConversation) {
     retryAssistantAccess(queryClient, conversation.id)
+    // Selecting even an already-mounted conversation requires a fresh Core
+    // read. Cached pages and in-flight pre-selection reads are not authority.
+    invalidateAssistantHistory(queryClient, conversation.id)
     const scope = clearConversationState(
       conversation.meetingId,
       conversation.id
@@ -357,6 +367,7 @@ export function useAssistantConversation() {
     if (
       !activeScope.meetingId ||
       !activeScope.conversationId ||
+      !historyAccessReady ||
       !isCurrentScope(activeScope) ||
       questionOperationRef.current !== undefined
     ) {
@@ -558,7 +569,7 @@ export function useAssistantConversation() {
   }
 
   useAssistantHistoryPolling({
-    processingTurn,
+    processingTurn: historyAccessReady ? processingTurn : undefined,
     pollingStopped,
     isCurrentScope,
     cacheHistoryPages,
@@ -604,12 +615,16 @@ export function useAssistantConversation() {
       detailAccessError,
       onDetailAccessRetry: () => {
         retryAssistantAccess(queryClient, selectedConversationId)
+        if (selectedConversationId) {
+          invalidateAssistantHistory(queryClient, selectedConversationId)
+        }
         clearConversationState(selectedMeetingId, selectedConversationId)
         void detailQuery.refetch()
       },
       selectedConversationId,
       selectedConversation,
       detailQuery,
+      historyAccessReady,
       historyRefreshError,
       historyRefreshing: isRefreshingHistory,
       onLoadOlderMessages: () =>
