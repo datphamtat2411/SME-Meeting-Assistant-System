@@ -680,7 +680,9 @@ void main() {
       find.byType(TextFormField).first,
       'user@example.test',
     );
-    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Gửi yêu cầu'));
+    await tester.ensureVisible(
+      find.widgetWithText(FilledButton, 'Gửi yêu cầu'),
+    );
     await tester.tap(find.widgetWithText(FilledButton, 'Gửi yêu cầu'));
     await pumpUntil(
       tester,
@@ -698,9 +700,11 @@ void main() {
       'other@example.test',
     );
     expect(
-      tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, 'Gửi yêu cầu'),
-      ).onPressed,
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Gửi yêu cầu'),
+          )
+          .onPressed,
       isNull,
     );
     expect(
