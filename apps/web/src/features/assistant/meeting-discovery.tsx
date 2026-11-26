@@ -2,12 +2,12 @@ import { Link } from '@tanstack/react-router'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { MeetingFilters } from '@/features/meetings/components/meeting-filters'
 import {
   RequestEmpty,
   RequestError,
   RequestLoading,
 } from '@/components/request-state'
+import { MeetingFilters } from '@/features/meetings/components/meeting-filters'
 import type { useAssistantMeetingDiscovery } from './use-assistant-meeting-discovery'
 
 export function MeetingSearchCard({

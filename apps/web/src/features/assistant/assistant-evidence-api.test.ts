@@ -24,7 +24,12 @@ const message: AssistantMessage = {
   content: 'Answer',
   createdAt: '2026-11-26T00:00:00Z',
   claims: [
-    { claimId: 'A1', text: 'Answer', support: 'SUPPORTED', citationIds: ['C1'] },
+    {
+      claimId: 'A1',
+      text: 'Answer',
+      support: 'SUPPORTED',
+      citationIds: ['C1'],
+    },
   ],
   citations: [
     {
@@ -96,7 +101,12 @@ describe('Assistant evidence boundary', () => {
           meta: {},
         })
         await expect(
-          readAssistantMessageEvidence(client, conversationId, meetingId, message)
+          readAssistantMessageEvidence(
+            client,
+            conversationId,
+            meetingId,
+            message
+          )
         ).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
       }
     } finally {

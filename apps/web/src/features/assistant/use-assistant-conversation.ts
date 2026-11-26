@@ -23,8 +23,8 @@ import {
   type AssistantConversation,
 } from './assistant-api'
 import { uniqueConversations } from './assistant-history'
-import { useAssistantTurnWorkflow } from './assistant-turn-workflow'
 import type { AssistantSelection } from './assistant-selection'
+import { useAssistantTurnWorkflow } from './assistant-turn-workflow'
 
 export function useAssistantConversation(
   selection: AssistantSelection,
@@ -32,12 +32,16 @@ export function useAssistantConversation(
 ) {
   const client = useQueryClient()
   useAssistantAccessRevision(client)
-  const { meetingId: selectedMeetingId, conversationId: selectedConversationId } = selection
+  const {
+    meetingId: selectedMeetingId,
+    conversationId: selectedConversationId,
+  } = selection
   const [openedId, setOpenedId] = useState<string>()
   const [previousId, setPreviousId] = useState(selectedConversationId)
   const [conversationTitle, setConversationTitle] = useState('')
   const [question, setQuestion] = useState('')
-  const [questionValidationError, setQuestionValidationError] = useState<string>()
+  const [questionValidationError, setQuestionValidationError] =
+    useState<string>()
   const [isCreating, setIsCreating] = useState(false)
   const [createError, setCreateError] = useState<unknown>()
   const [uncertainCreation, setUncertainCreation] = useState(false)
@@ -49,7 +53,10 @@ export function useAssistantConversation(
   const refreshGeneration = useRef(0)
 
   useEffect(() => {
-    selectionRef.current = { conversationId: selectedConversationId, meetingId: selectedMeetingId }
+    selectionRef.current = {
+      conversationId: selectedConversationId,
+      meetingId: selectedMeetingId,
+    }
     selectionGeneration.current += 1
   }, [selectedConversationId, selectedMeetingId])
 
@@ -71,7 +78,9 @@ export function useAssistantConversation(
     // Await the reset itself. The new query remains disabled until all old
     // pages and in-flight reads have been invalidated by the security boundary.
     void revalidateAssistantHistory(client, selectedConversationId)
-      .catch(() => { /* The enabled detail query will surface its own read failure. */ })
+      .catch(() => {
+        /* The enabled detail query will surface its own read failure. */
+      })
       .then(() => {
         if (current) setOpenedId(selectedConversationId)
       })
@@ -88,7 +97,10 @@ export function useAssistantConversation(
   })
   const detailQuery = useInfiniteQuery({
     ...assistantConversationHistoryQueryOptions(selectedConversationId),
-    enabled: Boolean(selectedConversationId) && openedId === selectedConversationId && !detailAccessError,
+    enabled:
+      Boolean(selectedConversationId) &&
+      openedId === selectedConversationId &&
+      !detailAccessError,
     refetchOnMount: 'always',
   })
   const historyAccessReady =
@@ -100,13 +112,22 @@ export function useAssistantConversation(
     (!detailQuery.isFetching || detailQuery.isFetchingNextPage)
   const detail = historyAccessReady ? detailQuery.data?.pages[0] : undefined
   const selectedConversation = detail?.conversation
-  const turns = useAssistantTurnWorkflow(detail, historyAccessReady, selectedConversationId)
+  const turns = useAssistantTurnWorkflow(
+    detail,
+    historyAccessReady,
+    selectedConversationId
+  )
 
-  const allConversations = useMemo(() =>
-    listAccessError ? [] : uniqueConversations(conversationsQuery.data?.pages ?? []),
-    [conversationsQuery.data, listAccessError])
+  const allConversations = useMemo(
+    () =>
+      listAccessError
+        ? []
+        : uniqueConversations(conversationsQuery.data?.pages ?? []),
+    [conversationsQuery.data, listAccessError]
+  )
   const conversations = allConversations.filter((item) =>
-    selectedMeetingId ? item.meetingId === selectedMeetingId : true)
+    selectedMeetingId ? item.meetingId === selectedMeetingId : true
+  )
 
   function selectMeeting(meetingId: string) {
     const next = { ...selection, meetingId: meetingId || undefined }
@@ -119,8 +140,12 @@ export function useAssistantConversation(
 
   function openConversation(conversation: AssistantConversation) {
     retryAssistantAccess(client, conversation.id)
-    if (conversation.id === selectedConversationId) invalidateAssistantHistory(client, conversation.id)
-    const next = { meetingId: conversation.meetingId, conversationId: conversation.id }
+    if (conversation.id === selectedConversationId)
+      invalidateAssistantHistory(client, conversation.id)
+    const next = {
+      meetingId: conversation.meetingId,
+      conversationId: conversation.id,
+    }
     selectionRef.current = next
     selectionGeneration.current += 1
     onSelectionChange(next)
@@ -128,8 +153,15 @@ export function useAssistantConversation(
 
   async function createConversation() {
     const meetingId = selection.meetingId
-    if (!meetingId || creationRef.current || assistantAccessError(client)) return
-    if (uncertainCreation && !window.confirm('Core may already have created a conversation. Create another conversation explicitly?')) return
+    if (!meetingId || creationRef.current || assistantAccessError(client))
+      return
+    if (
+      uncertainCreation &&
+      !window.confirm(
+        'Core may already have created a conversation. Create another conversation explicitly?'
+      )
+    )
+      return
     const access = captureAssistantCreationAccess(client, meetingId)
     const generation = selectionGeneration.current
     creationRef.current = true
@@ -137,10 +169,19 @@ export function useAssistantConversation(
     setCreateError(undefined)
     setUncertainCreation(false)
     try {
-      const conversation = await createAssistantConversation(meetingId, conversationTitle || undefined)
+      const conversation = await createAssistantConversation(
+        meetingId,
+        conversationTitle || undefined
+      )
       if (!isAssistantAccessCurrent(client, access)) return
-      void client.invalidateQueries({ queryKey: ['assistant', 'conversations'] })
-      if (generation !== selectionGeneration.current || selectionRef.current.meetingId !== meetingId) return
+      void client.invalidateQueries({
+        queryKey: ['assistant', 'conversations'],
+      })
+      if (
+        generation !== selectionGeneration.current ||
+        selectionRef.current.meetingId !== meetingId
+      )
+        return
       setConversationTitle('')
       openConversation(conversation)
     } catch (error) {
@@ -148,10 +189,16 @@ export function useAssistantConversation(
       containAssistantAccessFailure(client, access, error)
       if (!wasCurrent) return
       const failure = normalizeCoreApiError(error)
-      const uncertain = failure.isNetworkError || failure.isServerError || failure.kind === 'malformed' || failure.recoveryOutcome === 'uncertain'
+      const uncertain =
+        failure.isNetworkError ||
+        failure.isServerError ||
+        failure.kind === 'malformed' ||
+        failure.recoveryOutcome === 'uncertain'
       if (uncertain) {
         setUncertainCreation(true)
-        void client.invalidateQueries({ queryKey: ['assistant', 'conversations'] })
+        void client.invalidateQueries({
+          queryKey: ['assistant', 'conversations'],
+        })
       }
       if (generation === selectionGeneration.current) setCreateError(error)
     } finally {
@@ -169,22 +216,37 @@ export function useAssistantConversation(
     try {
       await revalidateAssistantHistory(client, id)
     } catch (error) {
-      if (selectionRef.current.conversationId === id && refreshGeneration.current === generation) setHistoryError(error)
+      if (
+        selectionRef.current.conversationId === id &&
+        refreshGeneration.current === generation
+      )
+        setHistoryError(error)
     } finally {
-      if (selectionRef.current.conversationId === id && refreshGeneration.current === generation) setHistoryRefreshing(false)
+      if (
+        selectionRef.current.conversationId === id &&
+        refreshGeneration.current === generation
+      )
+        setHistoryRefreshing(false)
     }
   }
 
   function submitQuestion(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedConversation || turns.busy || selectedConversation.status !== 'ACTIVE') return
+    if (
+      !selectedConversation ||
+      turns.busy ||
+      selectedConversation.status !== 'ACTIVE'
+    )
+      return
     const normalized = normalizeAssistantQuestion(question)
     if (isBlankAssistantQuestion(normalized)) {
       setQuestionValidationError('Enter a question before submitting.')
       return
     }
     if (assistantQuestionLength(normalized) > ASSISTANT_QUESTION_LIMIT) {
-      setQuestionValidationError('Questions must be at most 4096 Unicode code points.')
+      setQuestionValidationError(
+        'Questions must be at most 4096 Unicode code points.'
+      )
       return
     }
     setQuestionValidationError(undefined)
@@ -236,7 +298,11 @@ export function useAssistantConversation(
       historyRefreshError: historyError ?? turns.historyRefreshError,
       historyRefreshing,
       onLoadOlderMessages: () => {
-        if (normalizeCoreApiError(detailQuery.error).code === 'ASSISTANT_HISTORY_ANCHOR_NOT_FOUND') void refreshConversation()
+        if (
+          normalizeCoreApiError(detailQuery.error).code ===
+          'ASSISTANT_HISTORY_ANCHOR_NOT_FOUND'
+        )
+          void refreshConversation()
         else void detailQuery.fetchNextPage({ cancelRefetch: false })
       },
       question,

@@ -69,7 +69,10 @@ function notify(state: AccessState) {
   for (const listener of state.listeners) listener()
 }
 
-export function subscribeAssistantAccess(client: QueryClient, listener: () => void): () => void {
+export function subscribeAssistantAccess(
+  client: QueryClient,
+  listener: () => void
+): () => void {
   const state = stateFor(client)
   state.listeners.add(listener)
   return () => {

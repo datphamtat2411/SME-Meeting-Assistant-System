@@ -180,7 +180,12 @@ export function ConversationSelector({
       </div>
 
       {createError && <AssistantError error={createError} />}
-      {uncertainCreation && <p role='status' className='text-sm text-muted-foreground'>The creation outcome is unresolved. Review the refreshed conversation list before creating another.</p>}
+      {uncertainCreation && (
+        <p role='status' className='text-sm text-muted-foreground'>
+          The creation outcome is unresolved. Review the refreshed conversation
+          list before creating another.
+        </p>
+      )}
     </>
   )
 }

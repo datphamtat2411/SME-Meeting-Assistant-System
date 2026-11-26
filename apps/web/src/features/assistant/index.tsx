@@ -1,5 +1,4 @@
 import { useSyncExternalStore } from 'react'
-import type { AssistantSelection } from './assistant-selection'
 import { Bot } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Header } from '@/components/layout/header'
@@ -10,6 +9,7 @@ import {
   isAuthLifecycleBlocking,
   subscribeAuthLifecycle,
 } from '@/features/auth/session/auth-lifecycle'
+import type { AssistantSelection } from './assistant-selection'
 import { ConversationPanel } from './conversation-panel'
 import { ConversationSelector } from './conversation-selector'
 import { MeetingSearchCard } from './meeting-discovery'

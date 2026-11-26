@@ -1,4 +1,8 @@
-import type { AssistantConversation, AssistantConversationDetail, AssistantMessage } from './assistant-api'
+import type {
+  AssistantConversation,
+  AssistantConversationDetail,
+  AssistantMessage,
+} from './assistant-api'
 
 export function uniqueConversations(
   pages: AssistantConversation[][]
@@ -35,4 +39,3 @@ export function chronologicalHistoryMessages(
     })
   )
 }
-

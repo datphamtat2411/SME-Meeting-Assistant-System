@@ -7,6 +7,8 @@ const selectionSchema = z.object({
 
 export type AssistantSelection = z.infer<typeof selectionSchema>
 
-export function parseAssistantSelection(search: Record<string, unknown>): AssistantSelection {
+export function parseAssistantSelection(
+  search: Record<string, unknown>
+): AssistantSelection {
   return selectionSchema.parse(search)
 }

@@ -164,27 +164,58 @@ describe('Assistant protected operation ownership', () => {
   })
 
   it('does not restore visible content when redaction races an anchored page append', async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    const historyKey = ['assistant', 'conversation', 'a', 'history', 50] as const
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const historyKey = [
+      'assistant',
+      'conversation',
+      'a',
+      'history',
+      50,
+    ] as const
     const visible: AssistantConversationDetail = {
-      conversation: { id: 'a', meetingId: 'meeting', title: null, status: 'ACTIVE',
-        createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' },
+      conversation: {
+        id: 'a',
+        meetingId: 'meeting',
+        title: null,
+        status: 'ACTIVE',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+      },
       page: 0,
       size: 50,
       hasMore: true,
       nextBeforeMessageId: 'message',
-      messages: [{ id: 'message', role: 'ASSISTANT', content: 'protected answer',
-        answerStatus: 'GROUNDED', visibility: 'VISIBLE', claims: [], citations: [],
-        createdAt: '2026-01-01T00:00:00Z' }],
+      messages: [
+        {
+          id: 'message',
+          role: 'ASSISTANT',
+          content: 'protected answer',
+          answerStatus: 'GROUNDED',
+          visibility: 'VISIBLE',
+          claims: [],
+          citations: [],
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      ],
     }
     const redacted: AssistantConversationDetail = {
       ...visible,
-      messages: visible.messages.map((message) => ({ ...message, content: null, visibility: 'SOURCE_UNAVAILABLE' })),
+      messages: visible.messages.map((message) => ({
+        ...message,
+        content: null,
+        visibility: 'SOURCE_UNAVAILABLE',
+      })),
     }
     let finish!: (value: AssistantConversationDetail) => void
     let started!: () => void
-    const olderStarted = new Promise<void>((resolve) => { started = resolve })
-    const older = new Promise<AssistantConversationDetail>((resolve) => { finish = resolve })
+    const olderStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const older = new Promise<AssistantConversationDetail>((resolve) => {
+      finish = resolve
+    })
     const options = {
       queryKey: historyKey,
       initialPageParam: null as string | null,
@@ -194,7 +225,8 @@ describe('Assistant protected operation ownership', () => {
           started()
           return older
         }),
-      getNextPageParam: (page: AssistantConversationDetail) => page.nextBeforeMessageId ?? undefined,
+      getNextPageParam: (page: AssistantConversationDetail) =>
+        page.nextBeforeMessageId ?? undefined,
       structuralSharing: guardAssistantHistoryCache,
       retry: false as const,
     }
@@ -206,7 +238,11 @@ describe('Assistant protected operation ownership', () => {
     finish({ ...visible, hasMore: false, nextBeforeMessageId: null })
     await append
     const cached = observer.getCurrentResult().data
-    expect(cached?.pages.flatMap((page) => page.messages).every((message) => message.content === null)).toBe(true)
+    expect(
+      cached?.pages
+        .flatMap((page) => page.messages)
+        .every((message) => message.content === null)
+    ).toBe(true)
     expect(cached?.pages[0]?.messages[0]?.visibility).toBe('SOURCE_UNAVAILABLE')
     observer.destroy()
     client.clear()

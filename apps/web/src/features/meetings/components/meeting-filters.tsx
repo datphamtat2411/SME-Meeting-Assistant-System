@@ -1,6 +1,11 @@
 import { useDeferredValue, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Check, ChevronLeft, ChevronRight, Search as SearchIcon } from 'lucide-react'
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Search as SearchIcon,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Command,

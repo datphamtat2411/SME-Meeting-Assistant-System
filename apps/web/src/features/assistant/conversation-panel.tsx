@@ -13,8 +13,8 @@ import {
 import { AssistantError } from './assistant-error'
 import { canRetryAssistantSubmission } from './assistant-error-policy'
 import { chronologicalHistoryMessages } from './assistant-history'
-import type { ConversationHistoryQuery } from './assistant-types'
 import type { TurnWorkflow } from './assistant-turn-workflow'
+import type { ConversationHistoryQuery } from './assistant-types'
 import { ConversationHistory } from './message-history'
 
 export function ConversationPanel({
@@ -121,32 +121,69 @@ export function ConversationPanel({
       {workflow && workflow.phase !== 'settled' && (
         <Alert>
           <AlertTitle>
-            {workflow.phase === 'recoverable' ? 'Execution lease expired' :
-              workflow.phase === 'paused' ? 'Turn outcome is unresolved' :
-              workflow.phase === 'uncertain' || workflow.phase === 'lookup' ? 'Question submission is unresolved' :
-              'Core is processing this question.'}
+            {workflow.phase === 'recoverable'
+              ? 'Execution lease expired'
+              : workflow.phase === 'paused'
+                ? 'Turn outcome is unresolved'
+                : workflow.phase === 'uncertain' || workflow.phase === 'lookup'
+                  ? 'Question submission is unresolved'
+                  : 'Core is processing this question.'}
           </AlertTitle>
           <AlertDescription>
-            {workflow.phase === 'recoverable' ? 'Recover this existing turn explicitly. No new question will be created.' :
-              workflow.phase === 'paused' ? 'Resume read-only status checks to reconcile the durable turn.' :
-              workflow.phase === 'uncertain' || workflow.phase === 'lookup' ? 'The original request identity is retained. No automatic resubmission will occur.' :
-              'The Web observes authoritative turn status without creating another request.'}
-            {workflow.phase === 'recoverable' && <Button type='button' size='sm' variant='outline' onClick={onRecover} disabled={inactive}>Recover turn</Button>}
-            {(workflow.phase === 'paused' || workflow.phase === 'uncertain') && (
-              <Button type='button' size='sm' variant='outline' onClick={onResumePolling}>Resume status checks</Button>
+            {workflow.phase === 'recoverable'
+              ? 'Recover this existing turn explicitly. No new question will be created.'
+              : workflow.phase === 'paused'
+                ? 'Resume read-only status checks to reconcile the durable turn.'
+                : workflow.phase === 'uncertain' || workflow.phase === 'lookup'
+                  ? 'The original request identity is retained. No automatic resubmission will occur.'
+                  : 'The Web observes authoritative turn status without creating another request.'}
+            {workflow.phase === 'recoverable' && (
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                onClick={onRecover}
+                disabled={inactive}
+              >
+                Recover turn
+              </Button>
+            )}
+            {(workflow.phase === 'paused' ||
+              workflow.phase === 'uncertain') && (
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                onClick={onResumePolling}
+              >
+                Resume status checks
+              </Button>
             )}
           </AlertDescription>
         </Alert>
       )}
       {workflow?.error != null && (
-        <AssistantError error={workflow.error}
-          onRetry={workflow.phase === 'uncertain' && canRetryAssistantSubmission(workflow.error) ? onQuestionRetry : undefined}
+        <AssistantError
+          error={workflow.error}
+          onRetry={
+            workflow.phase === 'uncertain' &&
+            canRetryAssistantSubmission(workflow.error)
+              ? onQuestionRetry
+              : undefined
+          }
         />
       )}
       {workflow && 'retryAt' in workflow && workflow.retryAt != null && (
-        <p className='text-sm text-muted-foreground'>Core requested no retry before {new Date(workflow.retryAt).toLocaleTimeString()}.</p>
+        <p className='text-sm text-muted-foreground'>
+          Core requested no retry before{' '}
+          {new Date(workflow.retryAt).toLocaleTimeString()}.
+        </p>
       )}
-      {inactive && <p className='text-sm text-muted-foreground'>This conversation is not active.</p>}
+      {inactive && (
+        <p className='text-sm text-muted-foreground'>
+          This conversation is not active.
+        </p>
+      )}
 
       <form className='space-y-3' onSubmit={onQuestionSubmit}>
         <label className='space-y-1.5 text-sm font-medium'>

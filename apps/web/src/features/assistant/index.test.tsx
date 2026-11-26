@@ -4,8 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
-import { AssistantPage } from './index'
 import type { AssistantSelection } from './assistant-selection'
+import { AssistantPage } from './index'
 
 const meetingId = '11111111-1111-4111-8111-111111111111'
 const conversationId = '22222222-2222-4222-8222-222222222222'
@@ -255,7 +255,11 @@ function setupReads(
     conversationPages?: Record<number, unknown>
     onConversations?: (readCount: number, page: number) => unknown
     detail?: unknown
-    onStatus?: (reads: number, conversationId: string, turnId: string) => unknown
+    onStatus?: (
+      reads: number,
+      conversationId: string,
+      turnId: string
+    ) => unknown
     lookup?: unknown
     detailPages?: Record<string, Record<number, unknown>>
     detailsById?: Record<string, unknown>
@@ -301,24 +305,37 @@ function setupReads(
           meta: {},
         } as never
       }
-      const statusPath = /^\/assistant\/conversations\/([^/]+)\/turns\/([^/]+)$/.exec(url)
+      const statusPath =
+        /^\/assistant\/conversations\/([^/]+)\/turns\/([^/]+)$/.exec(url)
       if (statusPath) {
         statusReads += 1
         const [, currentConversationId, turnId] = statusPath
-        const value = await options.onStatus?.(statusReads, currentConversationId, turnId)
+        const value = await options.onStatus?.(
+          statusReads,
+          currentConversationId,
+          turnId
+        )
         if (value instanceof Error) throw value
-        return { data: value ?? turnStatus(currentConversationId, turnId), meta: {} } as never
+        return {
+          data: value ?? turnStatus(currentConversationId, turnId),
+          meta: {},
+        } as never
       }
       if (url.endsWith('/turns')) {
-        if (options.lookup !== undefined) return { data: options.lookup, meta: {} } as never
-        throw coreError(404, 'Turn not found', { code: 'ASSISTANT_TURN_NOT_FOUND' })
+        if (options.lookup !== undefined)
+          return { data: options.lookup, meta: {} } as never
+        throw coreError(404, 'Turn not found', {
+          code: 'ASSISTANT_TURN_NOT_FOUND',
+        })
       }
       if (url.startsWith('/assistant/conversations/')) {
         detailReads += 1
         const currentConversationId = decodeURIComponent(
           url.slice('/assistant/conversations/'.length)
         )
-        const currentPage = config?.params?.beforeMessageId ? 1 : Number(config?.params?.page ?? 0)
+        const currentPage = config?.params?.beforeMessageId
+          ? 1
+          : Number(config?.params?.page ?? 0)
         const value =
           (await options.onDetail?.(
             detailReads,
@@ -376,13 +393,18 @@ function turnStatus(
 
 function TestAssistant({ initial = {} }: { initial?: AssistantSelection }) {
   const [selection, setSelection] = useState(initial)
-  return <AssistantPage selection={selection} onSelectionChange={setSelection} />
+  return (
+    <AssistantPage selection={selection} onSelectionChange={setSelection} />
+  )
 }
 
-async function renderPage(options: { strict?: boolean; initial?: AssistantSelection } = {}) {
+async function renderPage(
+  options: { strict?: boolean; initial?: AssistantSelection } = {}
+) {
   vi.spyOn(coreApi, 'getWithMetaAndEtag').mockImplementation(async (url) => {
     const source = url.endsWith(otherMeetingId) ? otherMeeting : meeting
-    if (url !== `/meetings/${source.id}`) throw new Error(`Unexpected GET ${url}`)
+    if (url !== `/meetings/${source.id}`)
+      throw new Error(`Unexpected GET ${url}`)
     return {
       data: {
         ...source,
@@ -445,17 +467,20 @@ describe('AssistantPage', () => {
       screen.getByRole('textbox', { name: 'Search meeting titles' }),
       'another meeting'
     )
-    await expect.poll(() =>
-      get.mock.calls.some(([url, options]) =>
-        url === '/meetings' && options?.params?.q === 'another meeting'
+    await expect
+      .poll(() =>
+        get.mock.calls.some(
+          ([url, options]) =>
+            url === '/meetings' && options?.params?.q === 'another meeting'
+        )
       )
-    ).toBe(true)
+      .toBe(true)
     await expect
       .element(screen.getByText('The launch is planned for Friday.').first())
       .toBeVisible()
-    await expect.element(
-      screen.getByRole('combobox', { name: 'Assistant meeting' })
-    ).toHaveValue(meetingId)
+    await expect
+      .element(screen.getByRole('combobox', { name: 'Assistant meeting' }))
+      .toHaveValue(meetingId)
   })
 
   it('keeps page mount read-only and explicitly opens an authorized conversation', async () => {
@@ -699,7 +724,8 @@ describe('AssistantPage', () => {
           messages: [],
         },
       },
-      onStatus: (readCount) => readCount === 1 ? pendingRead.promise : undefined,
+      onStatus: (readCount) =>
+        readCount === 1 ? pendingRead.promise : undefined,
     })
     const post = vi.spyOn(coreApi, 'post').mockImplementation(async (url) => {
       if (url.endsWith('/messages')) {
@@ -717,7 +743,9 @@ describe('AssistantPage', () => {
     await expect
       .element(screen.getByText('Core is processing this question.'))
       .toBeVisible()
-    await expect.poll(() => getStatusReads(), { timeout: 6_000 }).toBeGreaterThan(0)
+    await expect
+      .poll(() => getStatusReads(), { timeout: 6_000 })
+      .toBeGreaterThan(0)
 
     await userEvent.selectOptions(
       screen.getByRole('combobox', { name: 'Assistant meeting' }),
@@ -730,7 +758,13 @@ describe('AssistantPage', () => {
       name: 'Assistant question',
     })
     await userEvent.fill(currentQuestion, 'Question B draft')
-    pendingRead.resolve(turnStatus(conversationId, acceptedTurn('PROCESSING', null).turnId, 'COMPLETED'))
+    pendingRead.resolve(
+      turnStatus(
+        conversationId,
+        acceptedTurn('PROCESSING', null).turnId,
+        'COMPLETED'
+      )
+    )
 
     await expect
       .poll(() => (currentQuestion.element() as HTMLTextAreaElement).value)
@@ -1023,9 +1057,15 @@ describe('AssistantPage', () => {
     )
     await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
 
-    await expect.poll(() => getStatusReads(), { timeout: 6_000 }).toBeGreaterThan(0)
-    await userEvent.click(screen.getByRole('button', { name: 'Refresh history' }))
-    await expect.element(screen.getByText('An unrelated later answer')).toBeVisible()
+    await expect
+      .poll(() => getStatusReads(), { timeout: 6_000 })
+      .toBeGreaterThan(0)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Refresh history' })
+    )
+    await expect
+      .element(screen.getByText('An unrelated later answer'))
+      .toBeVisible()
     await expect
       .element(screen.getByText('Core is processing this question.'))
       .toBeVisible()
@@ -1044,7 +1084,8 @@ describe('AssistantPage', () => {
       messages: [baseDetail.messages[0], exactAnswer],
     }
     const { getDetailReads } = setupReads({
-      onStatus: (_reads, id, turnId) => turnStatus(id, turnId, 'COMPLETED', exactMessageId),
+      onStatus: (_reads, id, turnId) =>
+        turnStatus(id, turnId, 'COMPLETED', exactMessageId),
       onDetail: (readCount) =>
         readCount > 1 ? completedDetail : processingDetail(),
     })
@@ -1062,7 +1103,9 @@ describe('AssistantPage', () => {
     )
     await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
 
-    await expect.poll(() => getDetailReads(), { timeout: 6_000 }).toBeGreaterThan(1)
+    await expect
+      .poll(() => getDetailReads(), { timeout: 6_000 })
+      .toBeGreaterThan(1)
     await expect
       .element(screen.getByText('Exact accepted answer'))
       .toBeVisible()
@@ -1193,7 +1236,15 @@ describe('AssistantPage', () => {
       ],
     }
     const { getStatusReads } = setupReads({
-      onStatus: (reads, id, turnId) => reads === 1 ? turnStatus(id, turnId) : turnStatus(id, turnId, 'COMPLETED', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
+      onStatus: (reads, id, turnId) =>
+        reads === 1
+          ? turnStatus(id, turnId)
+          : turnStatus(
+              id,
+              turnId,
+              'COMPLETED',
+              'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            ),
       onDetail: (reads) => (reads < 2 ? processingDetail() : completedDetail),
     })
     const post = vi.spyOn(coreApi, 'post').mockImplementation(async (url) => {
@@ -1278,7 +1329,9 @@ describe('AssistantPage', () => {
     await expect
       .element(screen.getByText('The refreshed answer is now available.'))
       .toBeVisible()
-    await expect.element(screen.getByText('Core is processing this question.')).toBeVisible()
+    await expect
+      .element(screen.getByText('Core is processing this question.'))
+      .toBeVisible()
     expect(post).toHaveBeenCalledTimes(1)
   })
 
@@ -1332,7 +1385,11 @@ describe('AssistantPage', () => {
       otherMeeting.id
     )
 
-    await expect.element(screen.getByRole('heading', { name: 'Planning questions', exact: true })).toBeVisible()
+    await expect
+      .element(
+        screen.getByRole('heading', { name: 'Planning questions', exact: true })
+      )
+      .toBeVisible()
     await expect
       .element(screen.getByText('The launch is planned for Friday.').first())
       .toBeVisible()
@@ -1471,16 +1528,28 @@ describe('AssistantPage', () => {
     setupReads({
       detail: {
         ...baseDetail,
-        pendingTurn: turnStatus(conversationId, turnId, 'PROCESSING', assistantMessageId, 'EXPIRED'),
+        pendingTurn: turnStatus(
+          conversationId,
+          turnId,
+          'PROCESSING',
+          assistantMessageId,
+          'EXPIRED'
+        ),
       },
     })
-    const post = vi.spyOn(coreApi, 'post').mockResolvedValue({ ...acceptedTurn('COMPLETED'), turnId })
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockResolvedValue({ ...acceptedTurn('COMPLETED'), turnId })
     const screen = await renderPage({ initial: { conversationId, meetingId } })
-    await expect.element(screen.getByText('Execution lease expired')).toBeVisible()
+    await expect
+      .element(screen.getByText('Execution lease expired'))
+      .toBeVisible()
     expect(post).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Recover turn' }))
     await expect.poll(() => post.mock.calls.length).toBe(1)
-    expect(post.mock.calls[0]?.[0]).toBe(`/assistant/conversations/${conversationId}/turns/${turnId}/recover`)
+    expect(post.mock.calls[0]?.[0]).toBe(
+      `/assistant/conversations/${conversationId}/turns/${turnId}/recover`
+    )
   })
 
   it('keeps an uncertain submission identity for an explicit retry', async () => {

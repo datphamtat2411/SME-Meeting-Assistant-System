@@ -381,7 +381,13 @@ export function assistantConversationHistoryQueryOptions(
   size = ASSISTANT_PAGE_SIZE
 ) {
   return infiniteQueryOptions({
-    queryKey: ['assistant', 'conversation', conversationId, 'history', size] as const,
+    queryKey: [
+      'assistant',
+      'conversation',
+      conversationId,
+      'history',
+      size,
+    ] as const,
     initialPageParam: null as string | null,
     queryFn: ({
       pageParam,
@@ -392,17 +398,27 @@ export function assistantConversationHistoryQueryOptions(
       signal: AbortSignal
       client: QueryClient
     }) =>
-      readAssistantHistoryProtected(client, conversationId as string, async () => {
-        const detail = await fetchAssistantConversationDetail(conversationId as string, {
-          ...(pageParam === null ? {} : { beforeMessageId: pageParam }),
-          size,
-          signal,
-        })
-        if (detail.hasMore && !detail.nextBeforeMessageId) {
-          throw malformedAssistantResponse('Core omitted the history continuation anchor.', undefined)
+      readAssistantHistoryProtected(
+        client,
+        conversationId as string,
+        async () => {
+          const detail = await fetchAssistantConversationDetail(
+            conversationId as string,
+            {
+              ...(pageParam === null ? {} : { beforeMessageId: pageParam }),
+              size,
+              signal,
+            }
+          )
+          if (detail.hasMore && !detail.nextBeforeMessageId) {
+            throw malformedAssistantResponse(
+              'Core omitted the history continuation anchor.',
+              undefined
+            )
+          }
+          return detail
         }
-        return detail
-      }),
+      ),
     getNextPageParam: (lastPage: AssistantConversationDetail) =>
       lastPage.nextBeforeMessageId ?? undefined,
     enabled: Boolean(conversationId),

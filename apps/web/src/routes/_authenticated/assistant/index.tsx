@@ -10,5 +10,10 @@ export const Route = createFileRoute('/_authenticated/assistant/')({
 function AssistantRoute() {
   const selection = Route.useSearch()
   const navigate = Route.useNavigate()
-  return <AssistantPage selection={selection} onSelectionChange={(search) => void navigate({ search })} />
+  return (
+    <AssistantPage
+      selection={selection}
+      onSelectionChange={(search) => void navigate({ search })}
+    />
+  )
 }
