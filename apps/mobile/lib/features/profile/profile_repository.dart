@@ -124,7 +124,8 @@ class ProfileRepository {
     ProfileSnapshot original,
     String name,
   ) async {
-    if (name.trim().isEmpty || name.length > 200) {
+    final normalized = normalizeDisplayName(name);
+    if (!isValidDisplayName(normalized)) {
       throw ProfileFailure.local(
         422,
         'PROFILE_INVALID_NAME',
@@ -137,7 +138,7 @@ class ProfileRepository {
       scope,
       () => api.patch(
         '/me/profile',
-        {'displayName': name},
+        {'displayName': normalized},
         headers: {'If-Match': original.etag},
         sessionScope: scope,
         attempt: attempt,
@@ -180,7 +181,11 @@ class ProfileRepository {
     String field,
     String? value,
   ) async {
-    if (value != null && value.trim().isEmpty) {
+    final limit = field == 'timezone' ? 64 : 32;
+    if (value != null &&
+        (value.trim().isEmpty ||
+            value.length > limit ||
+            RegExp(r'\s').hasMatch(value))) {
       throw ProfileFailure.local(
         422,
         'PREFERENCE_INVALID_VALUE',

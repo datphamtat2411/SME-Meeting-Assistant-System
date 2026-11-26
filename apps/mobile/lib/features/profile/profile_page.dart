@@ -8,6 +8,7 @@ import '../../core/widgets.dart';
 import 'appearance_panel.dart';
 import 'preferences_panel.dart';
 import 'profile_controllers.dart';
+import 'profile_edit_dialog.dart';
 import 'profile_models.dart';
 import 'profile_repository.dart';
 import 'account_resource_view.dart';
@@ -42,76 +43,17 @@ class _ProfilePageState extends State<ProfilePage> {
     super.dispose();
   }
 
-  Future<void> editName(ProfileSnapshot current) async {
-    final name = TextEditingController(text: current.profile.displayName);
-    final ok = await showDialog<bool>(
+  Future<void> editName(ProfileSnapshot original, {String? draft}) async {
+    if (!controller.current) return;
+    await showDialog<bool>(
       context: context,
-      builder: (dialog) => AlertDialog(
-        title: const Text('Cập nhật tên hiển thị'),
-        content: TextField(
-          controller: name,
-          maxLength: 200,
-          decoration: const InputDecoration(labelText: 'Tên hiển thị'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialog, false),
-            child: const Text('Hủy'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialog, true),
-            child: const Text('Lưu'),
-          ),
-        ],
+      barrierDismissible: false,
+      builder: (_) => ProfileEditDialog(
+        controller: controller,
+        original: original,
+        initialName: draft ?? original.profile.displayName,
       ),
     );
-    final value = name.text.trim();
-    name.dispose();
-    if (ok != true || !mounted || !controller.current) return;
-    if (value.isEmpty || value.length > 200) {
-      showFailure(
-        context,
-        const ApiFailure(
-          422,
-          'PROFILE_INVALID_NAME',
-          'Tên hiển thị không hợp lệ.',
-        ),
-      );
-      return;
-    }
-    if (value == current.profile.displayName) return;
-    final saved = await controller.updateName(current, value);
-    if (!mounted || !controller.current) return;
-    if (saved) {
-      showSuccess(
-        context,
-        controller.identityRefreshFailed
-            ? 'Đã lưu hồ sơ. Danh tính ứng dụng chưa đồng bộ.'
-            : 'Đã cập nhật hồ sơ.',
-      );
-    } else if (controller.failure != null) {
-      if (controller.outcome == ProfileMutationOutcome.unknown) {
-        showFailure(
-          context,
-          const ApiFailure(
-            0,
-            'PROFILE_OUTCOME_UNKNOWN',
-            'Chưa xác định được kết quả lưu. Vui lòng tải lại hồ sơ.',
-          ),
-        );
-      } else {
-        showFailure(context, controller.failure!);
-      }
-    } else {
-      showFailure(
-        context,
-        const ApiFailure(
-          412,
-          'PROFILE_CHANGED',
-          'Hồ sơ đã thay đổi. Vui lòng mở lại.',
-        ),
-      );
-    }
   }
 
   Future<void> signOut() async {
@@ -143,8 +85,9 @@ class _ProfilePageState extends State<ProfilePage> {
           snapshot: controller.snapshot,
           loading: controller.loading,
           saving: controller.saving,
-          failure: controller.failure,
-          needsReconciliation: controller.needsReconciliation,
+          failure: controller.pendingEdit == null ? controller.failure : null,
+          needsReconciliation:
+              controller.pendingEdit == null && controller.needsReconciliation,
           retry: controller.refresh,
           builder: (response) {
             final account = response.profile;
@@ -159,8 +102,7 @@ class _ProfilePageState extends State<ProfilePage> {
                         child: Text(
                           account.displayName.isEmpty
                               ? 'U'
-                              : account.displayName
-                                    .substring(0, 1)
+                              : account.displayName.characters.first
                                     .toUpperCase(),
                         ),
                       ),
@@ -178,15 +120,18 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             Text(
                               account.email,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 12,
-                                color: Palette.muted,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
                               ),
                             ),
                           ],
                         ),
                       ),
                       IconButton(
+                        tooltip: 'Chỉnh sửa tên hiển thị',
                         onPressed: controller.canMutate
                             ? () => editName(response)
                             : null,
@@ -195,14 +140,58 @@ class _ProfilePageState extends State<ProfilePage> {
                     ],
                   ),
                   const Divider(height: 26),
-                  Text('Vai trò: ${account.globalRole.name}'),
+                  Text('Vai trò: ${profileRoleLabel(account.globalRole)}'),
                   const SizedBox(height: 6),
-                  Text('Trạng thái: ${account.accountStatus.name}'),
+                  Text('Trạng thái: ${profileStatusLabel(account.accountStatus)}'),
                 ],
               ),
             );
           },
         ),
+        if (controller.pendingEdit case final pending?)
+          ContentCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  controller.needsReconciliation
+                      ? 'Cần kiểm tra lại dữ liệu hồ sơ từ máy chủ.'
+                      : 'Cần xác nhận lại thay đổi hồ sơ.',
+                ),
+                Text('Tên dự định lưu: ${pending.name}'),
+                TextButton(
+                  onPressed: controller.saving
+                      ? null
+                      : () => editName(pending.original, draft: pending.name),
+                  child: const Text('Xem và xử lý'),
+                ),
+              ],
+            ),
+          ),
+        if (controller.reconciled)
+          const Text('Tên máy chủ tại lần kiểm tra gần nhất đã khớp.'),
+        if (controller.identityStatus == IdentitySyncStatus.synchronizing)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Text('Đang đồng bộ danh tính ứng dụng...'),
+          ),
+        if (controller.identityRefreshFailed)
+          ContentCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Hồ sơ đã được xác nhận trên máy chủ. '
+                  'Danh tính ứng dụng chưa đồng bộ. Có thể tải lại hồ sơ '
+                  'nếu thông tin đã thay đổi trên thiết bị khác.',
+                ),
+                TextButton(
+                  onPressed: controller.retryIdentity,
+                  child: const Text('Thử đồng bộ lại'),
+                ),
+              ],
+            ),
+          ),
         const SectionHeading('Thông báo và khu vực'),
         PreferencesPanel(repository: widget.repository),
         const SizedBox(height: 12),
@@ -224,3 +213,15 @@ class _ProfilePageState extends State<ProfilePage> {
     ),
   );
 }
+
+String profileRoleLabel(AuthGlobalRole role) => switch (role) {
+  AuthGlobalRole.employee => 'Nhân viên',
+  AuthGlobalRole.departmentManager => 'Trưởng bộ phận',
+  AuthGlobalRole.administrator => 'Quản trị viên',
+};
+
+String profileStatusLabel(AuthAccountStatus status) => switch (status) {
+  AuthAccountStatus.pendingSetup => 'Chờ thiết lập',
+  AuthAccountStatus.active => 'Đang hoạt động',
+  AuthAccountStatus.inactive => 'Không hoạt động',
+};

@@ -15,11 +15,14 @@ abstract class _AccountResource<T> extends ChangeNotifier {
   final AuthenticatedSessionScope scope;
   T? _snapshot;
   ProfileFailure? _failure;
+  ProfileFailure? _rateFailure;
+  DateTime? _retryNotBefore;
   Future<void>? _reading;
   bool _saving = false;
   bool _disposed = false;
   bool _invalidated = false;
   bool _needsReconciliation = false;
+  bool _reconciled = false;
   int _generation = 0;
   ProfileMutationOutcome? _outcome;
 
@@ -31,17 +34,36 @@ abstract class _AccountResource<T> extends ChangeNotifier {
   ProfileFailure? get failure => _failure;
   bool get loading => current && _reading != null;
   bool get saving => current && _saving;
-  bool get needsReconciliation => _needsReconciliation;
+  bool get needsReconciliation => current && _needsReconciliation;
+  bool get reconciled => current && _reconciled;
   ProfileMutationOutcome? get outcome => _outcome;
-  bool get canMutate =>
-      current && _snapshot != null && !_saving && !_needsReconciliation;
+  bool get _hasPendingDecision => false;
+  bool get _additionalBusy => false;
+  bool get _canStart =>
+      current &&
+      _snapshot != null &&
+      !_saving &&
+      !_needsReconciliation &&
+      !_additionalBusy;
+  bool get canMutate => _canStart && !_hasPendingDecision;
 
   Future<T> _readResource();
+  Future<void> _afterRead(T result) => Future<void>.value();
+  void _clearWorkflow() {}
+
+  bool _retryWindowOpen() {
+    final deadline = _retryNotBefore;
+    if (deadline == null || !DateTime.now().isBefore(deadline)) return true;
+    _failure = _rateFailure;
+    notifyListeners();
+    return false;
+  }
 
   Future<void> refresh() {
     if (!current || _saving) return Future<void>.value();
     final existing = _reading;
     if (existing != null) return existing;
+    if (!_retryWindowOpen()) return Future<void>.value();
     final generation = ++_generation;
     final pending = Future<void>.microtask(() => _read(generation));
     _reading = pending;
@@ -60,6 +82,8 @@ abstract class _AccountResource<T> extends ChangeNotifier {
       _snapshot = result;
       _failure = null;
       _needsReconciliation = false;
+      _reconciled = false;
+      await _afterRead(result);
     } on ProfileFailure catch (error) {
       if (_owns(generation)) _applyFailure(error);
     } finally {
@@ -72,20 +96,37 @@ abstract class _AccountResource<T> extends ChangeNotifier {
 
   void _applyFailure(ProfileFailure error) {
     _failure = error;
-    if (error.accessLost) _snapshot = null;
-    if (error.requiresReconciliation) _needsReconciliation = true;
+    if (error.accessLost) {
+      _snapshot = null;
+      _needsReconciliation = false;
+      _reconciled = false;
+      _clearWorkflow();
+    } else if (error.requiresReconciliation) {
+      _needsReconciliation = true;
+    }
+    if (error.category == ProfileFailureCategory.rateLimited) {
+      final duration = error.retryAfterDuration();
+      if (duration != null) {
+        _retryNotBefore = DateTime.now().add(duration);
+        _rateFailure = error;
+      }
+    }
   }
 
   Future<bool> _mutate(
     Future<T> Function() send, {
+    VoidCallback? onStart,
+    void Function(ProfileFailure)? onFailure,
     Future<void> Function()? afterConfirmed,
   }) async {
-    if (!canMutate) return false;
+    if (!_canStart || !_retryWindowOpen()) return false;
     final generation = ++_generation;
     _reading = null;
     _saving = true;
     _failure = null;
     _outcome = null;
+    _reconciled = false;
+    onStart?.call();
     notifyListeners();
     try {
       if (!_owns(generation)) return false;
@@ -93,19 +134,20 @@ abstract class _AccountResource<T> extends ChangeNotifier {
       if (!_owns(generation)) return false;
       _snapshot = result;
       _outcome = ProfileMutationOutcome.confirmed;
+      final secondary = afterConfirmed?.call();
+      _saving = false;
       notifyListeners();
-      if (afterConfirmed != null && _owns(generation)) {
-        await afterConfirmed();
-      }
-      return _owns(generation);
+      if (secondary != null) await secondary;
+      return current;
     } on ProfileFailure catch (error) {
       if (_owns(generation)) {
         _applyFailure(error);
         _outcome = error.outcome;
+        if (!error.accessLost) onFailure?.call(error);
       }
       return false;
     } finally {
-      if (_owns(generation)) {
+      if (_owns(generation) && _saving) {
         _saving = false;
         notifyListeners();
       }
@@ -122,10 +164,14 @@ abstract class _AccountResource<T> extends ChangeNotifier {
     _generation++;
     _snapshot = null;
     _failure = null;
+    _rateFailure = null;
+    _retryNotBefore = null;
     _outcome = null;
     _reading = null;
     _saving = false;
     _needsReconciliation = false;
+    _reconciled = false;
+    _clearWorkflow();
     notifyListeners();
   }
 
@@ -135,64 +181,336 @@ abstract class _AccountResource<T> extends ChangeNotifier {
     _disposed = true;
     _generation++;
     _snapshot = null;
+    _clearWorkflow();
     repository.api.sessionCoordinator.removeListener(_sessionChanged);
     super.dispose();
   }
 }
 
+enum IdentitySyncStatus { idle, synchronizing, synchronized, failed }
+
+class ProfileEditIntent {
+  const ProfileEditIntent(this.original, this.name);
+
+  final ProfileSnapshot original;
+  final String name;
+}
+
 class ProfileController extends _AccountResource<ProfileSnapshot> {
   ProfileController(super.repository);
 
-  bool _identityRefreshFailed = false;
+  ProfileEditIntent? _pendingEdit;
+  IdentitySyncStatus _identityStatus = IdentitySyncStatus.idle;
+  Future<void>? _identitySync;
+  DateTime? _identityRetryNotBefore;
 
-  bool get identityRefreshFailed => current && _identityRefreshFailed;
+  ProfileEditIntent? get pendingEdit => current ? _pendingEdit : null;
+  IdentitySyncStatus get identityStatus =>
+      current ? _identityStatus : IdentitySyncStatus.idle;
+  bool get identityRefreshFailed => identityStatus == IdentitySyncStatus.failed;
+
+  @override
+  bool get _hasPendingDecision => _pendingEdit != null;
+
+  @override
+  bool get _additionalBusy => _identitySync != null;
 
   @override
   Future<ProfileSnapshot> _readResource() => repository.profile(scope);
 
+  @override
+  Future<void> _afterRead(ProfileSnapshot result) async {
+    final intent = _pendingEdit;
+    if (intent == null || result.profile.displayName != intent.name) return;
+    _pendingEdit = null;
+    _reconciled = true;
+    await _synchronizeIdentity();
+  }
+
+  @override
+  void _clearWorkflow() {
+    _pendingEdit = null;
+    _identityStatus = IdentitySyncStatus.idle;
+    _identityRetryNotBefore = null;
+    // The original future remains fenced by current session and snapshot.
+  }
+
+  Future<void> retryIdentity() {
+    if (!identityRefreshFailed) {
+      return _identitySync ?? Future<void>.value();
+    }
+    return _synchronizeIdentity();
+  }
+
+  Future<void> _synchronizeIdentity() {
+    if (!current || snapshot == null) return Future<void>.value();
+    final existing = _identitySync;
+    if (existing != null) return existing;
+    final deadline = _identityRetryNotBefore;
+    if (deadline != null && DateTime.now().isBefore(deadline)) {
+      _identityStatus = IdentitySyncStatus.failed;
+      notifyListeners();
+      return Future<void>.value();
+    }
+    _identityStatus = IdentitySyncStatus.synchronizing;
+    final pending = Future<void>.microtask(() async {
+      try {
+        if (!current || snapshot == null) return;
+        await repository.api.loadIdentity(expectedScope: scope);
+        if (current && snapshot != null) {
+          _identityStatus =
+              repository.api.displayName == snapshot!.profile.displayName
+              ? IdentitySyncStatus.synchronized
+              : IdentitySyncStatus.failed;
+          _identityRetryNotBefore = null;
+        }
+      } on ApiFailure catch (error) {
+        if (current && snapshot != null) {
+          _identityStatus = IdentitySyncStatus.failed;
+          final duration = error.retryAfterDuration();
+          if (duration != null) {
+            _identityRetryNotBefore = DateTime.now().add(duration);
+          }
+        }
+      } on AuthSessionException {
+        if (current && snapshot != null) {
+          _identityStatus = IdentitySyncStatus.failed;
+        }
+      } on TokenStoreException {
+        if (current && snapshot != null) {
+          _identityStatus = IdentitySyncStatus.failed;
+        }
+      } on TokenStoreStateException {
+        if (current && snapshot != null) {
+          _identityStatus = IdentitySyncStatus.failed;
+        }
+      } finally {
+        _identitySync = null;
+        if (current) notifyListeners();
+      }
+    });
+    _identitySync = pending;
+    notifyListeners();
+    return pending;
+  }
+
   Future<bool> updateName(ProfileSnapshot original, String name) async {
-    if (original.sessionScope != scope ||
-        original.etag != snapshot?.etag ||
-        !canMutate) {
+    final value = normalizeDisplayName(name);
+    if (original.sessionScope != scope || !canMutate) return false;
+    if (!isValidDisplayName(value)) {
+      _failure = ProfileFailure.local(
+        422,
+        'PROFILE_INVALID_NAME',
+        'Tên hiển thị không hợp lệ.',
+      );
+      notifyListeners();
       return false;
     }
-    if (original.profile.displayName == name) return true;
-    return _mutate(
-      () => repository.updateName(original, name),
-      afterConfirmed: () async {
-        try {
-          repository.api.requireCurrentAuthenticatedSession(scope);
-          await repository.api.loadIdentity();
-          if (current) _identityRefreshFailed = false;
-        } on ApiFailure {
-          if (current) _identityRefreshFailed = true;
-        } on AuthSessionException {
-          if (current) _identityRefreshFailed = true;
-        } on TokenStoreException {
-          if (current) _identityRefreshFailed = true;
-        } on TokenStoreStateException {
-          if (current) _identityRefreshFailed = true;
-        }
-      },
-    );
+    if (original.profile.displayName == value ||
+        snapshot!.profile.displayName == value) {
+      return true;
+    }
+    if (original.etag != snapshot!.etag) {
+      _pendingEdit = ProfileEditIntent(original, value);
+      _outcome = ProfileMutationOutcome.notDispatched;
+      _reconciled = false;
+      _failure = null;
+      notifyListeners();
+      return false;
+    }
+    return _sendName(original, value);
   }
+
+  Future<bool> confirmPending(ProfileSnapshot reviewed, String name) async {
+    final value = normalizeDisplayName(name);
+    if (_pendingEdit == null ||
+        !_canStart ||
+        loading ||
+        reviewed.sessionScope != scope ||
+        reviewed.etag != snapshot!.etag ||
+        !isValidDisplayName(value)) {
+      return false;
+    }
+    if (snapshot!.profile.displayName == value) {
+      abandonPending();
+      return true;
+    }
+    return _sendName(reviewed, value, recovering: true);
+  }
+
+  Future<bool> _sendName(
+    ProfileSnapshot original,
+    String name, {
+    bool recovering = false,
+  }) => _mutate(
+    () => repository.updateName(original, name),
+    onStart: () => _pendingEdit = null,
+    onFailure: (error) {
+      if (error.requiresReconciliation || recovering) {
+        _pendingEdit = ProfileEditIntent(original, name);
+      }
+    },
+    afterConfirmed: _synchronizeIdentity,
+  );
+
+  void abandonPending() {
+    if (!current || saving || loading || needsReconciliation) return;
+    _pendingEdit = null;
+    _failure = null;
+    _reconciled = false;
+    notifyListeners();
+  }
+}
+
+enum PreferenceField { meetingEmail, actionItemEmail, timezone, locale }
+
+/// The named constructors keep boolean and nullable regional intents distinct.
+class PreferenceIntent {
+  const PreferenceIntent.meetingEmail(bool enabled)
+    : field = PreferenceField.meetingEmail, value = enabled;
+  const PreferenceIntent.actionItemEmail(bool enabled)
+    : field = PreferenceField.actionItemEmail, value = enabled;
+  const PreferenceIntent.timezone(String? timezone)
+    : field = PreferenceField.timezone, value = timezone;
+  const PreferenceIntent.locale(String? locale)
+    : field = PreferenceField.locale, value = locale;
+
+  final PreferenceField field;
+  final Object? value;
+
+  Object? valueIn(UserPreferences preferences) => switch (field) {
+    PreferenceField.meetingEmail => preferences.meetingEmailEnabled,
+    PreferenceField.actionItemEmail => preferences.actionItemEmailEnabled,
+    PreferenceField.timezone => preferences.timezone,
+    PreferenceField.locale => preferences.locale,
+  };
 }
 
 class PreferencesController extends _AccountResource<PreferencesSnapshot> {
   PreferencesController(super.repository);
 
+  PreferenceIntent? _pendingIntent;
+  PreferenceIntent? _activeIntent;
+
+  PreferenceIntent? get pendingIntent => current ? _pendingIntent : null;
+  PreferenceIntent? get activeIntent => current ? _activeIntent : null;
+
+  @override
+  bool get _hasPendingDecision => _pendingIntent != null;
+
   @override
   Future<PreferencesSnapshot> _readResource() => repository.preferences(scope);
 
+  @override
+  Future<void> _afterRead(PreferencesSnapshot result) {
+    final intent = _pendingIntent;
+    if (intent != null && intent.valueIn(result.preferences) == intent.value) {
+      _pendingIntent = null;
+      _reconciled = true;
+    }
+    return Future<void>.value();
+  }
+
+  @override
+  void _clearWorkflow() {
+    _pendingIntent = null;
+    _activeIntent = null;
+  }
+
   Future<bool> updateMeetingEmail(bool enabled) =>
-      _mutate(() => repository.updateMeetingEmail(scope, enabled));
+      _submit(PreferenceIntent.meetingEmail(enabled));
 
   Future<bool> updateActionItemEmail(bool enabled) =>
-      _mutate(() => repository.updateActionItemEmail(scope, enabled));
+      _submit(PreferenceIntent.actionItemEmail(enabled));
 
   Future<bool> updateTimezone(String? value) =>
-      _mutate(() => repository.updateTimezone(scope, value));
+      _submit(PreferenceIntent.timezone(value));
 
   Future<bool> updateLocale(String? value) =>
-      _mutate(() => repository.updateLocale(scope, value));
+      _submit(PreferenceIntent.locale(value));
+
+  Future<bool> submitRegional(
+    PreferenceField field,
+    String? value,
+    PreferencesSnapshot original,
+  ) async {
+    if (original.sessionScope != scope || !canMutate) return false;
+    final intent = switch (field) {
+      PreferenceField.timezone => PreferenceIntent.timezone(value),
+      PreferenceField.locale => PreferenceIntent.locale(value),
+      _ => throw ArgumentError.value(field, 'field', 'Not a regional field'),
+    };
+    final observed = intent.valueIn(snapshot!.preferences);
+    if (observed == intent.value) return true;
+    if (observed != intent.valueIn(original.preferences)) {
+      _pendingIntent = intent;
+      _outcome = ProfileMutationOutcome.notDispatched;
+      _reconciled = false;
+      _failure = null;
+      notifyListeners();
+      return false;
+    }
+    return _submit(intent);
+  }
+
+  Future<bool> _submit(PreferenceIntent intent) async {
+    if (!canMutate) return false;
+    if (intent.valueIn(snapshot!.preferences) == intent.value) return true;
+    return _send(intent);
+  }
+
+  Future<bool> confirmPending(Object? reviewedValue) async {
+    final intent = _pendingIntent;
+    if (intent == null || !_canStart || loading) return false;
+    final observed = intent.valueIn(snapshot!.preferences);
+    if (observed != reviewedValue) return false;
+    if (observed == intent.value) {
+      abandonPending();
+      return true;
+    }
+    return _send(intent, recovering: true);
+  }
+
+  Future<bool> _send(
+    PreferenceIntent intent, {
+    bool recovering = false,
+  }) async {
+    try {
+      return await _mutate(
+        () => switch (intent.field) {
+          PreferenceField.meetingEmail =>
+            repository.updateMeetingEmail(scope, intent.value as bool),
+          PreferenceField.actionItemEmail =>
+            repository.updateActionItemEmail(scope, intent.value as bool),
+          PreferenceField.timezone =>
+            repository.updateTimezone(scope, intent.value as String?),
+          PreferenceField.locale =>
+            repository.updateLocale(scope, intent.value as String?),
+        },
+        onStart: () {
+          _pendingIntent = null;
+          _activeIntent = intent;
+        },
+        onFailure: (error) {
+          if (error.requiresReconciliation ||
+              recovering && error.category != ProfileFailureCategory.validation) {
+            _pendingIntent = intent;
+          }
+        },
+      );
+    } finally {
+      if (identical(_activeIntent, intent) && current && !saving) {
+        _activeIntent = null;
+        notifyListeners();
+      }
+    }
+  }
+
+  void abandonPending() {
+    if (!current || saving || loading || needsReconciliation) return;
+    _pendingIntent = null;
+    _failure = null;
+    _reconciled = false;
+    notifyListeners();
+  }
 }

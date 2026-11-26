@@ -134,6 +134,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
   int? _lastRefreshErrorGeneration;
   DateTime? _lastRefreshRetryNotBefore;
   int _lifecycleEpoch = 0;
+  int _identityReloadGeneration = 0;
   int _accessGeneration = 0;
   Future<void> _tokenStoreTail = Future<void>.value();
   bool _disposed = false;
@@ -547,14 +548,48 @@ class AuthSessionCoordinator extends ChangeNotifier {
     }
   }
 
-  Future<void> loadIdentity() async {
-    if (!_state.isAuthenticated) {
+  Future<void> loadIdentity({AuthenticatedSessionScope? expectedScope}) async {
+    if (expectedScope == null && !_state.isAuthenticated) {
       throw StateError('Identity reload requires a verified session.');
     }
-
-    final epoch = _lifecycleEpoch;
-    final identity = await _retrieveIdentity(expectedEpoch: epoch);
-    _requireCurrentEpoch(epoch);
+    final scope = expectedScope ?? requireAuthenticatedSessionScope();
+    requireCurrentAuthenticatedSession(scope);
+    final sessionId = _state.identity!.session.id.value;
+    final generation = ++_identityReloadGeneration;
+    final epoch = scope.lifecycleEpoch;
+    final AuthIdentity identity;
+    try {
+      identity = await _retrieveIdentity(expectedEpoch: epoch);
+    } on ApiFailure catch (failure) {
+      if (isCurrentAuthenticatedSession(scope) &&
+          generation == _identityReloadGeneration) {
+        final category = _classifier.classify(failure, AuthEndpoint.identity);
+        if (category == AuthFailureCategory.authorizationDenied ||
+            category == AuthFailureCategory.sessionInvalidated) {
+          await _handleRestoreFailure(failure, AuthEndpoint.identity, epoch);
+        }
+      }
+      rethrow;
+    }
+    requireCurrentAuthenticatedSession(scope);
+    if (generation != _identityReloadGeneration) {
+      throw const ApiFailure(
+        0,
+        'AUTH_IDENTITY_RELOAD_SUPERSEDED',
+        'Một lần đồng bộ danh tính mới hơn đã được bắt đầu.',
+      );
+    }
+    if (identity.userId.value != scope.userId ||
+        identity.session.id.value != sessionId ||
+        !identity.isEligibleMobileIdentity) {
+      final failure = AuthSessionFailure._(
+        category: AuthFailureCategory.sessionInvalidated,
+        code: 'AUTH_IDENTITY_MISMATCH',
+        message: 'Danh tính không khớp với phiên đăng nhập hiện tại.',
+      );
+      await _requireReauthentication(failure, expectedEpoch: epoch);
+      throw AuthSessionException(failure);
+    }
     _setState(
       AuthSessionState._(
         phase: AuthSessionPhase.authenticated,

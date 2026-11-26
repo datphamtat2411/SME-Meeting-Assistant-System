@@ -146,7 +146,8 @@ class ApiClient extends ChangeNotifier {
   Future<void> signIn(String email, String password) =>
       sessionCoordinator.signIn(email, password);
 
-  Future<void> loadIdentity() => sessionCoordinator.loadIdentity();
+  Future<void> loadIdentity({AuthenticatedSessionScope? expectedScope}) =>
+      sessionCoordinator.loadIdentity(expectedScope: expectedScope);
 
   Future<AuthLogoutOutcome> signOut() => sessionCoordinator.signOut();
 

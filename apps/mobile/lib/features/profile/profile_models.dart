@@ -122,3 +122,10 @@ String? _nullableIdentifier(
   if (!raw.containsKey(field)) invalidApiData(response: response);
   return optionalIdentifier(raw, field, response: response);
 }
+
+// Profile names are normalized using the same edge trimming as Java String.trim.
+String normalizeDisplayName(String value) =>
+    value.replaceAll(RegExp(r'^[\x00-\x20]+|[\x00-\x20]+$'), '');
+
+bool isValidDisplayName(String value) =>
+    value.trim().isNotEmpty && value.length <= 200;
