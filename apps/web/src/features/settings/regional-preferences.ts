@@ -8,13 +8,14 @@ export function isSupportedTimezone(value: string): boolean {
   }
 }
 
+// Validate identifier shape here; the Core API owns the authoritative zone
+// database. Browser formatting support is checked separately for presentation.
 export function isTimezoneSelection(value: string): boolean {
   return (
     value.length <= 64 &&
     (value === 'UTC' ||
       value === 'GMT' ||
-      /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)+$/.test(value)) &&
-    isSupportedTimezone(value)
+      /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)+$/.test(value))
   )
 }
 
@@ -61,7 +62,7 @@ export function resolveRegionalPreferences(
 }
 
 // The fallback covers commonly used regional hubs when enumeration is absent.
-// Search also accepts a runtime-recognized IANA identifier outside this list.
+// Custom identifiers outside this list are validated by the Core API.
 const fallbackTimezones = [
   'Africa/Abidjan',
   'Africa/Accra',

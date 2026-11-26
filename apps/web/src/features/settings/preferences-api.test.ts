@@ -3,6 +3,7 @@ import { coreApi } from '@/lib/core-api'
 import { patchPreferences, preferencesPatchSchema } from './preferences-api'
 import {
   isLocaleTag,
+  isSupportedTimezone,
   isTimezoneSelection,
   resolveRegionalPreferences,
   timezoneOptions,
@@ -71,6 +72,26 @@ describe('preferences contract', () => {
       timezoneFallback: true,
       localeFallback: true,
     })
+  })
+
+  it('separates candidate timezone identifiers from runtime support', () => {
+    const candidate = 'Future/Region'
+    expect(isTimezoneSelection(candidate)).toBe(true)
+    expect(isSupportedTimezone(candidate)).toBe(false)
+    expect(preferencesPatchSchema.parse({ timezone: candidate })).toEqual({
+      timezone: candidate,
+    })
+    expect(isTimezoneSelection('GMT+07:00')).toBe(false)
+    expect(isTimezoneSelection('PST')).toBe(false)
+    const browser = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'UTC',
+    }).resolvedOptions()
+    expect(
+      resolveRegionalPreferences(
+        { timezone: candidate, locale: null },
+        browser
+      )
+    ).toMatchObject({ timezone: 'UTC', timezoneFallback: true })
   })
 
   it('supports regional selections beyond a demonstration shortlist', () => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { z } from 'zod'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -75,6 +75,9 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
   })
   const {
     reset,
+    getFieldState,
+    getValues,
+    setValue,
     setError,
     clearErrors,
     formState: { dirtyFields },
@@ -92,13 +95,31 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
     (dirtyFields.locale && locale !== preferences.locale)
   const busy = mutation.isPending || refreshing
 
+  const reconcileDraft = useCallback(
+    (latest: RegionalDraft) => {
+      const draft = getValues()
+      const keepTimezone =
+        getFieldState('timezone').isDirty && draft.timezone !== latest.timezone
+      const keepLocale =
+        getFieldState('locale').isDirty && draft.locale !== latest.locale
+
+      // Rebase on confirmed values, then restore only edits that still differ.
+      // A converged draft must stop being dirty before another server update.
+      reset(latest)
+      if (keepTimezone) {
+        setValue('timezone', draft.timezone, { shouldDirty: true })
+      }
+      if (keepLocale) {
+        setValue('locale', draft.locale, { shouldDirty: true })
+      }
+    },
+    [getFieldState, getValues, reset, setValue]
+  )
+
   const { timezone: savedTimezone, locale: savedLocale } = preferences
   useEffect(() => {
-    reset(
-      { timezone: savedTimezone, locale: savedLocale },
-      { keepDirtyValues: true }
-    )
-  }, [savedTimezone, savedLocale, reset])
+    reconcileDraft({ timezone: savedTimezone, locale: savedLocale })
+  }, [savedTimezone, savedLocale, reconcileDraft])
 
   async function refresh(discard: boolean) {
     const generation = settingsSessionGeneration()
@@ -106,12 +127,14 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
     try {
       requireSettingsSession(generation)
       await qc.cancelQueries({ queryKey: preferencesQueryKey })
+      requireSettingsSession(generation)
       const latest = await qc.fetchQuery({
         ...preferencesQuery(),
         staleTime: 0,
       })
       requireSettingsSession(generation)
-      reset(regionalDraft(latest), { keepDirtyValues: !discard })
+      if (discard) reset(regionalDraft(latest))
+      else reconcileDraft(regionalDraft(latest))
       setReconcile(false)
       clearErrors()
     } catch (error) {
@@ -128,7 +151,7 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
     const patch: PreferencesPatch = {}
     if (dirtyFields.timezone && data.timezone !== preferences.timezone) {
       if (data.timezone !== null && !isTimezoneSelection(data.timezone)) {
-        setError('timezone', { message: 'Select a recognized timezone.' })
+        setError('timezone', { message: 'Select a valid IANA timezone identifier.' })
         return
       }
       patch.timezone = data.timezone
@@ -190,7 +213,8 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
                 disabled={busy}
               />
               <FormDescription>
-                Choose a preferred time zone or use your browser default.
+                Choose a preferred time zone or use your browser default. The
+                server validates time zone identifiers.
               </FormDescription>
               <FormMessage />
             </FormItem>

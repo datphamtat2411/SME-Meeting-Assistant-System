@@ -105,6 +105,7 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
     try {
       requireSettingsSession(generation)
       await qc.cancelQueries({ queryKey: profileQueryKey })
+      requireSettingsSession(generation)
       const latest = await qc.fetchQuery({ ...myProfileQuery(), staleTime: 0 })
       requireSettingsSession(generation)
       setRecovery('review')

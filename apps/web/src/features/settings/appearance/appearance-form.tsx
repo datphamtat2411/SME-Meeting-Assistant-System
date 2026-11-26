@@ -37,12 +37,22 @@ export function AppearanceForm() {
   })
   const {
     reset,
+    getValues,
+    getFieldState,
+    setValue,
     formState: { dirtyFields, isDirty },
   } = form
 
   useEffect(() => {
-    reset({ theme, font }, { keepDirtyValues: true })
-  }, [theme, font, reset])
+    const draft = getValues()
+    const keepTheme = getFieldState('theme').isDirty && draft.theme !== theme
+    const keepFont = getFieldState('font').isDirty && draft.font !== font
+
+    // Rebase against the current providers, clearing edits that have converged.
+    reset({ theme, font })
+    if (keepTheme) setValue('theme', draft.theme, { shouldDirty: true })
+    if (keepFont) setValue('font', draft.font, { shouldDirty: true })
+  }, [theme, font, getValues, getFieldState, reset, setValue])
 
   function onSubmit(data: AppearanceFormValues) {
     const next = {

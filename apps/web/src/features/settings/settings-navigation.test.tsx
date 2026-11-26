@@ -16,6 +16,10 @@ import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
 import { getCookie } from '@/lib/cookies'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import {
+  beginRequestRecoveryLogout,
+  resetRequestRecoveryState,
+} from '@/lib/request-recovery'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
 import { navigationGroups } from '@/components/layout/data/navigation-data'
@@ -25,6 +29,8 @@ import { AccountForm } from './account/account-form'
 import { AppearanceForm } from './appearance/appearance-form'
 import { SidebarNav } from './components/sidebar-nav'
 import { NotificationsForm } from './notifications/notifications-form'
+import { preferencesQueryKey } from './preferences-api'
+import { profileQueryKey } from './profile/profile-api'
 import { ProfileForm } from './profile/profile-form'
 
 const showSubmittedData = vi.hoisted(() => vi.fn())
@@ -118,6 +124,7 @@ describe('settings navigation and cleanup', () => {
     clearCookies()
     vi.restoreAllMocks()
     vi.clearAllMocks()
+    resetRequestRecoveryState()
   })
 
   it('exposes supported settings destinations without legacy template routes', () => {
@@ -364,6 +371,261 @@ describe('settings navigation and cleanup', () => {
     )
     await expect.element(actionEmails).toHaveAttribute('aria-checked', 'true')
     expect(showSubmittedData).not.toHaveBeenCalled()
+  })
+
+  it('preserves the reviewed ETag when a dirty profile is refreshed', async () => {
+    mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patchWithMetaAndEtag')
+    const { screen, queryClient } = await renderApiSettings(<ProfileForm />)
+    const name = screen.getByRole('textbox', { name: 'Display name' })
+    const save = screen.getByRole('button', { name: 'Save profile' })
+
+    await expect.element(name).toHaveValue(profile.displayName)
+    await userEvent.fill(name, 'My draft')
+    queryClient.setQueryData(profileQueryKey, {
+      profile: { ...profile, displayName: 'Remote edit' },
+      etag: '"profile-v2"',
+    })
+    await expect.element(name).toHaveValue('My draft')
+    await expect.element(save).toBeDisabled()
+    await expect
+      .element(screen.getByText('Latest retrieved name: Remote edit'))
+      .toBeVisible()
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it.each([428, 503])(
+    'requires review after a profile update returns %i',
+    async (status) => {
+      mockSettingsReads()
+      const patch = vi
+        .spyOn(coreApi, 'patchWithMetaAndEtag')
+        .mockRejectedValue(
+          new CoreApiError({
+            message: 'Update could not be confirmed',
+            status,
+            kind: status === 503 ? 'server' : 'http',
+          })
+        )
+      const { screen } = await renderApiSettings(<ProfileForm />)
+      const name = screen.getByRole('textbox', { name: 'Display name' })
+      const save = screen.getByRole('button', { name: 'Save profile' })
+
+      await expect.element(name).toHaveValue(profile.displayName)
+      await userEvent.fill(name, 'Unconfirmed draft')
+      await userEvent.click(save)
+      await expect
+        .element(
+          screen.getByRole('button', {
+            name: 'Keep my draft against this version',
+          })
+        )
+        .toBeEnabled()
+      await expect.element(name).toHaveValue('Unconfirmed draft')
+      await expect.element(save).toBeDisabled()
+      expect(patch).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('clears a converged Account draft and follows later server updates', async () => {
+    mockSettingsReads()
+    const { screen, queryClient } = await renderApiSettings(<AccountForm />)
+    const locale = screen.getByRole('combobox', { name: 'Regional format' })
+    const save = screen.getByRole('button', { name: 'Save preferences' })
+
+    await expect.element(locale).toHaveTextContent('vi-VN')
+    await userEvent.click(locale)
+    await userEvent.click(screen.getByRole('option', { name: /en-US/ }))
+    await expect.element(save).toBeEnabled()
+    queryClient.setQueryData(preferencesQueryKey, {
+      ...preferences,
+      locale: 'en-US',
+      timezone: 'Asia/Tokyo',
+    })
+    await expect.element(save).toBeDisabled()
+    await expect
+      .element(screen.getByRole('combobox', { name: 'Time zone' }))
+      .toHaveTextContent('Asia/Tokyo')
+
+    queryClient.setQueryData(preferencesQueryKey, {
+      ...preferences,
+      locale: 'ja-JP',
+      timezone: 'Asia/Tokyo',
+    })
+    await expect.element(locale).toHaveTextContent('ja-JP')
+    await expect.element(save).toBeDisabled()
+  })
+
+  it('clears a timezone using the keyboard-accessible regional picker', async () => {
+    const get = mockSettingsReads()
+    const saved = { ...preferences, timezone: null }
+    const patch = vi.spyOn(coreApi, 'patch').mockImplementation(async () => {
+      get.mockResolvedValue(saved)
+      return saved as never
+    })
+    const { screen } = await renderApiSettings(<AccountForm />)
+    const timezone = screen.getByRole('combobox', { name: 'Time zone' })
+    await expect.element(timezone).toHaveTextContent('Asia/Ho Chi Minh')
+    await userEvent.click(timezone)
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Time zone options' }))
+      .toBeVisible()
+    const search = screen.getByRole('combobox', { name: 'Search time zone' })
+    await userEvent.fill(search, 'browser default')
+    await expect
+      .element(screen.getByRole('option', { name: 'Use browser default' }))
+      .toBeVisible()
+    await userEvent.keyboard('{Enter}')
+    await expect.element(timezone).toHaveTextContent('Use browser default')
+    await expect.element(timezone).toHaveFocus()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save preferences' })
+    )
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/me/preferences', { timezone: null })
+    )
+  })
+
+  it('reconciles an uncertain Account save without replaying it', async () => {
+    const get = mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patch').mockImplementation(async () => {
+      get.mockResolvedValue({ ...preferences, locale: 'en-US' })
+      throw new CoreApiError({ message: 'Connection lost', kind: 'network' })
+    })
+    const { screen } = await renderApiSettings(<AccountForm />)
+    const locale = screen.getByRole('combobox', { name: 'Regional format' })
+    const save = screen.getByRole('button', { name: 'Save preferences' })
+    await expect.element(locale).toHaveTextContent('vi-VN')
+    await userEvent.click(locale)
+    await userEvent.click(screen.getByRole('option', { name: /en-US/ }))
+    await userEvent.click(save)
+    const refresh = screen.getByRole('button', {
+      name: 'Refresh saved preferences',
+    })
+    await expect.element(refresh).toBeEnabled()
+    await expect.element(save).toBeDisabled()
+    await userEvent.click(refresh)
+    await expect.element(refresh).not.toBeInTheDocument()
+    await expect.element(locale).toHaveTextContent('en-US')
+    await expect.element(save).toBeDisabled()
+    expect(patch).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not begin profile recovery reads after a session boundary', async () => {
+    mockSettingsReads()
+    const get = vi.mocked(coreApi.getWithMetaAndEtag)
+    vi.spyOn(coreApi, 'patchWithMetaAndEtag').mockRejectedValue(
+      new CoreApiError({ message: 'Stale profile', status: 412, kind: 'http' })
+    )
+    const { screen, queryClient } = await renderApiSettings(<ProfileForm />)
+    const name = screen.getByRole('textbox', { name: 'Display name' })
+    const save = screen.getByRole('button', { name: 'Save profile' })
+    await expect.element(name).toHaveValue(profile.displayName)
+    const cancel = queryClient.cancelQueries.bind(queryClient)
+    const cancellation = vi
+      .spyOn(queryClient, 'cancelQueries')
+      .mockImplementationOnce(cancel)
+      .mockImplementationOnce(async (filters, options) => {
+        await cancel(filters, options)
+        beginRequestRecoveryLogout()
+        resetRequestRecoveryState()
+      })
+
+    await userEvent.fill(name, 'My draft')
+    await userEvent.click(save)
+    await vi.waitFor(() => expect(cancellation).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(queryClient.isMutating()).toBe(0))
+    expect(get).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not begin Account recovery reads after a session boundary', async () => {
+    const get = mockSettingsReads()
+    vi.spyOn(coreApi, 'patch').mockRejectedValue(
+      new CoreApiError({ message: 'Connection lost', kind: 'network' })
+    )
+    const { screen, queryClient } = await renderApiSettings(<AccountForm />)
+    const locale = screen.getByRole('combobox', { name: 'Regional format' })
+    await expect.element(locale).toHaveTextContent('vi-VN')
+    await userEvent.click(locale)
+    await userEvent.click(screen.getByRole('option', { name: /en-US/ }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save preferences' })
+    )
+    const refresh = screen.getByRole('button', {
+      name: 'Refresh saved preferences',
+    })
+    await expect.element(refresh).toBeEnabled()
+    const readsBeforeRecovery = get.mock.calls.length
+    const cancel = queryClient.cancelQueries.bind(queryClient)
+    const cancellation = vi
+      .spyOn(queryClient, 'cancelQueries')
+      .mockImplementationOnce(async (filters, options) => {
+        await cancel(filters, options)
+        beginRequestRecoveryLogout()
+        resetRequestRecoveryState()
+      })
+
+    await userEvent.click(refresh)
+    await vi.waitFor(() => expect(cancellation).toHaveBeenCalledTimes(1))
+    await expect.element(refresh).toBeEnabled()
+    expect(get).toHaveBeenCalledTimes(readsBeforeRecovery)
+  })
+
+  it('ignores a profile mutation response from a previous session', async () => {
+    mockSettingsReads()
+    const nextProfile = {
+      ...profile,
+      id: '22222222-2222-4222-8222-222222222222',
+      displayName: 'Next user',
+    }
+    let finish!: (value: {
+      data: typeof profile
+      etag: string
+      meta: Record<string, never>
+    }) => void
+    const pending = new Promise<{
+      data: typeof profile
+      etag: string
+      meta: Record<string, never>
+    }>((resolve) => {
+      finish = resolve
+    })
+    const patch = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockImplementationOnce(() => pending as never)
+    const { screen, queryClient } = await renderApiSettings(<ProfileForm />)
+    const name = screen.getByRole('textbox', { name: 'Display name' })
+    await expect.element(name).toHaveValue(profile.displayName)
+    await userEvent.fill(name, 'Previous user draft')
+    await userEvent.click(screen.getByRole('button', { name: 'Save profile' }))
+    await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+
+    const oldMutation = queryClient.getMutationCache().getAll()[0]
+    if (!oldMutation) throw new Error('Expected a pending profile update')
+    vi.mocked(coreApi.getWithMetaAndEtag).mockResolvedValue({
+      data: nextProfile,
+      etag: '"next-v1"',
+      meta: {},
+    })
+    beginRequestRecoveryLogout()
+    queryClient.removeQueries()
+    queryClient.getMutationCache().clear()
+    resetRequestRecoveryState()
+    const nextSnapshot = { profile: nextProfile, etag: '"next-v1"' }
+    queryClient.setQueryData(profileQueryKey, nextSnapshot)
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    finish({
+      data: { ...profile, displayName: 'Previous user draft' },
+      etag: '"profile-v2"',
+      meta: {},
+    })
+
+    await vi.waitFor(() => expect(oldMutation.state.status).toBe('success'))
+    await expect.element(name).toHaveValue('Next user')
+    expect(queryClient.getQueryData(profileQueryKey)).toEqual(nextSnapshot)
+    expect(invalidate).not.toHaveBeenCalledWith({
+      queryKey: currentUserQueryKey,
+    })
   })
 
   it('shows an API failure and supports a real retry instead of hiding it', async () => {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Check, ChevronsUpDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -38,12 +38,28 @@ export function RegionalPicker({
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const normalized = search.trim().toLowerCase()
-  const values = [...new Set(value === null ? options : [value, ...options])]
-  const filtered = values.filter((option) =>
-    (option + ' ' + formatLabel(option)).toLowerCase().includes(normalized)
+  const choices = useMemo(
+    () =>
+      [...new Set(value === null ? options : [value, ...options])].map(
+        (option) => {
+          const label = formatLabel(option)
+          return {
+            value: option,
+            label,
+            searchText: (option + ' ' + label).toLowerCase(),
+          }
+        }
+      ),
+    [value, options, formatLabel]
+  )
+  const filtered = choices.filter((option) =>
+    option.searchText.includes(normalized)
   )
   const custom = search.trim()
-  const canAdd = !!custom && !values.includes(custom) && validateCustom(custom)
+  const canAdd =
+    !!custom &&
+    !choices.some((option) => option.value === custom) &&
+    validateCustom(custom)
   const showDefault = 'use browser default'.includes(normalized)
 
   function select(next: string | null) {
@@ -68,17 +84,22 @@ export function RegionalPicker({
             role='combobox'
             aria-label={label}
             aria-expanded={open && !disabled}
+            aria-haspopup='dialog'
             disabled={disabled}
             className='w-full justify-between font-normal'
           >
             <span className='truncate'>
               {value === null ? 'Use browser default' : formatLabel(value)}
             </span>
-            <ChevronsUpDown className='size-4 shrink-0 opacity-50' />
+            <ChevronsUpDown
+              aria-hidden='true'
+              className='size-4 shrink-0 opacity-50'
+            />
           </Button>
         </FormControl>
       </PopoverTrigger>
       <PopoverContent
+        aria-label={label + ' options'}
         align='start'
         className='w-(--radix-popover-trigger-width) p-0'
       >
@@ -97,6 +118,7 @@ export function RegionalPicker({
                 onSelect={() => select(null)}
               >
                 <Check
+                  aria-hidden='true'
                   className={cn('size-4', value !== null && 'opacity-0')}
                 />
                 Use browser default
@@ -104,14 +126,15 @@ export function RegionalPicker({
             )}
             {filtered.map((option) => (
               <CommandItem
-                key={option}
-                value={option}
-                onSelect={() => select(option)}
+                key={option.value}
+                value={option.value}
+                onSelect={() => select(option.value)}
               >
                 <Check
-                  className={cn('size-4', value !== option && 'opacity-0')}
+                  aria-hidden='true'
+                  className={cn('size-4', value !== option.value && 'opacity-0')}
                 />
-                {formatLabel(option)}
+                {option.label}
               </CommandItem>
             ))}
             {canAdd && (
