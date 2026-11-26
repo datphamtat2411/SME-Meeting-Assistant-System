@@ -82,21 +82,39 @@ class AccountFlowFailure {
     final message = switch (kind) {
       AccountFailureKind.throttled =>
         'Máy chủ đang giới hạn yêu cầu. Vui lòng thử lại khi phù hợp.',
-      AccountFailureKind.unavailable => 'Tính năng hiện không khả dụng. Vui lòng thử lại sau hoặc liên hệ quản trị viên.',
-      AccountFailureKind.uncertain =>
-        operation == AccountOperation.recovery
-            ? 'Không thể xác nhận yêu cầu. Hãy kiểm tra email trước khi gửi lại.'
-            : 'Không thể xác nhận kết quả. Mật khẩu có thể đã được cập nhật. '
-                  'Hãy thử đăng nhập hoặc yêu cầu hướng dẫn mới.',
+      AccountFailureKind.unavailable => switch (operation) {
+        AccountOperation.recovery =>
+          'Dịch vụ yêu cầu khôi phục hiện không khả dụng. Vui lòng thử lại sau.',
+        AccountOperation.reset =>
+          'Liên kết khôi phục không còn khả dụng. Hãy yêu cầu liên kết mới.',
+        AccountOperation.setup =>
+          'Lời mời thiết lập không còn khả dụng. Hãy yêu cầu lời mời mới từ tổ chức.',
+      },
+      AccountFailureKind.uncertain => switch (operation) {
+        AccountOperation.recovery =>
+          'Không thể xác nhận yêu cầu. Hãy kiểm tra email trước khi gửi lại.',
+        AccountOperation.reset =>
+          'Không thể xác nhận kết quả. Mật khẩu có thể đã được cập nhật. '
+              'Hãy thử đăng nhập bằng mật khẩu vừa chọn. Không gửi lại yêu cầu này.',
+        AccountOperation.setup =>
+          'Không thể xác nhận kết quả. Tài khoản có thể đã được kích hoạt. '
+              'Hãy thử đăng nhập bằng email doanh nghiệp và mật khẩu vừa thiết lập. '
+              'Không gửi lại yêu cầu này.',
+      },
       AccountFailureKind.rejected => switch (field) {
         AccountFailureField.email => 'Email không hợp lệ.',
         AccountFailureField.password =>
           'Mật khẩu không đáp ứng chính sách của tổ chức.',
-        null =>
-          operation.establishesPassword
-              ? 'Liên kết có thể không hợp lệ, đã hết hạn hoặc mật khẩu '
-                    'không đáp ứng chính sách của tổ chức.'
-              : 'Yêu cầu không được chấp nhận. Vui lòng kiểm tra thông tin.',
+        null => switch (operation) {
+          AccountOperation.reset =>
+            'Liên kết khôi phục có thể không hợp lệ, đã hết hạn hoặc mật khẩu '
+                'không đáp ứng chính sách của tổ chức.',
+          AccountOperation.setup =>
+            'Lời mời thiết lập có thể không hợp lệ, đã hết hạn hoặc mật khẩu '
+                'không đáp ứng chính sách của tổ chức.',
+          AccountOperation.recovery =>
+            'Yêu cầu không được chấp nhận. Vui lòng kiểm tra thông tin.',
+        },
       },
     };
     return AccountFlowFailure._(

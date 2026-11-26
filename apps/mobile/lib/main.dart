@@ -78,7 +78,15 @@ class ConfigurationErrorApp extends StatelessWidget {
 class MeetingAssistantApp extends StatefulWidget {
   final AppDependencies dependencies;
 
-  const MeetingAssistantApp({super.key, required this.dependencies});
+  /// An application host may supply the owner when it also owns capability
+  /// dispatch. Otherwise this app creates and disposes its own owner.
+  final CredentialWorkflowOwner? credentialWorkflowOwner;
+
+  const MeetingAssistantApp({
+    super.key,
+    required this.dependencies,
+    this.credentialWorkflowOwner,
+  });
 
   @override
   State<MeetingAssistantApp> createState() => _MeetingAssistantAppState();
@@ -89,7 +97,10 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
   AuthenticatedSessionScope? _navigationScope;
   bool _openingRecording = false;
   late final ApiClient api = widget.dependencies.api;
-  late final _credentialWorkflows = CredentialWorkflowOwner(api);
+  late final bool _ownsCredentialWorkflows =
+      widget.credentialWorkflowOwner == null;
+  late final CredentialWorkflowOwner _credentialWorkflows =
+      widget.credentialWorkflowOwner ?? CredentialWorkflowOwner(api);
   late final AppearanceController appearance = AppearanceController(
     preferences: widget.dependencies.appearancePreferences,
   );
@@ -107,6 +118,12 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
   @override
   void initState() {
     super.initState();
+    final suppliedOwner = widget.credentialWorkflowOwner;
+    if (suppliedOwner != null && !identical(suppliedOwner.api, api)) {
+      throw ArgumentError(
+        'The credential workflow owner must use this app ApiClient.',
+      );
+    }
     unawaited(api.initialize());
     appearance.initialize();
   }
@@ -115,7 +132,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
 
   @override
   void dispose() {
-    _credentialWorkflows.dispose();
+    if (_ownsCredentialWorkflows) _credentialWorkflows.dispose();
     appearance.dispose();
     widget.dependencies.dispose();
     super.dispose();
@@ -275,8 +292,9 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         api: api,
         mutationNotice: switch (outcome?.kind) {
           CredentialOutcomeKind.completed =>
-            'Thao tác tài khoản đã hoàn tất. Cần xác minh lại phiên đăng nhập.',
-          CredentialOutcomeKind.uncertain => 'Thao tác tài khoản có thể đã hoàn tất. Cần xác minh lại phiên đăng nhập.',
+            'Mật khẩu đã được cập nhật. Không gửi lại yêu cầu này. Vùng bảo vệ đang khóa cho đến khi máy chủ xác minh lại phiên đăng nhập hiện tại.',
+          CredentialOutcomeKind.uncertain =>
+            'Yêu cầu đặt lại mật khẩu có thể đã được xử lý. Không gửi lại yêu cầu này; vùng bảo vệ vẫn khóa cho đến khi xác minh lại phiên hiện tại.',
           _ => null,
         },
       );

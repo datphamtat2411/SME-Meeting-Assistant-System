@@ -21,15 +21,26 @@ or administrator; reset offers fresh recovery. Neither operation signs in.
 ## Session integration
 
 The application-owned credential workflow handoff holds only attempt
-identity, purpose and terminal outcome. The submission settlement callback
-runs after actual dispatch, including after presentation disposal. Confirmed
-or uncertain reset results synchronously request the established mandatory
-reconciliation gate; ordinary rejection, recovery and setup do not.
-Abandoned attempts still reconcile but cannot publish stale presentation.
-The account outcome is independent of verification; the session coordinator
-remains the only session authority. The application preserves the terminal
-outcome across navigator replacement and exposes existing session recovery
-when verification is unavailable. No verification retry replays a mutation.
+identity, purpose and terminal outcome. Each attempt owns its dispatch-in-flight
+and terminal latches, so replacing a submission controller cannot replay an
+in-flight, completed, uncertain or unavailable mutation. Confirmed rejection
+and throttling remain retryable under the existing explicit correction and
+Retry-After rules.
+
+The submission settlement callback runs after actual dispatch, including
+after presentation disposal. Confirmed or uncertain reset results synchronously
+request the established mandatory reconciliation gate; ordinary rejection,
+recovery and setup do not. Abandoned attempts still reconcile but cannot publish
+stale presentation. The account outcome is independent of verification; the
+session coordinator remains the only session authority.
+
+Application-level widget coverage exercises a reset while a session is active,
+the actual protected-navigator replacement, unavailable identity verification,
+an explicit verification retry, and restoration of the original mutation
+outcome without replaying the reset. When a different/current session remains
+verified, credential outcome guidance explicitly distinguishes that session
+from the account whose credentials were changed and requires sign-out before
+switching accounts. No verification retry replays a mutation.
 
 Wave 03 owns trusted HTTPS parsing, Android App Links, lifecycle dispatch,
 manual whole-link paste and authenticated external entry. No such entry
@@ -38,10 +49,14 @@ point is introduced in Wave 02.
 ## Verification
 
 Automated regression tests cover acknowledgement cooldown, retry deadlines,
+attempt-level duplicate-dispatch fencing, retryable rejection/throttling,
 credential completion and mutation/session outcome independence, including
-late settlement of an abandoned reset. Widget tests exercise explicit resend
-after expiry and externally supplied opaque capabilities; a stale reset
-cannot replace a newer setup outcome. The Mobile CI workflow must verify
-formatting, analysis, tests and Android debug build on the final revision.
+late settlement of an abandoned reset. Widget tests exercise explicit resend,
+recovery uncertainty, structured password-policy correction, purpose-specific
+rejection guidance, authenticated continuation, externally supplied opaque
+capabilities, and stale-outcome fencing. The application-root test covers
+actual navigator replacement and outcome handoff through session verification.
+The Mobile CI workflow must verify formatting, analysis, tests and Android
+debug build on the final revision.
 Live Core API, SMTP, physical-device and verified HTTPS acceptance are not
 established by these mocked tests or by source review.

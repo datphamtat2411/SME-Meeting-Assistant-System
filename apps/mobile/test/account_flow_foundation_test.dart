@@ -262,4 +262,51 @@ void main() {
     }
     expect(calls, 2);
   });
+
+  test('credential failure guidance follows the operation purpose', () {
+    final now = DateTime.utc(2026, 11, 26);
+    final resetUnavailable = AccountFlowFailure.classify(
+      const ApiFailure(404, 'RESOURCE_NOT_FOUND', 'private'),
+      AccountOperation.reset,
+      now: now,
+    );
+    final setupUnavailable = AccountFlowFailure.classify(
+      const ApiFailure(404, 'RESOURCE_NOT_FOUND', 'private'),
+      AccountOperation.setup,
+      now: now,
+    );
+    expect(resetUnavailable.kind, AccountFailureKind.unavailable);
+    expect(resetUnavailable.message, contains('Liên kết khôi phục'));
+    expect(setupUnavailable.kind, AccountFailureKind.unavailable);
+    expect(setupUnavailable.message, contains('Lời mời thiết lập'));
+
+    final resetUncertain = AccountFlowFailure.classify(
+      const ApiFailure(503, 'SERVICE_UNAVAILABLE', 'private'),
+      AccountOperation.reset,
+      now: now,
+    );
+    final setupUncertain = AccountFlowFailure.classify(
+      const ApiFailure(503, 'SERVICE_UNAVAILABLE', 'private'),
+      AccountOperation.setup,
+      now: now,
+    );
+    expect(resetUncertain.kind, AccountFailureKind.uncertain);
+    expect(resetUncertain.message, contains('Mật khẩu có thể đã được cập nhật'));
+    expect(setupUncertain.kind, AccountFailureKind.uncertain);
+    expect(setupUncertain.message, contains('Tài khoản có thể đã được kích hoạt'));
+
+    final resetRejected = AccountFlowFailure.classify(
+      const ApiFailure(422, 'VALIDATION_FAILED', 'private'),
+      AccountOperation.reset,
+      now: now,
+    );
+    final setupRejected = AccountFlowFailure.classify(
+      const ApiFailure(422, 'VALIDATION_FAILED', 'private'),
+      AccountOperation.setup,
+      now: now,
+    );
+    expect(resetRejected.message, contains('Liên kết khôi phục'));
+    expect(setupRejected.message, contains('Lời mời thiết lập'));
+    expect(setupRejected.message, isNot(contains('khôi phục')));
+  });
 }

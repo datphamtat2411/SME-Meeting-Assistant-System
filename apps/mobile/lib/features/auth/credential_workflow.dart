@@ -9,9 +9,14 @@ enum CredentialOutcomeKind { completed, uncertain, unavailable }
 
 /// An opaque workflow identity, containing no credential material.
 class CredentialAttempt {
-  CredentialAttempt(this.operation) : assert(operation.establishesPassword);
+  CredentialAttempt._(this.operation) : assert(operation.establishesPassword);
 
   final AccountOperation operation;
+
+  // Dispatch state belongs to the attempt, not to a replaceable form or
+  // submission controller. These flags contain no credential material.
+  bool _dispatchInFlight = false;
+  bool _terminal = false;
 }
 
 class CredentialOutcome {
@@ -40,7 +45,7 @@ class CredentialWorkflowOwner extends ChangeNotifier {
     if (_disposed || _outcome != null) {
       throw StateError('Credential workflow is not ready.');
     }
-    return _active = CredentialAttempt(operation);
+    return _active = CredentialAttempt._(operation);
   }
 
   void abandon(CredentialAttempt attempt) {
@@ -62,28 +67,44 @@ class CredentialWorkflowOwner extends ChangeNotifier {
   ) async {
     if (_disposed ||
         !identical(_active, attempt) ||
+        attempt._terminal ||
+        attempt._dispatchInFlight ||
         submission.operation != attempt.operation ||
         !submission.canSubmit) {
       return;
     }
-    await submission.submit(
-      () => attempt.operation == AccountOperation.reset
-          ? api.resetPassword(capability, password)
-          : api.completeAccountSetup(capability, password),
-      onSettled: (failure) => _settled(attempt, failure),
-    );
+
+    // Latch before the first await. A replacement controller cannot start a
+    // second dispatch while this attempt is already in flight.
+    attempt._dispatchInFlight = true;
+    try {
+      await submission.submit(
+        () => attempt.operation == AccountOperation.reset
+            ? api.resetPassword(capability, password)
+            : api.completeAccountSetup(capability, password),
+        onSettled: (failure) => _settled(attempt, failure),
+      );
+    } finally {
+      // AccountSubmissionController can decline a dispatch if its own state
+      // changed before it accepted the call. Never leave the attempt latched.
+      attempt._dispatchInFlight = false;
+    }
   }
 
   void _settled(CredentialAttempt attempt, AccountFlowFailure? failure) {
     if (_disposed) return;
+    attempt._dispatchInFlight = false;
     final kind = switch (failure?.kind) {
       null => CredentialOutcomeKind.completed,
       AccountFailureKind.uncertain => CredentialOutcomeKind.uncertain,
       AccountFailureKind.unavailable => CredentialOutcomeKind.unavailable,
       _ => null,
     };
+    // Completion, uncertainty and capability unavailability are terminal for
+    // this exact attempt even if its form/controller has since been replaced.
+    if (kind != null) attempt._terminal = true;
     final publish = kind != null && identical(_active, attempt);
-    if (kind != null && publish) {
+    if (publish) {
       _outcome = CredentialOutcome(attempt.operation, kind);
     }
     if (attempt.operation == AccountOperation.reset &&

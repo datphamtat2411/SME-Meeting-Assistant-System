@@ -436,21 +436,64 @@ class CredentialOutcomeView extends StatelessWidget {
             ? 'Đặt lại mật khẩu thành công'
             : 'Kích hoạt tài khoản thành công',
       CredentialOutcomeKind.uncertain => 'Chưa xác nhận được kết quả',
-      CredentialOutcomeKind.unavailable => 'Tính năng hiện không khả dụng',
+      CredentialOutcomeKind.unavailable => reset
+          ? 'Liên kết khôi phục không còn khả dụng'
+          : 'Lời mời thiết lập không còn khả dụng',
     };
-    final message = switch (outcome.kind) {
-      CredentialOutcomeKind.completed =>
-        reset
-            ? 'Mật khẩu đã được cập nhật. Các phiên đăng nhập trước đó '
-                  'của tài khoản được đặt lại đã bị thu hồi.'
-            : 'Tài khoản đã sẵn sàng. Hãy đăng nhập bằng email doanh nghiệp '
-                  'và mật khẩu vừa thiết lập.',
-      CredentialOutcomeKind.uncertain =>
-        'Thao tác có thể đã hoàn tất. Hãy thử đăng nhập bằng mật khẩu '
-            'vừa chọn. Không gửi lại yêu cầu này.',
-      CredentialOutcomeKind.unavailable =>
-        'Không thể tiếp tục thao tác hiện tại. Hãy thử lại sau.',
-    };
+    final message = authenticated
+        ? switch (outcome.kind) {
+            CredentialOutcomeKind.completed =>
+              reset
+                  ? 'Mật khẩu của tài khoản được khôi phục đã được cập nhật. '
+                        'Phiên đăng nhập hiện tại đã được xác minh và vẫn hoạt động. '
+                        'Nếu muốn chuyển sang tài khoản vừa đặt lại, hãy đăng xuất '
+                        'trước khi đăng nhập bằng tài khoản đó.'
+                  : 'Tài khoản đã sẵn sàng. Phiên đăng nhập hiện tại vẫn hoạt động. '
+                        'Nếu muốn sử dụng tài khoản vừa kích hoạt, hãy đăng xuất '
+                        'trước rồi đăng nhập bằng email doanh nghiệp của tài khoản đó.',
+            CredentialOutcomeKind.uncertain =>
+              reset
+                  ? 'Không thể xác nhận kết quả đặt lại mật khẩu. Phiên đăng nhập '
+                        'hiện tại đã được xác minh và vẫn hoạt động. Không gửi lại '
+                        'yêu cầu này. Nếu muốn đăng nhập bằng tài khoản vừa đặt lại, '
+                        'hãy đăng xuất trước rồi thử mật khẩu vừa chọn; nếu không '
+                        'đăng nhập được, hãy yêu cầu liên kết khôi phục mới.'
+                  : 'Không thể xác nhận kết quả kích hoạt tài khoản. Phiên đăng nhập '
+                        'hiện tại đã được xác minh và vẫn hoạt động. Không gửi lại '
+                        'yêu cầu này. Nếu muốn sử dụng tài khoản vừa kích hoạt, hãy '
+                        'đăng xuất trước; nếu không thể đăng nhập, hãy liên hệ quản '
+                        'trị viên để được cấp lời mời mới.',
+            CredentialOutcomeKind.unavailable =>
+              reset
+                  ? 'Liên kết khôi phục không còn khả dụng. Phiên đăng nhập hiện tại '
+                        'vẫn hoạt động. Bạn có thể tiếp tục phiên này hoặc yêu cầu '
+                        'một liên kết khôi phục mới.'
+                  : 'Lời mời thiết lập không còn khả dụng. Phiên đăng nhập hiện tại '
+                        'vẫn hoạt động. Bạn có thể tiếp tục phiên này hoặc yêu cầu '
+                        'quản trị viên cấp lời mời mới.',
+          }
+        : switch (outcome.kind) {
+            CredentialOutcomeKind.completed =>
+              reset
+                  ? 'Mật khẩu đã được cập nhật. Các phiên đăng nhập trước đó '
+                        'của tài khoản được đặt lại đã bị thu hồi.'
+                  : 'Tài khoản đã sẵn sàng. Hãy đăng nhập bằng email doanh nghiệp '
+                        'và mật khẩu vừa thiết lập.',
+            CredentialOutcomeKind.uncertain =>
+              reset
+                  ? 'Yêu cầu đặt lại mật khẩu có thể đã được xử lý. Hãy thử đăng '
+                        'nhập bằng mật khẩu vừa chọn. Không gửi lại yêu cầu này.'
+                  : 'Yêu cầu kích hoạt tài khoản có thể đã được xử lý. Hãy thử đăng '
+                        'nhập bằng email doanh nghiệp và mật khẩu vừa thiết lập. '
+                        'Không gửi lại yêu cầu này.',
+            CredentialOutcomeKind.unavailable =>
+              reset
+                  ? 'Liên kết khôi phục không còn khả dụng. Có thể liên kết đã hết '
+                        'hạn, đã được sử dụng hoặc không hợp lệ. Hãy yêu cầu liên '
+                        'kết khôi phục mới.'
+                  : 'Lời mời thiết lập không còn khả dụng. Hãy yêu cầu lời mời mới '
+                        'từ tổ chức hoặc liên hệ quản trị viên.',
+          };
     return ContentCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
