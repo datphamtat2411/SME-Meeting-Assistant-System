@@ -132,9 +132,17 @@ export function useCurrentUserVerification(): CurrentUserVerificationState & {
   if (isSessionVerificationPendingOrBlocked(revalidation)) {
     return {
       status:
-        revalidation === 'checking' ? 'initial-loading' : 'transient-failure',
+        revalidation === 'checking'
+          ? query.data
+            ? 'background-verification'
+            : 'initial-loading'
+          : 'transient-failure',
+      // Retain compatible ownership metadata for hidden local drafts. It is
+      // not authorization evidence while mandatory verification is unresolved.
+      identity: revalidation === 'denied' ? undefined : query.data,
       isVerified: false,
-      hasEstablishedIdentity: Boolean(query.data),
+      hasEstablishedIdentity:
+        revalidation !== 'denied' && Boolean(query.data),
       canReadProtectedData: false,
       query,
     }

@@ -32,13 +32,15 @@ type Verification =
 interface RevalidationOptions {
   queryClient: QueryClient
   onContainment: () => void
-  onChanged: () => void
+  onChanged: (preserveProtectedRoute: boolean) => void
 }
 
 let options: RevalidationOptions | undefined
 let state: SessionRevalidationState = 'idle'
 let revision = 0
 let active: Promise<void> | undefined
+let signInPending: Promise<void> | undefined
+let deferredRevalidation = false
 let unsubscribe: (() => void) | undefined
 const listeners = new Set<() => void>()
 
@@ -123,24 +125,71 @@ async function verifySession(
   }
 }
 
+export function getSessionContextKey(identity: AuthContext): string {
+  return JSON.stringify([
+    identity.userId,
+    identity.session.id,
+    identity.globalRole,
+    identity.primaryOrgUnitId,
+    identity.directoryManagementScope.allUnits,
+    [...identity.directoryManagementScope.unitIds].sort(),
+  ])
+}
+
 function sameContext(previous: AuthContext | undefined, next: AuthContext) {
   return (
     previous !== undefined &&
-    previous.userId === next.userId &&
-    previous.session.id === next.session.id &&
-    previous.globalRole === next.globalRole &&
-    previous.primaryOrgUnitId === next.primaryOrgUnitId &&
-    previous.directoryManagementScope.allUnits ===
-      next.directoryManagementScope.allUnits &&
-    [...previous.directoryManagementScope.unitIds].sort().join(',') ===
-      [...next.directoryManagementScope.unitIds].sort().join(',')
+    getSessionContextKey(previous) === getSessionContextKey(next)
   )
+}
+
+/**
+ * Explicit sign-in establishes a new session even for the same user. Fence
+ * the old context before any cookie-changing request and contain its state
+ * before allowing the new context to become visible.
+ */
+export function beginBrowserSessionSignIn(): (completed: boolean) => void {
+  const config = options
+  if (!config) return () => undefined
+  const ticket = ++revision
+  let settle!: () => void
+  const pending = new Promise<void>((resolve) => {
+    settle = resolve
+  })
+  signInPending = pending
+  setState('checking')
+
+  const finish = (completed: boolean) => {
+    if (signInPending !== pending) return
+    signInPending = undefined
+    const needsVerification = deferredRevalidation
+    deferredRevalidation = false
+    if (!completed && revision === ticket && !isAuthLifecycleBlocking()) {
+      setState('unavailable')
+    }
+    settle()
+    if (needsVerification && !isAuthLifecycleBlocking()) {
+      void revalidateBrowserSession()
+    }
+  }
+
+  try {
+    config.onContainment()
+  } catch (error) {
+    finish(false)
+    throw error
+  }
+  return finish
 }
 
 /** Runs outside the reset form so navigation cannot suppress reconciliation. */
 export function revalidateBrowserSession(): Promise<void> {
   const config = options
   if (!config || isAuthLifecycleBlocking()) return Promise.resolve()
+  if (signInPending) {
+    deferredRevalidation = true
+    return signInPending
+  }
   const ticket = ++revision
   const lifecycleGeneration = getRequestRecoveryGeneration()
   const barrier = beginRequestRecoveryRevalidation()
@@ -158,6 +207,7 @@ export function revalidateBrowserSession(): Promise<void> {
   const task = async () => {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
+    let preserveProtectedRoute = false
     try {
       const work = async (): Promise<Verification> => {
         await Promise.all([
@@ -191,6 +241,7 @@ export function revalidateBrowserSession(): Promise<void> {
           config.onContainment()
         } else {
           // Keep compatible state, but refetch protected data when it is used.
+          preserveProtectedRoute = sameContext(established, result.identity)
           void config.queryClient.invalidateQueries({ refetchType: 'none' })
         }
         config.queryClient.setQueryData(currentUserQueryKey, result.identity)
@@ -205,13 +256,17 @@ export function revalidateBrowserSession(): Promise<void> {
           setState('unauthenticated')
         }
       } else {
+        preserveProtectedRoute = result.type === 'unavailable' && !!established
         setState(result.type)
       }
     } catch {
-      if (isCurrent()) setState('unavailable')
+      if (isCurrent()) {
+        preserveProtectedRoute = !!established
+        setState('unavailable')
+      }
     } finally {
       if (timer !== undefined) clearTimeout(timer)
-      if (isCurrent()) config.onChanged()
+      if (isCurrent()) config.onChanged(preserveProtectedRoute)
     }
   }
   const promise = task()
@@ -232,12 +287,13 @@ export function requestSessionRevalidation(): void {
 }
 
 export function retrySessionRevalidation(): Promise<void> {
+  if (signInPending) return signInPending
   return state === 'checking' && active ? active : revalidateBrowserSession()
 }
 
 export async function waitForSessionRevalidation(): Promise<SessionRevalidationState> {
-  while (state === 'checking' && active) {
-    await active
+  while (signInPending || (state === 'checking' && active)) {
+    await (signInPending ?? active)
   }
   return state
 }

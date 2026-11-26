@@ -99,7 +99,18 @@ function containProtectedState(): void {
 configureSessionRevalidation({
   queryClient,
   onContainment: containProtectedState,
-  onChanged: () => {
+  onChanged: (preserveProtectedRoute) => {
+    // An unchanged mounted protected route already observes verification
+    // reactively. Reloading its loaders can discard compatible local drafts.
+    if (
+      preserveProtectedRoute &&
+      router.state.matches.some(
+        (match) =>
+          match.routeId === '/_authenticated' && match.status === 'success'
+      )
+    ) {
+      return
+    }
     void router.invalidate()
   },
 })

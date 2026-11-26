@@ -1,3 +1,4 @@
+import { Activity } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, redirect, useRouter } from '@tanstack/react-router'
 import {
@@ -23,6 +24,7 @@ import { useCurrentUserVerification } from '@/features/auth/session/current-user
 import { useAuthLifecycleState } from '@/features/auth/session/logout-status'
 import { SessionGate } from '@/features/auth/session/session-gate'
 import {
+  getSessionContextKey,
   retrySessionRevalidation,
   useSessionRevalidation,
   waitForSessionRevalidation,
@@ -104,23 +106,50 @@ function AuthenticatedRoute() {
     )
   }
 
-  if (revalidation === 'checking' || revalidation === 'unauthenticated') {
+  if (revalidation === 'unauthenticated') {
     return <SessionGate state='pending' />
   }
-  if (revalidation === 'denied' || revalidation === 'unavailable') {
+  if (revalidation === 'denied') {
     return (
       <SessionGate
-        state={revalidation}
+        state='denied'
+        onRetry={() => void retrySessionRevalidation()}
+      />
+    )
+  }
+
+  const shielded =
+    revalidation === 'checking' || revalidation === 'unavailable'
+  // Do not mount a stale route context if the cache has already been contained.
+  if (shielded && !verification.identity) {
+    return (
+      <SessionGate
+        state={revalidation === 'checking' ? 'pending' : 'unavailable'}
         onRetry={() => void retrySessionRevalidation()}
       />
     )
   }
 
   return (
-    <AuthenticatedLayout
-      user={toUserPresentation(verifiedUser)}
-      identity={verifiedIdentity}
-    />
+    <>
+      <Activity
+        key={getSessionContextKey(verifiedUser)}
+        mode={shielded ? 'hidden' : 'visible'}
+      >
+        <div className='contents' inert={shielded} aria-hidden={shielded || undefined}>
+          <AuthenticatedLayout
+            user={toUserPresentation(verifiedUser)}
+            identity={verifiedIdentity}
+          />
+        </div>
+      </Activity>
+      {shielded && (
+        <SessionGate
+          state={revalidation === 'checking' ? 'pending' : 'unavailable'}
+          onRetry={() => void retrySessionRevalidation()}
+        />
+      )}
+    </>
   )
 }
 

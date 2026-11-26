@@ -2,7 +2,6 @@ import { useRef, useState } from 'react'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Loader2, LogIn } from 'lucide-react'
 import { normalizeCoreApiError, type CoreApiError } from '@/lib/core-api'
@@ -19,10 +18,7 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { PasswordInput } from '@/components/password-input'
-import {
-  clearCurrentUserCache,
-  getSafeSessionRedirect,
-} from '@/features/auth/session/current-user'
+import { getSafeSessionRedirect } from '@/features/auth/session/current-user'
 import { signIn } from '../sign-in-api'
 
 const formSchema = z.object({
@@ -45,7 +41,6 @@ export function UserAuthForm({
   const [submitError, setSubmitError] = useState<string | null>(null)
   const isSubmitting = useRef(false)
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -65,7 +60,6 @@ export function UserAuthForm({
 
     try {
       await signIn(data)
-      clearCurrentUserCache(queryClient)
       navigate({ to: getSafeSessionRedirect(redirectTo), replace: true })
     } catch (error) {
       const apiError: CoreApiError = normalizeCoreApiError(error)
@@ -96,6 +90,8 @@ export function UserAuthForm({
         setSubmitError(
           'Too many sign-in attempts. Please wait a moment and try again.'
         )
+      } else if (apiError.code === 'SESSION_COORDINATION_TIMEOUT') {
+        setSubmitError('Another session operation is still in progress. Try again shortly.')
       } else if (apiError.isNetworkError) {
         setSubmitError(
           'Unable to connect to the service. Check your connection and try again.'

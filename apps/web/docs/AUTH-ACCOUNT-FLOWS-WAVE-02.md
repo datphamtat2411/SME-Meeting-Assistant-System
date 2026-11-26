@@ -25,10 +25,16 @@ verification, denial or unavailability. A verified unchanged context retains
 compatible cached state; incompatible identity/session/scope or confirmed
 loss uses the existing containment boundary. Confirmed anonymous/lost state
 remains fenced until successful sign-in or fresh authoritative verification.
-Transient verification can be explicitly retried. The protected shell is
-unmounted while fenced, so transient unsaved component state may be lost;
-persisted operations and compatible cache are not intentionally cleared for an
-unchanged verified context.
+Transient verification can be explicitly retried. An established compatible
+protected shell is hidden and made inert during temporary verification or
+unavailability, with its effects suspended by React Activity. The transport
+fence remains authoritative. A changed context, explicit new sign-in, denial
+or confirmed loss discards incompatible state. Explicit sign-in uses the same
+Web Lock as refresh and logout, fences and contains the previous context before
+changing cookies, and bounds lock waiting and its own transport requests.
+Signals received during sign-in request fresh verification after it settles.
+This does not guarantee retention of every feature-owned draft across route
+navigation or a changed authorization scope.
 
 Reset acknowledgement and session verification are independent outcomes. A
 timeout does not prove whether a reset committed; verification is evidence of

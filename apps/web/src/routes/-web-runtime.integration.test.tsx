@@ -245,7 +245,8 @@ describe('integrated generated Web runtime', () => {
   it.each([
     ['/sign-up', 'Activate your account', 'Back to sign in', '/sign-in'],
     ['/account-setup', 'Activate your account', 'Back to sign in', '/sign-in'],
-    ['/otp', 'Reset account password', 'Request recovery', '/forgot-password'],
+    ['/otp', 'Reset your password', 'Request a new reset link', '/forgot-password'],
+    ['/reset-password', 'Reset your password', 'Request a new reset link', '/forgot-password'],
   ] as const)(
     'renders the public callback %s and requires a capability',
     async (path, title, action, destination) => {

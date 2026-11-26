@@ -89,7 +89,7 @@ export type RecoveryAction =
 export interface RecoveryLockManager {
   request<T>(
     name: string,
-    options: { mode: 'exclusive' },
+    options: { mode: 'exclusive'; signal?: AbortSignal },
     callback: (lock: unknown) => Promise<T> | T
   ): Promise<T>
 }
@@ -174,6 +174,8 @@ export interface RequestRecoveryCoordinator {
   prepareForRetry(): void
   resetAfterSignIn(): void
   beginAuthLifecycleLogout(): AuthLifecycleLockBarrier
+  beginSignIn(): number
+  finishSignIn(generation: number): void
   beginSessionRevalidation(): AuthLifecycleLockBarrier
   finishSessionRevalidation(
     generation: number,
@@ -184,7 +186,10 @@ export interface RequestRecoveryCoordinator {
   isAuthLifecycleBlocked(): boolean
   getAuthLifecycleGeneration(): number
   isStaleAuthLifecycleResponse(config: RecoveryRequestConfig): boolean
-  withRecoveryLock<T>(callback: () => Promise<T> | T): Promise<T>
+  withRecoveryLock<T>(
+    callback: () => Promise<T> | T,
+    signal?: AbortSignal
+  ): Promise<T>
   setSessionLossHandler(handler: (() => void) | undefined): void
   isSessionLossConfirmed(): boolean
   dispose(): void
@@ -497,6 +502,7 @@ export function createRequestRecoveryCoordinator(
   let authLifecycleGeneration = 0
   let revalidationGeneration = 0
   let revalidationRequired = false
+  let signInInProgress = false
   let authLifecycleBarrier: AuthLifecycleLockBarrier | undefined
   let coordinationOperationId: string | undefined
   let sessionLossHandler = dependencies.onConfirmedSessionLoss
@@ -808,7 +814,7 @@ export function createRequestRecoveryCoordinator(
   function startRenewal(): Promise<RenewalResult> {
     if (renewalPromise) return renewalPromise
 
-    if (authLifecycleBarrier) {
+    if (authLifecycleBarrier || signInInProgress) {
       return Promise.resolve({
         type: 'failed',
         failure: authLifecycleBlockedFailure(),
@@ -838,6 +844,7 @@ export function createRequestRecoveryCoordinator(
     }
 
     const operationId = `${sourceId}-${++operationSequence}`
+    const startingLifecycleGeneration = authLifecycleGeneration
     const currentRenewal = (async (): Promise<RenewalResult> => {
       let result: RenewalResult | undefined
       try {
@@ -845,6 +852,14 @@ export function createRequestRecoveryCoordinator(
           RECOVERY_LOCK_NAME,
           { mode: 'exclusive' },
           async () => {
+            if (
+              authLifecycleBarrier ||
+              signInInProgress ||
+              startingLifecycleGeneration !== authLifecycleGeneration
+            ) {
+              result = { type: 'failed', failure: authLifecycleBlockedFailure() }
+              return
+            }
             result = await performRenewal(operationId)
           }
         )
@@ -890,6 +905,7 @@ export function createRequestRecoveryCoordinator(
     authLifecycleGeneration += 1
     revalidationGeneration += 1
     revalidationRequired = false
+    signInInProgress = false
     const activeRenewal = renewalPromise
     const barrier: AuthLifecycleLockBarrier = {
       generation: authLifecycleGeneration,
@@ -899,6 +915,23 @@ export function createRequestRecoveryCoordinator(
     }
     authLifecycleBarrier = barrier
     return barrier
+  }
+
+  // Called only by an explicit sign-in holding the shared cookie-operation
+  // lock, after the logout lifecycle has confirmed that sign-in is allowed.
+  function beginSignIn(): number {
+    authLifecycleBarrier = undefined
+    authLifecycleGeneration += 1
+    revalidationGeneration += 1
+    revalidationRequired = true
+    signInInProgress = true
+    return authLifecycleGeneration
+  }
+
+  function finishSignIn(expectedGeneration: number): void {
+    if (expectedGeneration === authLifecycleGeneration) {
+      signInInProgress = false
+    }
   }
 
   function beginSessionRevalidation(): AuthLifecycleLockBarrier {
@@ -940,7 +973,10 @@ export function createRequestRecoveryCoordinator(
     return true
   }
 
-  function withRecoveryLock<T>(callback: () => Promise<T> | T): Promise<T> {
+  function withRecoveryLock<T>(
+    callback: () => Promise<T> | T,
+    signal?: AbortSignal
+  ): Promise<T> {
     const activeLocks = getLocks()
     if (!activeLocks) {
       return Promise.reject(
@@ -953,7 +989,7 @@ export function createRequestRecoveryCoordinator(
 
     return activeLocks.request(
       RECOVERY_LOCK_NAME,
-      { mode: 'exclusive' },
+      { mode: 'exclusive', ...(signal ? { signal } : {}) },
       callback
     )
   }
@@ -1048,6 +1084,9 @@ export function createRequestRecoveryCoordinator(
       }
 
       const renewal = await startRenewal()
+      if (authLifecycleBarrier && !isAuthLifecycleExemptRequest(config)) {
+        return { type: 'failure', failure: authLifecycleBlockedFailure(normalized) }
+      }
       if (isStaleLifecycleResponse(config)) {
         return { type: 'failure', failure: authLifecycleStaleResponseFailure() }
       }
@@ -1110,6 +1149,7 @@ export function createRequestRecoveryCoordinator(
       authLifecycleGeneration += 1
       revalidationGeneration += 1
       revalidationRequired = false
+      signInInProgress = false
       circuit = 'ready'
       probeOnly = false
       generation += 1
@@ -1117,6 +1157,8 @@ export function createRequestRecoveryCoordinator(
     },
 
     beginAuthLifecycleLogout,
+    beginSignIn,
+    finishSignIn,
     beginSessionRevalidation,
     finishSessionRevalidation,
 
@@ -1180,6 +1222,17 @@ export function beginRequestRecoveryLogout(): AuthLifecycleLockBarrier {
   return defaultCoordinator.beginAuthLifecycleLogout()
 }
 
+export function beginRequestRecoverySignIn(): number {
+  if (!defaultCoordinator) {
+    throw new Error('Session recovery coordinator is unavailable.')
+  }
+  return defaultCoordinator.beginSignIn()
+}
+
+export function finishRequestRecoverySignIn(generation: number): void {
+  defaultCoordinator?.finishSignIn(generation)
+}
+
 export function beginRequestRecoveryRevalidation(): AuthLifecycleLockBarrier {
   if (!defaultCoordinator) {
     throw new Error('Session recovery coordinator is unavailable.')
@@ -1219,7 +1272,8 @@ export function isStaleAuthLifecycleResponse(
 }
 
 export function withRequestRecoveryLock<T>(
-  callback: () => Promise<T> | T
+  callback: () => Promise<T> | T,
+  signal?: AbortSignal
 ): Promise<T> {
   if (!defaultCoordinator) {
     return Promise.reject(
@@ -1231,7 +1285,7 @@ export function withRequestRecoveryLock<T>(
       )
     )
   }
-  return defaultCoordinator.withRecoveryLock(callback)
+  return defaultCoordinator.withRecoveryLock(callback, signal)
 }
 
 export function prepareRequestRecoveryRetry(): void {

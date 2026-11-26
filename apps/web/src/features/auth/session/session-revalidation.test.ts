@@ -7,7 +7,8 @@ import {
   resetCsrfToken,
   setCsrfToken,
 } from '@/lib/core-api'
-import { isSessionRevalidationRequired } from '@/lib/request-recovery'
+import { isSessionRevalidationRequired, RECOVERY_LOCK_NAME } from '@/lib/request-recovery'
+import { signIn } from '../sign-in/sign-in-api'
 import { resetAuthLifecycleAfterSignIn } from './auth-lifecycle'
 import { currentUserQueryKey, type AuthContext } from './current-user'
 import {
@@ -74,7 +75,7 @@ describe('mandatory browser-session revalidation', () => {
   const originalAdapter = coreApiAxios.defaults.adapter
   let client: QueryClient
   let dispose: () => void
-  let contain: ReturnType<typeof vi.fn>
+  let contain: () => void
   const requests: string[] = []
 
   function transport(handler: AxiosAdapter) {
@@ -211,6 +212,80 @@ describe('mandatory browser-session revalidation', () => {
     await revalidateBrowserSession()
     release.resolve()
     await stale
+  })
+
+  it('contains cached protected data before real sign-in can establish another context', async () => {
+    client.setQueryData(currentUserQueryKey, identity)
+    client.setQueryData(['meetings'], ['private data from A'])
+    transport(async (config) => reject(config, 503))
+    await revalidateBrowserSession()
+    expect(getSessionRevalidationState()).toBe('unavailable')
+    expect(client.getQueryData(['meetings'])).toEqual(['private data from A'])
+
+    transport(async (config) => {
+      if (config.url === '/auth/csrf') {
+        expect(client.getQueryData(['meetings'])).toBeUndefined()
+        expect(isSessionRevalidationRequired()).toBe(true)
+        return success(config, { csrfToken: 'login-proof' })
+      }
+      if (config.url === '/auth/login') {
+        return success(config, { sessionStatus: 'ACTIVE', csrfToken: 'new-proof' })
+      }
+      return success(config, other)
+    })
+    await signIn({ email: 'other@example.test', password: 'password' })
+    expect(contain).toHaveBeenCalledOnce()
+    expect(client.getQueryData(currentUserQueryKey)).toBeUndefined()
+    expect(client.getQueryData(['meetings'])).toBeUndefined()
+    expect(isSessionRevalidationRequired()).toBe(false)
+    expect(getSessionRevalidationState()).toBe('idle')
+    expect(await coreApi.get('/auth/me')).toEqual(other)
+  })
+
+  it('serializes real sign-in behind a cookie-changing refresh', async () => {
+    const refreshEntered = deferred()
+    const releaseRefresh = deferred()
+    client.setQueryData(currentUserQueryKey, identity)
+    client.setQueryData(['meetings'], ['private data from A'])
+    setCsrfToken('test-csrf')
+    let renewed = false
+    let loggedIn = false
+    transport(async (config) => {
+      if (config.url === '/auth/refresh') {
+        refreshEntered.resolve()
+        await releaseRefresh.promise
+        renewed = true
+        return success(config, { sessionStatus: 'ACTIVE', csrfToken: 'renewed-proof' })
+      }
+      if (config.url === '/auth/csrf') {
+        expect(renewed).toBe(true)
+        return success(config, { csrfToken: 'login-proof' })
+      }
+      if (config.url === '/auth/login') {
+        loggedIn = true
+        return success(config, { sessionStatus: 'ACTIVE', csrfToken: 'new-proof' })
+      }
+      if (loggedIn) return success(config, other)
+      return renewed ? success(config, identity) : reject(config, 401)
+    })
+
+    const checking = revalidateBrowserSession()
+    await refreshEntered.promise
+    const login = signIn({ email: 'other@example.test', password: 'password' })
+    try {
+      await vi.waitFor(async () => {
+        const locks = await navigator.locks.query()
+        expect(locks.pending?.some((lock) => lock.name === RECOVERY_LOCK_NAME)).toBe(true)
+      })
+      expect(requests).not.toContain('/auth/login')
+      expect(requests).not.toContain('/auth/csrf')
+    } finally {
+      releaseRefresh.resolve()
+      await Promise.all([checking, login])
+    }
+    expect(requests.indexOf('/auth/refresh')).toBeLessThan(requests.indexOf('/auth/login'))
+    expect(client.getQueryData(['meetings'])).toBeUndefined()
+    expect(await coreApi.get('/auth/me')).toEqual(other)
   })
 
   it('cannot overwrite a newer sign-in with a late verification result', async () => {
