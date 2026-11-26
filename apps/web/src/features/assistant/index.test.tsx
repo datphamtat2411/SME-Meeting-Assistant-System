@@ -1,10 +1,20 @@
 import { StrictMode, useState } from 'react'
+import { AxiosHeaders } from 'axios'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
-import { CoreApiError, coreApi } from '@/lib/core-api'
-import { resetAuthLifecycleAfterSignIn } from '@/features/auth/session/auth-lifecycle'
+import {
+  CoreApiError,
+  coreApi,
+  coreApiAxios,
+  resetCsrfToken,
+  setCsrfToken,
+} from '@/lib/core-api'
+import {
+  beginAuthLifecycleLogout,
+  resetAuthLifecycleAfterSignIn,
+} from '@/features/auth/session/auth-lifecycle'
 import type { AssistantSelection } from './assistant-selection'
 import { AssistantPage } from './index'
 
@@ -1951,7 +1961,10 @@ describe('AssistantPage', () => {
   })
 })
 
-function evidenceResponse(messageId = assistantMessageId, label = 'Verified source') {
+function evidenceResponse(
+  messageId = assistantMessageId,
+  label = 'Verified source'
+) {
   return {
     conversationId,
     messageId,
@@ -2007,7 +2020,11 @@ describe('Assistant presentation regressions', () => {
         ...baseDetail,
         messages: [
           ...baseDetail.messages,
-          { ...groundedAssistantMessage, id: secondId, content: 'Second answer' },
+          {
+            ...groundedAssistantMessage,
+            id: secondId,
+            content: 'Second answer',
+          },
         ],
       },
       onEvidence: (url) =>
@@ -2018,7 +2035,9 @@ describe('Assistant presentation regressions', () => {
     const screen = await renderPage({ initial: { conversationId, meetingId } })
     await userEvent.click(screen.getByRole('button', evidenceButton).first())
     await expect
-      .poll(() => get.mock.calls.filter(([url]) => url.endsWith('/evidence')).length)
+      .poll(
+        () => get.mock.calls.filter(([url]) => url.endsWith('/evidence')).length
+      )
       .toBe(1)
     await userEvent.click(screen.getByRole('button', { name: 'Close' }))
     await userEvent.click(screen.getByRole('button', evidenceButton).last())
@@ -2033,7 +2052,9 @@ describe('Assistant presentation regressions', () => {
 
   it('obsoletes a pending evidence read on externally controlled conversation navigation', async () => {
     const old = deferred<unknown>()
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
     const { get } = setupReads({
       evidence: old.promise,
       detailsById: {
@@ -2045,15 +2066,23 @@ describe('Assistant presentation regressions', () => {
         },
       },
     })
-    const screen = await renderPage({ client, initial: { conversationId, meetingId } })
+    const screen = await renderPage({
+      client,
+      initial: { conversationId, meetingId },
+    })
     await userEvent.click(screen.getByRole('button', evidenceButton))
     await expect
-      .poll(() => get.mock.calls.filter(([url]) => url.endsWith('/evidence')).length)
+      .poll(
+        () => get.mock.calls.filter(([url]) => url.endsWith('/evidence')).length
+      )
       .toBe(1)
     await screen.rerender(
       <QueryClientProvider client={client}>
         <TestAssistant
-          controlled={{ conversationId: otherConversationId, meetingId: otherMeetingId }}
+          controlled={{
+            conversationId: otherConversationId,
+            meetingId: otherMeetingId,
+          }}
         />
       </QueryClientProvider>
     )
@@ -2079,7 +2108,11 @@ describe('Assistant presentation regressions', () => {
     const screen = await renderPage({ initial: { conversationId, meetingId } })
     await userEvent.click(screen.getByRole('button', evidenceButton))
     await expect.element(screen.getByText('[1] Verified source')).toBeVisible()
-    await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+    resetAuthLifecycleAfterSignIn()
+    await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
+    await expect
+      .element(screen.getByText('[1] Verified source'))
+      .not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', evidenceButton))
     await expect.poll(() => evidenceReads).toBe(2)
     resetAuthLifecycleAfterSignIn()
@@ -2094,14 +2127,67 @@ describe('Assistant presentation regressions', () => {
       .not.toBeInTheDocument()
   })
 
+  it('withholds a pending inspection immediately when logout begins', async () => {
+    const old = deferred<unknown>()
+    const { get } = setupReads({ evidence: old.promise })
+    const screen = await renderPage({ initial: { conversationId, meetingId } })
+    await userEvent.click(screen.getByRole('button', evidenceButton))
+    await expect
+      .poll(
+        () => get.mock.calls.filter(([url]) => url.endsWith('/evidence')).length
+      )
+      .toBe(1)
+    const previousAdapter = coreApiAxios.defaults.adapter
+    try {
+      setCsrfToken('assistant-test-csrf')
+      coreApiAxios.defaults.adapter = async (config) => {
+        expect(config.url).toBe('/auth/logout')
+        return {
+          status: 200,
+          statusText: 'OK',
+          headers: new AxiosHeaders(),
+          config,
+          data: {
+            success: true,
+            code: 'SUCCESS',
+            message: 'Logged out.',
+            data: null,
+            meta: {},
+          },
+        }
+      }
+      const logout = beginAuthLifecycleLogout()
+      await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
+      old.resolve(evidenceResponse(assistantMessageId, 'Logged out source'))
+      await expect(logout).resolves.toMatchObject({ state: 'confirmed' })
+      await old.promise
+      await expect
+        .element(screen.getByText('[1] Logged out source'))
+        .not.toBeInTheDocument()
+      await expect
+        .element(screen.getByRole('textbox', { name: 'Assistant question' }))
+        .not.toBeInTheDocument()
+    } finally {
+      await screen.unmount()
+      coreApiAxios.defaults.adapter = previousAdapter
+      resetCsrfToken()
+      resetAuthLifecycleAfterSignIn()
+    }
+  })
+
   it('removes displayed evidence when canonical history redacts the answer', async () => {
     let redacted = false
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
     setupReads({
       evidence: evidenceResponse(),
-      onDetail: () => redacted ? redactedDetail() : baseDetail,
+      onDetail: () => (redacted ? redactedDetail() : baseDetail),
     })
-    const screen = await renderPage({ client, initial: { conversationId, meetingId } })
+    const screen = await renderPage({
+      client,
+      initial: { conversationId, meetingId },
+    })
     await userEvent.click(screen.getByRole('button', evidenceButton))
     await expect.element(screen.getByText('[1] Verified source')).toBeVisible()
     redacted = true
@@ -2121,7 +2207,9 @@ describe('Assistant presentation regressions', () => {
 
   it('removes displayed evidence on confirmed meeting access denial', async () => {
     let denied = false
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
     setupReads({ evidence: evidenceResponse() })
     const screen = await renderPage({
       client,
@@ -2147,10 +2235,12 @@ describe('Assistant presentation regressions', () => {
   it('revalidates and withholds an answer when the evidence resolver reports stale sources', async () => {
     let redacted = false
     setupReads({
-      onDetail: () => redacted ? redactedDetail() : baseDetail,
+      onDetail: () => (redacted ? redactedDetail() : baseDetail),
       onEvidence: () => {
         redacted = true
-        return coreError(409, 'Stale sources', { code: 'ASSISTANT_SOURCE_STALE' })
+        return coreError(409, 'Stale sources', {
+          code: 'ASSISTANT_SOURCE_STALE',
+        })
       },
     })
     const screen = await renderPage({ initial: { conversationId, meetingId } })
@@ -2165,7 +2255,12 @@ describe('Assistant presentation regressions', () => {
   it('shows related claims, safely renders external strings and navigates to all four canonical sections', async () => {
     const unsafe = '<img src=x onerror="alert(1)" data-unsafe="yes">'
     const types = ['TRANSCRIPT', 'SUMMARY', 'DECISION', 'ACTION_ITEM'] as const
-    const targets = ['MEETING_TRANSCRIPT', 'MEETING_SUMMARY', 'MEETING_DECISIONS', 'MEETING_ACTION_ITEMS'] as const
+    const targets = [
+      'MEETING_TRANSCRIPT',
+      'MEETING_SUMMARY',
+      'MEETING_DECISIONS',
+      'MEETING_ACTION_ITEMS',
+    ] as const
     const citations = types.map((sourceType, index) => ({
       ...groundedAssistantMessage.citations[0],
       citationId: 'citation-' + (index + 1),
@@ -2180,12 +2275,14 @@ describe('Assistant presentation regressions', () => {
             ...groundedAssistantMessage,
             content: unsafe,
             answerStatus: 'PARTIAL',
-            claims: [{
-              ...groundedAssistantMessage.claims[0],
-              text: unsafe,
-              support: 'CONFLICTED',
-              citationIds: citations.map((citation) => citation.citationId),
-            }],
+            claims: [
+              {
+                ...groundedAssistantMessage.claims[0],
+                text: unsafe,
+                support: 'CONFLICTED',
+                citationIds: citations.map((citation) => citation.citationId),
+              },
+            ],
             citations,
           },
         ],
@@ -2205,17 +2302,23 @@ describe('Assistant presentation regressions', () => {
     })
     const screen = await renderPage({ initial: { conversationId, meetingId } })
     await expect.element(screen.getByText('Conflicting evidence')).toBeVisible()
-    await userEvent.click(screen.getByRole('button', { name: 'Inspect citation 2' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Inspect citation 2' })
+    )
     await expect.element(screen.getByText('[2] Verified SUMMARY')).toBeVisible()
-    await expect.element(screen.getByText('Related claim 1').first()).toBeVisible()
+    await expect
+      .element(screen.getByText('Related claim 1').first())
+      .toBeVisible()
     expect(document.querySelector('[data-unsafe]')).toBeNull()
     for (const [label, section, view] of [
       ['Open transcript', 'transcript', null],
       ['Open summary', 'intelligence', 'summary'],
       ['Open decisions', 'intelligence', 'decisions'],
       ['Open action items', 'action-items', null],
-    ]) {
-      const link = screen.getByRole('link', { name: label }).element() as HTMLAnchorElement
+    ] as const) {
+      const link = screen
+        .getByRole('link', { name: label })
+        .element() as HTMLAnchorElement
       const url = new URL(link.href)
       expect(url.pathname).toBe('/meetings/' + meetingId)
       expect(url.searchParams.get('section')).toBe(section)
@@ -2223,19 +2326,66 @@ describe('Assistant presentation regressions', () => {
     }
   })
 
+  it('contains malformed evidence without denying the conversation and permits an explicit fresh read', async () => {
+    let reads = 0
+    setupReads({
+      onEvidence: () =>
+        ++reads === 1
+          ? { ...evidenceResponse(), meetingId: otherMeetingId }
+          : evidenceResponse(),
+    })
+    const screen = await renderPage({ initial: { conversationId, meetingId } })
+    await userEvent.click(screen.getByRole('button', evidenceButton))
+    await expect
+      .element(screen.getByText('Assistant response was invalid.'))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('[1] Verified source'))
+      .not.toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retry or refresh' })
+    )
+    await expect.element(screen.getByText('[1] Verified source')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Assistant question' }))
+      .toBeVisible()
+    expect(reads).toBe(2)
+  })
+
+  it('does not deny conversation access for a scoped missing evidence message', async () => {
+    setupReads({
+      evidence: coreError(404, 'Message missing', {
+        code: 'ASSISTANT_MESSAGE_NOT_FOUND',
+      }),
+    })
+    const screen = await renderPage({ initial: { conversationId, meetingId } })
+    await userEvent.click(screen.getByRole('button', evidenceButton))
+    await expect.element(screen.getByText('Answer unavailable')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Assistant question' }))
+      .toBeVisible()
+  })
+
   it('disables retry and resume until the authoritative deadline then enables them', async () => {
     setupReads()
-    const post = vi.spyOn(coreApi, 'post').mockRejectedValue(
-      coreError(429, 'Rate limited', { retryAfter: '2' })
-    )
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockRejectedValue(coreError(429, 'Rate limited', { retryAfter: '2' }))
     const screen = await renderPage({ initial: { conversationId, meetingId } })
-    await userEvent.fill(screen.getByRole('textbox', { name: 'Assistant question' }), 'Retry me')
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Assistant question' }),
+      'Retry me'
+    )
     await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
     const retry = screen.getByRole('button', { name: 'Retry or refresh' })
     const resume = screen.getByRole('button', { name: 'Resume status checks' })
     await expect.element(retry).toBeDisabled()
     await expect.element(resume).toBeDisabled()
-    await expect.element(screen.getByText(/Core requested no retry before/)).toBeVisible()
+    await expect
+      .element(screen.getByText(/Core requested no retry before/))
+      .toBeVisible()
     expect(post).toHaveBeenCalledTimes(1)
     await expect.element(retry).toBeEnabled()
     await expect.element(resume).toBeEnabled()
@@ -2253,17 +2403,23 @@ describe('Assistant presentation regressions', () => {
     await userEvent.click(question)
     await userEvent.keyboard('{End}{Shift>}{Enter}{/Shift}')
     await expect.element(question).toHaveValue('Câu hỏi\n')
-    question.element().dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'Enter',
-      isComposing: true,
-      bubbles: true,
-      cancelable: true,
-    }))
+    question.element().dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      })
+    )
     expect(post).not.toHaveBeenCalled()
     await userEvent.fill(question, '😀'.repeat(4097))
-    await expect.element(screen.getByRole('button', { name: 'Ask Assistant' })).toBeDisabled()
+    await expect
+      .element(screen.getByRole('button', { name: 'Ask Assistant' }))
+      .toBeDisabled()
     await userEvent.fill(question, '😀'.repeat(4096))
-    await expect.element(screen.getByRole('button', { name: 'Ask Assistant' })).toBeEnabled()
+    await expect
+      .element(screen.getByRole('button', { name: 'Ask Assistant' }))
+      .toBeEnabled()
     await userEvent.fill(question, 'Câu hỏi đã hoàn thành')
     await userEvent.keyboard('{Enter}')
     await expect.poll(() => post.mock.calls.length).toBe(1)
@@ -2271,8 +2427,13 @@ describe('Assistant presentation regressions', () => {
 
   it('preserves the visible reading anchor through a real infinite-query refetch', async () => {
     await import('@/styles/index.css')
-    const previousViewport = { width: window.innerWidth, height: window.innerHeight }
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const previousViewport = {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
     const messages = Array.from({ length: 14 }, (_, index) =>
       messageDto(
         'aaaaaaaa-aaaa-4aaa-8aaa-' + String(index).padStart(12, '0'),
@@ -2282,51 +2443,134 @@ describe('Assistant presentation regressions', () => {
       )
     )
     const refresh = deferred<unknown>()
-    let refreshing = false
+    const olderRead = deferred<unknown>()
+    const initialHead = { ...baseDetail, messages, hasMore: true }
+    let head: unknown = initialHead
     setupReads({
-      onDetail: () => refreshing ? refresh.promise : { ...baseDetail, messages },
+      onDetail: (_reads, currentPage) =>
+        currentPage === 1 ? olderRead.promise : head,
     })
     await page.viewport(1280, 720)
     try {
-      const screen = await renderPage({ client, initial: { conversationId, meetingId } })
+      const screen = await renderPage({
+        client,
+        initial: { conversationId, meetingId },
+      })
       const history = screen.getByLabelText('Conversation history')
       await expect.element(history).toBeVisible()
       const node = history.element() as HTMLElement
       expect(node.scrollHeight).toBeGreaterThan(node.clientHeight)
+      node.scrollTop = 0
+      node.dispatchEvent(new Event('scroll'))
+      const first = node.querySelector<HTMLElement>('[data-message-id]')!
+      const firstId = first.dataset.messageId
+      const firstOffset =
+        first.getBoundingClientRect().top - node.getBoundingClientRect().top
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Load older messages' })
+      )
+      const olderMessage = messageDto(
+        '77777777-7777-4777-8777-777777777777',
+        'USER',
+        'Older meeting question. '.repeat(30),
+        '2026-11-22T08:59:00Z'
+      )
+      olderRead.resolve({ ...baseDetail, messages: [olderMessage] })
+      await expect
+        .element(screen.getByText(olderMessage.content))
+        .toBeVisible()
+      await expect
+        .poll(() => {
+          const current = history.element()
+          const restored = Array.from(
+            current.querySelectorAll<HTMLElement>('[data-message-id]')
+          ).find((item) => item.dataset.messageId === firstId)
+          return restored
+            ? Math.abs(
+                restored.getBoundingClientRect().top -
+                  current.getBoundingClientRect().top -
+                  firstOffset
+              )
+            : Infinity
+        })
+        .toBeLessThan(4)
       node.scrollTop = Math.floor((node.scrollHeight - node.clientHeight) / 3)
       node.dispatchEvent(new Event('scroll'))
-      await expect.element(screen.getByRole('button', { name: 'Jump to latest' })).toBeVisible()
+      await expect
+        .element(screen.getByRole('button', { name: 'Jump to latest' }))
+        .toBeVisible()
       const top = node.getBoundingClientRect().top
-      const anchor = Array.from(node.querySelectorAll<HTMLElement>('[data-message-id]')).find(
-        (item) => item.getBoundingClientRect().bottom > top
-      )!
+      const anchor = Array.from(
+        node.querySelectorAll<HTMLElement>('[data-message-id]')
+      ).find((item) => item.getBoundingClientRect().bottom > top)!
       const anchorId = anchor.dataset.messageId
       const offset = anchor.getBoundingClientRect().top - top
-      refreshing = true
+      head = refresh.promise
       const revalidation = client.refetchQueries({
         queryKey: ['assistant', 'conversation', conversationId, 'history'],
       })
       await expect.element(history).not.toBeInTheDocument()
+      const newAnswer = {
+        ...groundedAssistantMessage,
+        createdAt: '2026-11-22T09:30:00Z',
+      }
       refresh.resolve({
-        ...baseDetail,
-        messages: [...messages, groundedAssistantMessage],
+        ...initialHead,
+        messages: [...messages, newAnswer],
       })
       await revalidation
       await expect.element(history).toBeVisible()
-      await expect.poll(() => {
-        const current = history.element()
-        const restored = Array.from(current.querySelectorAll<HTMLElement>('[data-message-id]')).find(
-          (item) => item.dataset.messageId === anchorId
-        )
-        return restored
-          ? Math.abs(restored.getBoundingClientRect().top - current.getBoundingClientRect().top - offset)
-          : Infinity
-      }).toBeLessThan(4)
-      await userEvent.click(screen.getByRole('button', { name: 'Jump to latest' }))
-      await expect.poll(() => {
-        const current = history.element()
-        return current.scrollHeight - current.clientHeight - current.scrollTop
-      }).toBeLessThan(4)
+      await expect
+        .poll(() => {
+          const current = history.element()
+          const restored = Array.from(
+            current.querySelectorAll<HTMLElement>('[data-message-id]')
+          ).find((item) => item.dataset.messageId === anchorId)
+          return restored
+            ? Math.abs(
+                restored.getBoundingClientRect().top -
+                  current.getBoundingClientRect().top -
+                  offset
+              )
+            : Infinity
+        })
+        .toBeLessThan(4)
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Jump to latest' })
+      )
+      await expect
+        .poll(() => {
+          const current = history.element()
+          return current.scrollHeight - current.clientHeight - current.scrollTop
+        })
+        .toBeLessThan(4)
+      head = {
+        ...initialHead,
+        messages: [
+          ...messages,
+          newAnswer,
+          messageDto(
+            userMessageId,
+            'USER',
+            'Newest question after following',
+            '2026-11-22T09:31:00Z'
+          ),
+        ],
+      }
+      await client.refetchQueries({
+        queryKey: ['assistant', 'conversation', conversationId, 'history'],
+      })
+      await expect
+        .element(screen.getByText('Newest question after following'))
+        .toBeVisible()
+      await expect
+        .poll(() => {
+          const current = history.element()
+          return (
+            current.scrollHeight - current.clientHeight - current.scrollTop
+          )
+        })
+        .toBeLessThan(4)
     } finally {
       client.clear()
       await page.viewport(previousViewport.width, previousViewport.height)
@@ -2335,7 +2579,10 @@ describe('Assistant presentation regressions', () => {
 
   it('renders the real workspace stylesheet at desktop, laptop, tablet and mobile sizes in both themes', async () => {
     await import('@/styles/index.css')
-    const previousViewport = { width: window.innerWidth, height: window.innerHeight }
+    const previousViewport = {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }
     const wasDark = document.documentElement.classList.contains('dark')
     setupReads({ evidence: evidenceResponse() })
     await page.viewport(1440, 900)
@@ -2343,31 +2590,55 @@ describe('Assistant presentation regressions', () => {
     try {
       for (const dark of [false, true]) {
         document.documentElement.classList.toggle('dark', dark)
-        for (const [width, height] of [[1440, 900], [1280, 720], [768, 1024], [390, 844]]) {
+        for (const [width, height] of [
+          [1440, 900],
+          [1280, 720],
+          [768, 1024],
+          [390, 844],
+        ]) {
           await page.viewport(width, height)
           const history = screen.getByLabelText('Conversation history')
-          const composer = screen.getByRole('textbox', { name: 'Assistant question' })
+          const composer = screen.getByRole('textbox', {
+            name: 'Assistant question',
+          })
           await expect.element(history).toBeVisible()
           await expect.element(composer).toBeVisible()
           const viewport = history.element() as HTMLElement
           expect(viewport.clientHeight).toBeGreaterThan(0)
-          expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth + 1)
+          expect(viewport.scrollWidth).toBeLessThanOrEqual(
+            viewport.clientWidth + 1
+          )
           const bounds = composer.element().getBoundingClientRect()
           expect(bounds.left).toBeGreaterThanOrEqual(0)
           expect(bounds.right).toBeLessThanOrEqual(width + 1)
           expect(bounds.bottom).toBeLessThanOrEqual(height + 1)
           await userEvent.click(screen.getByRole('button', evidenceButton))
-          await expect.element(screen.getByText('[1] Verified source')).toBeVisible()
+          await expect
+            .element(screen.getByText('[1] Verified source'))
+            .toBeVisible()
           const dialog = screen.getByRole('dialog')
-          await expect.poll(() => {
-            const rect = dialog.element().getBoundingClientRect()
-            return rect.left >= -1 && rect.right <= width + 1 && rect.bottom <= height + 1
-          }).toBe(true)
+          await expect
+            .poll(() => {
+              const rect = dialog.element().getBoundingClientRect()
+              return (
+                rect.left >= -1 &&
+                rect.right <= width + 1 &&
+                rect.bottom <= height + 1
+              )
+            })
+            .toBe(true)
           await userEvent.click(screen.getByRole('button', { name: 'Close' }))
           await expect.element(dialog).not.toBeInTheDocument()
           if (width < 768) {
-            await userEvent.click(screen.getByRole('button', { name: 'Conversations', exact: true }))
-            await openConversation(screen)
+            await userEvent.click(
+              screen.getByRole('button', { name: 'Conversations', exact: true })
+            )
+            await userEvent.click(
+              screen.getByRole('button', {
+                name: 'Opened: Planning questions',
+                exact: true,
+              })
+            )
             await expect.element(composer).toBeVisible()
           }
         }
