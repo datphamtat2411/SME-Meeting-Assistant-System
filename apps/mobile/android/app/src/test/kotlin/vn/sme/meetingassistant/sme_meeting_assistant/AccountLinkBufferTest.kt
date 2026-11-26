@@ -8,22 +8,28 @@ class AccountLinkBufferTest {
         val buffer = AccountLinkBuffer()
         val first = "https://example.invalid/otp#token=first"
         val latest = "https://example.invalid/otp#token=a%2Bb"
-        assertTrue(buffer.offer(first))
-        assertFalse(buffer.offer(first))
-        assertTrue(buffer.offer(latest))
-        assertEquals(first, buffer.take())
-        assertEquals(latest, buffer.take())
+        assertTrue(buffer.offer(first, initial = true))
+        assertFalse(buffer.offer(first, initial = false))
+        assertTrue(buffer.offer(latest, initial = false))
+        val initial = buffer.take()!!
+        assertEquals(first, initial.url)
+        assertTrue(initial.initial)
+        val subsequent = buffer.take()!!
+        assertEquals(latest, subsequent.url)
+        assertFalse(subsequent.initial)
         assertNull(buffer.take())
     }
 
     @Test fun unsupportedOrOversizedInputDoesNotReplacePending() {
         val buffer = AccountLinkBuffer()
         val valid = "https://example.invalid/otp#token=fixture"
-        assertTrue(buffer.offer(valid))
-        assertFalse(buffer.offer("http://example.invalid/otp#token=x"))
-        assertFalse(buffer.offer("https://" + "x".repeat(40001)))
-        assertEquals(valid, buffer.take())
-        buffer.offer(valid)
+        assertTrue(buffer.offer(valid, initial = false))
+        assertFalse(buffer.offer("http://example.invalid/otp#token=x", initial = false))
+        assertFalse(buffer.offer("https://" + "x".repeat(40001), initial = false))
+        val delivery = buffer.take()!!
+        assertEquals(valid, delivery.url)
+        assertFalse(delivery.initial)
+        buffer.offer(valid, initial = false)
         buffer.clear()
         assertNull(buffer.take())
     }
@@ -31,10 +37,12 @@ class AccountLinkBufferTest {
     @Test fun rawDeliveryBufferHasDeterministicBoundedOverflow() {
         val buffer = AccountLinkBuffer()
         repeat(AccountLinkBuffer.maxPending + 1) {
-            buffer.offer("https://example.invalid/otp#token=fixture$it")
+            buffer.offer("https://example.invalid/otp#token=fixture$it", initial = it == 0)
         }
         for (index in 1..AccountLinkBuffer.maxPending) {
-            assertEquals("https://example.invalid/otp#token=fixture$index", buffer.take())
+            val delivery = buffer.take()!!
+            assertEquals("https://example.invalid/otp#token=fixture$index", delivery.url)
+            assertFalse(delivery.initial)
         }
         assertNull(buffer.take())
     }

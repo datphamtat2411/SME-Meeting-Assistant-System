@@ -38,6 +38,281 @@ Future<String?> _readRefreshCredential(CredentialStorage storage) async =>
     ).read()).refreshToken;
 
 void main() {
+  testWidgets('reset completion from recovery acknowledgement reaches login', (
+    tester,
+  ) async {
+    final delivery = _NativeAccountLinkFixture(null);
+    addTearDown(delivery.dispose);
+    final harness = _Harness.create(_authClient(), InMemoryCredentialStorage());
+    await tester.pumpWidget(
+      MeetingAssistantApp(
+        dependencies: harness.dependencies,
+        accountLinkParser: AccountLinkParser('meeting.example.invalid'),
+        receiveNativeAccountLinks: true,
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'login ready',
+    );
+    await tester.ensureVisible(find.text('Quên mật khẩu?'));
+    await tester.tap(find.text('Quên mật khẩu?'));
+    await tester.pump();
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'employee@example.test',
+    );
+    final recoverySubmit = find.widgetWithText(FilledButton, 'Gửi yêu cầu');
+    await tester.ensureVisible(recoverySubmit);
+    await tester.tap(recoverySubmit);
+    await pumpUntil(
+      tester,
+      () => find.text('Kiểm tra email').evaluate().isNotEmpty,
+      reason: 'recovery acknowledgement',
+    );
+    const link = 'https://meeting.example.invalid/otp#token=fixture';
+    await delivery.send(link);
+    await tester.pumpAndSettle();
+    expect(find.text('Đặt lại mật khẩu'), findsNothing);
+    await tester.tap(find.widgetWithText(TextButton, 'Tiếp tục'));
+    await tester.pumpAndSettle();
+    final cancel = find.text('Hủy và quay lại');
+    await tester.ensureVisible(cancel);
+    await tester.tap(cancel);
+    await tester.pumpAndSettle();
+    expect(find.text('Kiểm tra email'), findsOneWidget);
+
+    await delivery.send(link);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Tiếp tục'));
+    await tester.pumpAndSettle();
+    await _submitLinkPassword(tester);
+    await pumpUntil(
+      tester,
+      () => find.text('Đặt lại mật khẩu thành công').evaluate().isNotEmpty,
+      reason: 'confirmed reset',
+    );
+    await tester.ensureVisible(find.text('Tiếp tục đăng nhập'));
+    await tester.tap(find.text('Tiếp tục đăng nhập'));
+    await tester.pumpAndSettle();
+    expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
+    expect(find.text('Kiểm tra email'), findsNothing);
+    expect(_credentialRequests(harness.client), hasLength(1));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('pending reset and reconciliation protect outcome from new links', (
+    tester,
+  ) async {
+    final credentials = InMemoryCredentialStorage();
+    await _writeRefreshCredential(credentials, 'refresh-0');
+    final mutation = Completer<http.StreamedResponse>();
+    final verification = Completer<http.StreamedResponse>();
+    final requested = Completer<void>();
+    final harness = _Harness.create(
+      _authClient(
+        credentialResponse: mutation,
+        reconciliationRequested: requested,
+        reconciliationResponse: verification,
+      ),
+      credentials,
+    );
+    final delivery = _NativeAccountLinkFixture(
+      'https://meeting.example.invalid/otp#token=fixture',
+    );
+    addTearDown(delivery.dispose);
+    await tester.pumpWidget(
+      MeetingAssistantApp(
+        dependencies: harness.dependencies,
+        accountLinkParser: AccountLinkParser('meeting.example.invalid'),
+        receiveNativeAccountLinks: true,
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.signedIn &&
+          find.widgetWithText(TextButton, 'Tiếp tục').evaluate().isNotEmpty,
+      reason: 'authenticated entry',
+    );
+    await tester.tap(find.widgetWithText(TextButton, 'Tiếp tục'));
+    await tester.pumpAndSettle();
+    await _submitLinkPassword(tester);
+    await pumpUntil(
+      tester,
+      () => _credentialRequests(harness.client).length == 1,
+      reason: 'reset dispatched but pending',
+    );
+    await delivery.send(
+      'https://meeting.example.invalid/account-setup#token=deferred',
+    );
+    await tester.pump();
+    final proceed = find.widgetWithText(TextButton, 'Tiếp tục');
+    expect(tester.widget<TextButton>(proceed).onPressed, isNull);
+    expect(find.text('Đặt lại mật khẩu'), findsOneWidget);
+    expect(find.text('Kích hoạt tài khoản'), findsNothing);
+
+    mutation.complete(
+      await jsonResponse(200, successEnvelope({'message': 'Acknowledged.'})),
+    );
+    await pumpUntil(
+      tester,
+      () => requested.isCompleted,
+      reason: 'mandatory verification begins',
+    );
+    await tester.pump();
+    verification.complete(
+      await jsonResponse(
+        503,
+        errorEnvelope('SERVICE_UNAVAILABLE', 'Unavailable.'),
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Thử xác minh lại').evaluate().isNotEmpty,
+      reason: 'verification remains fail-closed',
+    );
+    await delivery.send(
+      'https://meeting.example.invalid/account-setup#token=during-gate',
+    );
+    await tester.pump();
+    expect(tester.widget<TextButton>(proceed).onPressed, isNull);
+    expect(find.text('Tổng quan'), findsNothing);
+    expect(find.text('Kích hoạt tài khoản'), findsNothing);
+    await tester.tap(find.text('Thử xác minh lại'));
+    await pumpUntil(
+      tester,
+      () => find.text('Đặt lại mật khẩu thành công').evaluate().isNotEmpty,
+      reason: 'original mutation outcome restored',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Đặt lại mật khẩu thành công'), findsOneWidget);
+    expect(find.text('Kích hoạt tài khoản'), findsNothing);
+    expect(find.textContaining('Hãy mở lại email'), findsOneWidget);
+    expect(_credentialRequests(harness.client), hasLength(1));
+    await tester.ensureVisible(find.text('Tiếp tục phiên hiện tại'));
+    await tester.tap(find.text('Tiếp tục phiên hiện tại'));
+    await tester.pumpAndSettle();
+    expect(harness.api.signedIn, isTrue);
+    expect(await _readRefreshCredential(credentials), 'refresh-1');
+    expect(_credentialRequests(harness.client), hasLength(1));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('authenticated setup continues to the existing pushed route', (
+    tester,
+  ) async {
+    final credentials = InMemoryCredentialStorage();
+    await _writeRefreshCredential(credentials, 'refresh-0');
+    final delivery = _NativeAccountLinkFixture(null);
+    addTearDown(delivery.dispose);
+    final harness = _Harness.create(_authClient(), credentials);
+    await tester.pumpWidget(
+      MeetingAssistantApp(
+        dependencies: harness.dependencies,
+        accountLinkParser: AccountLinkParser('meeting.example.invalid'),
+        receiveNativeAccountLinks: true,
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.signedIn &&
+          find.text('Tổng quan').evaluate().isNotEmpty,
+      reason: 'verified startup',
+    );
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+    unawaited(
+      navigator.push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('Protected meeting')),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await delivery.send(
+      'https://meeting.example.invalid/account-setup#token=fixture',
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Tiếp tục'));
+    await tester.pumpAndSettle();
+    await _submitLinkPassword(tester);
+    await pumpUntil(
+      tester,
+      () => find.text('Kích hoạt tài khoản thành công').evaluate().isNotEmpty,
+      reason: 'confirmed setup',
+    );
+    expect(find.byType(CredentialOutcomeView), findsOneWidget);
+    await tester.ensureVisible(find.text('Tiếp tục phiên hiện tại'));
+    await tester.tap(find.text('Tiếp tục phiên hiện tại'));
+    await tester.pumpAndSettle();
+    expect(find.text('Protected meeting'), findsOneWidget);
+    expect(find.byType(CredentialOutcomeView), findsNothing);
+    expect(harness.api.signedIn, isTrue);
+    expect(await _readRefreshCredential(credentials), 'refresh-1');
+    expect(_credentialRequests(harness.client), hasLength(1));
+    expect(
+      harness.client.requests.where(
+        (request) =>
+            request.url.path.endsWith('/auth/logout') ||
+            request.url.path.endsWith('/auth/login'),
+      ),
+      isEmpty,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('new external reset route retains server retry restriction', (
+    tester,
+  ) async {
+    final delivery = _NativeAccountLinkFixture(
+      'https://meeting.example.invalid/otp#token=first',
+    );
+    addTearDown(delivery.dispose);
+    final harness = _Harness.create(
+      _authClient(credentialStatus: 429),
+      InMemoryCredentialStorage(),
+    );
+    await tester.pumpWidget(
+      MeetingAssistantApp(
+        dependencies: harness.dependencies,
+        accountLinkParser: AccountLinkParser('meeting.example.invalid'),
+        receiveNativeAccountLinks: true,
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Đặt lại mật khẩu').evaluate().isNotEmpty,
+      reason: 'initial reset',
+    );
+    await tester.pumpAndSettle();
+    await _submitLinkPassword(tester);
+    await pumpUntil(
+      tester,
+      () => find.textContaining('Máy chủ đang giới hạn').evaluate().isNotEmpty,
+      reason: 'server retry restriction',
+    );
+    await delivery.send(
+      'https://meeting.example.invalid/reset-password#token=second',
+    );
+    await tester.pump();
+    final cancel = find.text('Hủy và quay lại');
+    await tester.ensureVisible(cancel);
+    await tester.tap(cancel);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Tiếp tục'));
+    await tester.pumpAndSettle();
+    final fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(0), 'new synthetic password');
+    await tester.enterText(fields.at(1), 'new synthetic password');
+    final submit = find.widgetWithText(FilledButton, 'Xác nhận');
+    expect(tester.widget<FilledButton>(submit).onPressed, isNull);
+    expect(find.textContaining('Máy chủ đang giới hạn'), findsOneWidget);
+    expect(_credentialRequests(harness.client), hasLength(1));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('native initial and subsequent links preserve workflow input', (
     tester,
   ) async {
@@ -1538,8 +1813,26 @@ class _LinkWorkSubmission extends SubmissionCoordinator {
   }
 }
 
+Future<void> _submitLinkPassword(WidgetTester tester) async {
+  final fields = find.byType(TextFormField);
+  const password = 'new synthetic password';
+  await tester.enterText(fields.at(0), password);
+  await tester.enterText(fields.at(1), password);
+  final submit = find.widgetWithText(FilledButton, 'Xác nhận');
+  await tester.ensureVisible(submit);
+  await tester.tap(submit);
+}
+
+Iterable<http.BaseRequest> _credentialRequests(RecordingHttpClient client) =>
+    client.requests.where(
+      (request) =>
+          request.url.path.endsWith('/auth/password-reset') ||
+          request.url.path.endsWith('/auth/account-setup'),
+    );
+
 class _NativeAccountLinkFixture {
-  _NativeAccountLinkFixture(this._pending) {
+  _NativeAccountLinkFixture(String? initial)
+    : _pending = initial == null ? null : {'url': initial, 'initial': true} {
     _messenger.setMockMethodCallHandler(_channel, (call) async {
       expect(call.method, 'takePending');
       final value = _pending;
@@ -1551,10 +1844,10 @@ class _NativeAccountLinkFixture {
   static const _channel = MethodChannel('sme/account_links');
   final _messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-  String? _pending;
+  Map<String, Object>? _pending;
 
   Future<void> send(String raw) async {
-    _pending = raw;
+    _pending = {'url': raw, 'initial': false};
     await _messenger.handlePlatformMessage(
       _channel.name,
       const StandardMethodCodec().encodeMethodCall(
@@ -1606,6 +1899,7 @@ RecordingHttpClient _authClient({
   int? logoutStatus,
   bool recoveryThrottle = false,
   int credentialStatus = 200,
+  Completer<http.StreamedResponse>? credentialResponse,
   Completer<void>? reconciliationRequested,
   Completer<http.StreamedResponse>? reconciliationResponse,
   Completer<void>? identityRequested,
@@ -1636,6 +1930,23 @@ RecordingHttpClient _authClient({
       expect(request.headers['X-Auth-Transport'], isNull);
       expect(request.headers['Authorization'], isNull);
       expect(request.headers['Cookie'], isNull);
+      if (!path.endsWith('/auth/password-recovery') &&
+          credentialResponse != null) {
+        return credentialResponse.future;
+      }
+      if (!path.endsWith('/auth/password-recovery') &&
+          credentialStatus == 429) {
+        return streamedResponse(
+          429,
+          body: utf8.encode(
+            jsonEncode(errorEnvelope('RATE_LIMIT_EXCEEDED', 'Wait.')),
+          ),
+          headers: const {
+            'content-type': 'application/json',
+            'retry-after': '45',
+          },
+        );
+      }
       if (credentialStatus != 200) {
         return jsonResponse(
           credentialStatus,

@@ -120,6 +120,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
   bool _pasteOpen = false;
   bool _autoOpenInitial = false;
   bool _entryScheduled = false;
+  int _publicAuthRevision = 0;
   AccountLinkTicket? _activeLink;
   AccountLinkReceiver? _linkReceiver;
   final _retryDeadlines = AccountRetryDeadlines();
@@ -437,9 +438,10 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     final ticket = _accountLinks.claim();
     if (ticket == null) return;
     setState(() => _activeLink = ticket);
+    AccountLinkExit? exit;
     try {
-      await navigator.push<void>(
-        MaterialPageRoute<void>(
+      exit = await navigator.push<AccountLinkExit>(
+        MaterialPageRoute<AccountLinkExit>(
           builder: (_) => AccountLinkEntryView(
             ticket: ticket,
             api: api,
@@ -459,13 +461,23 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
       );
     } finally {
       if (mounted && identical(ticket, _activeLink)) {
-        setState(() => _activeLink = null);
+        setState(() {
+          _activeLink = null;
+          if (exit == AccountLinkExit.signIn &&
+              identical(key, _navigatorKey) &&
+              _sessionReady &&
+              !api.signedIn) {
+            // Terminal continuation is not a return to an old recovery form.
+            _publicAuthRevision++;
+          }
+        });
         _accountLinks.finish(ticket);
       }
     }
   }
 
   Widget _publicAuthPage() => AuthPage(
+    key: ValueKey(_publicAuthRevision),
     api: api,
     credentialWorkflows: _credentialWorkflows,
     retryDeadlines: _retryDeadlines,

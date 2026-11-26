@@ -155,7 +155,6 @@ class AccountLinkReceiver {
   bool _started = false;
   bool _draining = false;
   bool _requested = false;
-  bool _initial = true;
 
   void start() {
     if (_disposed || _started) return;
@@ -179,12 +178,17 @@ class AccountLinkReceiver {
     try {
       while (_requested && !_disposed) {
         _requested = false;
-        final initial = _initial;
-        _initial = false;
-        final url = await _channel.invokeMethod<String>('takePending');
+        final delivery = await _channel.invokeMethod<Object?>('takePending');
         if (_disposed) return;
-        if (url != null) {
-          onLink(url, initial);
+        if (delivery != null) {
+          if (delivery is Map<Object?, Object?> &&
+              delivery['url'] is String &&
+              delivery['initial'] is bool) {
+            onLink(delivery['url'] as String, delivery['initial'] as bool);
+          } else {
+            // Never grant automatic entry based on an ambiguous delivery.
+            onFailure();
+          }
           // Recheck the buffer even if a native availability signal was lost.
           _requested = true;
         }

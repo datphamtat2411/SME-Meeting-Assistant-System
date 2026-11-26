@@ -24,7 +24,9 @@ at 4,096. A parsed capability is not proof of backend authorization.
 Android VIEW intents are acquired by the existing activity, not generic
 Flutter routing. The transient native buffer holds at most four distinct raw
 entries and drops the oldest on overflow; Dart takes each entry once in
-arrival order. Activity recreation does not re-read the original intent.
+arrival order. Each delivery carries its original launch/subsequent-intent
+classification; dequeue order never grants initial-link auto-entry.
+Activity recreation does not re-read the original intent.
 The default Flutter deep-link handler is disabled. The application-scoped
 receiver registers its listener before draining and rechecks after delivery.
 Raw URL references are dropped after parsing. Dart retains at most one
@@ -33,7 +35,8 @@ and decoded capability values deduplicate by a bounded, non-persistent
 fingerprint. A terminal attempt does not auto-reopen on repeated delivery.
 
 Signed-out initial links may open once after safe session restoration.
-Other deliveries require deliberate continuation; authenticated links explain
+Other deliveries require deliberate continuation, including a subsequent
+intent received before the receiver's first drain; authenticated links explain
 that the capability may belong to another account. New links never replace
 an active form or terminal outcome silently. Cancel the existing form or
 finish the operation before continuing a deferred link. Active recording,
@@ -48,8 +51,16 @@ own non-sensitive outcomes when mandatory reset reconciliation replaces the
 navigator. Retry deadlines are application-scoped, preserving the existing
 60-second recovery acknowledgement cooldown and server Retry-After. HTTP 404
 means service unavailable, not proof that a capability expired or was consumed.
+Cancellation returns to a compatible prior route; signed-out terminal
+continuation explicitly returns to sign-in, even from recovery acknowledgement.
 Whole-link paste uses the same parser and entry rules, with no raw token input
 in the production authentication flow. Clipboard access is deliberate.
+
+The existing foreground-only recording lifecycle may interrupt recording when
+the user switches to an external email application. Account-link guards prevent
+additional avoidable interruption from link entry or mutation; they do not
+provide background recording or override mandatory security containment.
+Physical-device acceptance must verify this interaction.
 
 ## Android association and verification
 
@@ -109,6 +120,12 @@ disabled. Never paste real capabilities into shell history, logs or screenshots.
 ## Acceptance status
 
 Development implementation and regression tests are version controlled.
+The previous revision's Flutter checks passed; native verification stopped
+at Maven Central HTTP 429 resolving the pinned Kotlin Gradle plugin BOM.
+No dependency pin, repository, or verification gate is changed for this
+external provisioning failure. The hardening revision adds source-tagged native
+deliveries and regression scenarios for terminal navigation, pending mutation,
+verification retry, authenticated setup and shared retry restrictions.
 The final Mobile CI run is required to establish formatting, analysis,
 Flutter tests, native JVM tests and both manifest configurations/builds.
 The approved deployment host, production signing certificate, actual

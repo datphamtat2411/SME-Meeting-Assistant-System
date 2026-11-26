@@ -1,20 +1,23 @@
 package vn.sme.meetingassistant.sme_meeting_assistant
 
+/** Keep acquisition provenance without exposing the raw URL in toString(). */
+internal class AccountLinkDelivery(val url: String, val initial: Boolean)
+
 /** Main-thread owned, bounded raw delivery buffer. Dart owns trusted pending input. */
 internal class AccountLinkBuffer {
-    private val pending = ArrayDeque<String>()
+    private val pending = ArrayDeque<AccountLinkDelivery>()
 
-    fun offer(value: String): Boolean {
+    fun offer(value: String, initial: Boolean): Boolean {
         if (value.length > maxUrlLength || !value.startsWith("https://", ignoreCase = true)) {
             return false
         }
-        if (value in pending) return false
+        if (pending.any { it.url == value }) return false
         if (pending.size == maxPending) pending.removeFirst()
-        pending.addLast(value)
+        pending.addLast(AccountLinkDelivery(value, initial))
         return true
     }
 
-    fun take(): String? = pending.removeFirstOrNull()
+    fun take(): AccountLinkDelivery? = pending.removeFirstOrNull()
 
     fun clear() {
         pending.clear()

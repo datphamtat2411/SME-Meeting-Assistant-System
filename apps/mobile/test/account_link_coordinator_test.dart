@@ -14,7 +14,7 @@ void main() {
     const codec = StandardMethodCodec();
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    final first = Completer<String?>();
+    final first = Completer<Object?>();
     final requested = Completer<void>();
     final drained = Completer<void>();
     final deliveries = <(String, bool)>[];
@@ -30,7 +30,9 @@ void main() {
       final value = pending;
       pending = null;
       if (value == null) drained.complete();
-      return codec.encodeSuccessEnvelope(value);
+      return codec.encodeSuccessEnvelope(
+        value == null ? null : {'url': value, 'initial': false},
+      );
     });
     final receiver = AccountLinkReceiver(
       channel: channel,
@@ -50,11 +52,55 @@ void main() {
       (_) {},
     );
     expect(calls, 1);
-    first.complete('cold');
+    first.complete({'url': 'cold', 'initial': true});
     await drained.future.timeout(const Duration(seconds: 5));
     await Future<void>.delayed(Duration.zero);
     expect(deliveries, [('cold', true), ('warm', false)]);
     expect(calls, 3);
+    expect(failures, 0);
+  });
+
+  test('a warm first delivery never gains initial-entry privileges', () async {
+    const channel = MethodChannel('test/account_links/warm');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final delivered = Completer<(String, bool)>();
+    final requested = Completer<void>();
+    final response = Completer<Object?>();
+    var calls = 0;
+    var failures = 0;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'takePending');
+      if (calls++ != 0) return null;
+      requested.complete();
+      return response.future;
+    });
+    final receiver = AccountLinkReceiver(
+      channel: channel,
+      onLink: (url, initial) => delivered.complete((url, initial)),
+      onFailure: () => failures++,
+    );
+    addTearDown(() {
+      receiver.dispose();
+      messenger.setMockMethodCallHandler(channel, null);
+    });
+    receiver.start();
+    await requested.future;
+    await messenger.handlePlatformMessage(
+      channel.name,
+      const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('available'),
+      ),
+      (_) {},
+    );
+    expect(calls, 1);
+    response.complete({'url': 'warm', 'initial': false});
+    expect(
+      await delivered.future.timeout(const Duration(seconds: 5)),
+      ('warm', false),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(calls, 2);
     expect(failures, 0);
   });
 

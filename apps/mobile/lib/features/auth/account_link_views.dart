@@ -71,6 +71,9 @@ class _AccountLinkPasteViewState extends State<AccountLinkPasteView> {
   );
 }
 
+/// Non-sensitive continuation result; a null result is cancellation.
+enum AccountLinkExit { signIn }
+
 /// A public account route inside the current session-scoped Navigator.
 /// The app root presents the same outcome if reconciliation replaces it.
 class AccountLinkEntryView extends StatefulWidget {
@@ -104,7 +107,7 @@ class _AccountLinkEntryViewState extends State<AccountLinkEntryView> {
     _capability = widget.ticket.takeCapability();
   }
 
-  void _continue() {
+  void _close({bool returnToSignIn = false}) {
     if (_closing ||
         widget.owner.hasInFlight ||
         widget.retryDeadlines.hasActiveSubmission) {
@@ -115,7 +118,7 @@ class _AccountLinkEntryViewState extends State<AccountLinkEntryView> {
       _capability = null;
     });
     widget.owner.dismiss();
-    Navigator.of(context).pop();
+    Navigator.of(context).pop(returnToSignIn ? AccountLinkExit.signIn : null);
   }
 
   void _requestRecovery() {
@@ -155,14 +158,15 @@ class _AccountLinkEntryViewState extends State<AccountLinkEntryView> {
               ? CredentialOutcomeView(
                   outcome: outcome,
                   authenticated: widget.api.signedIn,
-                  onContinue: _continue,
+                  onContinue: () =>
+                      _close(returnToSignIn: !widget.api.signedIn),
                   onRecovery: _requestRecovery,
                 )
               : _recovery
               ? RecoveryRequestForm(
                   api: widget.api,
                   retryDeadlines: widget.retryDeadlines,
-                  onBack: _continue,
+                  onBack: () => _close(returnToSignIn: !widget.api.signedIn),
                 )
               : capability == null
               ? const AuthFeedback(
@@ -176,7 +180,7 @@ class _AccountLinkEntryViewState extends State<AccountLinkEntryView> {
                   owner: widget.owner,
                   retryDeadlines: widget.retryDeadlines,
                   canDispatch: widget.canDispatch,
-                  onBack: _continue,
+                  onBack: _close,
                   onRecovery: _requestRecovery,
                   backLabel: 'Hủy và quay lại',
                 ),

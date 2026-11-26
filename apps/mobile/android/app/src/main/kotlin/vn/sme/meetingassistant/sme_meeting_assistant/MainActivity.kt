@@ -17,7 +17,7 @@ class MainActivity : FlutterActivity() {
         val initial = intent
         // A recreated activity must not replay the original VIEW intent.
         // Undelivered process-local entries remain available to the new engine.
-        if (savedInstanceState == null) captureAccountLink(initial)
+        if (savedInstanceState == null) captureAccountLink(initial, initial = true)
         if (initial.action == Intent.ACTION_VIEW) {
             setIntent(Intent(initial).setData(null))
         }
@@ -25,7 +25,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onNewIntent(intent: Intent) {
-        captureAccountLink(intent)
+        captureAccountLink(intent, initial = false)
         val sanitized = if (intent.action == Intent.ACTION_VIEW) {
             Intent(intent).setData(null)
         } else intent
@@ -33,10 +33,10 @@ class MainActivity : FlutterActivity() {
         setIntent(sanitized)
     }
 
-    private fun captureAccountLink(intent: Intent?) {
+    private fun captureAccountLink(intent: Intent?, initial: Boolean) {
         if (intent?.action != Intent.ACTION_VIEW) return
         val url = intent.dataString ?: return
-        if (accountLinks.offer(url)) {
+        if (accountLinks.offer(url, initial)) {
             accountLinkChannel?.invokeMethod("available", null)
         }
     }
@@ -51,7 +51,9 @@ class MainActivity : FlutterActivity() {
         ).also { channel ->
             channel.setMethodCallHandler { call, result ->
                 if (call.method == "takePending" && call.arguments == null) {
-                    result.success(accountLinks.take())
+                    result.success(accountLinks.take()?.let {
+                        mapOf("url" to it.url, "initial" to it.initial)
+                    })
                 } else {
                     result.notImplemented()
                 }
