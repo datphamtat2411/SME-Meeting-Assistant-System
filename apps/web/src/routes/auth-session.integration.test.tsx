@@ -540,14 +540,15 @@ describe('session restoration and protected routing', () => {
         },
       }
       let replaced = false
-      getCurrentUser.mockImplementation(async (url: string) =>
-        (url === '/me/preferences'
-          ? replaced
-            ? nextPreferences
-            : previousPreferences
-          : replaced
-            ? nextIdentity
-            : identity) as never
+      getCurrentUser.mockImplementation(
+        async (url: string) =>
+          (url === '/me/preferences'
+            ? replaced
+              ? nextPreferences
+              : previousPreferences
+            : replaced
+              ? nextIdentity
+              : identity) as never
       )
       let resolve!: (value: Preferences) => void
       let reject!: (error: Error) => void
@@ -558,7 +559,9 @@ describe('session restoration and protected routing', () => {
       const patch = vi
         .spyOn(coreApi, 'patch')
         .mockImplementationOnce(() => pending as never)
-      const { queryClient, screen } = await renderRoute('/settings/notifications')
+      const { queryClient, screen } = await renderRoute(
+        '/settings/notifications'
+      )
       const dispose = configureSessionRevalidation({
         queryClient,
         onContainment: () => {
@@ -580,7 +583,8 @@ describe('session restoration and protected routing', () => {
         )
         await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
         const oldMutation = queryClient.getMutationCache().getAll()[0]
-        if (!oldMutation) throw new Error('Expected a pending preference update')
+        if (!oldMutation)
+          throw new Error('Expected a pending preference update')
         expect(oldMutation.state.status).toBe('pending')
 
         replaced = true
@@ -946,9 +950,17 @@ describe('session restoration and protected routing', () => {
   )
 
   it('resets retryable recovery state before revalidating an unavailable session', async () => {
+    const preferences: Preferences = {
+      timezone: 'UTC',
+      locale: 'en-US',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    }
     getCurrentUser
       .mockRejectedValueOnce(apiError(0, 'network'))
-      .mockResolvedValue(identity as never)
+      .mockImplementation(async (url: string) =>
+        (url === '/me/preferences' ? preferences : identity) as never
+      )
 
     const { screen } = await renderRoute('/calendar')
 
@@ -958,20 +970,26 @@ describe('session restoration and protected routing', () => {
     await screen.getByRole('button', { name: 'Retry' }).click()
 
     await expect.element(screen.getByText('Canonical User')).toBeInTheDocument()
-    expect(getCurrentUser).toHaveBeenCalledTimes(2)
+    expect(
+      getCurrentUser.mock.calls.filter(([url]) => url === '/auth/me')
+    ).toHaveLength(2)
   })
 
   it('revalidates identity when navigating between protected routes', async () => {
     const { router, screen } = await renderRoute('/')
     await expect.element(screen.getByText('Canonical User')).toBeInTheDocument()
-    const initialChecks = getCurrentUser.mock.calls.length
+    const initialChecks = getCurrentUser.mock.calls.filter(
+      ([url]) => url === '/auth/me'
+    ).length
 
     await router.navigate({ to: '/calendar' })
 
     await expect
       .element(screen.getByRole('heading', { name: 'Calendar' }))
       .toBeInTheDocument()
-    expect(getCurrentUser.mock.calls.length).toBeGreaterThan(initialChecks)
+    expect(
+      getCurrentUser.mock.calls.filter(([url]) => url === '/auth/me').length
+    ).toBeGreaterThan(initialChecks)
   })
 
   it('redirects an active session away from sign-in to its safe requested destination', async () => {

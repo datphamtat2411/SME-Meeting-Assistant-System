@@ -1093,7 +1093,14 @@ function MeetingEditSession({
     operationInFlight.current = true
     clearPreview()
     setErrorMessage(null)
-    await checkAndCommit(values, 'schedule', payload, scheduleValues, true, base)
+    await checkAndCommit(
+      values,
+      'schedule',
+      payload,
+      scheduleValues,
+      true,
+      base
+    )
   }
 
   const confirmScheduleWarnings = () => {
@@ -1293,7 +1300,6 @@ function MeetingEditSession({
                     </FormItem>
                   )}
                 />
-
               </fieldset>
               <div className='flex items-center gap-2 text-sm text-muted-foreground'>
                 <CalendarDays className='size-4' />
@@ -1355,12 +1361,14 @@ function MeetingEditSession({
                     <p>
                       Latest room:{' '}
                       {latestRoomId
-                        ? (latestRoomQuery.data?.name ?? 'Room details unavailable')
+                        ? (latestRoomQuery.data?.name ??
+                          'Room details unavailable')
                         : 'No room assigned'}
                     </p>
                     <p>
-                      Review the new version before saving. Keeping edits updates
-                      untouched fields and requires a new schedule check.
+                      Review the new version before saving. Keeping edits
+                      updates untouched fields and requires a new schedule
+                      check.
                     </p>
                     <Button
                       type='button'
@@ -1456,7 +1464,8 @@ function MeetingEditSession({
               ) : null}
               {phase === 'saving' ? 'Saving...' : 'Save changes'}
             </Button>
-            {(latestDetail?.meeting.status ?? workingMeeting.status) === 'DRAFT' && (
+            {(latestDetail?.meeting.status ?? workingMeeting.status) ===
+              'DRAFT' && (
               <Button
                 type='button'
                 onClick={handleSaveAndScheduleClick}

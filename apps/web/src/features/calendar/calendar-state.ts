@@ -145,8 +145,7 @@ export function resolveCalendarState(
   timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 ): CalendarState {
   const normalized = normalizeCalendarSearch(search, now)
-  const monthKey =
-    normalized.month ?? currentCalendarMonth(now, timezone)
+  const monthKey = normalized.month ?? currentCalendarMonth(now, timezone)
   return {
     monthKey,
     view: normalized.view ?? 'month',

@@ -611,7 +611,7 @@ describe('MeetingCreationDialog', () => {
     expect(previewSpy).toHaveBeenCalledWith(
       '/meeting-schedule-checks',
       expect.objectContaining({ start, end }),
-      expect.anything()
+      undefined
     )
     expect(postSpy).toHaveBeenCalledTimes(2)
     expect(postSpy.mock.calls[0]?.[1]).toMatchObject({

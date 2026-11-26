@@ -238,7 +238,8 @@ export function ConversationPanel({
             Core requested no retry before{' '}
             <RegionalTimestamp
               value={new Date(turnActions.blockedUntil).toJSON()}
-            />.
+            />
+            .
           </p>
         )}
         {inactive && (

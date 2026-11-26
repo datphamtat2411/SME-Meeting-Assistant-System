@@ -202,9 +202,9 @@ describe('calendar domain projection', () => {
       '2026-12-31T23:30:00.000Z',
       '2027-01-01T00:00:00.000Z'
     )
-    expect(
-      projectCalendarMonth([endingAtNewYear], '2027-01').segments
-    ).toEqual([])
+    expect(projectCalendarMonth([endingAtNewYear], '2027-01').segments).toEqual(
+      []
+    )
   })
 
   it('uses 23-hour spring-forward and 25-hour fall-back civil days', async () => {
