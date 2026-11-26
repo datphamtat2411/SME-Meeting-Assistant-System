@@ -1112,7 +1112,9 @@ void main() {
       dependencies.assistantWorkspace.conversation?.meetingId,
       testMeetingId,
     );
-    final send = find.byTooltip('Gửi câu hỏi');
+    final send = find.byWidgetPredicate(
+      (widget) => widget is IconButton && widget.tooltip == 'Gửi câu hỏi',
+    );
     expect(tester.widget<IconButton>(send).onPressed, isNull);
     await tester.enterText(composer, '   ');
     await tester.pump();
@@ -1699,46 +1701,62 @@ void main() {
         (tester) async {
           var reads = 0;
           var writes = 0;
-          final repository = (await tester.runAsync(
-            () => _repository(
-              MeetingTestHttpClient((request) async {
-                if (request.url.path.endsWith('/conversations')) {
-                  return meetingApiSuccess([]);
-                }
-                if (request.url.path.endsWith('/turns/by-key')) {
-                  reads++;
-                  expect(request.method, 'GET');
-                  if (longCooldown && reads == 1) {
-                    return meetingApiFailure(
-                      429,
-                      'RATE_LIMIT_EXCEEDED',
-                      headers: {'retry-after': '121'},
-                    );
-                  }
-                  return meetingApiSuccess({
-                    'turn': _turn(processing: true),
-                    'recoveryEligible': false,
-                  });
-                }
-                if (request.method == 'POST') {
-                  writes++;
-                  return meetingApiSuccess(
-                    _turn(processing: true),
-                    status: 202,
-                  );
-                }
-                return meetingApiSuccess(_detail(messages: [_userMessage()]));
-              }),
-            ),
-          ))!;
+          final client = MeetingTestHttpClient((request) async {
+            if (request.url.path.endsWith('/conversations')) {
+              return meetingApiSuccess([]);
+            }
+            if (request.url.path.endsWith('/turns/by-key')) {
+              reads++;
+              expect(request.method, 'GET');
+              if (longCooldown && reads == 1) {
+                return meetingApiFailure(
+                  429,
+                  'RATE_LIMIT_EXCEEDED',
+                  headers: {'retry-after': '121'},
+                );
+              }
+              return meetingApiSuccess({
+                'turn': _turn(processing: true),
+                'recoveryEligible': false,
+              });
+            }
+            if (request.method == 'POST') {
+              writes++;
+              return meetingApiSuccess(
+                _turn(processing: true),
+                status: 202,
+              );
+            }
+            return meetingApiSuccess(_detail(messages: [_userMessage()]));
+          });
+          final api = createMeetingTestApi(client);
+          addTearDown(api.dispose);
+          await tester.runAsync(() => signInMeetingTestApi(api));
+          final repository = AssistantRepository(api: api);
           final controller = AssistantWorkspaceController(
             repository,
             now: tester.binding.clock.now,
           );
           addTearDown(controller.dispose);
+          Future<void> settle(bool Function() condition, String reason) =>
+              pumpUntil(
+                tester,
+                condition,
+                reason: reason,
+                step: Duration.zero,
+              );
+
           controller.setActive(true);
-          await controller.open(_typedConversation());
-          await controller.submit('Câu hỏi');
+          unawaited(controller.open(_typedConversation()));
+          await settle(
+            () => controller.historyVerified && !controller.historyLoading,
+            'initial history',
+          );
+          unawaited(controller.submit('Câu hỏi'));
+          await settle(
+            () => reads == 1 && controller.pending?.busy == false,
+            'initial status read',
+          );
           final command = controller.pending!;
           expect(reads, 1);
           expect(command.automaticChecks, 1);
@@ -1755,8 +1773,10 @@ void main() {
               await tester.pump(Duration(seconds: delay - 1));
               expect(reads, before);
               await tester.pump(const Duration(seconds: 1));
-              await tester.pump();
-              expect(reads, before + 1);
+              await settle(
+                () => reads == before + 1 && !command.busy,
+                'scheduled status read',
+              );
             }
             expect(reads, 12);
             expect(command.automaticExhausted, isTrue);
@@ -1764,13 +1784,20 @@ void main() {
           final exhaustedReads = reads;
           controller.setActive(false);
           controller.setActive(true);
-          await tester.pump();
+          await settle(
+            () => controller.historyVerified && !controller.historyLoading,
+            'authoritative reactivation',
+          );
           await tester.pump(const Duration(seconds: 30));
           expect(reads, exhaustedReads);
           expect(controller.pending, same(command));
           expect(command.automaticExhausted, isTrue);
           expect(controller.historyVerified, isTrue);
-          await controller.checkPending();
+          unawaited(controller.checkPending());
+          await settle(
+            () => reads == exhaustedReads + 1 && !command.busy,
+            'manual status read after budget exhaustion',
+          );
           expect(reads, exhaustedReads + 1);
           expect(writes, 1);
           controller.setActive(false);
