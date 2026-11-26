@@ -202,6 +202,8 @@ class ExportJobIntegrationTests {
         assertThat(failed.status()).isEqualTo(ExportStatus.FAILED);
         assertThat(failed.generationAttempt()).isEqualTo(1);
         assertThat(failed.lastErrorCode()).isEqualTo("EXPORT_STORAGE_UNAVAILABLE");
+        assertThat(records.requireStatus(pending.id(), 2).retryEligible()).isTrue();
+        assertThat(records.requireStatus(pending.id(), 1).retryEligible()).isFalse();
         assertThat(failed.readyAt()).isNull();
         assertThat(failed.objectKey()).isNull();
 
@@ -209,6 +211,7 @@ class ExportJobIntegrationTests {
         awaitRetryEligibility(pending.id());
         worker.reconcile();
         assertThat(records.require(pending.id()).status()).isEqualTo(ExportStatus.PENDING);
+        assertThat(records.requireStatus(pending.id(), 2).retryEligible()).isFalse();
         assertThat(worker.processNext()).isTrue();
         ExportRecord ready=records.require(pending.id());
         assertThat(ready.status()).isEqualTo(ExportStatus.READY);
@@ -270,6 +273,7 @@ class ExportJobIntegrationTests {
         ExportRecord failed=records.require(pending.id());
         assertThat(failed.status()).isEqualTo(ExportStatus.FAILED);
         assertThat(failed.lastErrorCode()).isEqualTo("EXPORT_STORAGE_INTEGRITY");
+        assertThat(records.requireStatus(pending.id(), 2).retryEligible()).isFalse();
         worker.reconcile();
         assertThat(records.require(pending.id()).status()).isEqualTo(ExportStatus.FAILED);
     }

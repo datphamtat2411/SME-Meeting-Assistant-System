@@ -282,6 +282,46 @@ describe('ExportPanel authorization and download boundary', () => {
     exportMocks.accessMinutesExport.mockResolvedValue(exportCapability)
   })
 
+  it('observes a retryable failure on the same export and only replaces terminal failures', async () => {
+    const failed = {
+      exportId,
+      meetingId: authorizationMocks.value.meetingId,
+      format: 'PDF',
+      status: 'FAILED',
+      retryEligible: true,
+      freshness: 'NOT_APPLICABLE',
+    }
+    exportMocks.fetchExportStatus.mockResolvedValue(failed)
+    const screen = await renderPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await expect
+      .element(screen.getByText('Waiting for server retry'))
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('button', { name: 'Generate new PDF' }))
+      .not.toBeInTheDocument()
+    exportMocks.fetchExportStatus.mockResolvedValue({
+      ...failed,
+      status: 'PENDING',
+      retryEligible: false,
+    })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Refresh PDF status' })
+    )
+    await expect.element(screen.getByText('Queued')).toBeVisible()
+    exportMocks.fetchExportStatus.mockResolvedValue({
+      ...failed,
+      retryEligible: false,
+    })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Refresh PDF status' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Generate new PDF' }))
+      .toBeEnabled()
+    expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
+  })
+
   it('does not create exports when deployment admission is disabled', async () => {
     exportMocks.capabilities.admission = false
     const screen = await renderPanel()

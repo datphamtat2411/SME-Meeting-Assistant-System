@@ -55,6 +55,27 @@ describe('export adapter identity contracts', () => {
     ).toBe('UNKNOWN')
   })
 
+  it('validates retry eligibility without treating older FAILED responses as terminal', () => {
+    const failed = {
+      ...status,
+      status: 'FAILED',
+      readyAt: null,
+      safeErrorCode: 'EXPORT_STORAGE_UNAVAILABLE',
+      freshness: 'NOT_APPLICABLE',
+      freshnessCheckedAt: null,
+    }
+    expect(
+      parseExportStatus({ ...failed, retryEligible: true }).retryEligible
+    ).toBe(true)
+    expect(
+      parseExportStatus({ ...failed, retryEligible: false }).retryEligible
+    ).toBe(false)
+    expect(parseExportStatus(failed).retryEligible).toBeUndefined()
+    expect(() =>
+      parseExportStatus({ ...status, retryEligible: true })
+    ).toThrow(CoreApiError)
+  })
+
   it('uses a distinct recovery route and never creates on unavailable receipt', async () => {
     const post = vi.spyOn(coreApi, 'post').mockResolvedValue({
       outcome: 'UNAVAILABLE',

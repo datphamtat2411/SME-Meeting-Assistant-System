@@ -13,6 +13,7 @@ export const exportStatusSchema = z.object({
   createdAt: instant,
   readyAt: instant.nullable(),
   safeErrorCode: z.string().nullable(),
+  retryEligible: z.boolean().optional(),
   freshness: z.enum(['CURRENT', 'STALE', 'NOT_APPLICABLE', 'UNKNOWN']),
   freshnessCheckedAt: instant.nullable(),
 })
@@ -182,6 +183,7 @@ export function parseExportStatus(
   }
   const { status, readyAt, freshness, freshnessCheckedAt } = parsed.data
   if (
+    (parsed.data.retryEligible === true && status !== 'FAILED') ||
     (status === 'READY' &&
       (readyAt === null || freshness === 'NOT_APPLICABLE')) ||
     (status !== 'READY' &&

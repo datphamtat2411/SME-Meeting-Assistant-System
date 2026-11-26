@@ -28,6 +28,7 @@ import {
 } from './export-api'
 import {
   canRetryObservation,
+  isTerminalExportStatus,
   normalPollMs,
   observationBudgetMs,
   observationRetryDelay,
@@ -200,11 +201,7 @@ function FormatExportCard({
       )
         return false
       const value = query.state.data
-      return !value ||
-        value.status === 'PENDING' ||
-        value.status === 'GENERATING'
-        ? normalPollMs
-        : false
+      return isTerminalExportStatus(value) ? false : normalPollMs
     },
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
@@ -213,9 +210,7 @@ function FormatExportCard({
   })
   const status =
     canObserve && !statusQuery.isError ? statusQuery.data : undefined
-  const terminal = Boolean(
-    status && (status.status === 'READY' || status.status === 'FAILED')
-  )
+  const terminal = isTerminalExportStatus(status)
   const tracking =
     canObserve &&
     Boolean(operation?.exportId) &&
@@ -394,7 +389,13 @@ function FormatExportCard({
           </p>
         </div>
         {status && (
-          <Badge variant='outline'>{statusLabels[status.status]}</Badge>
+          <Badge variant='outline'>
+            {status.status === 'FAILED' && !terminal
+              ? status.retryEligible === true
+                ? 'Waiting for server retry'
+                : 'Retry disposition unavailable'
+              : statusLabels[status.status]}
+          </Badge>
         )}
       </div>
       {busy && (
@@ -454,8 +455,9 @@ function FormatExportCard({
       )}
       {status?.status === 'FAILED' && (
         <p className='text-sm text-muted-foreground'>
-          The server could not generate this document. You can request a new
-          export.
+          {terminal
+            ? 'The server could not generate this document. You can request a new export.'
+            : 'The original export may be retried by the server. Continue tracking it rather than creating another document.'}
         </p>
       )}
       {status?.status === 'READY' && status.freshness === 'CURRENT' && (

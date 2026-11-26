@@ -1,4 +1,12 @@
 import { normalizeCoreApiError } from '@/lib/core-api'
+import type { ExportStatus } from './export-api'
+
+export function isTerminalExportStatus(status: ExportStatus | undefined) {
+  return (
+    status?.status === 'READY' ||
+    (status?.status === 'FAILED' && status.retryEligible === false)
+  )
+}
 
 export const observationBudgetMs = 10 * 60_000
 export const normalPollMs = 4_000

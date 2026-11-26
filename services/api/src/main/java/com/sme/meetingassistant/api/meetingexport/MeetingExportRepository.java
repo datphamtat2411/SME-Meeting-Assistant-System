@@ -27,6 +27,14 @@ public class MeetingExportRepository {
         artifact_sha256,artifact_size_bytes,row_version
         """;
 
+    // Shared by worker reconciliation and the public status projection. Backoff
+    // determines when an eligible failure can be requeued, not whether it is final.
+    static final String RETRY_ELIGIBLE = """
+        e.status='FAILED' AND e.generation_attempt < ?
+          AND e.last_error_code IN ('EXPORT_STORAGE_UNAVAILABLE','EXPORT_LEASE_EXPIRED')
+          AND EXISTS (SELECT 1 FROM meeting_export_intakes i WHERE i.export_id=e.id)
+        """;
+
     private final JdbcTemplate jdbc;
     private final int retentionHours;
 
@@ -157,6 +165,19 @@ public class MeetingExportRepository {
     @Transactional(readOnly = true)
     public ExportRecord require(UUID id) {
         return find(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+    }
+
+    public record StatusObservation(ExportRecord record, boolean retryEligible) { }
+
+    /** Read the generation state and its retry disposition in one DB snapshot. */
+    @Transactional(readOnly = true)
+    public StatusObservation requireStatus(UUID id, int maxAttempts) {
+        return jdbc.query("SELECT " + COLUMNS + ", COALESCE((" + RETRY_ELIGIBLE
+                + "), false) AS retry_eligible FROM meeting_exports e WHERE e.id=?",
+                (rs, row) -> new StatusObservation(map(rs, row),
+                        rs.getBoolean("retry_eligible")), maxAttempts, id)
+                .stream().findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
     }
 
     static ExportRecord map(ResultSet rs, int row) throws SQLException {

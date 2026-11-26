@@ -80,6 +80,7 @@ class ExportHttpIntegrationTests {
                 .principal(principal(organizer)))
                 .andExpect(status().isOk()).andReturn();
         String publicJson=readable.getResponse().getContentAsString();
+        assertThat(json.readTree(publicJson).path("data").path("retryEligible").isBoolean()).isTrue();
         assertThat(publicJson).contains(exportId.toString())
                 .doesNotContain("objectKey","snapshotObjectKey","claimToken",
                         "artifactSha256","intakeSha256");
