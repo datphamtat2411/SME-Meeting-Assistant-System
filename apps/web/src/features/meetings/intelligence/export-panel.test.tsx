@@ -9,6 +9,7 @@ import { ExportPanel } from './export-panel'
 
 const exportMocks = vi.hoisted(() => ({
   createMinutesExport: vi.fn(),
+  recoverMinutesExport: vi.fn(),
   accessMinutesExport: vi.fn(),
 }))
 
@@ -99,6 +100,12 @@ vi.mock('./minutes-api', () => ({
 
 vi.mock('./export-api', () => ({
   createMinutesExport: exportMocks.createMinutesExport,
+  recoverMinutesExport: exportMocks.recoverMinutesExport,
+  exportCapabilitiesQuery: (meetingId: string) => ({
+    queryKey: ['export', 'capabilities', meetingId],
+    queryFn: async () => ({ meetingId, admission: true, recovery: true, status: true, access: true }),
+    retry: false,
+  }),
   accessMinutesExport: exportMocks.accessMinutesExport,
   exportStatusQuery: (exportId: string) => ({
     queryKey: ['export', exportId],
@@ -256,6 +263,7 @@ describe('ExportPanel authorization and download boundary', () => {
       proposalsIncluded: false,
     }
     exportMocks.createMinutesExport.mockResolvedValue({ exportId })
+    exportMocks.recoverMinutesExport.mockResolvedValue({ exportId })
     exportMocks.accessMinutesExport.mockResolvedValue(exportCapability)
   })
 
@@ -327,11 +335,30 @@ describe('ExportPanel authorization and download boundary', () => {
     await expect.element(recover).toBeEnabled()
     await userEvent.click(recover)
     await expect
-      .poll(() => exportMocks.createMinutesExport.mock.calls.length)
-      .toBe(2)
+      .poll(() => exportMocks.recoverMinutesExport.mock.calls.length)
+      .toBe(1)
+    expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
     expect(exportMocks.createMinutesExport.mock.calls[0]).toEqual(
-      exportMocks.createMinutesExport.mock.calls[1]
+      exportMocks.recoverMinutesExport.mock.calls[0]
     )
+  })
+
+  it('does not automatically create an export after an unavailable recovery receipt', async () => {
+    exportMocks.createMinutesExport.mockRejectedValueOnce(new CoreApiError({
+      message: 'Connection interrupted',
+      code: 'EXPORT_ADMISSION_UNCERTAIN',
+      kind: 'network',
+      recoveryOutcome: 'uncertain',
+    }))
+    exportMocks.recoverMinutesExport.mockResolvedValueOnce(null)
+    const screen = await renderPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Recover PDF request' }))
+    await expect.element(screen.getByRole('button', { name: 'Confirm new PDF request' })).toBeEnabled()
+    expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm new PDF request' }))
+    await expect.poll(() => exportMocks.createMinutesExport.mock.calls.length).toBe(2)
+    expect(exportMocks.createMinutesExport.mock.calls[1][2]).not.toBe(exportMocks.createMinutesExport.mock.calls[0][2])
   })
 
   it('records admission after the presentation unmounts without replaying POST', async () => {

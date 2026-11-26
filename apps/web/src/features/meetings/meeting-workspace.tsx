@@ -807,6 +807,7 @@ function MeetingWorkspace({
         organizer={organizer}
         canEdit={canEdit}
         onEdit={() => setEditOpen(true)}
+        onExportMinutes={() => navigateToSection('intelligence', false, 'minutes')}
       />
       {canEdit && (
         <MeetingEditDialog
