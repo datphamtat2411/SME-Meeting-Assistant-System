@@ -28,6 +28,7 @@ class AssistantPendingTurn {
 
   bool get terminal =>
       turn != null && turn!.state != AssistantTurnState.processing;
+  bool get canCheck => !busy && (uncertain || turn != null);
   bool get canEdit =>
       !busy &&
       !uncertain &&
@@ -78,6 +79,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       historyVerified &&
       conversation?.status == AssistantConversationStatus.active &&
       pending == null;
+  DateTime? get creationRetryAt => _creationRetryAt;
   bool get canDiscardCreation =>
       !creating &&
       !_creationUncertain &&
@@ -111,11 +113,12 @@ class AssistantWorkspaceController extends ChangeNotifier {
 
   Future<void> revalidate() async {
     if (!current || !_active) return;
-    if (conversation == null) {
+    final selected = conversation;
+    if (selected == null) {
       await refreshList();
     } else {
       await refreshHistory();
-      if (pending != null && !pending!.busy && !pending!.terminal) {
+      if (conversation?.id == selected.id && pending?.canCheck == true) {
         await checkPending();
       }
     }
@@ -204,7 +207,9 @@ class AssistantWorkspaceController extends ChangeNotifier {
     } on AssistantFailure catch (error) {
       if (current && identical(command, creation)) {
         creationFailure = error;
-        _creationUncertain |= error.outcome == AssistantMutationOutcome.unknown;
+        _creationUncertain =
+            _creationUncertain ||
+            error.outcome == AssistantMutationOutcome.unknown;
         _creationRetryAt = _retryDeadline(error);
       }
       return null;
@@ -228,10 +233,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
     if (!current || !_active) return;
     conversation = selected;
     await refreshHistory();
-    if (conversation?.id == selected.id &&
-        pending != null &&
-        !pending!.busy &&
-        !pending!.terminal) {
+    if (conversation?.id == selected.id && pending?.canCheck == true) {
       await checkPending();
     }
   }
@@ -390,7 +392,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
     } on AssistantFailure catch (error) {
       if (!_ownsCommand(command)) return;
       command.failure = error;
-      command.uncertain |= error.outcome == AssistantMutationOutcome.unknown;
+      command.uncertain =
+          command.uncertain || error.outcome == AssistantMutationOutcome.unknown;
       command.retryAllowed =
           error.category == AssistantFailureCategory.rateLimited;
       command.retryAt = _retryDeadline(error);
@@ -406,8 +409,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
       await refreshHistory();
       // Resolve uncertain outcomes by a read, not by replaying inference.
       if (_ownsCommand(command) &&
-          (command.uncertain ||
-              command.turn?.state == AssistantTurnState.processing)) {
+          conversation?.id == command.request.conversation.id &&
+          command.canCheck) {
         await checkPending();
       }
     }
@@ -419,7 +422,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         !_active ||
         !historyVerified ||
         command == null ||
-        command.busy ||
+        !command.canCheck ||
         command.terminal) {
       return;
     }
@@ -478,6 +481,11 @@ class AssistantWorkspaceController extends ChangeNotifier {
     conversation = null;
     creation = null;
     creationFailure = null;
+    _creationRetryAt = null;
+    _creationUncertain = false;
+    creating = false;
+    listHasMore = false;
+    historyHasMore = false;
     listFailure = null;
     historyFailure = null;
     historyVerified = false;

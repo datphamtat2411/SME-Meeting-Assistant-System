@@ -153,6 +153,7 @@ class _AssistantPageState extends State<AssistantPage>
     if (!_controller.canSend || question.isEmpty || question.length > 4096) {
       return;
     }
+    FocusScope.of(context).unfocus();
     _input.clear();
     unawaited(_controller.submit(question));
   }
@@ -191,80 +192,6 @@ class _AssistantPageState extends State<AssistantPage>
             ),
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Card(
-            color: colors.primaryContainer,
-            margin: EdgeInsets.zero,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.auto_awesome, color: colors.onPrimaryContainer),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Hỏi đáp có nguồn tham chiếu',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: colors.onPrimaryContainer,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Chọn một cuộc họp để tìm quyết định, công việc '
-                    'và những thông tin đã thảo luận.',
-                    style: TextStyle(color: colors.onPrimaryContainer),
-                  ),
-                  const SizedBox(height: 14),
-                  FilledButton.icon(
-                    onPressed:
-                        state.creating ||
-                            state.creation != null ||
-                            _choosingMeeting
-                        ? null
-                        : _chooseMeeting,
-                    icon: const Icon(Icons.add_comment_outlined),
-                    label: const Text('Hội thoại mới'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        if (state.creation != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
-            child: ContentCard(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    state.creating
-                        ? 'Đang tạo hội thoại…'
-                        : 'Chưa xác nhận được hội thoại mới',
-                    style: Theme.of(context).textTheme.titleSmall,
-                  ),
-                  if (state.creationFailure != null)
-                    Text(assistantFailureLabel(state.creationFailure!)),
-                  Wrap(
-                    spacing: 8,
-                    children: [
-                      TextButton(
-                        onPressed: state.creating ? null : _retryCreation,
-                        child: const Text('Thử lại cùng yêu cầu'),
-                      ),
-                      if (state.canDiscardCreation)
-                        TextButton(
-                          onPressed: state.discardRejectedCreation,
-                          child: const Text('Bỏ yêu cầu'),
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
         Expanded(
           child: RefreshIndicator(
             onRefresh: state.refreshList,
@@ -272,6 +199,85 @@ class _AssistantPageState extends State<AssistantPage>
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
               children: [
+                Padding(
+                  padding: EdgeInsets.zero,
+                  child: Card(
+                    color: colors.primaryContainer,
+                    margin: EdgeInsets.zero,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.auto_awesome, color: colors.onPrimaryContainer),
+                          const SizedBox(height: 12),
+                          Text(
+                            'Hỏi đáp có nguồn tham chiếu',
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              color: colors.onPrimaryContainer,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'Chọn một cuộc họp để tìm quyết định, công việc '
+                            'và những thông tin đã thảo luận.',
+                            style: TextStyle(color: colors.onPrimaryContainer),
+                          ),
+                          const SizedBox(height: 14),
+                          FilledButton.icon(
+                            onPressed:
+                                state.creating ||
+                                    state.creation != null ||
+                                    _choosingMeeting
+                                ? null
+                                : _chooseMeeting,
+                            icon: const Icon(Icons.add_comment_outlined),
+                            label: const Text('Hội thoại mới'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                if (state.creation != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: ContentCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            state.creating
+                                ? 'Đang tạo hội thoại…'
+                                : 'Chưa xác nhận được hội thoại mới',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          if (state.creationFailure != null)
+                            Text(assistantFailureLabel(state.creationFailure!)),
+                          if (state.creationRetryAt != null)
+                            Text(
+                              'Thử lại sau ${DateFormat('HH:mm:ss').format(state.creationRetryAt!.toLocal())}',
+                            ),
+                          Wrap(
+                            spacing: 8,
+                            children: [
+                              TextButton(
+                                onPressed: state.creating ? null : _retryCreation,
+                                child: const Text('Thử lại cùng yêu cầu'),
+                              ),
+                              if (state.canDiscardCreation)
+                                TextButton(
+                                  onPressed: state.discardRejectedCreation,
+                                  child: const Text('Bỏ yêu cầu'),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 20),
                 Text(
                   'Hội thoại gần đây',
                   style: Theme.of(context).textTheme.titleMedium,
@@ -442,7 +448,13 @@ class _AssistantPageState extends State<AssistantPage>
                   },
                 ),
         ),
-        if (state.historyVerified && pending != null) _pendingPanel(pending),
+        if (state.historyVerified && pending != null)
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.32,
+            ),
+            child: SingleChildScrollView(child: _pendingPanel(pending)),
+          ),
         if (selected.status == AssistantConversationStatus.archived)
           const Padding(
             padding: EdgeInsets.all(12),
@@ -467,12 +479,21 @@ class _AssistantPageState extends State<AssistantPage>
                       hintText: 'Hỏi về cuộc họp này…',
                       counterText: '',
                     ),
+                    buildCounter: (
+                      context, {
+                      required currentLength,
+                      required isFocused,
+                      required maxLength,
+                    }) => Text('${_input.text.trim().length}/4096'),
                   ),
                 ),
                 const SizedBox(width: 8),
                 IconButton.filled(
                   tooltip: 'Gửi câu hỏi',
-                  onPressed: state.canSend && _input.text.trim().isNotEmpty
+                  onPressed:
+                      state.canSend &&
+                          _input.text.trim().isNotEmpty &&
+                          _input.text.trim().length <= 4096
                       ? _send
                       : null,
                   icon: const Icon(Icons.arrow_upward),
@@ -538,6 +559,12 @@ class _AssistantPageState extends State<AssistantPage>
                 : 'Chưa xác nhận được kết quả',
             style: Theme.of(context).textTheme.titleSmall,
           ),
+          const SizedBox(height: 4),
+          Text(
+            pending.request.question,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
           if (pending.busy) const LinearProgressIndicator(),
           if (pending.failure != null)
             Text(assistantFailureLabel(pending.failure!)),
@@ -545,12 +572,17 @@ class _AssistantPageState extends State<AssistantPage>
             Wrap(
               spacing: 8,
               children: [
-                TextButton(
-                  onPressed: pending.terminal
-                      ? _controller.refreshHistory
-                      : _controller.checkPending,
-                  child: const Text('Kiểm tra trạng thái'),
-                ),
+                if (pending.canCheck || pending.terminal)
+                  TextButton(
+                    onPressed: pending.terminal
+                        ? _controller.refreshHistory
+                        : _controller.checkPending,
+                    child: const Text('Kiểm tra trạng thái'),
+                  ),
+                if (pending.retryAllowed && pending.retryAt != null)
+                  Text(
+                    'Thử lại sau ${DateFormat('HH:mm:ss').format(pending.retryAt!.toLocal())}',
+                  ),
                 if (pending.retryAllowed)
                   TextButton(
                     onPressed: _controller.retryPending,
