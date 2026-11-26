@@ -13,7 +13,7 @@ enum AssistantClaimSupport { supported, unsupported, conflicted }
 
 enum AssistantSourceType { transcript, summary, decision, actionItem }
 
-enum AssistantTurnState { processing, completed }
+enum AssistantTurnState { processing, completed, failed, staleSource }
 
 final _uuidPattern = RegExp(
   r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
@@ -465,8 +465,19 @@ class AssistantTurn {
   factory AssistantTurn.fromResult(
     ApiResult response, {
     required String meetingId,
+  }) => AssistantTurn._decode(
+    response.objectData(),
+    response,
+    meetingId,
+    statusRead: false,
+  );
+
+  static AssistantTurn _decode(
+    Map<String, dynamic> raw,
+    ApiResult response,
+    String meetingId, {
+    required bool statusRead,
   }) {
-    final raw = response.objectData();
     final state = _requiredEnum(
       raw,
       'state',
@@ -481,7 +492,7 @@ class AssistantTurn {
         : _uuid(raw, 'assistantMessageId', response);
     final userId = _uuid(raw, 'userMessageId', response);
     if (state == AssistantTurnState.processing) {
-      if (response.statusCode != 202 ||
+      if (response.statusCode != (statusRead ? 200 : 202) ||
           assistantId != null ||
           status != null ||
           answer != null ||
@@ -492,13 +503,35 @@ class AssistantTurn {
       if (response.statusCode != 200 ||
           assistantId == null ||
           assistantId == userId ||
-          status == null ||
-          status == AssistantAnswerStatus.failed ||
-          answer == null ||
-          answer.isEmpty) {
+          status == null) {
         invalidApiData(response: response);
       }
-      evidence.validateAnswer(status, response);
+      switch (state) {
+        case AssistantTurnState.completed:
+          if (status == AssistantAnswerStatus.failed ||
+              answer == null ||
+              answer.isEmpty) {
+            invalidApiData(response: response);
+          }
+          evidence.validateAnswer(status, response);
+        case AssistantTurnState.failed:
+          if (!statusRead ||
+              status != AssistantAnswerStatus.failed ||
+              answer != null ||
+              !evidence.isEmpty) {
+            invalidApiData(response: response);
+          }
+        case AssistantTurnState.staleSource:
+          if (!statusRead ||
+              (status != AssistantAnswerStatus.grounded &&
+                  status != AssistantAnswerStatus.partial) ||
+              answer != null ||
+              !evidence.isEmpty) {
+            invalidApiData(response: response);
+          }
+        case AssistantTurnState.processing:
+          invalidApiData(response: response);
+      }
     }
     return AssistantTurn._(
       turnId: _uuid(raw, 'turnId', response),
@@ -510,5 +543,35 @@ class AssistantTurn {
       claims: evidence.claims,
       citations: evidence.citations,
     );
+  }
+}
+
+/// A successful read of a durable turn, not a successful question submission.
+class AssistantTurnStatus {
+  const AssistantTurnStatus._(this.turn, this.recoveryEligible);
+
+  final AssistantTurn turn;
+  final bool recoveryEligible;
+
+  factory AssistantTurnStatus.fromResult(
+    ApiResult response, {
+    required String meetingId,
+  }) {
+    final raw = response.objectData();
+    final turn = AssistantTurn._decode(
+      requiredObject(raw, 'turn', response: response),
+      response,
+      meetingId,
+      statusRead: true,
+    );
+    final recoveryEligible = requiredBool(
+      raw,
+      'recoveryEligible',
+      response: response,
+    );
+    if (recoveryEligible && turn.state != AssistantTurnState.processing) {
+      invalidApiData(response: response);
+    }
+    return AssistantTurnStatus._(turn, recoveryEligible);
   }
 }

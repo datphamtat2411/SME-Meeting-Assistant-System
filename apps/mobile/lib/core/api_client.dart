@@ -158,6 +158,20 @@ class ApiClient extends ChangeNotifier {
     AuthenticatedSessionScope? sessionScope,
   }) => _request('GET', path, query: query, sessionScope: sessionScope);
 
+  /// A protected read whose contract requires a non-URL request header.
+  Future<ApiResult> getWithHeaders(
+    String path, {
+    required Map<String, String> headers,
+    Map<String, String>? query,
+    AuthenticatedSessionScope? sessionScope,
+  }) => _request(
+    'GET',
+    path,
+    query: query,
+    headers: headers,
+    sessionScope: sessionScope,
+  );
+
   Future<ApiResult> post(
     String path,
     Map<String, dynamic> body, {

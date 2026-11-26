@@ -393,6 +393,87 @@ void main() {
       expect(submissions, 2);
     });
 
+    test('uses creation keys, anchored history and read-only turn status', () async {
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          final path = request.url.path;
+          if (path.endsWith('/turns/by-key')) {
+            expect(request.method, 'GET');
+            expect(request.headers['idempotency-key'], 'intent-01:retry');
+            expect(request.url.queryParameters, isEmpty);
+            return meetingApiSuccess({
+              'turn': _turn(processing: true),
+              'recoveryEligible': true,
+            });
+          }
+          if (request.method == 'POST') {
+            expect(request.headers['idempotency-key'], 'create-01');
+            return meetingApiSuccess(_conversation(), status: 201);
+          }
+          expect(request.url.queryParameters, {
+            'page': '0',
+            'size': '50',
+            'beforeMessageId': _userMessageId,
+          });
+          return meetingApiSuccess(_detail());
+        }),
+      );
+      final scope = repository.captureSession();
+      await repository.createConversation(
+        const AssistantCreateConversationRequest(
+          meetingId: testMeetingId,
+          idempotencyKey: 'create-01',
+        ),
+        sessionScope: scope,
+      );
+      final older = await repository.getConversation(
+        _conversationId,
+        sessionScope: scope,
+        beforeMessageId: _userMessageId,
+      );
+      expect(older.messages.single.id, _assistantMessageId);
+      final result = await repository.getTurnStatus(
+        _question(),
+        sessionScope: scope,
+      );
+      expect(result.turn.state, AssistantTurnState.processing);
+      expect(result.recoveryEligible, isTrue);
+    });
+
+    test('status lookup preserves terminal failures without exposing evidence', () {
+      for (final state in ['FAILED', 'STALE_SOURCE']) {
+        final raw = {
+          'turn': _turn()
+            ..['state'] = state
+            ..['answerStatus'] = state == 'FAILED' ? 'FAILED' : 'GROUNDED'
+            ..['answer'] = null
+            ..['claims'] = []
+            ..['citations'] = [],
+          'recoveryEligible': false,
+        };
+        final result = AssistantTurnStatus.fromResult(
+          _result(raw),
+          meetingId: testMeetingId,
+        );
+        expect(
+          result.turn.state,
+          state == 'FAILED'
+              ? AssistantTurnState.failed
+              : AssistantTurnState.staleSource,
+        );
+        expect(result.turn.answer, isNull);
+        expect(result.turn.citations, isEmpty);
+        raw['recoveryEligible'] = true;
+        expect(
+          () => AssistantTurnStatus.fromResult(
+            _result(raw),
+            meetingId: testMeetingId,
+          ),
+          throwsA(_invalidResponse()),
+        );
+      }
+    });
+
     test('rejects invalid input without dispatch', () async {
       var requests = 0;
       final repository = await _repository(

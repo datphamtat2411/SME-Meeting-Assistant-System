@@ -10,10 +10,12 @@ class AssistantCreateConversationRequest {
   const AssistantCreateConversationRequest({
     required this.meetingId,
     this.title,
+    this.idempotencyKey,
   });
 
   final String meetingId;
   final String? title;
+  final String? idempotencyKey;
 }
 
 class AssistantQuestionRequest {
@@ -83,6 +85,8 @@ class AssistantRepository {
     required AuthenticatedSessionScope sessionScope,
   }) async {
     _validateUuid(input.meetingId, 'meetingId');
+    final key = input.idempotencyKey;
+    if (key != null) _validateKey(key);
     final title = input.title?.trim();
     if (title != null && title.length > 255) {
       throw AssistantFailure.invalidInput('title');
@@ -91,10 +95,15 @@ class AssistantRepository {
       sessionScope,
       mutation: true,
       operation: () async {
-        final response = await api.post(_collection, {
-          'meetingId': input.meetingId.toLowerCase(),
-          if (title != null && title.isNotEmpty) 'title': title,
-        }, sessionScope: sessionScope);
+        final response = await api.post(
+          _collection,
+          {
+            'meetingId': input.meetingId.toLowerCase(),
+            if (title != null && title.isNotEmpty) 'title': title,
+          },
+          headers: key == null ? null : {'Idempotency-Key': key},
+          sessionScope: sessionScope,
+        );
         if (response.statusCode != 201) throw response.invalidDataFailure();
         final conversation = AssistantConversation.fromJson(
           response.objectData(),
@@ -113,6 +122,7 @@ class AssistantRepository {
     String conversationId, {
     required AuthenticatedSessionScope sessionScope,
     String? expectedMeetingId,
+    String? beforeMessageId,
     int page = 0,
     int size = 50,
   }) async {
@@ -121,22 +131,59 @@ class AssistantRepository {
       _validateUuid(expectedMeetingId, 'meetingId');
     }
     _validatePage(page, size);
+    if (beforeMessageId != null) {
+      _validateUuid(beforeMessageId, 'beforeMessageId');
+      if (page != 0) throw AssistantFailure.invalidInput('page');
+    }
     return _execute(
       sessionScope,
       mutation: false,
       operation: () async {
         final response = await api.get(
           _path(conversationId),
-          query: _pageQuery(page, size),
+          query: {
+            ..._pageQuery(page, size),
+            if (beforeMessageId != null)
+              'beforeMessageId': beforeMessageId.toLowerCase(),
+          },
           sessionScope: sessionScope,
         );
         if (response.statusCode != 200) throw response.invalidDataFailure();
-        return AssistantConversationDetail.fromResult(
+        final detail = AssistantConversationDetail.fromResult(
           response,
           conversationId: conversationId,
           expectedMeetingId: expectedMeetingId,
           requestedPage: page,
           requestedSize: size,
+        );
+        if (beforeMessageId != null &&
+            detail.messages.any(
+              (message) => sameAssistantIdentity(message.id, beforeMessageId),
+            )) {
+          throw response.invalidDataFailure();
+        }
+        return detail;
+      },
+    );
+  }
+
+  Future<AssistantTurnStatus> getTurnStatus(
+    AssistantQuestionRequest input, {
+    required AuthenticatedSessionScope sessionScope,
+  }) async {
+    _validateKey(input.idempotencyKey);
+    return _execute(
+      sessionScope,
+      mutation: false,
+      operation: () async {
+        final response = await api.getWithHeaders(
+          _path(input.conversation.id) + '/turns/by-key',
+          headers: {'Idempotency-Key': input.idempotencyKey},
+          sessionScope: sessionScope,
+        );
+        return AssistantTurnStatus.fromResult(
+          response,
+          meetingId: input.conversation.meetingId,
         );
       },
     );
@@ -151,9 +198,7 @@ class AssistantRepository {
     if (question.isEmpty || question.length > 4096) {
       throw AssistantFailure.invalidInput('question');
     }
-    if (!_keyPattern.hasMatch(input.idempotencyKey)) {
-      throw AssistantFailure.invalidInput('Idempotency-Key');
-    }
+    _validateKey(input.idempotencyKey);
     return _execute(
       sessionScope,
       mutation: true,
@@ -213,6 +258,12 @@ class AssistantRepository {
     'page': page.toString(),
     'size': size.toString(),
   };
+
+  static void _validateKey(String value) {
+    if (!_keyPattern.hasMatch(value)) {
+      throw AssistantFailure.invalidInput('Idempotency-Key');
+    }
+  }
 
   static void _validateUuid(String value, String field) {
     if (!isAssistantUuid(value)) throw AssistantFailure.invalidInput(field);
