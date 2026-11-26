@@ -1,132 +1,242 @@
+import { useLayoutEffect, useRef, useState } from 'react'
 import { LoaderCircle, ShieldAlert } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { RequestEmpty } from '@/components/request-state'
 import type { AssistantMessage } from './assistant-api'
+import {
+  assistantHistoryEpoch,
+  captureAssistantAccess,
+  isAssistantAccessCurrent,
+  useAssistantAccessRevision,
+  type AssistantAccessToken,
+} from './assistant-access'
 import { AssistantError } from './assistant-error'
+import { EvidenceInspector } from './evidence-inspector'
+
+const suggestions = [
+  'Tóm tắt những nội dung chính của cuộc họp.',
+  'Cuộc họp đã thống nhất những quyết định nào?',
+  'Ai được giao phụ trách các đầu việc?',
+  'Những thời hạn nào đã được thống nhất?',
+]
+
+type Inspection = {
+  messageId: string
+  citationId?: string
+  epoch: number
+  access: AssistantAccessToken
+  trigger: HTMLElement
+}
 
 export function ConversationHistory({
+  conversationId,
+  meetingId,
   messages,
   hasMore,
   loadingOlder,
   olderPageError,
   onLoadOlder,
+  onSuggestion,
+  suggestionsEnabled,
 }: {
+  conversationId: string
+  meetingId: string
   messages: AssistantMessage[]
   hasMore: boolean
   loadingOlder: boolean
   olderPageError: unknown
   onLoadOlder: () => void
+  onSuggestion: (question: string) => void
+  suggestionsEnabled: boolean
 }) {
+  const client = useQueryClient()
+  useAssistantAccessRevision(client)
+  const [inspection, setInspection] = useState<Inspection>()
+  const viewport = useRef<HTMLDivElement>(null)
+  const reading = useRef<{ id: string; offset: number } | undefined>(undefined)
+  const following = useRef(true)
+  const [showLatest, setShowLatest] = useState(false)
+  const epoch = assistantHistoryEpoch(client, conversationId)
+  const inspected = inspection &&
+    inspection.epoch === epoch &&
+    isAssistantAccessCurrent(client, inspection.access)
+    ? messages.find((message) => message.id === inspection.messageId &&
+        message.role === 'ASSISTANT' && message.visibility === 'VISIBLE' &&
+        message.citations.length > 0)
+    : undefined
+
+  function rememberPosition() {
+    const node = viewport.current
+    if (!node) return
+    following.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80
+    setShowLatest(!following.current)
+    const top = node.getBoundingClientRect().top
+    const first = Array.from(node.querySelectorAll<HTMLElement>('[data-message-id]'))
+      .find((item) => item.getBoundingClientRect().bottom > top)
+    reading.current = first?.dataset.messageId
+      ? { id: first.dataset.messageId, offset: first.getBoundingClientRect().top - top }
+      : undefined
+  }
+
+  useLayoutEffect(() => {
+    const node = viewport.current
+    if (!node) return
+    if (following.current) {
+      node.scrollTop = node.scrollHeight
+    } else if (reading.current) {
+      const anchor = Array.from(node.querySelectorAll<HTMLElement>('[data-message-id]'))
+        .find((item) => item.dataset.messageId === reading.current?.id)
+      if (anchor)
+        node.scrollTop += anchor.getBoundingClientRect().top -
+          node.getBoundingClientRect().top - reading.current.offset
+    }
+  }, [messages])
+
+  function inspect(messageId: string, trigger: HTMLElement, citationId?: string) {
+    const access = captureAssistantAccess(client, conversationId)
+    if (!isAssistantAccessCurrent(client, access)) return
+    setInspection({ messageId, citationId, epoch, access, trigger })
+  }
+
   return (
-    <div className='space-y-3' aria-label='Conversation history'>
-      {!messages.length && (
-        <RequestEmpty
-          title='Conversation is ready for questions.'
-          description='Core has not recorded any messages in this conversation yet.'
+    <div className='relative flex min-h-0 flex-1 flex-col'>
+      <div
+        ref={viewport}
+        onScroll={rememberPosition}
+        className='min-h-0 flex-1 space-y-5 overflow-y-auto px-3 py-4 sm:px-6'
+        aria-label='Conversation history'
+        tabIndex={0}
+      >
+        {olderPageError != null && <AssistantError error={olderPageError} />}
+        {hasMore && (
+          <div className='flex justify-center'>
+            <Button type='button' variant='outline' disabled={loadingOlder} onClick={() => {
+              rememberPosition()
+              following.current = false
+              onLoadOlder()
+            }}>
+              {loadingOlder && <LoaderCircle className='size-4 animate-spin' />}
+              {olderPageError ? 'Retry loading older messages' : 'Load older messages'}
+            </Button>
+          </div>
+        )}
+        {!messages.length && (
+          <div className='mx-auto max-w-lg space-y-4 py-8 text-center'>
+            <h3 className='text-lg font-semibold'>Conversation is ready for questions.</h3>
+            <p className='text-sm text-muted-foreground'>Explore the available knowledge from this meeting.</p>
+            <div className='grid gap-2 sm:grid-cols-2'>
+              {suggestions.map((question) => (
+                <Button key={question} type='button' variant='outline' disabled={!suggestionsEnabled}
+                  className='h-auto justify-start whitespace-normal text-start'
+                  onClick={() => onSuggestion(question)}>{question}</Button>
+              ))}
+            </div>
+          </div>
+        )}
+        {messages.map((message) => (
+          <AssistantMessageCard key={message.id} message={message} onInspect={inspect} />
+        ))}
+      </div>
+      {showLatest && (
+        <Button type='button' variant='outline' size='sm' className='absolute bottom-3 left-1/2 -translate-x-1/2 shadow-sm'
+          onClick={() => {
+            following.current = true
+            if (viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight
+            setShowLatest(false)
+          }}>Jump to latest</Button>
+      )}
+      {inspection && inspected && (
+        <EvidenceInspector
+          key={inspection.messageId + ':' + inspection.epoch}
+          conversationId={conversationId}
+          meetingId={meetingId}
+          message={inspected}
+          citationId={inspection.citationId}
+          access={inspection.access}
+          epoch={inspection.epoch}
+          onClose={() => setInspection(undefined)}
+          returnFocus={inspection.trigger}
         />
-      )}
-      {messages.map((message) => (
-        <AssistantMessageCard key={message.id} message={message} />
-      ))}
-      {olderPageError !== undefined && olderPageError !== null && (
-        <AssistantError error={olderPageError} />
-      )}
-      {hasMore && (
-        <Button
-          type='button'
-          variant='outline'
-          disabled={loadingOlder}
-          onClick={onLoadOlder}
-        >
-          {loadingOlder && <LoaderCircle className='size-4 animate-spin' />}
-          {olderPageError
-            ? 'Retry loading older messages'
-            : 'Load older messages'}
-        </Button>
       )}
     </div>
   )
 }
 
-function AssistantMessageCard({ message }: { message: AssistantMessage }) {
+const answerLabels = {
+  GROUNDED: 'Grounded answer',
+  PARTIAL: 'Partially supported answer',
+  INSUFFICIENT_EVIDENCE: 'Insufficient evidence',
+  FAILED: 'Answer failed',
+}
+
+const supportLabels: Record<string, string> = {
+  SUPPORTED: 'Supported',
+  UNSUPPORTED: 'Not established from evidence',
+  CONFLICTED: 'Conflicting evidence',
+}
+
+function AssistantMessageCard({
+  message,
+  onInspect,
+}: {
+  message: AssistantMessage
+  onInspect: (id: string, trigger: HTMLElement, citationId?: string) => void
+}) {
   const isUser = message.role === 'USER'
-  const sourceUnavailable = message.visibility === 'SOURCE_UNAVAILABLE'
+  const sourceUnavailable = message.visibility !== 'VISIBLE'
   return (
-    <article
-      className={`rounded-lg border p-4 ${isUser ? 'bg-muted/30' : 'bg-card'}`}
-    >
-      <div className='flex flex-wrap items-center gap-2'>
-        <Badge variant={isUser ? 'outline' : 'default'}>
-          {isUser ? 'You' : 'Assistant'}
-        </Badge>
-        {!isUser && message.answerStatus && (
-          <Badge variant='outline'>{message.answerStatus}</Badge>
-        )}
+    <article data-message-id={message.id}
+      className={isUser ? 'ms-auto max-w-[90%] rounded-2xl bg-primary/10 px-4 py-3 sm:max-w-[75%]' : 'me-auto w-full max-w-3xl space-y-2 rounded-2xl border bg-card p-4'}>
+      <div className='flex flex-wrap items-center gap-2 text-xs text-muted-foreground'>
+        <span className='font-medium text-foreground'>{isUser ? 'You' : 'Meeting Assistant'}</span>
+        <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time>
       </div>
       {sourceUnavailable ? (
-        <Alert className='mt-3'>
+        <Alert>
           <ShieldAlert />
           <AlertTitle>Source unavailable</AlertTitle>
-          <AlertDescription>
-            Core no longer verifies the evidence for this answer. The previous
-            answer is not displayed as current grounded content.
-          </AlertDescription>
+          <AlertDescription>The supporting evidence is no longer current or available. The previous answer is withheld.</AlertDescription>
         </Alert>
       ) : (
-        message.content && (
-          <p className='mt-3 text-sm leading-6 whitespace-pre-wrap'>
-            {message.content}
-          </p>
-        )
-      )}
-      {!isUser &&
-        message.answerStatus === 'INSUFFICIENT_EVIDENCE' &&
-        message.citations.length === 0 && (
-          <p className='mt-3 text-sm text-muted-foreground'>
-            No verified citations were returned.
-          </p>
-        )}
-      {!isUser && !sourceUnavailable && message.claims.length > 0 && (
-        <div className='mt-4 space-y-2 border-t pt-3'>
-          <p className='text-xs font-semibold tracking-wide text-muted-foreground uppercase'>
-            Claims
-          </p>
-          {message.claims.map((claim) => (
-            <div
-              className='rounded-md bg-muted/40 p-3 text-sm'
-              key={claim.claimId}
-            >
-              <p>{claim.text}</p>
-              <p className='mt-1 text-xs text-muted-foreground'>
-                {claim.support}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
-      {!isUser && !sourceUnavailable && message.citations.length > 0 && (
-        <div className='mt-4 space-y-2 border-t pt-3'>
-          <p className='text-xs font-semibold tracking-wide text-muted-foreground uppercase'>
-            Evidence
-          </p>
-          {message.citations.map((citation) => (
-            <details
-              className='rounded-md border px-3 py-2 text-sm'
-              key={citation.citationId}
-            >
-              <summary className='cursor-pointer font-medium'>
-                {citation.sourceType} · Revision {citation.sourceRevision}
-              </summary>
-              <div className='mt-2 space-y-1 text-xs text-muted-foreground'>
-                <p>Citation: {citation.citationId}</p>
-                <p>Retrieval chunk: {citation.retrievalChunkId}</p>
-                <p>Meeting-scoped source: {citation.meetingId}</p>
+        <>
+          {!isUser && message.answerStatus && (
+            <p className='text-xs font-medium text-muted-foreground'>{answerLabels[message.answerStatus]}</p>
+          )}
+          {message.content && <p className='text-sm leading-7 wrap-anywhere whitespace-pre-wrap'>{message.content}</p>}
+          {!isUser && message.answerStatus === 'INSUFFICIENT_EVIDENCE' && message.citations.length === 0 && (
+            <p className='text-sm text-muted-foreground'>No verified citations were returned.</p>
+          )}
+          {!isUser && message.claims.length > 0 && (
+            <details className='rounded-lg border px-3 py-2' open={message.answerStatus === 'PARTIAL' || message.claims.some((claim) => claim.support !== 'SUPPORTED')}>
+              <summary className='cursor-pointer text-sm font-medium'>Claim support ({message.claims.length})</summary>
+              <div className='mt-3 space-y-2'>
+                {message.claims.map((claim) => (
+                  <div key={claim.claimId} className='space-y-1 rounded-md bg-muted/40 p-3 text-sm wrap-anywhere'>
+                    <p className='whitespace-pre-wrap'>{claim.text}</p>
+                    <p className='text-xs text-muted-foreground'>{supportLabels[claim.support] ?? 'Support not established'}</p>
+                    <div className='flex flex-wrap gap-1'>
+                      {message.citations.map((citation, index) =>
+                        claim.citationIds.includes(citation.citationId) && citation.claimIds.includes(claim.claimId) ? (
+                          <Button key={citation.citationId} type='button' variant='outline' size='sm'
+                            aria-label={'Inspect citation ' + (index + 1)}
+                            onClick={(event) => onInspect(message.id, event.currentTarget, citation.citationId)}>
+                            [{index + 1}]
+                          </Button>
+                        ) : null
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
             </details>
-          ))}
-        </div>
+          )}
+          {!isUser && message.citations.length > 0 && (
+            <Button type='button' size='sm' variant='outline' onClick={(event) => onInspect(message.id, event.currentTarget)}>
+              Supporting evidence ({message.citations.length})
+            </Button>
+          )}
+        </>
       )}
     </article>
   )

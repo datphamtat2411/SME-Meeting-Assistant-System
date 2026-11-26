@@ -260,6 +260,7 @@ function setupReads(
       conversationId: string,
       turnId: string
     ) => unknown
+    evidence?: unknown
     lookup?: unknown
     onLookup?: (reads: number) => unknown
     detailPages?: Record<string, Record<number, unknown>>
@@ -332,6 +333,12 @@ function setupReads(
         throw coreError(404, 'Turn not found', {
           code: 'ASSISTANT_TURN_NOT_FOUND',
         })
+      }
+      if (url.endsWith('/evidence')) {
+        const value = await options.evidence
+        if (value instanceof Error) throw value
+        if (value === undefined) throw new Error('Unexpected evidence read')
+        return { data: value, meta: {} } as never
       }
       if (url.startsWith('/assistant/conversations/')) {
         detailReads += 1
@@ -447,16 +454,14 @@ async function renderPage(
 }
 
 async function selectMeeting(screen: Awaited<ReturnType<typeof render>>) {
+  await userEvent.click(screen.getByRole('button', { name: 'Find meetings' }))
   await userEvent.click(
     screen.getByRole('button', { name: 'Use meeting for Assistant' }).first()
   )
 }
 
 async function openConversation(screen: Awaited<ReturnType<typeof render>>) {
-  await selectMeeting(screen)
-  await userEvent.click(
-    screen.getByRole('button', { name: 'Open conversation' })
-  )
+  await userEvent.click(screen.getByRole('button', { name: 'Open conversation: Planning questions', exact: true }).first())
 }
 
 describe('AssistantPage', () => {
@@ -468,6 +473,75 @@ describe('AssistantPage', () => {
     vi.restoreAllMocks()
   })
 
+  it('resolves canonical evidence only on explicit inspection', async () => {
+    const { get } = setupReads({
+      evidence: {
+        conversationId,
+        messageId: assistantMessageId,
+        meetingId,
+        evidence: [{
+          citationId: 'citation-1',
+          sourceType: 'TRANSCRIPT',
+          sourceId,
+          sourceRevision: 3,
+          label: 'Verified transcript',
+          meetingTitle: meeting.title,
+          preview: null,
+          claimIds: ['claim-1'],
+          navigation: { target: 'MEETING_TRANSCRIPT', precision: 'SOURCE' },
+        }],
+      },
+    })
+    const screen = await renderPage()
+    await openConversation(screen)
+    await expect.element(screen.getByRole('button', { name: 'Supporting evidence (1)' })).toBeVisible()
+    expect(get.mock.calls.filter(([url]) => url.endsWith('/evidence'))).toHaveLength(0)
+    await userEvent.click(screen.getByRole('button', { name: 'Supporting evidence (1)' }))
+    await expect.element(screen.getByText('[1] Verified transcript')).toBeVisible()
+    await expect.element(screen.getByRole('link', { name: 'Open transcript' })).toBeVisible()
+    expect(get.mock.calls.filter(([url]) => url.endsWith('/evidence'))).toHaveLength(1)
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+    await expect.element(screen.getByText('[1] Verified transcript')).not.toBeInTheDocument()
+  })
+
+  it('does not display evidence that arrives after the inspector is closed', async () => {
+    const evidence = deferred<unknown>()
+    const { get } = setupReads({ evidence: evidence.promise })
+    const screen = await renderPage()
+    await openConversation(screen)
+    await userEvent.click(screen.getByRole('button', { name: 'Supporting evidence (1)' }))
+    await expect.poll(() => get.mock.calls.filter(([url]) => url.endsWith('/evidence')).length).toBe(1)
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+    evidence.resolve({
+      conversationId,
+      messageId: assistantMessageId,
+      meetingId,
+      evidence: [{
+        citationId: 'citation-1',
+        sourceType: 'TRANSCRIPT',
+        sourceId,
+        sourceRevision: 3,
+        label: 'Late protected transcript',
+        meetingTitle: meeting.title,
+        preview: null,
+        claimIds: ['claim-1'],
+        navigation: { target: 'MEETING_TRANSCRIPT', precision: 'SOURCE' },
+      }],
+    })
+    await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
+    await expect.element(screen.getByText('[1] Late protected transcript')).not.toBeInTheDocument()
+  })
+
+  it('fills a suggested question without sending a mutation', async () => {
+    setupReads({ detail: createConversationDetail() })
+    const post = vi.spyOn(coreApi, 'post')
+    const screen = await renderPage()
+    await openConversation(screen)
+    await userEvent.click(screen.getByRole('button', { name: 'Cuộc họp đã thống nhất những quyết định nào?' }))
+    await expect.element(screen.getByRole('textbox', { name: 'Assistant question' })).toHaveValue('Cuộc họp đã thống nhất những quyết định nào?')
+    expect(post).not.toHaveBeenCalled()
+  })
+
   it('keeps structured discovery independent of the selected conversation', async () => {
     const { get } = setupReads()
     const screen = await renderPage()
@@ -475,6 +549,7 @@ describe('AssistantPage', () => {
     await expect
       .element(screen.getByText('The launch is planned for Friday.').first())
       .toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Find meetings' }))
     await userEvent.fill(
       screen.getByRole('textbox', { name: 'Search meeting titles' }),
       'another meeting'
@@ -487,9 +562,11 @@ describe('AssistantPage', () => {
         )
       )
       .toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: 'Assistant', exact: true }))
     await expect
       .element(screen.getByText('The launch is planned for Friday.').first())
       .toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'New conversation' }))
     await expect
       .element(screen.getByRole('combobox', { name: 'Assistant meeting' }))
       .toHaveValue(meetingId)
@@ -500,10 +577,12 @@ describe('AssistantPage', () => {
     const post = vi.spyOn(coreApi, 'post').mockResolvedValue(conversation)
     const screen = await renderPage()
 
+    await userEvent.click(screen.getByRole('button', { name: 'Find meetings' }))
     await expect
       .element(screen.getByText('Product planning').last())
       .toBeVisible()
     expect(post).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Assistant', exact: true }))
 
     await openConversation(screen)
 
@@ -511,7 +590,7 @@ describe('AssistantPage', () => {
       .element(screen.getByText('The launch is planned for Friday.').first())
       .toBeVisible()
     expect(post).not.toHaveBeenCalled()
-    await expect.element(screen.getByText('Revision 3').first()).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: 'Supporting evidence (1)' }).first()).toBeVisible()
   })
 
   it('creates a meeting-scoped conversation only after an explicit action', async () => {
@@ -565,6 +644,7 @@ describe('AssistantPage', () => {
     })
     const screen = await renderPage()
 
+    await userEvent.click(screen.getByRole('button', { name: 'New conversation' }))
     await userEvent.selectOptions(
       screen.getByRole('combobox', { name: 'Assistant meeting' }),
       meetingId
@@ -578,23 +658,15 @@ describe('AssistantPage', () => {
       screen.getByRole('combobox', { name: 'Assistant meeting' }),
       otherMeetingId
     )
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     creation.resolve(createdConversation)
 
     await expect.poll(() => getConversationReads()).toBeGreaterThan(1)
     await expect
       .element(screen.getByText('Other meeting questions'))
       .toBeVisible()
-    await expect
-      .element(screen.getByText('Created for Product planning'))
-      .not.toBeInTheDocument()
-
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: 'Assistant meeting' }),
-      meetingId
-    )
-    await expect
-      .element(screen.getByText('Created for Product planning'))
-      .toBeVisible()
+    await expect.element(screen.getByText('Created for Product planning')).toBeVisible()
+    await expect.element(screen.getByRole('heading', { name: 'Created for Product planning' })).not.toBeInTheDocument()
     expect(post).toHaveBeenCalledTimes(1)
   })
 
@@ -640,13 +712,7 @@ describe('AssistantPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
     await expect.poll(() => post.mock.calls.length).toBe(1)
 
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: 'Assistant meeting' }),
-      otherMeetingId
-    )
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Open conversation' })
-    )
+    await userEvent.click(screen.getByRole('button', { name: 'Open conversation: Other meeting questions', exact: true }))
     const currentQuestion = screen.getByRole('textbox', {
       name: 'Assistant question',
     })
@@ -662,13 +728,7 @@ describe('AssistantPage', () => {
       .not.toBeInTheDocument()
     expect(post).toHaveBeenCalledTimes(1)
 
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: 'Assistant meeting' }),
-      meetingId
-    )
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Open conversation' })
-    )
+    await userEvent.click(screen.getByRole('button', { name: 'Open conversation: Planning questions', exact: true }))
     await expect
       .element(screen.getByText('Question A authoritative answer'))
       .toBeVisible()
@@ -702,13 +762,7 @@ describe('AssistantPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
     await expect.poll(() => post.mock.calls.length).toBe(1)
 
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: 'Assistant meeting' }),
-      otherMeetingId
-    )
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Open conversation' })
-    )
+    await userEvent.click(screen.getByRole('button', { name: 'Open conversation: Other meeting questions', exact: true }))
     submission.reject(coreError(503, 'Question A failed'))
 
     await expect
@@ -759,13 +813,7 @@ describe('AssistantPage', () => {
       .poll(() => getStatusReads(), { timeout: 6_000 })
       .toBeGreaterThan(0)
 
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: 'Assistant meeting' }),
-      otherMeetingId
-    )
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Open conversation' })
-    )
+    await userEvent.click(screen.getByRole('button', { name: 'Open conversation: Other meeting questions', exact: true }))
     const currentQuestion = screen.getByRole('textbox', {
       name: 'Assistant question',
     })
@@ -783,13 +831,7 @@ describe('AssistantPage', () => {
       .toBe('Question B draft')
     expect(post).toHaveBeenCalledTimes(1)
 
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: 'Assistant meeting' }),
-      meetingId
-    )
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Open conversation' })
-    )
+    await userEvent.click(screen.getByRole('button', { name: 'Open conversation: Planning questions', exact: true }))
     await expect
       .element(screen.getByText('Core is processing this question.'))
       .toBeVisible()
@@ -817,10 +859,6 @@ describe('AssistantPage', () => {
       detailPages: { [olderConversation.id]: { 0: olderDetail } },
     })
     const screen = await renderPage()
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: 'Assistant meeting' }),
-      meetingId
-    )
 
     await userEvent.click(
       screen.getByRole('button', { name: 'Load older conversations' })
@@ -829,7 +867,7 @@ describe('AssistantPage', () => {
       .element(screen.getByText('Older authorized conversation'))
       .toBeVisible()
     await userEvent.click(
-      screen.getByRole('button', { name: 'Open conversation' }).last()
+      screen.getByRole('button', { name: 'Open conversation: Older authorized conversation', exact: true })
     )
 
     await expect
@@ -870,10 +908,6 @@ describe('AssistantPage', () => {
       },
     })
     const screen = await renderPage()
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: 'Assistant meeting' }),
-      meetingId
-    )
     await userEvent.click(
       screen.getByRole('button', { name: 'Load older conversations' })
     )
@@ -1131,10 +1165,8 @@ describe('AssistantPage', () => {
     setupReads()
     const post = vi.spyOn(coreApi, 'post').mockResolvedValue(conversation)
     const screen = await renderPage({ strict: true })
-    await expect
-      .element(screen.getByText('Product planning').last())
-      .toBeVisible()
     await selectMeeting(screen)
+    await expect.element(screen.getByRole('combobox', { name: 'Assistant meeting' })).toHaveValue(meetingId)
     expect(post).not.toHaveBeenCalled()
   })
 
@@ -1184,8 +1216,9 @@ describe('AssistantPage', () => {
     await expect
       .element(screen.getByText('The launch date is Friday.'))
       .toBeVisible()
-    await expect.element(screen.getByText('Revision 3').first()).toBeVisible()
-    await expect.element(screen.getByText('SUPPORTED').first()).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: 'Supporting evidence (1)' }).first()).toBeVisible()
+    await userEvent.click(screen.getByText('Claim support (1)').first())
+    await expect.element(screen.getByText('Supported').first()).toBeVisible()
   })
 
   it('does not invent citations for insufficient evidence', async () => {
@@ -1200,7 +1233,7 @@ describe('AssistantPage', () => {
         )
       )
       .toBeVisible()
-    expect(screen.getByText('INSUFFICIENT_EVIDENCE')).toBeVisible()
+    expect(screen.getByText('Insufficient evidence')).toBeVisible()
     expect(
       screen.getByText('No verified citations were returned.')
     ).toBeVisible()
@@ -1231,8 +1264,8 @@ describe('AssistantPage', () => {
         )
       )
       .toBeVisible()
-    await expect.element(screen.getByText('PARTIAL')).toBeVisible()
-    await expect.element(screen.getByText('Revision 3').first()).toBeVisible()
+    await expect.element(screen.getByText('Partially supported answer')).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: 'Supporting evidence (1)' }).first()).toBeVisible()
   })
 
   it('keeps a 202 turn in processing and observes completion through read-only turn status', async () => {
@@ -1382,20 +1415,17 @@ describe('AssistantPage', () => {
       throw new Error(`Unexpected GET ${url}`)
     })
     const screen = await renderPage()
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Use meeting for Assistant' }).first()
-    )
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Open conversation' })
-    )
+    await openConversation(screen)
     await expect
       .element(screen.getByText('The launch is planned for Friday.').first())
       .toBeVisible()
 
+    await userEvent.click(screen.getByRole('button', { name: 'New conversation' }))
     await userEvent.selectOptions(
       screen.getByRole('combobox', { name: 'Assistant meeting' }),
       otherMeeting.id
     )
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
     await expect
       .element(
@@ -1427,10 +1457,11 @@ describe('AssistantPage', () => {
       })
       const screen = await renderPage()
 
+      await expect.element(screen.getByText(message)).toBeVisible()
+      await userEvent.click(screen.getByRole('button', { name: 'Find meetings' }))
       await expect
         .element(screen.getByText('Product planning').last())
         .toBeVisible()
-      await expect.element(screen.getByText(message)).toBeVisible()
     }
   )
 
@@ -1502,7 +1533,7 @@ describe('AssistantPage', () => {
       .element(screen.getByText('The launch is planned for Friday.').first())
       .toBeVisible()
     revoked = true
-    await userEvent.click(screen.getByRole('button', { name: 'Opened' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Opened: Planning questions', exact: true }))
     await expect
       .element(screen.getByText('The launch is planned for Friday.').first())
       .not.toBeInTheDocument()
@@ -1554,7 +1585,7 @@ describe('AssistantPage', () => {
       .mockResolvedValue({ ...acceptedTurn('COMPLETED'), turnId })
     const screen = await renderPage({ initial: { conversationId, meetingId } })
     await expect
-      .element(screen.getByText('Execution lease expired'))
+      .element(screen.getByText('This request needs to be resumed'))
       .toBeVisible()
     expect(post).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Recover turn' }))
@@ -1763,23 +1794,11 @@ describe('AssistantPage', () => {
     })
     const screen = await renderPage({ initial: { conversationId, meetingId } })
     await expect.poll(() => getStatusReads()).toBe(1)
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: 'Assistant meeting' }),
-      otherMeetingId
-    )
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Open conversation' })
-    )
+    await userEvent.click(screen.getByRole('button', { name: 'Open conversation: Other meeting questions', exact: true }))
     await expect
       .element(screen.getByRole('heading', { name: otherConversation.title }))
       .toBeVisible()
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: 'Assistant meeting' }),
-      meetingId
-    )
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Open conversation' })
-    )
+    await userEvent.click(screen.getByRole('button', { name: 'Open conversation: Planning questions', exact: true }))
     await expect
       .element(screen.getByText('Core is processing this question.'))
       .toBeVisible()

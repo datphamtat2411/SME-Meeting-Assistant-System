@@ -1,4 +1,5 @@
-import { type FormEvent, type ReactNode } from 'react'
+import { useRef, type FormEvent, type ReactNode } from 'react'
+import { Link } from '@tanstack/react-router'
 import { LoaderCircle, RefreshCw } from 'lucide-react'
 import type { CoreApiError } from '@/lib/core-api'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -66,6 +67,7 @@ export function ConversationPanel({
   onRefresh: () => void
   onResumePolling: () => void
 }) {
+  const form = useRef<HTMLFormElement>(null)
   if (!selectedConversationId || listAccessError) return null
   if (detailAccessError) {
     return (
@@ -73,7 +75,7 @@ export function ConversationPanel({
     )
   }
 
-  if (!historyAccessReady) {
+  if (!historyAccessReady || !selectedConversation) {
     return detailQuery.isError ? (
       <AssistantError error={detailQuery.error} onRetry={onRefresh} />
     ) : (
@@ -82,17 +84,21 @@ export function ConversationPanel({
   }
 
   return (
-    <div className='space-y-4 border-t pt-5'>
-      <div className='flex flex-wrap items-center justify-between gap-3'>
+    <div className='flex h-full min-h-0 flex-col gap-3'>
+      <div className='flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-3 py-3 sm:px-6'>
         <div>
           <h3 className='font-semibold'>
-            {selectedConversation?.title || 'Conversation'}
+            {selectedConversation.title || 'Untitled conversation'}
           </h3>
           <p className='text-sm text-muted-foreground'>
-            {selectedMeetingTitle || 'Authorized meeting'} ·{' '}
-            {selectedConversationId}
+            {selectedMeetingTitle || 'Authorized meeting'} · One meeting
           </p>
         </div>
+        {selectedMeetingTitle && (
+          <Button asChild type='button' size='sm' variant='ghost'>
+            <Link to='/meetings/$meetingId' params={{ meetingId: selectedConversation.meetingId }}>Open meeting</Link>
+          </Button>
+        )}
         <Button
           type='button'
           size='sm'
@@ -105,6 +111,11 @@ export function ConversationPanel({
       </div>
       {detailQuery.data ? (
         <ConversationHistory
+          key={selectedConversationId}
+          conversationId={selectedConversationId}
+          meetingId={selectedConversation.meetingId}
+          onSuggestion={onQuestionChange}
+          suggestionsEnabled={!questionBusy}
           messages={chronologicalHistoryMessages(detailQuery.data.pages)}
           hasMore={Boolean(detailQuery.hasNextPage)}
           loadingOlder={detailQuery.isFetchingNextPage}
@@ -114,6 +125,7 @@ export function ConversationPanel({
           onLoadOlder={onLoadOlderMessages}
         />
       ) : null}
+      <div className='max-h-[30%] shrink-0 space-y-2 overflow-y-auto px-3 sm:px-6'>
       {historyRefreshError !== undefined && historyRefreshError !== null && (
         <AssistantError error={historyRefreshError} />
       )}
@@ -121,8 +133,12 @@ export function ConversationPanel({
       {workflow && workflow.phase !== 'settled' && (
         <Alert>
           <AlertTitle>
-            {workflow.phase === 'recoverable'
-              ? 'Execution lease expired'
+            {workflow.phase === 'submitting'
+              ? 'Sending your question…'
+              : workflow.phase === 'recovering'
+                ? 'Resuming the existing request…'
+                : workflow.phase === 'recoverable'
+              ? 'This request needs to be resumed'
               : workflow.phase === 'paused'
                 ? 'Turn outcome is unresolved'
                 : workflow.phase === 'uncertain' || workflow.phase === 'lookup'
@@ -135,14 +151,14 @@ export function ConversationPanel({
           </AlertTitle>
           <AlertDescription>
             {workflow.phase === 'recoverable'
-              ? 'Recover this existing turn explicitly. No new question will be created.'
+              ? 'Resume the existing request. This will not send another question.'
               : workflow.phase === 'paused'
                 ? 'Resume read-only status checks to reconcile the durable turn.'
                 : workflow.phase === 'uncertain' || workflow.phase === 'lookup'
                   ? workflow.conflict
                     ? 'This question was rejected. Status checks concern the existing request, not acceptance of this question.'
                     : 'The original request identity is retained. No automatic resubmission will occur.'
-                  : 'The Web observes authoritative turn status without creating another request.'}
+                  : 'We will check for the result without sending another question.'}
             {workflow.phase === 'recoverable' && (
               <Button
                 type='button'
@@ -193,7 +209,8 @@ export function ConversationPanel({
         </p>
       )}
 
-      <form className='space-y-3' onSubmit={onQuestionSubmit}>
+      </div>
+      <form ref={form} className='shrink-0 space-y-2 border-t bg-background p-3 sm:px-6' onSubmit={onQuestionSubmit}>
         <label className='space-y-1.5 text-sm font-medium'>
           <span>Ask about this meeting</span>
           <Textarea
@@ -202,15 +219,22 @@ export function ConversationPanel({
             onChange={(event) => onQuestionChange(event.target.value)}
             placeholder='Ask a question grounded in the authorized meeting evidence'
             disabled={questionBusy}
+            aria-invalid={questionCount > ASSISTANT_QUESTION_LIMIT || Boolean(questionValidationError)}
+            className='max-h-36 min-h-16 resize-y'
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return
+              event.preventDefault()
+              if (!questionBusy && !isBlankAssistantQuestion(question) && questionCount <= ASSISTANT_QUESTION_LIMIT) form.current?.requestSubmit()
+            }}
           />
         </label>
         <div className='flex flex-wrap items-center justify-between gap-3'>
           <span className='text-xs text-muted-foreground'>
-            {questionCount}/4096 Unicode code points
+            {questionCount}/4096 Unicode code points · AI-derived answers; verify important details
           </span>
-          {questionValidationError && (
+          {(questionValidationError || questionCount > ASSISTANT_QUESTION_LIMIT) && (
             <span role='alert' className='text-sm text-destructive'>
-              {questionValidationError}
+              {questionValidationError || 'Questions must be at most 4096 Unicode code points.'}
             </span>
           )}
           <Button
