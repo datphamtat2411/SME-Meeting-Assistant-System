@@ -52,6 +52,15 @@ const emptyList = {
   data: [],
   meta: { pagination },
 }
+const emptyActionItemList = {
+  data: [],
+  meta: {
+    pagination: {
+      ...pagination,
+      size: 5,
+    },
+  },
+}
 
 const meeting = {
   id: meetingId,
@@ -94,17 +103,17 @@ const meetingList = {
   },
 }
 
-const dashboardAsOf = '2026-11-23T09:00:00Z'
+const dashboardAsOf = '2026-11-23T10:30:00Z'
 const dashboard = {
   asOf: dashboardAsOf,
   timezone: 'Asia/Ho_Chi_Minh',
   upcomingWindow: {
     fromInclusive: dashboardAsOf,
-    toExclusive: '2026-12-07T09:00:00Z',
+    toExclusive: '2026-12-07T10:30:00Z',
     limit: 10,
   },
   recentWindow: {
-    fromInclusive: '2026-10-24T09:00:00Z',
+    fromInclusive: '2026-10-24T10:30:00Z',
     toExclusive: dashboardAsOf,
     limit: 10,
   },
@@ -182,7 +191,7 @@ function installCoreFixtures(options: FixtureOptions = {}) {
         if (options.meetingListError) throw options.meetingListError
         return (options.meetingList ?? meetingList) as never
       }
-      if (url === '/action-items') return emptyList as never
+      if (url === '/action-items') return emptyActionItemList as never
       if (url === '/rooms') return emptyList as never
       if (url === '/users') return emptyList as never
       if (url === '/organizational-units') return emptyList as never
@@ -382,7 +391,7 @@ describe('integrated generated Web runtime', () => {
           .element(screen.getByText('Scheduled meetings'))
           .toBeInTheDocument()
         await expect
-          .element(screen.getByText('No upcoming meeting'))
+          .element(screen.getByText('No upcoming meeting', { exact: true }))
           .toBeInTheDocument()
       }
       expect(router.state.location.pathname).toBe(path)

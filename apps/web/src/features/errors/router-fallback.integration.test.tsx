@@ -71,6 +71,19 @@ const emptyMeetingList = {
     },
   },
 }
+const emptyActionItemList = {
+  data: [],
+  meta: {
+    pagination: {
+      page: 0,
+      size: 5,
+      totalElements: 0,
+      totalPages: 0,
+      hasNext: false,
+      hasPrevious: false,
+    },
+  },
+}
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -222,8 +235,11 @@ describe('router fallback integration', () => {
       return Promise.reject(new Error('Unexpected GET: ' + url)) as never
     })
     vi.spyOn(coreApi, 'getWithMeta').mockImplementation((url) => {
-      if (url === '/meetings' || url === '/action-items') {
+      if (url === '/meetings') {
         return Promise.resolve(emptyMeetingList) as never
+      }
+      if (url === '/action-items') {
+        return Promise.resolve(emptyActionItemList) as never
       }
       return Promise.reject(
         new Error('Unexpected GET with meta: ' + url)
