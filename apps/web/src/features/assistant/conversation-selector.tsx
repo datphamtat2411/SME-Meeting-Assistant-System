@@ -1,3 +1,4 @@
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { useState } from 'react'
 import { LoaderCircle, Plus } from 'lucide-react'
 import type { CoreApiError } from '@/lib/core-api'
@@ -220,7 +221,7 @@ export function ConversationSelector({
                 className='text-xs font-normal text-muted-foreground'
                 dateTime={item.updatedAt}
               >
-                {new Date(item.updatedAt).toLocaleString()}
+                <RegionalTimestamp value={item.updatedAt} />
               </time>
             </Button>
           ))

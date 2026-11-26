@@ -1,3 +1,4 @@
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { useRef, useState } from 'react'
 import { FileAudio, Play, UploadCloud } from 'lucide-react'
 import { toast } from 'sonner'
@@ -241,7 +242,7 @@ function MediaRow({
           {media.durationMs != null && (
             <span>{formatDuration(media.durationMs)}</span>
           )}
-          <span>{formatDate(media.createdAt)}</span>
+          <span><RegionalTimestamp value={media.createdAt} fallback='Time unavailable' /></span>
         </div>
         {media.failureCode && (
           <p className='mt-1 text-xs text-destructive'>{media.failureCode}</p>
@@ -270,12 +271,3 @@ function formatDuration(durationMs: number): string {
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`
 }
 
-function formatDate(value: string): string {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime())
-    ? 'Time unavailable'
-    : new Intl.DateTimeFormat(undefined, {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-      }).format(date)
-}

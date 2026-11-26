@@ -252,6 +252,7 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
             <dd>
               {new Intl.DateTimeFormat(preview.locale, {
                 dateStyle: 'long',
+                calendar: 'gregory',
                 timeZone: preview.timezone,
               }).format(reference)}
             </dd>
@@ -280,8 +281,9 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
         <p className='text-sm text-muted-foreground'>
           Saved time zone: {preferences.timezone ?? 'Browser default'}. Saved
           regional format: {preferences.locale ?? 'Browser default'}. These
-          settings are used in this preview; schedule integration is not yet
-          available.
+          settings control how dates, numbers and schedules are displayed. New
+          scheduling editors use the saved effective timezone; existing meeting
+          instants are never changed.
         </p>
         {form.formState.errors.root?.message && (
           <p role='alert' className='text-sm text-destructive'>

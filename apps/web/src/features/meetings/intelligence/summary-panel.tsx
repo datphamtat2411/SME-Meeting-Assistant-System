@@ -1,3 +1,4 @@
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Columns2, FileText, RefreshCw } from 'lucide-react'
@@ -30,7 +31,6 @@ import {
 import {
   ConflictColumn,
   CurrentSummary,
-  formatDate,
   PreviewColumn,
   VersionRow,
 } from './summary-presentation'
@@ -736,7 +736,7 @@ function SummaryPanelContent({
                 </h3>
                 <p className='text-xs text-muted-foreground'>
                   {selectedVersion.sourceType} · created{' '}
-                  {formatDate(selectedVersion.createdAt)}
+                  <RegionalTimestamp value={selectedVersion.createdAt} />
                   {selectedVersion.isStale ? ' · source is stale' : ''}
                 </p>
               </div>

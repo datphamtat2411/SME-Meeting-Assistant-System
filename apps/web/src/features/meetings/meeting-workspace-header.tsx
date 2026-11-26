@@ -1,3 +1,4 @@
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { CalendarDays, MapPin, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { AuthContext } from '@/features/auth/session/current-user'
@@ -37,6 +38,7 @@ export function MeetingWorkspaceHeader({
   canEdit: boolean
   onEdit: () => void
 }) {
+  const { timezone, locale } = useRegionalPresentation()
   return (
     <section className='space-y-5'>
       <div className='min-w-0 space-y-3'>
@@ -71,7 +73,7 @@ export function MeetingWorkspaceHeader({
         <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
           <span className='inline-flex items-center gap-1.5'>
             <CalendarDays className='size-4' />
-            {formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt)}
+            {formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt, timezone, locale)}
           </span>
           <span className='inline-flex items-center gap-1.5'>
             <MapPin className='size-4' />

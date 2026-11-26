@@ -126,3 +126,22 @@ export function formatCivilDate(
     timeZone: 'UTC',
   }).format(new Date(civilBoundary(date, 'UTC')))
 }
+
+/** Format an absolute timestamp without changing the stored value. */
+export function formatRegionalInstant(
+  value: string,
+  timezone: string,
+  locale: string,
+  options: Intl.DateTimeFormatOptions = { dateStyle: 'medium', timeStyle: 'short' }
+) {
+  try {
+    const instant = Temporal.Instant.from(value)
+    return new Intl.DateTimeFormat(locale, {
+      ...options,
+      timeZone: timezone,
+      calendar: 'gregory',
+    }).format(instant.epochMilliseconds)
+  } catch {
+    return undefined
+  }
+}

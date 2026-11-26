@@ -1,3 +1,4 @@
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle, UserRound } from 'lucide-react'
 import { toast } from 'sonner'
@@ -27,12 +28,6 @@ const participantManagementStatuses = new Set([
   'SCHEDULED',
   'IN_PROGRESS',
 ])
-
-const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-})
 
 type ParticipantManagementPhase =
   | 'ready'
@@ -589,11 +584,11 @@ function ParticipantMembership({
             : 'Name unavailable'}
         </p>
         <p className='text-xs text-muted-foreground'>
-          Added {formatDateTime(participant.addedAt)}
+          Added <RegionalTimestamp value={participant.addedAt} />
         </p>
         {historical && participant.removedAt && (
           <p className='text-xs text-muted-foreground'>
-            Removed {formatDateTime(participant.removedAt)}
+            Removed <RegionalTimestamp value={participant.removedAt} />
           </p>
         )}
       </div>
@@ -603,10 +598,6 @@ function ParticipantMembership({
 
 function participantDisplayName(participant: ParticipantView) {
   return participant.displayName?.trim() || 'Name unavailable'
-}
-
-function formatDateTime(value: string) {
-  return meetingDateTimeFormatter.format(new Date(value))
 }
 
 function formatMutationFailure(

@@ -1,3 +1,5 @@
+import { useRegionalPresentation } from '@/context/regional-presentation'
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -47,13 +49,6 @@ import {
 import { PlaybackControls } from './media/playback-controls'
 import { RecordingPanel } from './media/recording-panel'
 import { useOptionalMeetingAuthorization } from './meeting-authorization-context'
-
-const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
-const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-  timeZone: presentationTimeZone,
-})
 
 export function LiveMeetingPage({ meetingId }: { meetingId: string }) {
   return (
@@ -178,6 +173,7 @@ function LiveMeetingDetail({
   canReadMedia: boolean
   media: MeetingMedia[]
 }) {
+  const { timezone, locale } = useRegionalPresentation()
   const { meeting, etag } = detail
   const isLive = meeting.status === 'IN_PROGRESS'
   const isOrganizer =
@@ -237,7 +233,7 @@ function LiveMeetingDetail({
         <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
           <span className='inline-flex items-center gap-1.5'>
             <CalendarDays className='size-4' />
-            {formatMeetingScheduleValue(meeting)}
+            {formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt, timezone, locale)}
           </span>
           <span className='inline-flex items-center gap-1.5'>
             <MapPin className='size-4' />
@@ -296,7 +292,7 @@ function LiveMeetingDetail({
               />
               <LiveMetric
                 label='Scheduled window'
-                value={formatMeetingScheduleValue(meeting)}
+                value={formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt, timezone, locale)}
               />
               <LiveMetric
                 label='Recording'
@@ -437,7 +433,7 @@ function LifecycleSummary({ meeting }: { meeting: MeetingView }) {
             className='flex items-start justify-between gap-4 text-sm'
           >
             <span className='text-muted-foreground'>{label}</span>
-            <span className='font-medium'>{formatDateTime(value)}</span>
+            <span className='font-medium'><RegionalTimestamp value={value} /></span>
           </div>
         ))}
         {meeting.cancellationReason && (
@@ -556,14 +552,6 @@ function lifecycleDetail(meeting: MeetingView) {
     return 'No live session or lifecycle mutation is available for this meeting.'
   }
   return 'Return to the meeting workspace to review this draft.'
-}
-
-function formatMeetingScheduleValue(meeting: MeetingView) {
-  return formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt)
-}
-
-function formatDateTime(value: string) {
-  return meetingDateTimeFormatter.format(new Date(value))
 }
 
 function formatElapsedBetween(startedAt: number, endedAt: number): string {

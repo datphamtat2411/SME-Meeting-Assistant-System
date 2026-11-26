@@ -1,3 +1,4 @@
+import { RegionalCivilDate } from '@/components/regional-timestamp'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -359,7 +360,7 @@ function ReviewContent({
         State: {item.status} · Assignee:{' '}
         {item.assignee?.displayName ?? 'Unassigned'}
         {item.assignee && !item.assignee.active ? ' (inactive)' : ''} · Due:{' '}
-        {item.dueDate ?? 'none'}
+        <RegionalCivilDate value={item.dueDate} fallback='none' />
       </p>
       {item.evidence.limitation && <p>{item.evidence.limitation}</p>}
       {showEvidence &&

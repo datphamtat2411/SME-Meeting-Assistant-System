@@ -1,3 +1,4 @@
+import { RegionalTimestamp } from '@/components/regional-timestamp'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { LoaderCircle, ShieldAlert } from 'lucide-react'
@@ -266,7 +267,7 @@ function AssistantMessageCard({
           {isUser ? 'You' : 'Meeting Assistant'}
         </span>
         <time dateTime={message.createdAt}>
-          {new Date(message.createdAt).toLocaleString()}
+          <RegionalTimestamp value={message.createdAt} />
         </time>
       </div>
       {sourceUnavailable ? (

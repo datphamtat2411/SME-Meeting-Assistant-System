@@ -1,3 +1,4 @@
+import { RegionalCivilDate } from '@/components/regional-timestamp'
 import { useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -444,7 +445,7 @@ export function ActionForm({
                     Server assignee:{' '}
                     {conflict.latest.assignee?.displayName ?? 'Unassigned'}
                   </p>
-                  <p>Server due date: {conflict.latest.dueDate ?? 'None'}</p>
+                  <p>Server due date: <RegionalCivilDate value={conflict.latest.dueDate} fallback='None' /></p>
                   <p>Server status: {conflict.latest.status}</p>
                   <p>
                     Only the fields you originally changed will be retained.

@@ -1,3 +1,5 @@
+import { useRegionalPresentation } from '@/context/regional-presentation'
+import { formatRegionalInstant } from '@/lib/regional-time'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Badge } from '@/components/ui/badge'
@@ -42,6 +44,7 @@ export function MinutesPanel({
   onOpenDecisions?: () => void
   onOpenTranscript?: () => void
 }) {
+  const { timezone, locale } = useRegionalPresentation()
   const query = useQuery(minutesQuery(meetingId))
   if (query.isPending) {
     return (
@@ -80,7 +83,7 @@ export function MinutesPanel({
       ? (assigneeDisplayNames[id] ?? names[id] ?? 'Name unavailable')
       : 'Unassigned'
   const time = (value: string | null) =>
-    value ? new Date(value).toLocaleString() : 'Not recorded'
+    value ? (formatRegionalInstant(value, timezone, locale) ?? 'Time unavailable') : 'Not recorded'
   return (
     <Card>
       <CardHeader className='border-b'>
