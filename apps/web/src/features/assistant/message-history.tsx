@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { LoaderCircle, ShieldAlert } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -46,7 +46,8 @@ export function ConversationHistory({
   onLoadOlder,
   onSuggestion,
   suggestionsEnabled,
-  position,
+  readPosition,
+  writePosition,
   showLatest,
   onShowLatestChange,
 }: {
@@ -59,7 +60,8 @@ export function ConversationHistory({
   onLoadOlder: () => void
   onSuggestion: (question: string) => void
   suggestionsEnabled: boolean
-  position: RefObject<HistoryScrollPosition>
+  readPosition: () => HistoryScrollPosition
+  writePosition: (position: HistoryScrollPosition) => void
   showLatest: boolean
   onShowLatestChange: (show: boolean) => void
 }) {
@@ -81,17 +83,18 @@ export function ConversationHistory({
         )
       : undefined
 
-  function rememberPosition() {
+  function rememberPosition(forceReading = false) {
     const node = viewport.current
     if (!node || !node.clientHeight) return
     const following =
+      !forceReading &&
       node.scrollHeight - node.scrollTop - node.clientHeight < 80
     onShowLatestChange(!following)
     const top = node.getBoundingClientRect().top
     const first = Array.from(
       node.querySelectorAll<HTMLElement>('[data-message-id]')
     ).find((item) => item.getBoundingClientRect().bottom > top)
-    position.current = {
+    writePosition({
       following,
       scrollTop: node.scrollTop,
       reading: first?.dataset.messageId
@@ -100,13 +103,13 @@ export function ConversationHistory({
             offset: first.getBoundingClientRect().top - top,
           }
         : undefined,
-    }
+    })
   }
 
   useLayoutEffect(() => {
     const node = viewport.current
     if (!node || !node.clientHeight) return
-    const { following, reading, scrollTop } = position.current
+    const { following, reading, scrollTop } = readPosition()
     if (following) {
       node.scrollTop = node.scrollHeight
     } else {
@@ -122,7 +125,7 @@ export function ConversationHistory({
           reading.offset
       else node.scrollTop = scrollTop ?? 0
     }
-  }, [messages, position])
+  }, [messages, readPosition])
 
   function inspect(
     messageId: string,
@@ -138,7 +141,7 @@ export function ConversationHistory({
     <div className='relative flex min-h-0 flex-1 flex-col'>
       <div
         ref={viewport}
-        onScroll={rememberPosition}
+        onScroll={() => rememberPosition()}
         className='min-h-0 flex-1 space-y-5 overflow-y-auto px-3 py-4 [overflow-anchor:none] sm:px-6'
         aria-label='Conversation history'
         tabIndex={0}
@@ -151,9 +154,7 @@ export function ConversationHistory({
               variant='outline'
               disabled={loadingOlder}
               onClick={() => {
-                rememberPosition()
-                position.current.following = false
-                onShowLatestChange(true)
+                rememberPosition(true)
                 onLoadOlder()
               }}
             >
@@ -203,7 +204,7 @@ export function ConversationHistory({
           size='sm'
           className='absolute bottom-3 left-1/2 -translate-x-1/2 shadow-sm'
           onClick={() => {
-            position.current = { following: true }
+            writePosition({ following: true })
             if (viewport.current)
               viewport.current.scrollTop = viewport.current.scrollHeight
             onShowLatestChange(false)

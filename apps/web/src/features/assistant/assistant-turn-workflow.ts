@@ -400,7 +400,8 @@ export function useAssistantTurnWorkflow(
       ? workflow
       : undefined
   const observing = active?.phase === 'observing' ? active : undefined
-  const retryDeadline = active && 'retryAt' in active ? active.retryAt : undefined
+  const retryDeadline =
+    active && 'retryAt' in active ? active.retryAt : undefined
   const [clock, setClock] = useState(() => Date.now())
   useEffect(() => {
     if (!retryDeadline || retryDeadline <= clock) return

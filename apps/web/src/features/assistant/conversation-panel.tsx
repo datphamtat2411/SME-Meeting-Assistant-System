@@ -1,4 +1,10 @@
-import { useRef, useState, type FormEvent, type ReactNode } from 'react'
+import {
+  useCallback,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react'
 import { Link } from '@tanstack/react-router'
 import { LoaderCircle, RefreshCw } from 'lucide-react'
 import type { CoreApiError } from '@/lib/core-api'
@@ -16,7 +22,10 @@ import { canRetryAssistantSubmission } from './assistant-error-policy'
 import { chronologicalHistoryMessages } from './assistant-history'
 import type { TurnWorkflow } from './assistant-turn-workflow'
 import type { ConversationHistoryQuery } from './assistant-types'
-import { ConversationHistory, type HistoryScrollPosition } from './message-history'
+import {
+  ConversationHistory,
+  type HistoryScrollPosition,
+} from './message-history'
 
 export function ConversationPanel({
   listAccessError,
@@ -76,6 +85,10 @@ export function ConversationPanel({
 }) {
   const form = useRef<HTMLFormElement>(null)
   const position = useRef<HistoryScrollPosition>({ following: true })
+  const readPosition = useCallback(() => position.current, [])
+  const writePosition = useCallback((next: HistoryScrollPosition) => {
+    position.current = next
+  }, [])
   const [showLatest, setShowLatest] = useState(false)
   if (!selectedConversationId || listAccessError) return null
   if (detailAccessError) {
@@ -126,7 +139,8 @@ export function ConversationPanel({
       {detailQuery.data ? (
         <ConversationHistory
           key={selectedConversationId}
-          position={position}
+          readPosition={readPosition}
+          writePosition={writePosition}
           showLatest={showLatest}
           onShowLatestChange={setShowLatest}
           conversationId={selectedConversationId}
