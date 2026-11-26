@@ -257,8 +257,10 @@ void main() {
       tester,
       () =>
           find.text('Test User').evaluate().isNotEmpty &&
-          find.widgetWithText(SwitchListTile, 'Email cuộc họp')
-              .evaluate().isNotEmpty,
+          find
+              .widgetWithText(SwitchListTile, 'Email cuộc họp')
+              .evaluate()
+              .isNotEmpty,
       reason: 'first Account destination activation',
     );
     expect(profileReads, 1);
@@ -278,17 +280,19 @@ void main() {
     expect(profileReads, 1);
     expect(preferenceReads, 1);
 
-    tester.widget<NavigationRail>(find.byType(NavigationRail))
+    tester
+        .widget<NavigationRail>(find.byType(NavigationRail))
         .onDestinationSelected!(0);
     await tester.pumpAndSettle();
     expect(profileReads, 1);
     expect(preferenceReads, 1);
-    tester.widget<NavigationRail>(find.byType(NavigationRail))
+    tester
+        .widget<NavigationRail>(find.byType(NavigationRail))
         .onDestinationSelected!(4);
     await pumpUntil(
       tester,
-      () => profileReads == 2 && preferenceReads == 2 &&
-          !preferenceOwner.loading,
+      () =>
+          profileReads == 2 && preferenceReads == 2 && !preferenceOwner.loading,
       reason: 'Account destination re-entry',
     );
     expect(tester.state(workspace), same(accountState));

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
@@ -139,6 +140,17 @@ Future<void> _waitForIdentity(ProfileController controller) {
 
   controller.addListener(listener);
   return settled.future;
+}
+
+Future<void> _sendLifecycle(
+  WidgetTester tester,
+  AppLifecycleState state,
+) async {
+  await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    SystemChannels.lifecycle.name,
+    SystemChannels.lifecycle.codec.encodeMessage(state.toString()),
+    null,
+  );
 }
 
 class _FailingCredentialStorage extends InMemoryCredentialStorage {
@@ -1743,8 +1755,8 @@ void main() {
 
     update(() => active = false);
     await tester.pump();
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await _sendLifecycle(tester, AppLifecycleState.inactive);
+    await _sendLifecycle(tester, AppLifecycleState.resumed);
     await tester.pump();
     expect(profileReads, 1);
     expect(preferenceReads, 1);
@@ -1763,8 +1775,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await _sendLifecycle(tester, AppLifecycleState.inactive);
+    await _sendLifecycle(tester, AppLifecycleState.resumed);
     await tester.pump();
     expect(profileReads, 2);
     expect(preferenceReads, 2);
