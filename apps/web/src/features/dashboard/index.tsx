@@ -26,8 +26,8 @@ import {
   RequestLoading,
 } from '@/components/request-state'
 import { actionItemsQuery } from '@/features/action-items/action-api'
-import { useCurrentUserVerification } from '@/features/auth/session/current-user-verification'
 import type { AuthContext } from '@/features/auth/session/current-user'
+import { useCurrentUserVerification } from '@/features/auth/session/current-user-verification'
 import { getSessionContextKey } from '@/features/auth/session/session-revalidation'
 import {
   meetingDetailQueryOptions,
@@ -102,14 +102,17 @@ function MeetingList({
           </Button>
         </div>
         <p className='text-xs text-muted-foreground'>
-          {windowFormat(window.fromInclusive)} to {windowFormat(window.toExclusive)} (exclusive)
-          · Up to {window.limit} meetings
+          {windowFormat(window.fromInclusive)} to{' '}
+          {windowFormat(window.toExclusive)} (exclusive) · Up to {window.limit}{' '}
+          meetings
         </p>
       </CardHeader>
       <CardContent className='space-y-2'>
         {meetings.length === 0 ? (
           <RequestEmpty
-            title={recent ? 'No recently ended meetings' : 'No upcoming meetings'}
+            title={
+              recent ? 'No recently ended meetings' : 'No upcoming meetings'
+            }
             description='No meetings in this reporting window.'
           />
         ) : (
@@ -153,7 +156,11 @@ function MyActionItems({ identity }: { identity: AuthContext }) {
     actionItemsQuery({ ...filter, status: 'OPEN' }, actionPreviewLimit, owner)
   )
   const inProgress = useQuery(
-    actionItemsQuery({ ...filter, status: 'IN_PROGRESS' }, actionPreviewLimit, owner)
+    actionItemsQuery(
+      { ...filter, status: 'IN_PROGRESS' },
+      actionPreviewLimit,
+      owner
+    )
   )
   let items: ReturnType<typeof mergeAssignedWork> = []
   let error: unknown
@@ -198,7 +205,11 @@ function MyActionItems({ identity }: { identity: AuthContext }) {
               <div className='flex flex-wrap items-start justify-between gap-2'>
                 <p className='min-w-0 font-medium break-words'>{item.title}</p>
                 <Badge variant={item.overdue ? 'destructive' : 'secondary'}>
-                  {item.overdue ? 'Overdue' : item.status === 'OPEN' ? 'Open' : 'In progress'}
+                  {item.overdue
+                    ? 'Overdue'
+                    : item.status === 'OPEN'
+                      ? 'Open'
+                      : 'In progress'}
                 </Badge>
               </div>
               {item.overdue && (
@@ -209,7 +220,8 @@ function MyActionItems({ identity }: { identity: AuthContext }) {
               <p className='text-xs text-muted-foreground'>
                 {item.dueDate ? 'Due ' + item.dueDate : 'No due date'}
               </p>
-              {item.capabilities.canAccessMeeting && !item.meeting.restricted ? (
+              {item.capabilities.canAccessMeeting &&
+              !item.meeting.restricted ? (
                 <Link
                   to='/meetings/$meetingId'
                   params={{ meetingId: item.meetingId }}
@@ -225,8 +237,10 @@ function MyActionItems({ identity }: { identity: AuthContext }) {
             </article>
           ))
         )}
-        {!error && (open.isFetching || inProgress.isFetching) &&
-          !open.isPending && !inProgress.isPending && (
+        {!error &&
+          (open.isFetching || inProgress.isFetching) &&
+          !open.isPending &&
+          !inProgress.isPending && (
             <p role='status' className='text-xs text-muted-foreground'>
               Refreshing assigned work…
             </p>
@@ -269,23 +283,23 @@ function PersonalDashboard({ identity }: { identity: AuthContext }) {
     participantFailure?.status === 403 ||
     participantFailure?.status === 404
   const scheduleChanged = Boolean(
-    meeting && next && (
-      meeting.status !== 'SCHEDULED' ||
-      Date.parse(meeting.scheduledStartAt ?? '') !== Date.parse(next.scheduledStartAt ?? '') ||
-      Date.parse(meeting.scheduledEndAt ?? '') !== Date.parse(next.scheduledEndAt ?? '')
-    )
+    meeting &&
+    next &&
+    (meeting.status !== 'SCHEDULED' ||
+      Date.parse(meeting.scheduledStartAt ?? '') !==
+        Date.parse(next.scheduledStartAt ?? '') ||
+      Date.parse(meeting.scheduledEndAt ?? '') !==
+        Date.parse(next.scheduledEndAt ?? ''))
   )
-  const zone = presentationTimeZone(
-    preferences.data?.timezone,
-    data?.timezone
-  )
+  const zone = presentationTimeZone(preferences.data?.timezone, data?.timezone)
   const locale = preferences.data?.locale
   const format: FormatInstant = (value) =>
     formatPresentationInstant(value, zone, locale)
   const businessFormat: FormatInstant = (value) =>
     formatPresentationInstant(value, data?.timezone ?? zone, locale)
   const activeParticipants =
-    participants.isSuccess && next &&
+    participants.isSuccess &&
+    next &&
     participants.data.every((person) => person.meetingId === next.id)
       ? participants.data.filter((person) => person.removedAt === null)
       : undefined
@@ -322,112 +336,176 @@ function PersonalDashboard({ identity }: { identity: AuthContext }) {
           error={personal.error}
           retry={() => void personal.refetch()}
         />
-      ) : data && (
-        <>
-          <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
-            <Metric label='Scheduled meetings' value={data.meetingCountsByState.SCHEDULED ?? 0}
-              icon={CalendarDays} description='Within your authorized meeting scope' />
-            <Metric label='Pending action items' value={data.assignedActionItems.open + data.assignedActionItems.inProgress}
-              icon={ListChecks} description='Open and in progress' />
-            <Metric label='Overdue action items' value={data.assignedActionItems.overdue}
-              icon={TriangleAlert} description='Pending work requiring attention' />
-            <Metric label='Completed action items' value={data.assignedActionItems.done}
-              icon={CheckCircle2} description='Your completed official work' />
-          </div>
-          <div className='grid gap-4 xl:grid-cols-5'>
-            <Card className='xl:col-span-3'>
-              <CardHeader>
-                <CardTitle className='flex items-center gap-2'>
-                  <CalendarDays className='size-5 text-primary' /> Next meeting
-                </CardTitle>
-              </CardHeader>
-              <CardContent className='space-y-4'>
-                {accessChanged ? (
-                  <RequestError
-                    error={detail.error ?? participants.error}
-                    retry={() => {
-                      void personal.refetch()
-                      void detail.refetch()
-                      if (meeting) void participants.refetch()
-                    }}
-                  />
-                ) : scheduleChanged ? (
-                  <div className='space-y-3 rounded-lg border p-4 text-sm'>
-                    <p>The meeting schedule has changed. Refresh your dashboard to see the next meeting.</p>
-                    <Button size='sm' variant='outline' onClick={() => void personal.refetch()}>
-                      Refresh dashboard
-                    </Button>
-                  </div>
-                ) : next ? (
-                  <>
-                    <div className='space-y-2'>
-                      <Badge variant='secondary'>Scheduled</Badge>
-                      <h2 className='text-xl font-semibold break-words'>{next.title}</h2>
-                      {meeting?.description && (
-                        <p className='text-sm break-words whitespace-pre-wrap text-muted-foreground'>
-                          {meeting.description}
-                        </p>
-                      )}
-                    </div>
-                    <div className='space-y-2 text-sm'>
-                      <p className='flex items-start gap-2'>
-                        <Clock3 className='size-4 shrink-0 text-muted-foreground' />
-                        {format(next.scheduledStartAt)} – {format(next.scheduledEndAt)}
-                      </p>
-                      {meeting && (
-                        <p className='flex items-center gap-2'>
-                          <MapPin className='size-4 shrink-0 text-muted-foreground' />
-                          {!meeting.roomId ? 'No room assigned' : room.isSuccess ? room.data.room.name : room.isPending ? 'Loading room…' : 'Room details unavailable'}
-                        </p>
-                      )}
-                      {activeParticipants && (
-                        <p className='flex items-center gap-2'>
-                          <Users className='size-4 shrink-0 text-muted-foreground' />
-                          {activeParticipants.length} active participants
-                        </p>
-                      )}
-                      {organizer?.displayName && <p>Organizer: {organizer.displayName}</p>}
-                      {detail.isError || participants.isError || room.isError ? (
-                        <p className='text-xs text-muted-foreground'>
-                          Some additional meeting details are unavailable.
-                        </p>
-                      ) : detail.isFetching || (meeting && participants.isFetching) ? (
-                        <p role='status' className='text-xs text-muted-foreground'>
-                          Loading additional meeting details…
-                        </p>
-                      ) : null}
-                    </div>
-                    <Button asChild>
-                      <Link to='/meetings/$meetingId' params={{ meetingId: next.id }}>
-                        Open meeting workspace
-                      </Link>
-                    </Button>
-                  </>
-                ) : (
-                  <RequestEmpty
-                    title='No upcoming meeting'
-                    description='There is no scheduled meeting in the current upcoming window.'
-                  />
-                )}
-              </CardContent>
-            </Card>
-            <div className='min-w-0 xl:col-span-2'>
-              <MyActionItems identity={identity} />
+      ) : (
+        data && (
+          <>
+            <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
+              <Metric
+                label='Scheduled meetings'
+                value={data.meetingCountsByState.SCHEDULED ?? 0}
+                icon={CalendarDays}
+                description='Within your authorized meeting scope'
+              />
+              <Metric
+                label='Pending action items'
+                value={
+                  data.assignedActionItems.open +
+                  data.assignedActionItems.inProgress
+                }
+                icon={ListChecks}
+                description='Open and in progress'
+              />
+              <Metric
+                label='Overdue action items'
+                value={data.assignedActionItems.overdue}
+                icon={TriangleAlert}
+                description='Pending work requiring attention'
+              />
+              <Metric
+                label='Completed action items'
+                value={data.assignedActionItems.done}
+                icon={CheckCircle2}
+                description='Your completed official work'
+              />
             </div>
-          </div>
-          <div className='grid gap-4 xl:grid-cols-2'>
-            <MeetingList title='Upcoming meetings'
-              meetings={accessChanged || scheduleChanged ? upcoming.filter((item) => item.id !== next?.id) : upcoming}
-              window={data.upcomingWindow} format={format} windowFormat={businessFormat} />
-            <MeetingList title='Recently ended' meetings={orderedRecent(data)}
-              window={data.recentWindow} format={format} windowFormat={businessFormat} recent />
-          </div>
-          <p className='text-xs text-muted-foreground'>
-            As of {businessFormat(data.asOf)} · Reporting timezone: {data.timezone}
-            {zone !== data.timezone ? ' · Meeting times: ' + zone : ''}
-            {personal.isFetching ? ' · Refreshing…' : ''}
-          </p>
-        </>
+            <div className='grid gap-4 xl:grid-cols-5'>
+              <Card className='xl:col-span-3'>
+                <CardHeader>
+                  <CardTitle className='flex items-center gap-2'>
+                    <CalendarDays className='size-5 text-primary' /> Next
+                    meeting
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className='space-y-4'>
+                  {accessChanged ? (
+                    <RequestError
+                      error={detail.error ?? participants.error}
+                      retry={() => {
+                        void personal.refetch()
+                        void detail.refetch()
+                        if (meeting) void participants.refetch()
+                      }}
+                    />
+                  ) : scheduleChanged ? (
+                    <div className='space-y-3 rounded-lg border p-4 text-sm'>
+                      <p>
+                        The meeting schedule has changed. Refresh your dashboard
+                        to see the next meeting.
+                      </p>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        onClick={() => void personal.refetch()}
+                      >
+                        Refresh dashboard
+                      </Button>
+                    </div>
+                  ) : next ? (
+                    <>
+                      <div className='space-y-2'>
+                        <Badge variant='secondary'>Scheduled</Badge>
+                        <h2 className='text-xl font-semibold break-words'>
+                          {next.title}
+                        </h2>
+                        {meeting?.description && (
+                          <p className='text-sm break-words whitespace-pre-wrap text-muted-foreground'>
+                            {meeting.description}
+                          </p>
+                        )}
+                      </div>
+                      <div className='space-y-2 text-sm'>
+                        <p className='flex items-start gap-2'>
+                          <Clock3 className='size-4 shrink-0 text-muted-foreground' />
+                          {format(next.scheduledStartAt)} –{' '}
+                          {format(next.scheduledEndAt)}
+                        </p>
+                        {meeting && (
+                          <p className='flex items-center gap-2'>
+                            <MapPin className='size-4 shrink-0 text-muted-foreground' />
+                            {!meeting.roomId
+                              ? 'No room assigned'
+                              : room.isSuccess
+                                ? room.data.room.name
+                                : room.isPending
+                                  ? 'Loading room…'
+                                  : 'Room details unavailable'}
+                          </p>
+                        )}
+                        {activeParticipants && (
+                          <p className='flex items-center gap-2'>
+                            <Users className='size-4 shrink-0 text-muted-foreground' />
+                            {activeParticipants.length} active participants
+                          </p>
+                        )}
+                        {organizer?.displayName && (
+                          <p>Organizer: {organizer.displayName}</p>
+                        )}
+                        {detail.isError ||
+                        participants.isError ||
+                        room.isError ? (
+                          <p className='text-xs text-muted-foreground'>
+                            Some additional meeting details are unavailable.
+                          </p>
+                        ) : detail.isFetching ||
+                          (meeting && participants.isFetching) ? (
+                          <p
+                            role='status'
+                            className='text-xs text-muted-foreground'
+                          >
+                            Loading additional meeting details…
+                          </p>
+                        ) : null}
+                      </div>
+                      <Button asChild>
+                        <Link
+                          to='/meetings/$meetingId'
+                          params={{ meetingId: next.id }}
+                        >
+                          Open meeting workspace
+                        </Link>
+                      </Button>
+                    </>
+                  ) : (
+                    <RequestEmpty
+                      title='No upcoming meeting'
+                      description='There is no scheduled meeting in the current upcoming window.'
+                    />
+                  )}
+                </CardContent>
+              </Card>
+              <div className='min-w-0 xl:col-span-2'>
+                <MyActionItems identity={identity} />
+              </div>
+            </div>
+            <div className='grid gap-4 xl:grid-cols-2'>
+              <MeetingList
+                title='Upcoming meetings'
+                meetings={
+                  accessChanged || scheduleChanged
+                    ? upcoming.filter((item) => item.id !== next?.id)
+                    : upcoming
+                }
+                window={data.upcomingWindow}
+                format={format}
+                windowFormat={businessFormat}
+              />
+              <MeetingList
+                title='Recently ended'
+                meetings={orderedRecent(data)}
+                window={data.recentWindow}
+                format={format}
+                windowFormat={businessFormat}
+                recent
+              />
+            </div>
+            <p className='text-xs text-muted-foreground'>
+              As of {businessFormat(data.asOf)} · Reporting timezone:{' '}
+              {data.timezone}
+              {zone !== data.timezone ? ' · Meeting times: ' + zone : ''}
+              {personal.isFetching ? ' · Refreshing…' : ''}
+            </p>
+          </>
+        )
       )}
       {!data && <MyActionItems identity={identity} />}
     </>
@@ -437,7 +515,8 @@ function PersonalDashboard({ identity }: { identity: AuthContext }) {
 export function Dashboard() {
   const verification = useCurrentUserVerification()
   const identity = verification.identity
-  const isManager = verification.canReadProtectedData &&
+  const isManager =
+    verification.canReadProtectedData &&
     (identity?.globalRole === 'ADMINISTRATOR' ||
       identity?.globalRole === 'DEPARTMENT_MANAGER')
   const management = useQuery({

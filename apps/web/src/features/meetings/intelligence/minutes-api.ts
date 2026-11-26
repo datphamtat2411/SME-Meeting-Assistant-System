@@ -97,7 +97,10 @@ export const minutesSchema = z
       .passthrough(),
     displayMetadata: z
       .object({
-        assigneeDisplayNames: z.record(z.string().uuid(), z.string().trim().min(1)),
+        assigneeDisplayNames: z.record(
+          z.string().uuid(),
+          z.string().trim().min(1)
+        ),
       })
       .default({ assigneeDisplayNames: {} }),
   })

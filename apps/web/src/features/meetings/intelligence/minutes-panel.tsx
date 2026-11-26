@@ -26,7 +26,11 @@ function SnapshotBadge({ value }: { value: string }) {
     'DONE',
   ].includes(value)
   return (
-    <Badge variant={value === 'FAILED' ? 'destructive' : normal ? 'secondary' : 'outline'}>
+    <Badge
+      variant={
+        value === 'FAILED' ? 'destructive' : normal ? 'secondary' : 'outline'
+      }
+    >
       {minutesStatusLabel(value)}
     </Badge>
   )
@@ -41,7 +45,10 @@ function Warnings({ warnings }: { warnings: string[] }) {
           key={warning}
           className='flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50 p-3 text-sm break-words text-amber-900 dark:bg-amber-950/20 dark:text-amber-200'
         >
-          <AlertTriangle className='mt-0.5 size-4 shrink-0' aria-hidden='true' />
+          <AlertTriangle
+            className='mt-0.5 size-4 shrink-0'
+            aria-hidden='true'
+          />
           <span className='min-w-0 break-words'>{minutesWarning(warning)}</span>
         </li>
       ))}
@@ -93,8 +100,7 @@ export function MinutesPanel({
       ? (assigneeDisplayNames[id] ?? names[id] ?? 'Name unavailable')
       : 'Unassigned'
   const zone = presentationTimeZone(undefined)
-  const time = (value: string | null) =>
-    formatPresentationInstant(value, zone)
+  const time = (value: string | null) => formatPresentationInstant(value, zone)
   const ready =
     minutes.completeness === 'COMPLETE' && !minutes.proposalsIncluded
   const transcript = minutes.transcript
@@ -111,19 +117,26 @@ export function MinutesPanel({
             </p>
             <CardTitle className='text-xl'>Meeting Minutes</CardTitle>
             <p className='text-sm text-muted-foreground'>
-              Summary, confirmed decisions, official action items and source quality.
+              Summary, confirmed decisions, official action items and source
+              quality.
             </p>
           </div>
           <SnapshotBadge value={minutes.completeness} />
         </div>
         {minutes.proposalsIncluded && (
-          <p role='alert' className='rounded-md border border-amber-300/70 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-200'>
-            This snapshot contains unconfirmed AI proposals and is not official minutes.
+          <p
+            role='alert'
+            className='rounded-md border border-amber-300/70 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-200'
+          >
+            This snapshot contains unconfirmed AI proposals and is not official
+            minutes.
           </p>
         )}
         <div className='rounded-md border bg-muted/30 p-3 text-sm'>
           <p className='font-medium'>
-            {ready ? 'Minutes are complete' : 'Not ready for a new official export'}
+            {ready
+              ? 'Minutes are complete'
+              : 'Not ready for a new official export'}
           </p>
           <p className='mt-1 text-muted-foreground'>
             {ready
@@ -156,22 +169,30 @@ export function MinutesPanel({
             </div>
             <div>
               <dt className='text-xs text-muted-foreground'>Meeting status</dt>
-              <dd className='mt-1'>{minutesStatusLabel(minutes.meeting.status)}</dd>
+              <dd className='mt-1'>
+                {minutesStatusLabel(minutes.meeting.status)}
+              </dd>
             </div>
             <div>
               <dt className='text-xs text-muted-foreground'>Scheduled</dt>
               <dd className='mt-1'>
-                {time(minutes.meeting.scheduledStartAt)} – {time(minutes.meeting.scheduledEndAt)}
+                {time(minutes.meeting.scheduledStartAt)} –{' '}
+                {time(minutes.meeting.scheduledEndAt)}
               </dd>
             </div>
             <div>
-              <dt className='text-xs text-muted-foreground'>Actual occurrence</dt>
+              <dt className='text-xs text-muted-foreground'>
+                Actual occurrence
+              </dt>
               <dd className='mt-1'>
-                {time(minutes.meeting.startedAt)} – {time(minutes.meeting.endedAt)}
+                {time(minutes.meeting.startedAt)} –{' '}
+                {time(minutes.meeting.endedAt)}
               </dd>
             </div>
           </dl>
-          <p className='text-xs text-muted-foreground'>Times shown in {zone}.</p>
+          <p className='text-xs text-muted-foreground'>
+            Times shown in {zone}.
+          </p>
         </section>
 
         {minutes.warnings.length > 0 && (
@@ -199,7 +220,9 @@ export function MinutesPanel({
           <div className='flex flex-wrap items-center gap-2 text-xs text-muted-foreground'>
             <span>Source: {minutes.summary.sourceType ?? 'Not available'}</span>
             {minutes.summary.qualityStatus && (
-              <span>Quality: {minutes.summary.qualityStatus.replace(/_/g, ' ')}</span>
+              <span>
+                Quality: {minutes.summary.qualityStatus.replace(/_/g, ' ')}
+              </span>
             )}
             {minutes.summary.isStale && <SnapshotBadge value='STALE' />}
           </div>
@@ -224,7 +247,10 @@ export function MinutesPanel({
           ) : (
             <div className='space-y-3'>
               {minutes.confirmedDecisions.map((decision) => (
-                <article key={decision.id} className='space-y-2 rounded-lg border p-4'>
+                <article
+                  key={decision.id}
+                  className='space-y-2 rounded-lg border p-4'
+                >
                   <div className='flex flex-wrap items-center gap-2'>
                     <SnapshotBadge value={decision.status} />
                     {decision.isStale && <SnapshotBadge value='STALE' />}
@@ -243,7 +269,8 @@ export function MinutesPanel({
                   <Warnings warnings={decision.aiWarnings} />
                   {decision.evidenceSegmentIds.length > 0 && (
                     <p className='text-xs text-muted-foreground'>
-                      {decision.evidenceSegmentIds.length} evidence references · Review Decisions to inspect evidence.
+                      {decision.evidenceSegmentIds.length} evidence references ·
+                      Review Decisions to inspect evidence.
                     </p>
                   )}
                 </article>
@@ -274,7 +301,10 @@ export function MinutesPanel({
           ) : (
             <div className='space-y-3'>
               {minutes.officialActionItems.map((item) => (
-                <article key={item.id} className='space-y-3 rounded-lg border p-4'>
+                <article
+                  key={item.id}
+                  className='space-y-3 rounded-lg border p-4'
+                >
                   <div className='flex flex-wrap items-start justify-between gap-2'>
                     <div className='min-w-0 flex-1'>
                       <p className='font-medium break-words'>{item.title}</p>
@@ -288,11 +318,17 @@ export function MinutesPanel({
                   </div>
                   <dl className='grid gap-2 text-sm sm:grid-cols-2'>
                     <div>
-                      <dt className='text-xs text-muted-foreground'>Assignee</dt>
-                      <dd className='break-words'>{person(item.assigneeUserId)}</dd>
+                      <dt className='text-xs text-muted-foreground'>
+                        Assignee
+                      </dt>
+                      <dd className='break-words'>
+                        {person(item.assigneeUserId)}
+                      </dd>
                     </div>
                     <div>
-                      <dt className='text-xs text-muted-foreground'>Due date</dt>
+                      <dt className='text-xs text-muted-foreground'>
+                        Due date
+                      </dt>
                       <dd>{item.dueDate ?? 'No due date'}</dd>
                     </div>
                   </dl>
@@ -319,14 +355,29 @@ export function MinutesPanel({
           </div>
           {hasTranscript ? (
             <dl className='grid gap-3 rounded-lg border p-4 text-sm sm:grid-cols-2'>
-              <div><dt className='text-muted-foreground'>Source duration</dt><dd>{formatMinutesDuration(transcript.durationMs)}</dd></div>
-              <div><dt className='text-muted-foreground'>Suspicious segments</dt><dd>{transcript.suspiciousSegments}</dd></div>
-              <div><dt className='text-muted-foreground'>Unresolved segments</dt><dd>{transcript.unresolvedSegments}</dd></div>
-              <div><dt className='text-muted-foreground'>Unresolved speech regions</dt><dd>{transcript.unresolvedCoverageRegions}</dd></div>
+              <div>
+                <dt className='text-muted-foreground'>Source duration</dt>
+                <dd>{formatMinutesDuration(transcript.durationMs)}</dd>
+              </div>
+              <div>
+                <dt className='text-muted-foreground'>Suspicious segments</dt>
+                <dd>{transcript.suspiciousSegments}</dd>
+              </div>
+              <div>
+                <dt className='text-muted-foreground'>Unresolved segments</dt>
+                <dd>{transcript.unresolvedSegments}</dd>
+              </div>
+              <div>
+                <dt className='text-muted-foreground'>
+                  Unresolved speech regions
+                </dt>
+                <dd>{transcript.unresolvedCoverageRegions}</dd>
+              </div>
             </dl>
           ) : (
             <p className='text-sm text-muted-foreground'>
-              No current transcript is available to assess speech coverage or quality.
+              No current transcript is available to assess speech coverage or
+              quality.
             </p>
           )}
           <p className='text-xs text-muted-foreground'>
@@ -338,7 +389,7 @@ export function MinutesPanel({
           <summary className='cursor-pointer font-medium focus-visible:outline-2'>
             Advanced source details
           </summary>
-          <div className='mt-3 space-y-4 break-all text-xs text-muted-foreground'>
+          <div className='mt-3 space-y-4 text-xs break-all text-muted-foreground'>
             <div>
               <h4 className='font-semibold text-foreground'>Snapshot</h4>
               <p>Assembled: {minutes.assembledAt}</p>
@@ -350,24 +401,40 @@ export function MinutesPanel({
               <p>ID: {minutes.summary.id ?? 'Not available'}</p>
               <p>Version: {minutes.summary.versionNumber ?? '—'}</p>
               <p>Selection epoch: {minutes.summary.selectionEpoch}</p>
-              <p>Transcript: {minutes.summary.transcriptId ?? 'Not available'}</p>
+              <p>
+                Transcript: {minutes.summary.transcriptId ?? 'Not available'}
+              </p>
               <p>Content revision: {minutes.summary.contentRevision ?? '—'}</p>
             </div>
             {minutes.confirmedDecisions.map((decision) => (
               <div key={decision.id}>
-                <h4 className='font-semibold text-foreground'>Decision {decision.id}</h4>
+                <h4 className='font-semibold text-foreground'>
+                  Decision {decision.id}
+                </h4>
                 <p>Version: {decision.version}</p>
-                <p>Confirmed by: {person(decision.confirmedByUserId)} · {time(decision.confirmedAt)}</p>
-                <p>Confirmer ID: {decision.confirmedByUserId ?? 'Not recorded'}</p>
+                <p>
+                  Confirmed by: {person(decision.confirmedByUserId)} ·{' '}
+                  {time(decision.confirmedAt)}
+                </p>
+                <p>
+                  Confirmer ID: {decision.confirmedByUserId ?? 'Not recorded'}
+                </p>
                 <p>Transcript: {decision.transcriptId ?? 'Not available'}</p>
                 <p>Revision: {decision.contentRevision ?? '—'}</p>
-                <p>Evidence: {decision.evidenceSegmentIds.join(', ') || 'None recorded'}</p>
+                <p>
+                  Evidence:{' '}
+                  {decision.evidenceSegmentIds.join(', ') || 'None recorded'}
+                </p>
               </div>
             ))}
             {minutes.officialActionItems.map((item) => (
               <div key={item.id}>
-                <h4 className='font-semibold text-foreground'>Action Item {item.id}</h4>
-                <p>Version: {item.version} · Created: {item.createdAt}</p>
+                <h4 className='font-semibold text-foreground'>
+                  Action Item {item.id}
+                </h4>
+                <p>
+                  Version: {item.version} · Created: {item.createdAt}
+                </p>
                 <p>Confirmed by: {item.confirmedByUserId ?? 'Not recorded'}</p>
                 <p>Confirmed at: {item.confirmedAt ?? 'Not recorded'}</p>
               </div>
@@ -375,10 +442,15 @@ export function MinutesPanel({
             <div>
               <h4 className='font-semibold text-foreground'>Transcript</h4>
               <p>ID: {transcript.id ?? 'Not available'}</p>
-              <p>Processing job: {transcript.processingJobId ?? 'Not available'}</p>
+              <p>
+                Processing job: {transcript.processingJobId ?? 'Not available'}
+              </p>
               <p>Status: {transcript.status ?? 'Not available'}</p>
               <p>Language: {transcript.languageCode ?? 'Not available'}</p>
-              <p>Version: {transcript.versionNumber ?? '—'} · Revision: {transcript.contentRevision ?? '—'}</p>
+              <p>
+                Version: {transcript.versionNumber ?? '—'} · Revision:{' '}
+                {transcript.contentRevision ?? '—'}
+              </p>
               <p>Duration: {transcript.durationMs ?? '—'} ms</p>
             </div>
           </div>

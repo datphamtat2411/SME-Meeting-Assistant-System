@@ -1,21 +1,24 @@
 import { z } from 'zod'
 import { queryOptions } from '@tanstack/react-query'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { isValidTimeZone } from '@/lib/presentation-time'
 import {
   isValidOffsetDateTime,
   meetingLifecycleStatuses,
 } from '@/features/meetings/data/list-api'
-import { isValidTimeZone } from '@/lib/presentation-time'
 
 const instant = z.string().refine(isValidOffsetDateTime)
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
-const windowSchema = z.object({
-  fromInclusive: instant,
-  toExclusive: instant,
-  limit: z.number().int().min(1).max(50),
-}).refine(
-  (window) => Date.parse(window.fromInclusive) < Date.parse(window.toExclusive)
-)
+const windowSchema = z
+  .object({
+    fromInclusive: instant,
+    toExclusive: instant,
+    limit: z.number().int().min(1).max(50),
+  })
+  .refine(
+    (window) =>
+      Date.parse(window.fromInclusive) < Date.parse(window.toExclusive)
+  )
 
 const meetingCard = z.object({
   id: z.string().uuid(),
@@ -31,51 +34,83 @@ const assigned = z.object({
   done: count,
   overdue: count,
 })
-export const personalDashboardSchema = z.object({
-  asOf: instant,
-  timezone: z.string().refine(isValidTimeZone),
-  upcomingWindow: windowSchema,
-  recentWindow: windowSchema,
-  meetingCountsByState: z.partialRecord(z.enum(meetingLifecycleStatuses), count),
-  upcomingMeetings: z.array(meetingCard),
-  recentMeetings: z.array(meetingCard),
-  assignedActionItems: assigned,
-}).superRefine((data, context) => {
-  const validList = (
-    meetings: z.infer<typeof meetingCard>[],
-    window: z.infer<typeof windowSchema>,
-    status: 'SCHEDULED' | 'ENDED',
-    field: 'scheduledStartAt' | 'endedAt'
-  ) =>
-    meetings.length <= window.limit &&
-    new Set(meetings.map((meeting) => meeting.id)).size === meetings.length &&
-    meetings.every((meeting) => {
-      const timestamp = meeting[field]
-      return (
-        meeting.status === status && timestamp !== null &&
-        Date.parse(timestamp) >= Date.parse(window.fromInclusive) &&
-        Date.parse(timestamp) < Date.parse(window.toExclusive) &&
-        (status !== 'SCHEDULED' || (
-          meeting.scheduledEndAt !== null &&
-          Date.parse(meeting.scheduledEndAt) > Date.parse(timestamp)
-        ))
+export const personalDashboardSchema = z
+  .object({
+    asOf: instant,
+    timezone: z.string().refine(isValidTimeZone),
+    upcomingWindow: windowSchema,
+    recentWindow: windowSchema,
+    meetingCountsByState: z.partialRecord(
+      z.enum(meetingLifecycleStatuses),
+      count
+    ),
+    upcomingMeetings: z.array(meetingCard),
+    recentMeetings: z.array(meetingCard),
+    assignedActionItems: assigned,
+  })
+  .superRefine((data, context) => {
+    const validList = (
+      meetings: z.infer<typeof meetingCard>[],
+      window: z.infer<typeof windowSchema>,
+      status: 'SCHEDULED' | 'ENDED',
+      field: 'scheduledStartAt' | 'endedAt'
+    ) =>
+      meetings.length <= window.limit &&
+      new Set(meetings.map((meeting) => meeting.id)).size === meetings.length &&
+      meetings.every((meeting) => {
+        const timestamp = meeting[field]
+        return (
+          meeting.status === status &&
+          timestamp !== null &&
+          Date.parse(timestamp) >= Date.parse(window.fromInclusive) &&
+          Date.parse(timestamp) < Date.parse(window.toExclusive) &&
+          (status !== 'SCHEDULED' ||
+            (meeting.scheduledEndAt !== null &&
+              Date.parse(meeting.scheduledEndAt) > Date.parse(timestamp)))
+        )
+      })
+    if (
+      !validList(
+        data.upcomingMeetings,
+        data.upcomingWindow,
+        'SCHEDULED',
+        'scheduledStartAt'
       )
-    })
-  if (!validList(data.upcomingMeetings, data.upcomingWindow, 'SCHEDULED', 'scheduledStartAt')) {
-    context.addIssue({ code: 'custom', path: ['upcomingMeetings'], message: 'Invalid upcoming meeting window.' })
-  }
-  if (!validList(data.recentMeetings, data.recentWindow, 'ENDED', 'endedAt')) {
-    context.addIssue({ code: 'custom', path: ['recentMeetings'], message: 'Invalid recent meeting window.' })
-  }
-  if (Date.parse(data.upcomingWindow.fromInclusive) !== Date.parse(data.asOf) ||
-    Date.parse(data.recentWindow.toExclusive) !== Date.parse(data.asOf)) {
-    context.addIssue({ code: 'custom', path: ['asOf'], message: 'Reporting windows do not match the snapshot reference time.' })
-  }
-  const actions = data.assignedActionItems
-  if (actions.overdue > actions.open + actions.inProgress) {
-    context.addIssue({ code: 'custom', path: ['assignedActionItems', 'overdue'], message: 'Overdue exceeds pending official work.' })
-  }
-})
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['upcomingMeetings'],
+        message: 'Invalid upcoming meeting window.',
+      })
+    }
+    if (
+      !validList(data.recentMeetings, data.recentWindow, 'ENDED', 'endedAt')
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['recentMeetings'],
+        message: 'Invalid recent meeting window.',
+      })
+    }
+    if (
+      Date.parse(data.upcomingWindow.fromInclusive) !== Date.parse(data.asOf) ||
+      Date.parse(data.recentWindow.toExclusive) !== Date.parse(data.asOf)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['asOf'],
+        message: 'Reporting windows do not match the snapshot reference time.',
+      })
+    }
+    const actions = data.assignedActionItems
+    if (actions.overdue > actions.open + actions.inProgress) {
+      context.addIssue({
+        code: 'custom',
+        path: ['assignedActionItems', 'overdue'],
+        message: 'Overdue exceeds pending official work.',
+      })
+    }
+  })
 
 export type PersonalDashboard = z.infer<typeof personalDashboardSchema>
 

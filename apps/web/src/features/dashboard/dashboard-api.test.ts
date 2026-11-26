@@ -16,14 +16,16 @@ const fixture = () => ({
     limit: 10,
   },
   meetingCountsByState: { SCHEDULED: 1 },
-  upcomingMeetings: [{
-    id,
-    title: 'Planning',
-    status: 'SCHEDULED',
-    scheduledStartAt: asOf,
-    scheduledEndAt: '2026-11-26T09:00:00Z',
-    endedAt: null,
-  }],
+  upcomingMeetings: [
+    {
+      id,
+      title: 'Planning',
+      status: 'SCHEDULED',
+      scheduledStartAt: asOf,
+      scheduledEndAt: '2026-11-26T09:00:00Z',
+      endedAt: null,
+    },
+  ],
   recentMeetings: [],
   assignedActionItems: { open: 2, inProgress: 1, done: 4, overdue: 1 },
 })
@@ -37,25 +39,50 @@ describe('personal dashboard projection', () => {
 
   it('rejects invalid counts, intervals, and meeting lifecycle values', () => {
     const data = fixture()
-    expect(() => parsePersonalDashboard({
-      ...data, meetingCountsByState: { SCHEDULED: -1 },
-    })).toThrow(CoreApiError)
-    expect(() => parsePersonalDashboard({
-      ...data, upcomingWindow: { ...data.upcomingWindow, toExclusive: asOf },
-    })).toThrow(CoreApiError)
-    expect(() => parsePersonalDashboard({
-      ...data, upcomingMeetings: [{ ...data.upcomingMeetings[0], status: 'CANCELLED' }],
-    })).toThrow(CoreApiError)
-    expect(() => parsePersonalDashboard({
-      ...data, upcomingMeetings: [{ ...data.upcomingMeetings[0], scheduledStartAt: later }],
-    })).toThrow(CoreApiError)
-    expect(() => parsePersonalDashboard({
-      ...data, assignedActionItems: { ...data.assignedActionItems, overdue: 4 },
-    })).toThrow(CoreApiError)
+    expect(() =>
+      parsePersonalDashboard({
+        ...data,
+        meetingCountsByState: { SCHEDULED: -1 },
+      })
+    ).toThrow(CoreApiError)
+    expect(() =>
+      parsePersonalDashboard({
+        ...data,
+        upcomingWindow: { ...data.upcomingWindow, toExclusive: asOf },
+      })
+    ).toThrow(CoreApiError)
+    expect(() =>
+      parsePersonalDashboard({
+        ...data,
+        upcomingMeetings: [
+          { ...data.upcomingMeetings[0], status: 'CANCELLED' },
+        ],
+      })
+    ).toThrow(CoreApiError)
+    expect(() =>
+      parsePersonalDashboard({
+        ...data,
+        upcomingMeetings: [
+          { ...data.upcomingMeetings[0], scheduledStartAt: later },
+        ],
+      })
+    ).toThrow(CoreApiError)
+    expect(() =>
+      parsePersonalDashboard({
+        ...data,
+        assignedActionItems: { ...data.assignedActionItems, overdue: 4 },
+      })
+    ).toThrow(CoreApiError)
   })
 
   it('scopes personal cache keys without losing the dashboard family', () => {
-    expect(personalDashboardQuery('actor-a').queryKey).toEqual(['dashboard', 'me', 'actor-a'])
-    expect(personalDashboardQuery('actor-b').queryKey).not.toEqual(personalDashboardQuery('actor-a').queryKey)
+    expect(personalDashboardQuery('actor-a').queryKey).toEqual([
+      'dashboard',
+      'me',
+      'actor-a',
+    ])
+    expect(personalDashboardQuery('actor-b').queryKey).not.toEqual(
+      personalDashboardQuery('actor-a').queryKey
+    )
   })
 })

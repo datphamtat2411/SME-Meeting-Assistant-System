@@ -31,8 +31,9 @@ describe('Dashboard assigned-work preview', () => {
       item('e', 'IN_PROGRESS', '2026-11-25'),
       item('f', 'IN_PROGRESS', null),
     ]
-    expect(mergeAssignedWork(open, progress, actor).map((value) => value.id))
-      .toEqual(['d', 'a', 'e', 'b', 'c'])
+    expect(
+      mergeAssignedWork(open, progress, actor).map((value) => value.id)
+    ).toEqual(['d', 'a', 'e', 'b', 'c'])
   })
 
   it('does not duplicate a task that moved status between bounded reads', () => {
@@ -43,11 +44,14 @@ describe('Dashboard assigned-work preview', () => {
 
   it('rejects proposed, wrong-owner, or malformed work', () => {
     const open = item('a', 'OPEN', null)
-    expect(() => mergeAssignedWork([{ ...open, isOfficial: false }], [], actor))
-      .toThrow(/scope/i)
-    expect(() => mergeAssignedWork([{ ...open, assigneeUserId: 'other' }], [], actor))
-      .toThrow(/scope/i)
-    expect(() => mergeAssignedWork([{ ...open, dueDate: 'not a date' }], [], actor))
-      .toThrow(/scope/i)
+    expect(() =>
+      mergeAssignedWork([{ ...open, isOfficial: false }], [], actor)
+    ).toThrow(/scope/i)
+    expect(() =>
+      mergeAssignedWork([{ ...open, assigneeUserId: 'other' }], [], actor)
+    ).toThrow(/scope/i)
+    expect(() =>
+      mergeAssignedWork([{ ...open, dueDate: 'not a date' }], [], actor)
+    ).toThrow(/scope/i)
   })
 })

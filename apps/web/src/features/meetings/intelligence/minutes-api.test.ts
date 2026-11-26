@@ -104,21 +104,29 @@ describe('canonical Minutes adapter', () => {
   it('rejects missing trust-critical decision fields rather than defaulting them', () => {
     const valid = validMinutes()
     const decision = valid.confirmedDecisions[0]
-    for (const field of ['isStale', 'aiWarnings', 'evidenceSegmentIds'] as const) {
-      expect(() => parseMinutes({
-        ...valid,
-        confirmedDecisions: [{ ...decision, [field]: undefined }],
-      })).toThrow(CoreApiError)
+    for (const field of [
+      'isStale',
+      'aiWarnings',
+      'evidenceSegmentIds',
+    ] as const) {
+      expect(() =>
+        parseMinutes({
+          ...valid,
+          confirmedDecisions: [{ ...decision, [field]: undefined }],
+        })
+      ).toThrow(CoreApiError)
     }
   })
 
   it('rejects malformed quality counters and preserves optional display enrichment', () => {
     const valid = validMinutes()
     expect(parseMinutes(valid).displayMetadata.assigneeDisplayNames).toEqual({})
-    expect(() => parseMinutes({
-      ...valid,
-      transcript: { ...valid.transcript, unresolvedSegments: -1 },
-    })).toThrow(CoreApiError)
+    expect(() =>
+      parseMinutes({
+        ...valid,
+        transcript: { ...valid.transcript, unresolvedSegments: -1 },
+      })
+    ).toThrow(CoreApiError)
   })
 
   it('rejects malformed fingerprints and unconfirmed work', () => {

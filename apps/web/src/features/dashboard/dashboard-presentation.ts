@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import { CoreApiError } from '@/lib/core-api'
-import type { ActionItem, ActionStatus } from '@/features/action-items/action-api'
+import type {
+  ActionItem,
+  ActionStatus,
+} from '@/features/action-items/action-api'
 import type { PersonalDashboard } from './dashboard-api'
 
 export const actionPreviewLimit = 5
@@ -8,8 +11,8 @@ export const actionPreviewLimit = 5
 export function orderedUpcoming(data: PersonalDashboard) {
   return [...data.upcomingMeetings].sort(
     (a, b) =>
-      Date.parse(a.scheduledStartAt ?? '') - Date.parse(b.scheduledStartAt ?? '') ||
-      a.id.localeCompare(b.id)
+      Date.parse(a.scheduledStartAt ?? '') -
+        Date.parse(b.scheduledStartAt ?? '') || a.id.localeCompare(b.id)
   )
 }
 
@@ -27,14 +30,19 @@ export function mergeAssignedWork(
   actorId: string
 ) {
   const validate = (items: ActionItem[], status: ActionStatus) => {
-    if (items.some((item) =>
-      item.status !== status ||
-      !item.isOfficial ||
-      item.assigneeUserId !== actorId ||
-      (item.dueDate !== null && !z.iso.date().safeParse(item.dueDate).success)
-    )) {
+    if (
+      items.some(
+        (item) =>
+          item.status !== status ||
+          !item.isOfficial ||
+          item.assigneeUserId !== actorId ||
+          (item.dueDate !== null &&
+            !z.iso.date().safeParse(item.dueDate).success)
+      )
+    ) {
       throw new CoreApiError({
-        message: 'Core API returned work outside the requested assigned-work scope.',
+        message:
+          'Core API returned work outside the requested assigned-work scope.',
         code: 'MALFORMED_RESPONSE',
         kind: 'malformed',
       })

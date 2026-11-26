@@ -12,7 +12,9 @@ describe('Minutes presentation', () => {
     expect(minutesStatusLabel('NEEDS_REVIEW')).toBe('Needs review')
     expect(minutesStatusLabel('FUTURE_STATE')).toContain('FUTURE_STATE')
     expect(minutesWarning('FUTURE_WARNING')).toBe('FUTURE_WARNING')
-    expect(minutesWarning('TRANSCRIPT_INCOMPLETE_COVERAGE')).toContain('detected speech')
+    expect(minutesWarning('TRANSCRIPT_INCOMPLETE_COVERAGE')).toContain(
+      'detected speech'
+    )
   })
 
   it('represents durations without fabricating a missing duration', () => {
