@@ -14,8 +14,10 @@ import { CoreApiError, coreApi, resetCsrfToken } from '@/lib/core-api'
 import { DirectionProvider } from '@/context/direction-provider'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
+import { ActionCommands } from '@/features/action-items/action-commands'
 import { resetAuthLifecycleAfterSignIn } from '@/features/auth/session/auth-lifecycle'
 import { configureSessionRevalidation } from '@/features/auth/session/session-revalidation'
+import { MinutesPanel } from '@/features/meetings/intelligence/minutes-panel'
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -207,6 +209,15 @@ type FixtureOptions = {
   dashboard?: unknown
   managementError?: unknown
   managementUnitIds?: string[]
+  managementActionItems?: {
+    open: number
+    inProgress: number
+    done: number
+    cancelled: number
+    overdue: number
+    totalOfficial: number
+  }
+  minutes?: unknown
   actionItemsError?: unknown
   actionItemsFailureStatus?: 'OPEN' | 'IN_PROGRESS'
   actionItemsOpen?: unknown
@@ -258,7 +269,7 @@ function installCoreFixtures(options: FixtureOptions = {}) {
               ? [config.params.orgUnitId]
               : (options.managementUnitIds ?? []),
           },
-          actionItems: {
+          actionItems: options.managementActionItems ?? {
             open: 3,
             inProgress: 4,
             done: 5,
@@ -274,6 +285,8 @@ function installCoreFixtures(options: FixtureOptions = {}) {
           ],
         } as never
       }
+      if (url === `/meetings/${meetingId}/minutes` && options.minutes)
+        return options.minutes as never
       if (url === '/me/profile') return profile as never
       if (url === '/me/preferences') return preferences as never
       if (url.endsWith(`/meetings/${meetingId}/media`)) return [] as never
@@ -356,7 +369,8 @@ function installCoreFixtures(options: FixtureOptions = {}) {
 async function renderGeneratedRoute(
   initialPath: string,
   width = 1280,
-  height = 800
+  height = 800,
+  supplement?: React.ReactNode
 ) {
   await page.viewport(width, height)
   const queryClient = createQueryClient()
@@ -371,6 +385,7 @@ async function renderGeneratedRoute(
         <FontProvider>
           <DirectionProvider>
             <RouterProvider router={router} />
+            {supplement}
           </DirectionProvider>
         </FontProvider>
       </ThemeProvider>
@@ -907,6 +922,192 @@ describe('integrated generated Web runtime', () => {
     const params = requests()[1][1]?.params
     expect(params?.orgUnitId).toBe(unitId)
     expect(Date.parse(params?.to) - Date.parse(params?.from)).toBe(7 * 86400000)
+  })
+
+  it('reconciles visible personal, managed and Minutes projections after completing official work', async () => {
+    const unitId = '11111111-2222-4333-8444-555555555555'
+    const assigned = assignedWork('OPEN')
+    const item = {
+      ...assigned,
+      capabilities: { ...assigned.capabilities, canAccessMeeting: true },
+      meeting: { id: meetingId, label: meeting.title, restricted: false },
+      evidence: {
+        ...assigned.evidence,
+        availability: 'NOT_APPLICABLE' as const,
+        freshness: 'NOT_APPLICABLE' as const,
+      },
+    }
+    const completed = {
+      ...item,
+      status: 'DONE' as const,
+      version: 2,
+      overdue: false,
+      completedByUserId: userId,
+      completedAt: dashboardAsOf,
+      capabilities: {
+        ...item.capabilities,
+        canStart: false,
+        canComplete: false,
+      },
+    }
+    const transcriptId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    const snapshot = {
+      schemaVersion: 1,
+      assembledAt: dashboardAsOf,
+      sourceFingerprint: 'a'.repeat(64),
+      completeness: 'COMPLETE',
+      proposalsIncluded: false,
+      warnings: [],
+      meeting: { ...meeting, status: 'ENDED', endedAt: dashboardAsOf },
+      summary: {
+        availability: 'AVAILABLE',
+        id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        versionNumber: 1,
+        content: 'Canonical Vietnamese meeting summary',
+        sourceType: 'HUMAN_EDIT',
+        qualityStatus: 'READY',
+        transcriptId,
+        contentRevision: 1,
+        selectionEpoch: 1,
+        isStale: false,
+        aiWarnings: [],
+      },
+      confirmedDecisions: [],
+      officialActionItems: [item],
+      transcript: {
+        availability: 'AVAILABLE',
+        id: transcriptId,
+        versionNumber: 1,
+        processingJobId: null,
+        languageCode: 'vi',
+        status: 'READY',
+        contentRevision: 1,
+        durationMs: 1000,
+        suspiciousSegments: 0,
+        unresolvedSegments: 0,
+        unresolvedCoverageRegions: 0,
+      },
+    }
+    const options: FixtureOptions = {
+      identity: {
+        ...identity,
+        globalRole: 'DEPARTMENT_MANAGER',
+        directoryManagementScope: { allUnits: false, unitIds: [unitId] },
+      },
+      managementUnitIds: [unitId],
+      dashboard: {
+        ...dashboard,
+        assignedActionItems: { open: 1, inProgress: 0, done: 2, overdue: 1 },
+      },
+      actionItemsOpen: {
+        data: [item],
+        meta: {
+          pagination: {
+            ...pagination,
+            size: 5,
+            totalElements: 1,
+            totalPages: 1,
+          },
+        },
+      },
+      minutes: snapshot,
+    }
+    const { get, getWithMeta, getWithMetaAndEtag } =
+      installCoreFixtures(options)
+    getWithMetaAndEtag.mockImplementation(async (url) => {
+      if (url !== '/action-items/' + item.id)
+        throw new Error('Unexpected detail request ' + url)
+      return { data: item, meta: {}, etag: '"reviewed"' } as never
+    })
+    const post = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockImplementation(async (url) => {
+        if (url !== '/action-items/' + item.id + '/complete')
+          throw new Error('Unexpected mutation ' + url)
+        // The mock Core API changes its canonical observations only after
+        // the actual reviewed command is submitted. No cache is patched.
+        options.dashboard = {
+          ...dashboard,
+          assignedActionItems: { open: 0, inProgress: 0, done: 3, overdue: 0 },
+        }
+        options.managementActionItems = {
+          open: 2,
+          inProgress: 4,
+          done: 6,
+          cancelled: 1,
+          overdue: 1,
+          totalOfficial: 13,
+        }
+        options.actionItemsOpen = emptyActionItemList
+        options.minutes = {
+          ...snapshot,
+          sourceFingerprint: 'b'.repeat(64),
+          officialActionItems: [completed],
+        }
+        return { data: completed, meta: {}, etag: '"completed"' } as never
+      })
+    const { screen } = await renderGeneratedRoute(
+      '/',
+      1280,
+      800,
+      <>
+        <ActionCommands item={item} />
+        <section aria-label='Canonical Minutes regression'>
+          <MinutesPanel meetingId={meetingId} onOpenActions={() => {}} />
+        </section>
+      </>
+    )
+    const minutes = screen.getByRole('region', {
+      name: 'Canonical Minutes regression',
+    })
+    const metric = (label: string) =>
+      Array.from(document.querySelectorAll('[data-slot="card-content"]'))
+        .find((card) => card.querySelector('p')?.textContent === label)
+        ?.querySelector('.tabular-nums')?.textContent
+    const metrics = () => [
+      metric('Pending action items'),
+      metric('Completed action items'),
+      metric('Pending'),
+      metric('Completed'),
+    ]
+    await expect.poll(metrics).toEqual(['1', '2', '7', '5'])
+    await expect.element(minutes.getByText(item.title)).toBeVisible()
+    await expect
+      .element(minutes.getByText('Open', { exact: true }))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('No pending assigned work'))
+      .not.toBeInTheDocument()
+    const reads = () => [
+      get.mock.calls.filter(([url]) => url === '/dashboard/me').length,
+      get.mock.calls.filter(([url]) => url === '/dashboard/management')
+        .length,
+      get.mock.calls.filter(([url]) => url.endsWith('/minutes')).length,
+      getWithMeta.mock.calls.filter(([url]) => url === '/action-items').length,
+    ]
+    const initialReads = reads()
+    await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
+    await userEvent.click(
+      screen.getByRole('alertdialog').getByRole('button', { name: 'Complete' })
+    )
+    await expect.poll(metrics).toEqual(['0', '3', '6', '6'])
+    await expect
+      .element(screen.getByText('No pending assigned work'))
+      .toBeVisible()
+    await expect
+      .element(minutes.getByText('Done', { exact: true }))
+      .toBeVisible()
+    await expect
+      .element(minutes.getByText('Open', { exact: true }))
+      .not.toBeInTheDocument()
+    expect(post).toHaveBeenCalledExactlyOnceWith(
+      '/action-items/' + item.id + '/complete',
+      undefined,
+      { headers: { 'If-Match': '"reviewed"' } }
+    )
+    expect(reads().every((count, index) => count > initialReads[index])).toBe(
+      true
+    )
   })
 
   it('navigates through dashboard, meetings, detail, live, and browser history', async () => {
