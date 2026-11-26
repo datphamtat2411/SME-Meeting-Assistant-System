@@ -11,6 +11,7 @@ import {
 } from '@/features/meetings/data/list-api'
 import {
   captureAssistantCreationAccess,
+  containAssistantAccessFailure,
   containAssistantMeetingDenial,
 } from './assistant-access'
 
@@ -73,7 +74,9 @@ export function isAssistantMeetingReady(
   client: QueryClient,
   meetingId: string
 ): boolean {
-  const state = client.getQueryState(meetingDetailQueryOptions(meetingId).queryKey)
+  const state = client.getQueryState(
+    meetingDetailQueryOptions(meetingId).queryKey
+  )
   return (
     state?.status === 'success' &&
     state.fetchStatus === 'idle' &&
@@ -91,7 +94,7 @@ export function useAssistantMeetingContext(meetingId?: string) {
       try {
         return await fetchMeetingDetail(id, signal)
       } catch (error) {
-        containAssistantMeetingDenial(client, access, error)
+        containAssistantAccessFailure(client, access, error)
         throw error
       }
     },

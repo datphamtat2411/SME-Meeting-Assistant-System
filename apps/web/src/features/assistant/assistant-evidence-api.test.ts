@@ -1,6 +1,6 @@
 import { QueryClient } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
-import { CoreApiError, coreApi } from '@/lib/core-api'
+import { CoreApiError, coreApi, type ApiResponseData } from '@/lib/core-api'
 import {
   assistantAccessError,
   assistantHistoryEpoch,
@@ -150,10 +150,10 @@ describe('Assistant evidence boundary', () => {
 
   it('rejects evidence that arrives after history invalidation', async () => {
     const client = new QueryClient()
-    let finish!: (value: { data: typeof data; meta: object }) => void
+    let finish!: (value: ApiResponseData<unknown>) => void
     const request = vi.spyOn(coreApi, 'getWithMeta').mockImplementationOnce(
       () =>
-        new Promise((resolve) => {
+        new Promise<ApiResponseData<unknown>>((resolve) => {
           finish = resolve
         })
     )

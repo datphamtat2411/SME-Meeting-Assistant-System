@@ -91,6 +91,7 @@ export function useAssistantTurnWorkflow(
   const client = useQueryClient()
   const records = useRef(new Map<string, TurnWorkflow>())
   const observationRetryAt = useRef(new Map<string, Map<string, number>>())
+  const lastDetail = useRef<AssistantConversationDetail | undefined>(undefined)
   const [workflows, setWorkflows] = useState<ReadonlyMap<string, TurnWorkflow>>(
     new Map()
   )
@@ -197,6 +198,7 @@ export function useAssistantTurnWorkflow(
         })
         return
       }
+      observationRetryAt.current.get(key)?.delete(turn.turnId)
       const next: Settled = {
         phase: 'settled',
         access: operation.access,
@@ -211,7 +213,12 @@ export function useAssistantTurnWorkflow(
   )
 
   useEffect(() => {
-    if (!id || !historyReady || !detail) return
+    if (!id || !historyReady || !detail) {
+      lastDetail.current = undefined
+      return
+    }
+    const fresh = lastDetail.current !== detail
+    lastDetail.current = detail
     const previous = records.current.get(id)
     if (previous && isAssistantAccessCurrent(client, previous.access)) {
       if (
@@ -234,7 +241,7 @@ export function useAssistantTurnWorkflow(
             })
           return
         }
-        if (previous.phase !== 'observing') {
+        if (fresh && previous.phase !== 'observing') {
           if (Date.now() < (previous.retryAt ?? 0)) return
           const phase =
             pending?.leaseStatus === 'EXPIRED' ? 'recoverable' : 'observing'
@@ -250,9 +257,10 @@ export function useAssistantTurnWorkflow(
     write(id, {
       phase: pending.leaseStatus === 'EXPIRED' ? 'recoverable' : 'observing',
       access: captureAssistantAccess(client, id),
+      conflict: previous?.conflict,
       turnId: pending.turnId,
     })
-  }, [client, id, detail, historyReady, pending, write])
+  }, [client, id, detail, historyReady, pending, workflows, write])
 
   const lookup = useCallback(
     async (key: string, operation: Intent) => {
@@ -284,7 +292,7 @@ export function useAssistantTurnWorkflow(
         })
       }
     },
-    [adopt, client, owns, refresh, write]
+    [adopt, client, owns, write]
   )
 
   const submit = useCallback(
@@ -440,6 +448,8 @@ export function useAssistantTurnWorkflow(
         if (operation.replacementTurnId) {
           // The old status was read, not inferred from the new pending ID.
           // Observe the newly discovered identity before permitting recovery.
+          if (status.state !== 'PROCESSING')
+            deadlines.get(id)?.delete(operation.turnId)
           write(id, {
             phase: 'observing',
             access: operation.access,

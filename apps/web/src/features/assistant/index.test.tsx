@@ -1632,10 +1632,23 @@ describe('AssistantPage', () => {
       'Rejected intent'
     )
     await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
-    await expect.element(screen.getByText('Assistant is currently unavailable.')).toBeVisible()
-    await expect.element(screen.getByRole('button', { name: 'Retry or refresh' })).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Resume status checks' }))
-    await expect.element(screen.getByRole('button', { name: 'Ask Assistant' })).toBeVisible()
+    await expect
+      .element(screen.getByText('Assistant is currently unavailable.'))
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry or refresh' }))
+      .not.toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Resume status checks' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Ask Assistant' }))
+      .toBeVisible()
+    await expect
+      .element(
+        screen.getByText('This request identity belongs to a different question.')
+      )
+      .toBeVisible()
     expect(post).toHaveBeenCalledTimes(1)
   })
 
@@ -1652,13 +1665,74 @@ describe('AssistantPage', () => {
         if (revoked) throw coreError(403, 'Meeting denied')
       },
     })
-    await expect.element(screen.getByText('The launch is planned for Friday.').first()).toBeVisible()
+    await expect
+      .element(screen.getByText('The launch is planned for Friday.').first())
+      .toBeVisible()
     revoked = true
     await client.refetchQueries({ queryKey: ['meetings', 'detail', meetingId] })
-    await expect.element(screen.getByRole('textbox', { name: 'Assistant question' })).not.toBeInTheDocument()
-    await expect.element(screen.getByText('The launch is planned for Friday.').first()).not.toBeInTheDocument()
-    expect(client.getQueryData(['assistant', 'conversation', conversationId, 'history', 50])).toBeUndefined()
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Assistant question' }))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByText('The launch is planned for Friday.').first())
+      .not.toBeInTheDocument()
+    expect(
+      client.getQueryData([
+        'assistant',
+        'conversation',
+        conversationId,
+        'history',
+        50,
+      ])
+    ).toBeUndefined()
     client.clear()
+  })
+
+  it('observes a displaced pending turn before recovering its replacement', async () => {
+    const oldTurnId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const newTurnId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    let replaced = false
+    const { get } = setupReads({
+      onDetail: () => ({
+        ...baseDetail,
+        pendingTurn: turnStatus(
+          conversationId,
+          replaced ? newTurnId : oldTurnId,
+          'PROCESSING',
+          assistantMessageId,
+          'EXPIRED'
+        ),
+      }),
+      onStatus: (_reads, id, turnId) =>
+        turnId === oldTurnId
+          ? turnStatus(id, turnId, 'COMPLETED')
+          : turnStatus(id, turnId, 'PROCESSING', assistantMessageId, 'EXPIRED'),
+    })
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockResolvedValue({ ...acceptedTurn('COMPLETED'), turnId: newTurnId })
+    const screen = await renderPage({ initial: { conversationId, meetingId } })
+    await expect
+      .element(screen.getByRole('button', { name: 'Recover turn' }))
+      .toBeVisible()
+    replaced = true
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Refresh history' })
+    )
+    await expect
+      .poll(
+        () => get.mock.calls.some(([url]) => url.endsWith('/turns/' + newTurnId)),
+        { timeout: 6000 }
+      )
+      .toBe(true)
+    expect(
+      get.mock.calls.some(([url]) => url.endsWith('/turns/' + oldTurnId))
+    ).toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: 'Recover turn' }))
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[0]?.[0]).toBe(
+      `/assistant/conversations/${conversationId}/turns/${newTurnId}/recover`
+    )
   })
 
   it('reports malformed Assistant responses without fabricating success', async () => {

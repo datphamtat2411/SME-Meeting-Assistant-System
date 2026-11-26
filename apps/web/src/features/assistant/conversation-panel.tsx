@@ -126,8 +126,12 @@ export function ConversationPanel({
               : workflow.phase === 'paused'
                 ? 'Turn outcome is unresolved'
                 : workflow.phase === 'uncertain' || workflow.phase === 'lookup'
-                  ? 'Question submission is unresolved'
-                  : 'Core is processing this question.'}
+                  ? workflow.conflict
+                    ? 'Question rejected; checking the conflicting request'
+                    : 'Question submission is unresolved'
+                  : workflow.conflict
+                    ? 'Core is processing the existing turn.'
+                    : 'Core is processing this question.'}
           </AlertTitle>
           <AlertDescription>
             {workflow.phase === 'recoverable'
@@ -135,7 +139,9 @@ export function ConversationPanel({
               : workflow.phase === 'paused'
                 ? 'Resume read-only status checks to reconcile the durable turn.'
                 : workflow.phase === 'uncertain' || workflow.phase === 'lookup'
-                  ? 'The original request identity is retained. No automatic resubmission will occur.'
+                  ? workflow.conflict
+                    ? 'This question was rejected. Status checks concern the existing request, not acceptance of this question.'
+                    : 'The original request identity is retained. No automatic resubmission will occur.'
                   : 'The Web observes authoritative turn status without creating another request.'}
             {workflow.phase === 'recoverable' && (
               <Button

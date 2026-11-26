@@ -266,16 +266,18 @@ describe('Assistant protected operation ownership', () => {
       size: 50,
       hasMore: true,
       nextBeforeMessageId: 'head',
-      messages: [{
-        id: 'head',
-        role: 'ASSISTANT',
-        content: 'current answer',
-        answerStatus: 'GROUNDED',
-        visibility: 'VISIBLE',
-        claims: [],
-        citations: [],
-        createdAt: '2026-01-01T00:00:00Z',
-      }],
+      messages: [
+        {
+          id: 'head',
+          role: 'ASSISTANT',
+          content: 'current answer',
+          answerStatus: 'GROUNDED',
+          visibility: 'VISIBLE',
+          claims: [],
+          citations: [],
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      ],
     }
     let redact = false
     const options = {
@@ -293,7 +295,9 @@ describe('Assistant protected operation ownership', () => {
                   ...message,
                   id: 'older',
                   content: redact ? null : 'old answer',
-                  visibility: redact ? 'SOURCE_UNAVAILABLE' : 'VISIBLE',
+                  visibility: redact
+                    ? ('SOURCE_UNAVAILABLE' as const)
+                    : ('VISIBLE' as const),
                 })),
               }
         ),
@@ -326,7 +330,10 @@ describe('Assistant protected operation ownership', () => {
     const pending = readAssistantHistoryProtected(
       client,
       'a',
-      () => new Promise((resolve) => { finish = resolve })
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        })
     )
     const denied = new CoreApiError({
       status: 403,
@@ -353,7 +360,9 @@ describe('Assistant protected operation ownership', () => {
       messages: [],
     })
     await expect(pending).rejects.toBe(denied)
-    expect(isAssistantAccessCurrent(client, captureAssistantAccess(client, 'a'))).toBe(false)
+    expect(
+      isAssistantAccessCurrent(client, captureAssistantAccess(client, 'a'))
+    ).toBe(false)
     client.clear()
   })
 
