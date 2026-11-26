@@ -297,11 +297,7 @@ describe('Calendar month view', () => {
 
   it('marks adjacent-month dates as not loaded rather than empty scheduling days', async () => {
     const screen = await render(
-      <CalendarMonthView
-        month='2026-11'
-        segments={[]}
-        state={readyState()}
-      />
+      <CalendarMonthView month='2026-11' segments={[]} state={readyState()} />
     )
 
     expect(
