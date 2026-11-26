@@ -10,6 +10,7 @@ import 'appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_invalidation.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_repository.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_workflows.dart';
+import 'package:sme_meeting_assistant/features/assistant/assistant_repository.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_creation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart';
@@ -36,6 +37,7 @@ class AppDependencies {
   final http.Client httpClient;
   late final ActionItemInvalidationSignal actionItemInvalidation;
   late final ActionItemRepository actionItems;
+  late final AssistantRepository assistant;
   late final ActionItemWorkflowOwner actionItemWorkflows;
   late final MeetingInvalidationSignal meetingInvalidation;
   late final MeetingRepository meetings;
@@ -66,6 +68,7 @@ class AppDependencies {
     SubmissionCoordinator? submissions,
     ProcessingManager? processingManager,
   }) {
+    assistant = AssistantRepository(api: api);
     this.localMedia = localMedia ?? LocalMediaRepository.lazyDefault();
     meetingInvalidation = MeetingInvalidationSignal(api);
     resultsInvalidation = ResultsInvalidationSignal(
