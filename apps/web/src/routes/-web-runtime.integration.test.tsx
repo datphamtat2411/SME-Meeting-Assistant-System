@@ -14,6 +14,8 @@ import { DirectionProvider } from '@/context/direction-provider'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
 import { resetAuthLifecycleAfterSignIn } from '@/features/auth/session/auth-lifecycle'
+import { configureSessionRevalidation } from '@/features/auth/session/session-revalidation'
+import { containProtectedState } from '@/protected-state-containment'
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -213,6 +215,7 @@ type FixtureOptions = {
   meetingListError?: unknown
   meetingDetail?: unknown
   meetingDetailError?: unknown
+  meetingParticipantsError?: unknown
 }
 
 function createQueryClient() {
@@ -326,6 +329,7 @@ function installCoreFixtures(options: FixtureOptions = {}) {
         } as never
       }
       if (url.endsWith(`/meetings/${meetingId}/participants`)) {
+        if (options.meetingParticipantsError) throw options.meetingParticipantsError
         return { data: [participant], meta: {} } as never
       }
       throw new Error(`Unexpected Core GET with meta ${url}`)
@@ -776,6 +780,63 @@ describe('integrated generated Web runtime', () => {
       ).toBe(false)
     }
   )
+
+  it('reconciles a revoked featured meeting membership with the canonical overview', async () => {
+    const scheduled = {
+      ...meeting,
+      title: 'Revoked planning meeting',
+      status: 'SCHEDULED',
+      startedAt: null,
+      scheduledStartAt: '2026-11-24T10:00:00Z',
+      scheduledEndAt: '2026-11-24T11:00:00Z',
+    }
+    const options: FixtureOptions = {
+      dashboard: {
+        ...dashboard,
+        meetingCountsByState: { SCHEDULED: 1 },
+        upcomingMeetings: [scheduled],
+      },
+      meetingDetail: scheduled,
+    }
+    const { get } = installCoreFixtures(options)
+    const { queryClient, screen } = await renderGeneratedRoute('/')
+    await expect.element(screen.getByText('1 active participants')).toBeVisible()
+    options.meetingParticipantsError = apiError(403)
+    options.dashboard = { ...dashboard, upcomingMeetings: [], meetingCountsByState: {} }
+    await queryClient.invalidateQueries({ queryKey: ['meetings', 'participants', meetingId] })
+    await expect.element(screen.getByText('No upcoming meetings')).toBeVisible()
+    await expect.element(screen.getByText(scheduled.title, { exact: true })).not.toBeInTheDocument()
+    expect(get.mock.calls.filter(([url]) => url === '/dashboard/me').length).toBe(2)
+  })
+
+  it('automatically revalidates a revoked management grant', async () => {
+    const unitId = '11111111-2222-4333-8444-555555555555'
+    const manager = {
+      ...identity,
+      globalRole: 'DEPARTMENT_MANAGER',
+      directoryManagementScope: { allUnits: false, unitIds: [unitId] },
+    }
+    const options: FixtureOptions = { identity: manager, managementUnitIds: [unitId] }
+    const { get } = installCoreFixtures(options)
+    const { queryClient, router, screen } = await renderGeneratedRoute('/')
+    const dispose = configureSessionRevalidation({
+      queryClient,
+      onContainment: () => containProtectedState(queryClient),
+      onChanged: (preserve) => { if (!preserve) void router.invalidate() },
+    })
+    try {
+      await expect.element(screen.getByText('Official actions')).toBeVisible()
+      const verificationCount = get.mock.calls.filter(([url]) => url === '/auth/me').length
+      options.identity = { ...manager, directoryManagementScope: { allUnits: false, unitIds: [] } }
+      options.managementError = apiError(403)
+      await queryClient.invalidateQueries({ queryKey: ['dashboard', 'management'] })
+      await expect.element(screen.getByText('No active organizational management scope is available.')).toBeVisible()
+      await expect.element(screen.getByText('Official actions')).not.toBeInTheDocument()
+      expect(get.mock.calls.filter(([url]) => url === '/auth/me').length).toBeGreaterThan(verificationCount)
+    } finally {
+      dispose()
+    }
+  })
 
   it('applies scoped management filters without changing personal metrics', async () => {
     const unitId = '11111111-2222-4333-8444-555555555555'

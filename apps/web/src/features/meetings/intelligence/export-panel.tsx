@@ -3,15 +3,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, FileDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { RequestError } from '@/components/request-state'
 import {
   isProtectedResourceAccessFailure,
   reconcileProtectedScope,
   resetProtectedScopeReconciliation,
 } from '@/features/auth/session/session-revalidation'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { RequestError } from '@/components/request-state'
 import { useOptionalMeetingSession } from '../media/meeting-session-context'
 import type {
   ExportOperationOwnerValue,
@@ -249,7 +249,11 @@ function FormatExportCard({
             description:
               'Access could not be confirmed. Verifying the workspace.',
           })
-          void reconcileProtectedScope(queryClient, downloadChannel, statusScope)
+          void reconcileProtectedScope(
+            queryClient,
+            downloadChannel,
+            statusScope
+          )
         } else {
           toast.error('Download unavailable', {
             description:

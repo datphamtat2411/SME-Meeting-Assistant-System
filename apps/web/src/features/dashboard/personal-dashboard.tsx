@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { skipToken, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
@@ -269,6 +270,22 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
       Date.parse(meeting.scheduledEndAt ?? '') !==
         Date.parse(next.scheduledEndAt ?? ''))
   )
+  // Reconcile a stale overview with the canonical projection once per mismatch.
+  // Do not turn membership denial or rescheduling into an unbounded refetch loop.
+  const mismatch = next && (accessChanged || scheduleChanged)
+    ? JSON.stringify([scope, next.id, accessChanged, scheduleChanged])
+    : undefined
+  const reconciledMismatch = useRef<string | undefined>(undefined)
+  const refreshPersonal = personal.refetch
+  useEffect(() => {
+    if (!mismatch) {
+      reconciledMismatch.current = undefined
+      return
+    }
+    if (reconciledMismatch.current === mismatch) return
+    reconciledMismatch.current = mismatch
+    void refreshPersonal()
+  }, [mismatch, refreshPersonal])
   const zone = presentationTimeZone(preferences.data?.timezone, data?.timezone)
   const locale = preferences.data?.locale
   const format: FormatInstant = (value) =>

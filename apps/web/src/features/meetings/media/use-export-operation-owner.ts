@@ -9,14 +9,14 @@ import { z } from 'zod'
 import { useQueryClient } from '@tanstack/react-query'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import {
+  getAuthLifecycleSnapshot,
+  subscribeAuthLifecycle,
+} from '@/features/auth/session/auth-lifecycle'
+import {
   isProtectedResourceAccessFailure,
   reconcileProtectedScope,
   resetProtectedScopeReconciliation,
 } from '@/features/auth/session/session-revalidation'
-import {
-  getAuthLifecycleSnapshot,
-  subscribeAuthLifecycle,
-} from '@/features/auth/session/auth-lifecycle'
 import {
   createMinutesExport,
   recoverMinutesExport,
