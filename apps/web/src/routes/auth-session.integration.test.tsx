@@ -11,6 +11,7 @@ import {
   RouterProvider,
 } from '@tanstack/react-router'
 import { routeTree } from '@/routeTree.gen'
+import '@/styles/index.css'
 import { beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
@@ -502,6 +503,10 @@ describe('session restoration and protected routing', () => {
         .element()
         .closest('[data-slot="workspace-portal-host"]')
       expect(portalHost).not.toBeNull()
+      const boundary = portalHost?.closest<HTMLDivElement>(
+        '[data-slot="workspace-visibility-boundary"]'
+      )
+      expect(boundary).not.toBeNull()
       getCurrentUser.mockImplementationOnce(async () => {
         await pending
         return administrator as never
@@ -525,6 +530,7 @@ describe('session restoration and protected routing', () => {
         expect(
           document.querySelector('[data-slot="workspace-portal-host"]')
         ).toBe(portalHost)
+        expect(boundary?.hidden).toBe(true)
         await expect.element(dialog).not.toBeInTheDocument()
         await expect.element(heading).not.toBeInTheDocument()
       } finally {
@@ -532,11 +538,11 @@ describe('session restoration and protected routing', () => {
         await checking
       }
       await expect.element(dialog).toBeVisible()
-      await expect.element(name).toBeVisible()
-      await expect.element(name).toHaveValue('Private unsaved draft')
       expect(
         dialog.element().closest('[data-slot="workspace-portal-host"]')
       ).toBe(portalHost)
+      await expect.element(name).toBeVisible()
+      await expect.element(name).toHaveValue('Private unsaved draft')
 
       getCurrentUser.mockResolvedValue(identity as never)
       await revalidateBrowserSession()

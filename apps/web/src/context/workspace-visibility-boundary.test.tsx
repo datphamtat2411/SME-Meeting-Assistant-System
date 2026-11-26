@@ -20,7 +20,10 @@ function ProtectedDraft() {
       {createPortal(
         <label>
           Portal draft
-          <input value={draft} onChange={(e) => setDraft(e.target.value)} />
+          <input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
         </label>,
         host
       )}
@@ -45,8 +48,8 @@ function Harness() {
 
 describe('workspace visibility boundary', () => {
   it('retains one portal host and hides protected DOM across repeated Strict Mode transitions', async () => {
-    // Deliberately do not load application CSS: isolation must not rely on
-    // utility styles or on Activity hiding the separately mounted portal host.
+    // Isolation must not rely on utility styles or on Activity hiding the
+    // separately mounted portal host.
     const screen = await render(
       <StrictMode>
         <Harness />

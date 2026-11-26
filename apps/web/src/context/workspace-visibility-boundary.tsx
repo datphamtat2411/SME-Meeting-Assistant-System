@@ -26,13 +26,16 @@ export function WorkspaceVisibilityBoundary({
   hidden: boolean
   children: ReactNode
 }) {
-  const hostRef = useRef<HTMLDivElement>(null)
+  const portalContainerRef = useRef<HTMLDivElement>(null)
   const [container, setContainer] = useState<HTMLDivElement | null>(null)
 
-  // Publish the committed host once. Detaching refs must not enqueue state
-  // updates, and visibility changes must never replace the portal target.
   useLayoutEffect(() => {
-    setContainer(hostRef.current)
+    const portalContainer = portalContainerRef.current
+    if (!portalContainer) return
+
+    setContainer((current) =>
+      current === portalContainer ? current : portalContainer
+    )
   }, [])
 
   return (
@@ -43,9 +46,8 @@ export function WorkspaceVisibilityBoundary({
       inert={hidden}
       aria-hidden={hidden || undefined}
     >
-      {/* The host is outside Activity, but inside the same DOM shield. */}
       <div
-        ref={hostRef}
+        ref={portalContainerRef}
         data-slot='workspace-portal-host'
         style={{ display: 'contents' }}
       />
