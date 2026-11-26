@@ -97,6 +97,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
   AssistantFailure? creationFailure;
   bool _creationUncertain = false;
   DateTime? _creationRetryAt;
+  DateTime? _askRetryAt;
   Object? listFailure;
   Object? historyFailure;
   bool listLoading = false;
@@ -112,13 +113,23 @@ class AssistantWorkspaceController extends ChangeNotifier {
       List.unmodifiable(_conversations);
   List<AssistantMessage> get messages => List.unmodifiable(_messages);
   AssistantPendingTurn? get pending => _pending[conversation?.id];
-  bool get canSend =>
+  bool get canCompose =>
       current &&
       _active &&
       historyVerified &&
       !historyLoading &&
       conversation?.status == AssistantConversationStatus.active &&
       pending == null;
+  bool get askCoolingDown => _waiting(_askRetryAt);
+  DateTime? get askRetryAt => _askRetryAt;
+  bool get canSend => canCompose && !askCoolingDown;
+  bool get canRetryPending =>
+      current &&
+      _active &&
+      historyVerified &&
+      !historyLoading &&
+      !askCoolingDown &&
+      pending?.canRetry == true;
   DateTime? get creationRetryAt => _creationRetryAt;
   bool get creationCoolingDown => _waiting(_creationRetryAt);
   bool get canRetryCreation =>
@@ -128,12 +139,18 @@ class AssistantWorkspaceController extends ChangeNotifier {
       creation != null &&
       !_waiting(_creationRetryAt);
   bool get canDiscardCreation =>
+      current &&
+      _active &&
       !creating &&
       !_creationUncertain &&
       (creationFailure?.outcome == AssistantMutationOutcome.rejected ||
           creationFailure?.outcome == AssistantMutationOutcome.notDispatched);
   bool get canAbandonCreation =>
-      creation != null && !creating && _creationUncertain;
+      current &&
+      _active &&
+      creation != null &&
+      !creating &&
+      _creationUncertain;
 
   void _publish() {
     if (current) notifyListeners();
@@ -223,7 +240,10 @@ class AssistantWorkspaceController extends ChangeNotifier {
   }
 
   Future<AssistantConversation?> create(String meetingId, String title) {
-    if (!current || !_active || creating || creation != null ||
+    if (!current ||
+        !_active ||
+        creating ||
+        creation != null ||
         _waiting(_creationRetryAt)) {
       return Future.value(null);
     }
@@ -539,15 +559,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
 
   Future<void> retryPending() async {
     final command = pending;
-    if (!current ||
-        !_active ||
-        !historyVerified ||
-        historyLoading ||
-        command == null ||
-        command.busy ||
-        command.terminal ||
-        !command.retryAllowed ||
-        _waiting(command.retryAt)) {
+    if (!canRetryPending || command == null || command.terminal) {
       return;
     }
     _stopStatusMonitoring();
@@ -593,7 +605,11 @@ class AssistantWorkspaceController extends ChangeNotifier {
                   error.outcome == AssistantMutationOutcome.rejected)) ||
           (command.turn == null &&
               error.category == AssistantFailureCategory.rateLimited);
-      command.retryAt = _laterDeadline(command.retryAt, _retryDeadline(error));
+      final deadline = _retryDeadline(error);
+      command.retryAt = _laterDeadline(command.retryAt, deadline);
+      if (error.category == AssistantFailureCategory.rateLimited) {
+        _askRetryAt = _laterDeadline(_askRetryAt, deadline);
+      }
       if (_accessLost(error) ||
           error.category == AssistantFailureCategory.sourceStale) {
         _hideSelectedHistory(command);
@@ -767,6 +783,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
     final now = DateTime.now();
     final deadlines = [
       _creationRetryAt,
+      _askRetryAt,
       pending?.retryAt,
       pending?.statusRetryAt,
     ].whereType<DateTime>().where((value) => value.isAfter(now)).toList()
@@ -828,6 +845,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
     creation = null;
     creationFailure = null;
     _creationRetryAt = null;
+    _askRetryAt = null;
     _creationUncertain = false;
     creating = false;
     listHasMore = false;

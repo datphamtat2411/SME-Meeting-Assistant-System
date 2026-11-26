@@ -799,6 +799,95 @@ void main() {
   });
 
   group('Assistant workspace recovery', () {
+    test('ASK cooldown survives editing and conversation switching', () async {
+      const otherId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+      final other = _conversation()..['id'] = otherId;
+      var writes = 0;
+      final retryAt = HttpDate.format(
+        DateTime.now().add(const Duration(minutes: 1)).toUtc(),
+      );
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          if (request.url.path.endsWith('/conversations')) {
+            return meetingApiSuccess([]);
+          }
+          if (request.method == 'POST') {
+            writes++;
+            return meetingApiFailure(
+              429,
+              'RATE_LIMIT_EXCEEDED',
+              headers: {'retry-after': retryAt},
+            );
+          }
+          return meetingApiSuccess(
+            _detail(messages: [])..['conversation'] =
+                request.url.path.endsWith(otherId) ? other : _conversation(),
+          );
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      controller.setActive(true);
+      await controller.open(_typedConversation());
+      await controller.submit('Câu hỏi');
+      expect(controller.askCoolingDown, isTrue);
+      expect(controller.canRetryPending, isFalse);
+      expect(controller.editRejectedQuestion(), 'Câu hỏi');
+      expect(controller.canCompose, isTrue);
+      expect(controller.canSend, isFalse);
+      await controller.open(
+        AssistantConversation.fromJson(other, response: _result(other)),
+      );
+      expect(controller.canCompose, isTrue);
+      expect(controller.canSend, isFalse);
+      await controller.submit('Câu hỏi khác');
+      expect(writes, 1);
+    });
+
+    test('automatic status monitoring resolves a turn without POST replay',
+        () async {
+      var reads = 0;
+      var writes = 0;
+      final settled = Completer<void>();
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          if (request.url.path.endsWith('/conversations')) {
+            return meetingApiSuccess([]);
+          }
+          if (request.url.path.endsWith('/turns/by-key')) {
+            reads++;
+            return meetingApiSuccess({
+              'turn': _turn(processing: reads == 1),
+              'recoveryEligible': false,
+            });
+          }
+          if (request.method == 'POST') {
+            writes++;
+            return meetingApiSuccess(_turn(processing: true), status: 202);
+          }
+          return meetingApiSuccess(
+            _detail(
+              messages: reads >= 2 ? [_userMessage(), _message()] : [],
+            ),
+          );
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      controller.addListener(() {
+        if (reads >= 2 && controller.pending == null && !settled.isCompleted) {
+          settled.complete();
+        }
+      });
+      controller.setActive(true);
+      await controller.open(_typedConversation());
+      await controller.submit('Câu hỏi');
+      await settled.future.timeout(const Duration(seconds: 15));
+      expect(reads, 2);
+      expect(writes, 1);
+      expect(controller.messages.length, 2);
+    });
+
     test('TLS failure before dispatch does not lock the composer', () async {
       var writes = 0;
       final repository = await _repository(

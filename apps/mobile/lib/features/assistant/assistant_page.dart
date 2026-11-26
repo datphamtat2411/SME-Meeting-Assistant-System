@@ -581,6 +581,13 @@ class _AssistantPageState extends State<AssistantPage>
             ),
             child: SingleChildScrollView(child: _pendingPanel(pending)),
           ),
+        if (state.historyVerified && state.askCoolingDown)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Text(
+              'Có thể gửi câu hỏi sau ${DateFormat('HH:mm:ss').format(state.askRetryAt!.toLocal())}',
+            ),
+          ),
         if (!state.historyVerified)
           const Padding(
             padding: EdgeInsets.all(12),
@@ -600,7 +607,7 @@ class _AssistantPageState extends State<AssistantPage>
                 Expanded(
                   child: TextField(
                     controller: _input,
-                    enabled: state.canSend,
+                    enabled: state.canCompose,
                     minLines: 1,
                     maxLines: 4,
                     maxLength: 4096,
@@ -666,7 +673,7 @@ class _AssistantPageState extends State<AssistantPage>
           child: ListTile(
             title: Text(question),
             trailing: const Icon(Icons.arrow_upward),
-            onTap: _controller.canSend
+            onTap: _controller.canCompose
                 ? () => setState(() => _input.text = question)
                 : null,
           ),
@@ -737,7 +744,7 @@ class _AssistantPageState extends State<AssistantPage>
                   ),
                 if (pending.retryAllowed)
                   TextButton(
-                    onPressed: pending.canRetry && !_controller.historyLoading
+                    onPressed: _controller.canRetryPending
                         ? _controller.retryPending
                         : null,
                     child: const Text('Thử lại cùng câu hỏi'),
