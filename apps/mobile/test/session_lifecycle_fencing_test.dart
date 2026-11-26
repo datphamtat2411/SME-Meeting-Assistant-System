@@ -42,6 +42,135 @@ void main() {
     );
   }
 
+  test('reconciliation permanently fences an earlier protected request', () async {
+    final client = _SessionRaceClient()..delaySecondIdentity = true;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await _signIn(api);
+    final previousScope = api.sessionCoordinator.authenticatedSessionScope!;
+    final response = api.get('/slow');
+    final rejected = expectLater(response, throwsA(isA<AuthSessionException>()));
+    await client.slowRequestStarted.future;
+
+    final reconciliation = api.reconcileSession();
+    expect(api.sessionState.isAuthenticated, isFalse);
+    expect(api.sessionCoordinator.authenticatedSessionScope, isNull);
+    await expectLater(api.get('/blocked'), throwsA(isA<ApiFailure>()));
+    await client.delayedIdentityStarted.future;
+    client.completeDelayedIdentity();
+    expect(await reconciliation, AuthReconciliationOutcome.verified);
+    final nextScope = api.sessionCoordinator.authenticatedSessionScope!;
+    expect(nextScope.lifecycleEpoch, previousScope.lifecycleEpoch);
+    expect(nextScope, isNot(previousScope));
+    expect(client.loginCount, 1);
+
+    client.completeSlowRequest(status: 200);
+    await rejected;
+    expect(api.sessionState.identity!.userId.value, _userA);
+  });
+
+  test('a newer reconciliation requires a newer identity probe', () async {
+    final client = _SessionRaceClient()
+      ..delaySecondIdentity = true
+      ..delayThirdIdentity = true;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await _signIn(api);
+
+    final first = api.reconcileSession();
+    await client.delayedIdentityStarted.future;
+    final second = api.reconcileSession();
+    client.completeDelayedIdentity();
+    await client.thirdIdentityStarted.future;
+    expect(api.sessionState.isAuthenticated, isFalse);
+    client.completeThirdIdentity();
+
+    expect(await first, AuthReconciliationOutcome.verified);
+    expect(await second, AuthReconciliationOutcome.verified);
+    expect(client.identityCount, 3);
+    expect(client.loginCount, 1);
+  });
+
+  test('ordinary identity reload cannot reopen the reconciliation gate', () async {
+    final client = _SessionRaceClient()
+      ..delaySecondIdentity = true
+      ..delayThirdIdentity = true;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await _signIn(api);
+
+    final reload = api.loadIdentity();
+    final rejected = expectLater(reload, throwsA(isA<AuthSessionException>()));
+    await client.delayedIdentityStarted.future;
+    final reconciliation = api.reconcileSession();
+    await client.thirdIdentityStarted.future;
+    client.completeDelayedIdentity();
+    await rejected;
+    expect(api.sessionState.isAuthenticated, isFalse);
+
+    client.completeThirdIdentity();
+    expect(await reconciliation, AuthReconciliationOutcome.verified);
+  });
+
+  test('unavailable verification stays closed and can be retried', () async {
+    final client = _SessionRaceClient()..delaySecondIdentity = true;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await _signIn(api);
+    final previousScope = api.sessionCoordinator.authenticatedSessionScope!;
+
+    final result = api.reconcileSession();
+    await client.delayedIdentityStarted.future;
+    client.delayedIdentityResponse.complete(
+      jsonResponse(503, errorEnvelope('SERVICE_UNAVAILABLE', 'Unavailable.')),
+    );
+    expect(await result, AuthReconciliationOutcome.unavailable);
+    expect(api.sessionState.canRetryIdentityVerification, isTrue);
+    expect(api.sessionState.isAuthenticated, isFalse);
+    expect(await api.reconcileSession(), AuthReconciliationOutcome.verified);
+    expect(api.sessionCoordinator.authenticatedSessionScope, isNot(previousScope));
+    expect(client.loginCount, 1);
+  });
+
+  test('identity mismatch invalidates the retained session', () async {
+    final client = _SessionRaceClient()..delaySecondIdentity = true;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await _signIn(api);
+    final result = api.reconcileSession();
+    await client.delayedIdentityStarted.future;
+    client.delayedIdentityResponse.complete(
+      jsonResponse(200, successEnvelope(_identity(_userB))),
+    );
+    expect(await result, AuthReconciliationOutcome.invalidated);
+    expect(api.sessionState.phase, AuthSessionPhase.reauthenticationRequired);
+    expect(api.sessionCoordinator.authenticatedSessionScope, isNull);
+  });
+
+  test('logout supersedes an in-flight reconciliation', () async {
+    final client = _SessionRaceClient()..delaySecondIdentity = true;
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await _signIn(api);
+    final result = api.reconcileSession();
+    await client.delayedIdentityStarted.future;
+    await api.signOut();
+    expect(await result, AuthReconciliationOutcome.noSession);
+    await api.signIn('user-b@example.test', 'password');
+    client.completeDelayedIdentity();
+    await Future<void>.delayed(Duration.zero);
+    expect(api.sessionState.identity!.userId.value, _userB);
+  });
+
+  test('reconciliation without a session never dispatches identity', () async {
+    final client = _SessionRaceClient();
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await api.initialize();
+    expect(await api.reconcileSession(), AuthReconciliationOutcome.noSession);
+    expect(client.identityCount, 0);
+  });
+
   test('a delayed identity response cannot replace the next session', () async {
     final client = _SessionRaceClient()..delaySecondIdentity = true;
     final api = _api(client);
@@ -87,6 +216,9 @@ class _SessionRaceClient extends http.BaseClient {
   final delayedIdentityStarted = Completer<void>();
   final delayedIdentityResponse = Completer<http.StreamedResponse>();
   bool delaySecondIdentity = false;
+  bool delayThirdIdentity = false;
+  final thirdIdentityStarted = Completer<void>();
+  final thirdIdentityResponse = Completer<http.StreamedResponse>();
   int loginCount = 0;
   int identityCount = 0;
 
@@ -106,6 +238,10 @@ class _SessionRaceClient extends http.BaseClient {
       if (delaySecondIdentity && identityCount == 2) {
         delayedIdentityStarted.complete();
         return delayedIdentityResponse.future;
+      }
+      if (delayThirdIdentity && identityCount == 3) {
+        thirdIdentityStarted.complete();
+        return thirdIdentityResponse.future;
       }
       return jsonResponse(
         200,
@@ -132,6 +268,12 @@ class _SessionRaceClient extends http.BaseClient {
         jsonResponse(503, errorEnvelope('SERVICE_UNAVAILABLE', 'Unavailable.')),
       );
     }
+  }
+
+  void completeThirdIdentity() {
+    thirdIdentityResponse.complete(
+      jsonResponse(200, successEnvelope(_identity(_userA))),
+    );
   }
 
   void completeDelayedIdentity() {
