@@ -1113,9 +1113,8 @@ void main() {
       MaterialApp(
         theme: ThemeData.dark(),
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(
-            context,
-          ).copyWith(textScaler: const TextScaler.linear(1.4)),
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: const TextScaler.linear(1.4)),
           child: child!,
         ),
         home: Scaffold(
@@ -1223,7 +1222,12 @@ void main() {
     );
     expect(
       dependencies.assistantWorkspace.messages.map((message) => message.id),
-      [_userMessageId, _assistantMessageId, followUpUserId, followUpAssistantId],
+      [
+        _userMessageId,
+        _assistantMessageId,
+        followUpUserId,
+        followUpAssistantId,
+      ],
     );
     expect(find.text(followUpAnswer), findsWidgets);
     expect(tester.widget<TextField>(composer).controller!.text, isEmpty);
