@@ -151,7 +151,9 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
     const patch: PreferencesPatch = {}
     if (dirtyFields.timezone && data.timezone !== preferences.timezone) {
       if (data.timezone !== null && !isTimezoneSelection(data.timezone)) {
-        setError('timezone', { message: 'Select a valid IANA timezone identifier.' })
+        setError('timezone', {
+          message: 'Select a valid IANA timezone identifier.',
+        })
         return
       }
       patch.timezone = data.timezone

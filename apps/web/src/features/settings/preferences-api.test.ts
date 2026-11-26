@@ -87,10 +87,7 @@ describe('preferences contract', () => {
       timeZone: 'UTC',
     }).resolvedOptions()
     expect(
-      resolveRegionalPreferences(
-        { timezone: candidate, locale: null },
-        browser
-      )
+      resolveRegionalPreferences({ timezone: candidate, locale: null }, browser)
     ).toMatchObject({ timezone: 'UTC', timezoneFallback: true })
   })
 

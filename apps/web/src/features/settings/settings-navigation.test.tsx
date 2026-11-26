@@ -398,15 +398,13 @@ describe('settings navigation and cleanup', () => {
     'requires review after a profile update returns %i',
     async (status) => {
       mockSettingsReads()
-      const patch = vi
-        .spyOn(coreApi, 'patchWithMetaAndEtag')
-        .mockRejectedValue(
-          new CoreApiError({
-            message: 'Update could not be confirmed',
-            status,
-            kind: status === 503 ? 'server' : 'http',
-          })
-        )
+      const patch = vi.spyOn(coreApi, 'patchWithMetaAndEtag').mockRejectedValue(
+        new CoreApiError({
+          message: 'Update could not be confirmed',
+          status,
+          kind: status === 503 ? 'server' : 'http',
+        })
+      )
       const { screen } = await renderApiSettings(<ProfileForm />)
       const name = screen.getByRole('textbox', { name: 'Display name' })
       const save = screen.getByRole('button', { name: 'Save profile' })

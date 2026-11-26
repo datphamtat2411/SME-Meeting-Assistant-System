@@ -132,7 +132,10 @@ export function RegionalPicker({
               >
                 <Check
                   aria-hidden='true'
-                  className={cn('size-4', value !== option.value && 'opacity-0')}
+                  className={cn(
+                    'size-4',
+                    value !== option.value && 'opacity-0'
+                  )}
                 />
                 {option.label}
               </CommandItem>
