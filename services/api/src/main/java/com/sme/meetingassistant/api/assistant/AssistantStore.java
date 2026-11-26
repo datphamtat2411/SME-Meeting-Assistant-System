@@ -92,6 +92,20 @@ class AssistantStore {
                FROM assistant_turns WHERE conversation_id=? AND state='PROCESSING' FOR UPDATE
             """,AssistantStore::turn,conversation).stream().findFirst().orElse(null);
     }
+    Turn observeByKey(UUID conversation,String key) {
+        return jdbc.query("""
+             SELECT id,conversation_id,request_sha256,idempotency_key,user_message_id,
+                    assistant_message_id,state,claim_token,claim_expires_at,scope_version
+               FROM assistant_turns WHERE conversation_id=? AND idempotency_key=?
+            """,AssistantStore::turn,conversation,key).stream().findFirst().orElse(null);
+    }
+    Turn observePending(UUID conversation) {
+        return jdbc.query("""
+             SELECT id,conversation_id,request_sha256,idempotency_key,user_message_id,
+                    assistant_message_id,state,claim_token,claim_expires_at,scope_version
+               FROM assistant_turns WHERE conversation_id=? AND state='PROCESSING'
+            """,AssistantStore::turn,conversation).stream().findFirst().orElse(null);
+    }
     Turn findById(UUID id){
         return jdbc.query("""
              SELECT id,conversation_id,request_sha256,idempotency_key,user_message_id,
@@ -181,12 +195,24 @@ class AssistantStore {
               FROM assistant_messages WHERE id=?
             """,AssistantStore::message,messageId).stream().findFirst().orElse(null);
     }
-    List<Message> messages(UUID conversation,int page,int size){
+    List<Message> messages(UUID conversation,int offset,int limit){
         List<Message> reversed=jdbc.query("""
             SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,created_at
               FROM assistant_messages WHERE conversation_id=?
              ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?
-            """,AssistantStore::message,conversation,size,page*size);
+            """,AssistantStore::message,conversation,limit,offset);
+        Collections.reverse(reversed);
+        return reversed;
+    }
+    List<Message> messagesBefore(UUID conversation,UUID anchorId,int limit) {
+        Message anchor=answer(anchorId);
+        if(anchor==null||!conversation.equals(anchor.conversationId()))
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        List<Message> reversed=jdbc.query("""
+            SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,created_at
+              FROM assistant_messages WHERE conversation_id=? AND (created_at,id)<(?,?)
+             ORDER BY created_at DESC,id DESC LIMIT ?
+            """,AssistantStore::message,conversation,anchor.createdAt(),anchor.id(),limit);
         Collections.reverse(reversed);
         return reversed;
     }

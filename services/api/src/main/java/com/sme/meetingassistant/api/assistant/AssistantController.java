@@ -35,9 +35,27 @@ final class AssistantController {
     }
     @GetMapping("/{conversationId}")
     ResponseEntity<ApiResponse<ConversationDetail>> detail(@PathVariable UUID conversationId,
-            @RequestParam(defaultValue="0") int page,@RequestParam(defaultValue="50") int size){
+            @RequestParam(required=false) Integer page,@RequestParam(defaultValue="50") int size,
+            @RequestParam(required=false) UUID beforeMessageId){
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
-            .body(responses.success(service.detail(conversationId,page,size)));
+            .body(responses.success(service.detail(conversationId,page,size,beforeMessageId)));
+    }
+    @GetMapping("/{conversationId}/turns/{turnId}")
+    ResponseEntity<ApiResponse<TurnStatusView>> observe(@PathVariable UUID conversationId,@PathVariable UUID turnId){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
+            .body(responses.success(service.observe(conversationId,turnId,null)));
+    }
+    @GetMapping("/{conversationId}/turns")
+    ResponseEntity<ApiResponse<TurnStatusView>> lookup(@PathVariable UUID conversationId,
+            @RequestHeader("Idempotency-Key") String key){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
+            .body(responses.success(service.observe(conversationId,null,key)));
+    }
+    @ExceptionHandler(AssistantDomainException.class)
+    ResponseEntity<ApiResponse<Void>> domainError(AssistantDomainException error){
+        return ResponseEntity.status(error.getStatusCode()).cacheControl(CacheControl.noStore())
+            .header("Referrer-Policy","no-referrer")
+            .body(responses.error(error.code(),error.getReason(),null));
     }
     @PostMapping("/{conversationId}/messages")
     ResponseEntity<ApiResponse<TurnView>> submit(@PathVariable UUID conversationId,
@@ -46,7 +64,7 @@ final class AssistantController {
         if(outcome.httpStatus()==503){
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
-                .body(responses.error("ASSISTANT_UNAVAILABLE","Assistant answer is unavailable.",null));
+                .body(responses.error("ASSISTANT_TURN_FAILED","Assistant answer is unavailable.",null));
         }
         if(outcome.httpStatus()==409){
             return ResponseEntity.status(HttpStatus.CONFLICT).cacheControl(CacheControl.noStore())

@@ -231,4 +231,69 @@ class AssistantHttpIntegrationTests {
             """,Integer.class,id)).isZero();
     }
 
+    @Test void historyLookaheadDoesNotSkipMessagesAndAnchorSurvivesNewerWrites() throws Exception {
+        UUID owner=user(),meeting=meeting(owner),id=conversation(owner,meeting);
+        for(int i=1;i<=6;i++) {
+            jdbc.update("""
+                INSERT INTO assistant_messages(id,conversation_id,role,content,created_at)
+                VALUES (?,?,'USER',?,TIMESTAMPTZ '2026-01-01 00:00:00Z' + (? * INTERVAL '1 second'))
+                """,UUID.randomUUID(),id,"question-"+i,i);
+        }
+        String url="/api/v1/assistant/conversations/"+id;
+        JsonNode first=response(mvc.perform(get(url).param("size","2").principal(principal(owner)))
+            .andExpect(status().isOk()).andReturn());
+        assertThat(first.path("messages").get(0).path("content").asText()).isEqualTo("question-5");
+        assertThat(first.path("hasMore").asBoolean()).isTrue();
+        JsonNode second=response(mvc.perform(get(url).param("page","1").param("size","2")
+            .principal(principal(owner))).andExpect(status().isOk()).andReturn());
+        assertThat(second.path("messages").get(0).path("content").asText()).isEqualTo("question-3");
+        assertThat(second.path("messages").get(1).path("content").asText()).isEqualTo("question-4");
+        jdbc.update("INSERT INTO assistant_messages(id,conversation_id,role,content) VALUES (?,?,'USER','newer')",
+            UUID.randomUUID(),id);
+        JsonNode anchored=response(mvc.perform(get(url).param("size","2")
+            .param("beforeMessageId",first.path("nextBeforeMessageId").asText())
+            .principal(principal(owner))).andExpect(status().isOk()).andReturn());
+        assertThat(anchored.path("messages")).isEqualTo(second.path("messages"));
+        JsonNode last=response(mvc.perform(get(url).param("size","2")
+            .param("beforeMessageId",anchored.path("nextBeforeMessageId").asText())
+            .principal(principal(owner))).andExpect(status().isOk()).andReturn());
+        assertThat(last.path("messages").get(0).path("content").asText()).isEqualTo("question-1");
+        assertThat(last.path("hasMore").asBoolean()).isFalse();
+        assertThat(last.path("nextBeforeMessageId").isNull()).isTrue();
+        mvc.perform(get(url).param("beforeMessageId",UUID.randomUUID().toString()).principal(principal(owner)))
+            .andExpect(status().isNotFound());
+        mvc.perform(get(url).param("page","0").param("beforeMessageId",first.path("nextBeforeMessageId").asText())
+            .principal(principal(owner))).andExpect(status().isUnprocessableEntity());
+    }
+
+    @Test void readOnlyTurnObservationAndRequestLookupRequireCurrentAccess() throws Exception {
+        UUID owner=user(),member=user(),meeting=meeting(owner,member),id=conversation(member,meeting);
+        when(gateway.answer(anyString())).thenAnswer(inv->insufficient(inv.getArgument(0)));
+        JsonNode submitted=response(mvc.perform(post(target(id)).principal(principal(member))
+            .header("Idempotency-Key","observe-turn")
+            .contentType(MediaType.APPLICATION_JSON).content("{\"question\":\"Kết quả?\"}"))
+            .andExpect(status().isOk()).andReturn());
+        String url="/api/v1/assistant/conversations/"+id+"/turns";
+        String turnId=submitted.path("turnId").asText();
+        JsonNode observed=response(mvc.perform(get(url+"/"+turnId).principal(principal(member)))
+            .andExpect(status().isOk()).andReturn());
+        assertThat(observed.path("state").asText()).isEqualTo("COMPLETED");
+        assertThat(observed.path("conversationId").asText()).isEqualTo(id.toString());
+        assertThat(observed.path("leaseStatus").isNull()).isTrue();
+        assertThat(observed.has("answer")).isFalse();
+        assertThat(observed.has("citations")).isFalse();
+        JsonNode byKey=response(mvc.perform(get(url).header("Idempotency-Key","observe-turn")
+            .principal(principal(member))).andExpect(status().isOk()).andReturn());
+        assertThat(byKey).isEqualTo(observed);
+        mvc.perform(get(url).header("Idempotency-Key","missing-turn").principal(principal(member)))
+            .andExpect(status().isNotFound());
+        mvc.perform(get(url+"/"+turnId).principal(principal(owner))).andExpect(status().isNotFound());
+        UUID other=conversation(member,meeting);
+        mvc.perform(get("/api/v1/assistant/conversations/"+other+"/turns/"+turnId)
+            .principal(principal(member))).andExpect(status().isNotFound());
+        jdbc.update("UPDATE meeting_participants SET removed_at=CURRENT_TIMESTAMP WHERE meeting_id=? AND user_id=?",
+            meeting,member);
+        mvc.perform(get(url+"/"+turnId).principal(principal(member))).andExpect(status().isNotFound());
+        verify(gateway,times(1)).answer(anyString());
+    }
 }

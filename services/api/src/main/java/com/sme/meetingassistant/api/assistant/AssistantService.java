@@ -90,17 +90,60 @@ public final class AssistantService {
         return store.list(user,page,size);
     }
 
+
     ConversationDetail detail(UUID id,int page,int size){
-        requireEnabled();UUID user=actor();validatePage(page,size);
+        return detail(id,page,size,null);
+    }
+
+    ConversationDetail detail(UUID id,Integer page,int size,UUID beforeMessageId){
+        requireEnabled();UUID user=actor();
+        if(page!=null&&beforeMessageId!=null)
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+        int requestedPage=page==null?0:page;
+        validatePage(requestedPage,size);
         var conversation=store.require(id,user,false);
         access.requireReadable(conversation.meetingId(),user);
-        List<AssistantStore.Message> messages=store.messages(id,page,size+1);
+        List<AssistantStore.Message> messages=beforeMessageId==null
+            ?store.messages(id,requestedPage*size,size+1)
+            :store.messagesBefore(id,beforeMessageId,size+1);
         boolean hasMore=messages.size()>size;
         if(hasMore)messages=messages.subList(messages.size()-size,messages.size());
         List<MessageView> views=new ArrayList<>();
         for(var message:messages)views.add(view(message,conversation.meetingId()));
+        UUID next=hasMore?messages.getFirst().id():null;
+        var pending=store.observePending(id);
+        TurnStatusView pendingView=pending==null?null:statusView(conversation,pending);
         access.requireReadable(conversation.meetingId(),user);
-        return new ConversationDetail(conversation.view(),List.copyOf(views),page,size,hasMore);
+        return new ConversationDetail(conversation.view(),List.copyOf(views),requestedPage,size,hasMore,next,pendingView);
+    }
+
+    TurnStatusView observe(UUID conversationId,UUID turnId,String key){
+        requireEnabled();UUID user=actor();
+        var conversation=store.require(conversationId,user,false);
+        access.requireReadable(conversation.meetingId(),user);
+        if(turnId==null&&(key==null||!KEY.matcher(key).matches()))
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+        var turn=turnId==null?store.observeByKey(conversationId,key):store.findById(turnId);
+        if(turn==null||!conversationId.equals(turn.conversationId()))
+            throw new AssistantDomainException(HttpStatus.NOT_FOUND,"ASSISTANT_TURN_NOT_FOUND",
+                "Assistant turn was not found.");
+        TurnStatusView result=statusView(conversation,turn);
+        access.requireReadable(conversation.meetingId(),user);
+        return result;
+    }
+
+    private TurnStatusView statusView(AssistantStore.Conversation conversation,AssistantStore.Turn turn){
+        String state=turn.state();
+        if("PROCESSING".equals(state))
+            return new TurnStatusView(conversation.id(),turn.id(),state,
+                store.live(turn)?"ACTIVE":"EXPIRED",turn.userMessageId(),null,null);
+        var message=store.answer(turn.assistantMessageId());
+        if(message==null||!conversation.id().equals(message.conversationId()))
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE);
+        if("COMPLETED".equals(state)&&!"VISIBLE".equals(view(message,conversation.meetingId()).visibility()))
+            state="STALE_SOURCE";
+        return new TurnStatusView(conversation.id(),turn.id(),state,null,turn.userMessageId(),
+            message.id(),message.answerStatus());
     }
 
     TurnOutcome submit(UUID conversationId,String idempotencyKey,Ask input){
@@ -112,11 +155,11 @@ public final class AssistantService {
             throw admission.databaseUnavailable();
         }
         if(input==null||input.question()==null||input.question().isBlank()
-            ||input.question().codePointCount(0,input.question().length())>4096
             ||idempotencyKey==null||!KEY.matcher(idempotencyKey).matches())
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         String question=input.question().trim();
-        if(question.isEmpty())throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+        if(question.isBlank()||question.codePointCount(0,question.length())>4096)
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         String fingerprint=WorkerJson.sha256(question.getBytes(StandardCharsets.UTF_8));
         AssistantStore.Conversation conversation;
         try {
@@ -214,11 +257,13 @@ public final class AssistantService {
         if(!conversation.meetingId().equals(expectedMeeting))
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         access.requireReadable(conversation.meetingId(),user);
-        if(!"ACTIVE".equals(conversation.status()))throw new ResponseStatusException(HttpStatus.CONFLICT);
+        if(!"ACTIVE".equals(conversation.status()))throw new AssistantDomainException(HttpStatus.CONFLICT,
+            "ASSISTANT_CONVERSATION_INACTIVE","Assistant conversation is inactive.");
         AssistantStore.Turn prior=store.findTurn(conversationId,key);
         if(prior!=null){
             if(!prior.fingerprint().equals(fingerprint))
-                throw new ResponseStatusException(HttpStatus.CONFLICT,"Idempotency key reused with different question");
+                throw new AssistantDomainException(HttpStatus.CONFLICT,"ASSISTANT_IDEMPOTENCY_CONFLICT",
+                    "Idempotency key reused with different question.");
             if(!"PROCESSING".equals(prior.state())){
                 admission.replay();
                 return new Admission(prior,false);
@@ -237,8 +282,8 @@ public final class AssistantService {
         }
         AssistantStore.Turn busy=store.active(conversationId);
         if(busy!=null){
-            if(store.live(busy))throw new ResponseStatusException(HttpStatus.CONFLICT,
-                "A previous Assistant turn is still processing");
+            if(store.live(busy))throw new AssistantDomainException(HttpStatus.CONFLICT,
+                "ASSISTANT_TURN_IN_PROGRESS","A previous Assistant turn is still processing.");
             store.expire(busy);
             admission.leaseExpired();
         }
