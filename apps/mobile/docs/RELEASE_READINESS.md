@@ -13,7 +13,11 @@ For M06 Action Items and its verification status, see
 For M07 Assistant, see [`M07_ACCEPTANCE.md`](M07_ACCEPTANCE.md) and the
 [Assistant contract](M07_WAVE01_CONTRACT.md).
 For M08 Authentication Account Flows, see [M08_ACCEPTANCE.md](M08_ACCEPTANCE.md)
-for current development and live integration gates.
+for current development and live integration gates. M08 is development
+accepted on implementation revision `1628e38a` (637 Flutter tests, successful
+native checks and both Android debug builds); live integration remains
+pending, including the compatible Web/Core revision, SMTP, trusted-domain
+association and physical-device acceptance.
 
 ## Verified foundation capabilities
 

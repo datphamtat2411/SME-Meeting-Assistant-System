@@ -2,8 +2,9 @@
 
 ## Status and evidence boundary
 
-**Development acceptance pending final candidate CI; live system acceptance
-not established.** This record is not production or release approval.
+**Development Accepted — Live Integration Acceptance Pending.** Gate A is
+supported by the verified implementation revision below; Gate B remains
+blocked. This record is not production or release approval.
 The accepted Wave 03 baseline is
 [713ddc85](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/commit/713ddc8531abacd4ed95ee68d11a910ac49d2f74).
 Wave 04 correction [0a7e124d](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/commit/0a7e124db492b2cadd83146b5b0afb4b896d92d6)
@@ -20,7 +21,34 @@ failed at the pinned Dart formatter (two files); provisioning, dependency and
 static native configuration checks passed; analysis, Flutter tests, native
 runtime tests and builds did not execute. The formatter's exact diff is
 applied in the follow-up acceptance revision. No gate or dependency is
-changed. Check the current branch's exact HEAD CI before promoting it.
+changed.
+
+### Final development evidence
+
+Implementation revision [1628e38a](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/commit/1628e38ab2faead557a60766fd0eff37feb03707)
+passed [Mobile CI 45904825574](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45904825574)
+([job 140198937087](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45904825574/job/140198937087)).
+The run is completed successfully; the job steps and logs were inspected.
+
+| Executed gate | Observed result |
+| --- | --- |
+| Pinned toolchain, lockfile and native static configuration | PASS |
+| Dart formatting and static analysis | PASS; no analyzer issues |
+| Complete Flutter tests with coverage | PASS; 637 tests passed |
+| Native diagnostics tests, JVM verification and credential durability | PASS; Gradle BUILD SUCCESSFUL and merged manifest validation PASS |
+| Configured Android debug APK | PASS; exact account-link manifest validation PASS |
+| Unconfigured Android debug APK | PASS; disabled account-link manifest validation PASS |
+| Evidence artifact upload and final dependency/toolchain drift check | PASS |
+
+The logs explicitly report successful regressions for stale candidate
+claim/discard, stale UI confirmation, and untrusted manual link input.
+The run published `mobile-test-evidence`, `mobile-android-native-diagnostics`
+and `mobile-android-debug-apk`. Artifact availability was confirmed; artifact
+contents were not independently downloaded or audited in this review.
+The final acceptance update records these results without modifying runtime
+code, tests, toolchain, or CI. Any subsequent runtime/test/configuration change
+requires fresh verification; a documentation-only revision does not acquire
+its own CI result from this run. Check its exact HEAD separately.
 
 The baseline Mobile [CI job](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45901286507/job/140187401250)
 reported 634 Flutter tests passed, no analyzer issues, successful native
@@ -35,12 +63,13 @@ Git tree comparison confirmed identical Core API
 (`4b53769ee35b6772b5ef59f60f98ef2a6c70f1c9`), AI
 (`ee82c83e38af1576adb3687b7fd5a89f34a5d77b`) and API CI workflow
 (`eb0f17b68eab256376b1f012f10d9c63ab132b9e`) content at the Mobile
-baseline. This is historical automated backend evidence, not a new
+baseline and the verified Wave 04 implementation revision. This is historical automated backend evidence, not a new
 execution against an actual deployed Core API. The API workflow does not
 currently trigger on this Mobile branch. Relevant executed classes (all
 zero failures/errors/skips): AuthTransportHttpIntegrationTests (23),
 AuthIdentityBoundaryIntegrationTests (12),
-CanonicalAuthenticationPersistenceIntegrationTests (15),
+RefreshSessionIntegrationTests (11), RefreshSessionConcurrencyIntegrationTests
+(1), CanonicalAuthenticationPersistenceIntegrationTests (15),
 Rs256JwtAuthorizationIntegrationTests (9), AuthAbuseIntegrationTests (5),
 PasswordRecoveryIntegrationTests (9), AuthTokenRetentionIntegrationTests
 (4), AccountSetupIntegrationTests (17), AccountSetupPasswordPolicyTests
@@ -86,8 +115,9 @@ and verify the intended combined revision.
 
 ## Requirement-to-evidence traceability
 
-PASS below refers only to the cited executed baseline evidence. Candidate
-tests are NOT RUN until a successful run for that candidate is observed.
+PASS below refers to the cited executed automated evidence, not live
+acceptance. The complete candidate suite passed on 1628e38a. Historical Core
+evidence is separately scoped to its unchanged source and CI tree.
 BLOCKED denotes missing external prerequisites, not an executed failure.
 
 | ID / scope | Requirements | Baseline observed evidence / expected behavior | Final live/device gap |
@@ -104,14 +134,14 @@ BLOCKED denotes missing external prerequisites, not an executed failure.
 | A10 T04 URL trust | SEC-REC-007/009/010, SEC-AUTH-008 | PASS: account_link parser; configured/unconfigured manifest and strict host tests | BLOCKED: approved deployed HTTPS callback host |
 | A11 T04 Android lifecycle | ARCH-MOB-003, SEC-REC-009 | PASS: native buffer tests, account_link_coordinator, startup_widget (initial/warm, deferred and duplicates); both baseline APKs | BLOCKED: actual Android domain verification, device and email-client handoff |
 | A12 T04 authenticated continuation | FEAT-AUTH-SESSION-004, SEC-SESS-009/011 | PASS: startup_widget authenticated setup/reset, stale/fresh deferral through gate and pushed-route restoration | BLOCKED: real same-account and unrelated-account sessions |
-| A13 T04 whole-link paste/fallback | SEC-REC-009/010, FEAT-GEN-003 | PASS: baseline manual-entry credential journey and parser; added untrusted-paste test NOT RUN | BLOCKED: integrated compatible Web and normal browser fallback |
-| A14 T04 candidate confirmation | BR-GEN-004, FEAT-GEN-005/006 | Baseline defect found by source review; correction and two targeted tests committed; candidate tests NOT RUN | BLOCKED: device race and actual email client |
+| A13 T04 whole-link paste/fallback | SEC-REC-009/010, FEAT-GEN-003 | PASS: manual-entry credential journey, parser and candidate untrusted-paste regression | BLOCKED: integrated compatible Web and normal browser fallback |
+| A14 T04 candidate confirmation | BR-GEN-004, FEAT-GEN-005/006 | PASS: candidate-bound claim/discard and stale UI confirmation regressions on 1628e38a | BLOCKED: device race and actual email client |
 | A15 T04 active work and protected scope | ARCH-MOB-004, BR-GEN-008, FEAT-AUTH-SESSION-004, FEAT-GEN-008 | PASS: startup_widget, recording/submission regressions, meeting_session_isolation, results/action-item/assistant fixtures | BLOCKED: physical recording/import/upload and live cross-account data |
 | A16 T01–T04 confidentiality | SEC-PWD-010, SEC-REC-009, SEC-LOG-003–005, SEC-TLS-004/005 | Source review: transient capability ownership, no generic route identifier, secure refresh storage; baseline disposal/transport/native durability tests PASS | BLOCKED: real Android/logcat/email capture audit; no blanket runtime secrecy claim |
 | A17 T01–T04 usability | FEAT-GEN-005, FEAT-AUTH-RECOVERY-005 | PASS: localized widget states, feedback, cancellation and continuation fixtures | NOT RUN: full screen-reader/compact keyboard/theme acceptance; physical device blocked |
-| A18 T05 toolchain/build | ARCH-MOB-001–003, SEC-BASE-007 | PASS baseline 634 tests, analysis, native and both APKs; 0a7e124d formatting FAIL, later gates NOT RUN on that revision | Current HEAD CI required; production release signing not established |
+| A18 T05 toolchain/build | ARCH-MOB-001–003, SEC-BASE-007 | PASS on 1628e38a: 637 tests, formatting, analysis, native, both APKs and effective manifests; prior formatter failure resolved | Production release signing not established |
 | A19 T05 operator evidence | SEC-BASE-007, ARCH-GEN-008 | Baseline and correction evidence recorded here; source/fixture/live evidence distinguished | BLOCKED: external prerequisites and actual deployment evidence |
-| A20 T05 closure | ARCH-GEN-002/003, SEC-BASE-005/007 | Development gate pending current CI; no production approval | BLOCKED: live integration including Web/Core correction |
+| A20 T05 closure | ARCH-GEN-002/003, SEC-BASE-005/007 | Gate A accepted for verified implementation; no production approval | BLOCKED: live integration including Web/Core correction |
 
 Test identifiers without extensions refer to existing files in
 `apps/mobile/test/`. The matrix traces representative requirements, not
@@ -275,8 +305,17 @@ acceptance, verified Android association and physical-device lifecycle,
 email-client fragment preservation and browser fallback. Release signing
 and external provider acceptance are separate applicable deployment gates.
 
-If Gate A succeeds while Gate B is blocked, the status is
-**Development Accepted — Live Integration Acceptance Pending**. Until
-candidate CI is observed green, retain **Development Verification Pending**.
+Gate A: **PASS** for implementation revision `1628e38ab2faead557a60766fd0eff37feb03707`.
+No unresolved blocking Mobile implementation defect was identified in the
+review of the acceptance correction. This is development evidence, not a
+claim of exhaustive defect absence. Manual accessibility and runtime
+confidentiality checks remain separately recorded in A16/A17 and L05.
+
+Gate B: **BLOCKED**. The current Web/Core integration dependency and missing
+approved environment, callback association, SMTP and physical device prevent
+live acceptance. The integration owner must resolve the combined revision
+and execute L01–L05; any failed required scenario remains a blocker.
+
+Overall: **Development Accepted — Live Integration Acceptance Pending**.
 Never report a skipped, blocked or unexecuted scenario as PASS. Do not
 claim production readiness from fixture tests or debug APKs.
