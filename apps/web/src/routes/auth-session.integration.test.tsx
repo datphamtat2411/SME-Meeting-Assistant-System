@@ -766,7 +766,9 @@ describe('session restoration and protected routing', () => {
     await expect
       .element(screen.getByText('Scheduled meetings'))
       .toBeInTheDocument()
-    await expect.element(screen.getByText('Canonical User')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Canonical User', { exact: true }))
+      .toBeInTheDocument()
     const initialChecks = getCurrentUser.mock.calls.length
 
     await router.navigate({ to: '/calendar' })
