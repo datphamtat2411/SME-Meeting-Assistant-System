@@ -172,7 +172,10 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
   Widget _accountList(double horizontalPadding) => ListenableBuilder(
     listenable: controller,
     builder: (context, _) => ListView(
-      padding: EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: 18),
+      padding: EdgeInsets.symmetric(
+        horizontal: horizontalPadding,
+        vertical: 18,
+      ),
       physics: const AlwaysScrollableScrollPhysics(),
       children: [
         SectionHeading(
@@ -189,10 +192,7 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
             ),
           ),
         ),
-        const Semantics(
-          header: true,
-          child: SectionHeading('Hồ sơ cá nhân'),
-        ),
+        Semantics(header: true, child: const SectionHeading('Hồ sơ cá nhân')),
         AccountResourceView<ProfileSnapshot>(
           snapshot: controller.snapshot,
           loading: controller.loading,
@@ -312,13 +312,13 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
               ],
             ),
           ),
-        const Semantics(
+        Semantics(
           header: true,
-          child: SectionHeading('Thiết lập tài khoản'),
+          child: const SectionHeading('Thiết lập tài khoản'),
         ),
         PreferencesPanel(controller: preferences),
         const SizedBox(height: 12),
-        const Semantics(header: true, child: SectionHeading('Giao diện')),
+        Semantics(header: true, child: const SectionHeading('Giao diện')),
         AppearancePanel(controller: widget.appearance),
         const SizedBox(height: 12),
         OutlinedButton.icon(

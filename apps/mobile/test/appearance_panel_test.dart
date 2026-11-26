@@ -21,18 +21,19 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(context).copyWith(
-            textScaler: TextScaler.linear(1.8),
-          ),
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: TextScaler.linear(1.8)),
           child: child!,
         ),
         home: Scaffold(body: AppearancePanel(controller: controller)),
       ),
     );
     expect(
-      tester.widget<SegmentedButton<ThemeMode>>(
-        find.byType(SegmentedButton<ThemeMode>),
-      ).direction,
+      tester
+          .widget<SegmentedButton<ThemeMode>>(
+            find.byType(SegmentedButton<ThemeMode>),
+          )
+          .direction,
       Axis.vertical,
     );
     await tester.tap(find.text('Tối'));
