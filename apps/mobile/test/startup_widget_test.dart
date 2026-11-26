@@ -13,6 +13,11 @@ import 'package:sme_meeting_assistant/features/auth/account_flow.dart';
 import 'package:sme_meeting_assistant/features/auth/account_link.dart';
 import 'package:sme_meeting_assistant/features/auth/account_forms.dart';
 import 'package:sme_meeting_assistant/features/auth/credential_workflow.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/recording_coordinator.dart';
+import 'package:sme_meeting_assistant/features/recording/submission_coordinator.dart';
 import 'package:sme_meeting_assistant/main.dart';
 
 import 'support/http_test_support.dart';
@@ -151,6 +156,86 @@ void main() {
     await tester.tap(find.text('Tiếp tục phiên hiện tại'));
     await tester.pumpAndSettle();
     expect(harness.api.signedIn, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('active meeting work defers links and blocks late dispatch', (
+    tester,
+  ) async {
+    final credentials = InMemoryCredentialStorage();
+    await _writeRefreshCredential(credentials, 'refresh-0');
+    final client = _authClient();
+    final api = ApiClient(
+      baseUri: Uri.parse(_testApiUri),
+      httpClient: client,
+      credentialStorage: credentials,
+    );
+    final media = LocalMediaRepository.lazyDefault();
+    final recording = _LinkWorkRecording(api, media)..setActive(true);
+    final submissions = _LinkWorkSubmission(api, media);
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+      localMedia: media,
+      recording: recording,
+      submissions: submissions,
+    );
+    final delivery = _NativeAccountLinkFixture(
+      'https://meeting.example.invalid/reset-password#token=fixture',
+    );
+    addTearDown(delivery.dispose);
+    await tester.pumpWidget(
+      MeetingAssistantApp(
+        dependencies: dependencies,
+        accountLinkParser: AccountLinkParser('meeting.example.invalid'),
+        receiveNativeAccountLinks: true,
+      ),
+    );
+    await pumpUntil(
+      tester,
+      () => api.signedIn &&
+          find.textContaining('Hãy hoàn tất ghi âm').evaluate().isNotEmpty,
+      reason: 'active recording prevents account entry',
+    );
+    final proceed = find.widgetWithText(TextButton, 'Tiếp tục');
+    expect(tester.widget<TextButton>(proceed).onPressed, isNull);
+    expect(recording.hasActiveWork, isTrue);
+    recording.setActive(false);
+    await tester.pump();
+    expect(find.text('Đặt lại mật khẩu'), findsNothing);
+    expect(tester.widget<TextButton>(proceed).onPressed, isNotNull);
+    await tester.tap(proceed);
+    await tester.pumpAndSettle();
+    submissions.setActive(true);
+    await tester.pump();
+    final fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(0), 'new synthetic password');
+    await tester.enterText(fields.at(1), 'new synthetic password');
+    final submit = find.widgetWithText(FilledButton, 'Xác nhận');
+    await tester.ensureVisible(submit);
+    await tester.tap(submit);
+    await tester.pump();
+    expect(
+      find.text('Hãy hoàn tất thao tác hiện tại trước khi tiếp tục.'),
+      findsOneWidget,
+    );
+    expect(
+      client.requests.where(
+        (request) => request.url.path.endsWith('/auth/password-reset'),
+      ),
+      isEmpty,
+    );
+    expect(submissions.hasActiveWork, isTrue);
+    expect(api.signedIn, isTrue);
+    submissions.setActive(false);
+    await tester.pump();
+    final cancel = find.text('Hủy và quay lại');
+    await tester.ensureVisible(cancel);
+    await tester.tap(cancel);
+    await tester.pumpAndSettle();
+    expect(api.signedIn, isTrue);
+    expect(find.text('Đặt lại mật khẩu'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -1413,6 +1498,43 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+}
+
+// These doubles change only the existing application-owned work indicator.
+// Recording/submission regression tests exercise how the real producers set it.
+class _LinkWorkRecording extends RecordingCoordinator {
+  _LinkWorkRecording(ApiClient api, LocalMediaRepository media)
+    : super(api: api, localMedia: media, observeAppLifecycle: false);
+
+  bool _active = false;
+
+  @override
+  bool get hasActiveWork => _active;
+
+  void setActive(bool value) {
+    _active = value;
+    notifyListeners();
+  }
+}
+
+class _LinkWorkSubmission extends SubmissionCoordinator {
+  _LinkWorkSubmission(ApiClient api, LocalMediaRepository media)
+    : super(
+        api: api,
+        localMedia: media,
+        mediaRepository: MediaRepository(api: api),
+        processingRepository: ProcessingRepository(api: api),
+      );
+
+  bool _active = false;
+
+  @override
+  bool get hasActiveWork => _active;
+
+  void setActive(bool value) {
+    _active = value;
+    notifyListeners();
+  }
 }
 
 class _NativeAccountLinkFixture {

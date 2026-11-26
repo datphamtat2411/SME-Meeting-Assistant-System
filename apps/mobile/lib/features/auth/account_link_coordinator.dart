@@ -138,7 +138,7 @@ class AccountLinkCoordinator extends ChangeNotifier {
   }
 }
 
-/// Pull-based handshake: native keeps its one slot until Dart takes ownership.
+/// Pull-based handshake: native keeps a bounded buffer until Dart takes ownership.
 /// A signal received during a drain schedules another drain, not a second
 /// concurrent consumer.
 class AccountLinkReceiver {
@@ -185,7 +185,7 @@ class AccountLinkReceiver {
         if (_disposed) return;
         if (url != null) {
           onLink(url, initial);
-          // Recheck the slot even if a native availability signal was lost.
+          // Recheck the buffer even if a native availability signal was lost.
           _requested = true;
         }
       }

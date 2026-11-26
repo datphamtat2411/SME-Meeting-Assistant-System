@@ -144,10 +144,20 @@ jobs:
       - name: Verify merged manifest and Android credential durability
         run: python3 tool/run_android_native_verification.py
 
+      - name: Build and verify configured Android account links
+        run: |
+          flutter build apk --debug \
+            --dart-define=API_BASE_URL=https://api.mobile-ci.invalid/api/v1 \
+            --dart-define=ACCOUNT_LINK_HOST=meeting.mobile-ci.invalid
+          python3 tool/validate_account_link_manifest.py --host meeting.mobile-ci.invalid
+
       - name: Build Android debug APK
         run: >-
           flutter build apk --debug
           --dart-define=API_BASE_URL=https://api.mobile-ci.invalid/api/v1
+
+      - name: Verify disabled Android account links
+        run: python3 tool/validate_account_link_manifest.py
 
       - name: Upload Android native verification diagnostics
         if: ${{ !cancelled() }}
