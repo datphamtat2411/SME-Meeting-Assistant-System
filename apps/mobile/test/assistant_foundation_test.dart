@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
+import 'package:sme_meeting_assistant/features/assistant/assistant_message_view.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_repository.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_workspace_controller.dart';
 
@@ -55,6 +58,17 @@ Map<String, dynamic> _message({
   'citations': visibility == 'VISIBLE' && status == 'GROUNDED'
       ? [_citation()]
       : [],
+  'createdAt': _timestamp,
+};
+
+Map<String, dynamic> _userMessage() => {
+  'id': _userMessageId,
+  'role': 'USER',
+  'content': 'Câu hỏi',
+  'answerStatus': null,
+  'visibility': 'VISIBLE',
+  'claims': [],
+  'citations': [],
   'createdAt': _timestamp,
 };
 
@@ -747,7 +761,231 @@ void main() {
     });
   });
 
+  group('Assistant evidence presentation', () {
+    testWidgets('citation interaction is typed and redaction removes evidence',
+        (tester) async {
+      final visible = AssistantMessage.fromJson(
+        _message(),
+        response: _result(_message()),
+        meetingId: testMeetingId,
+      );
+      final hiddenRaw = _message(visibility: 'SOURCE_UNAVAILABLE');
+      final hidden = AssistantMessage.fromJson(
+        hiddenRaw,
+        response: _result(hiddenRaw),
+        meetingId: testMeetingId,
+      );
+      AssistantCitation? opened;
+      Widget surface(AssistantMessage message) => MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: AssistantMessageView(
+              message: message,
+              onOpenCitation: (citation) => opened = citation,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpWidget(surface(visible));
+      await tester.tap(find.text('Bằng chứng · 1 nguồn'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Mở nguồn tham chiếu'));
+      expect(opened?.sourceId, _sourceId);
+      await tester.pumpWidget(surface(hidden));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Mở nguồn tham chiếu'), findsNothing);
+      expect(find.text('Đã thống nhất.'), findsNothing);
+    });
+  });
+
   group('Assistant workspace recovery', () {
+    test('TLS failure before dispatch does not lock the composer', () async {
+      var writes = 0;
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          if (request.url.path.endsWith('/conversations')) {
+            return meetingApiSuccess([]);
+          }
+          if (request.method == 'POST') {
+            writes++;
+            throw const HandshakeException('TLS failed');
+          }
+          return meetingApiSuccess(_detail(messages: []));
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      controller.setActive(true);
+      await controller.open(_typedConversation());
+      await controller.submit('Câu hỏi');
+      expect(controller.pending?.failure?.outcome,
+          AssistantMutationOutcome.notDispatched);
+      expect(controller.pending?.canEdit, isTrue);
+      expect(controller.editRejectedQuestion(), 'Câu hỏi');
+      expect(controller.canSend, isTrue);
+      expect(writes, 1);
+    });
+
+    test('incremental reconciliation retains contiguous older history', () async {
+      var submitted = false;
+      Map<String, dynamic> userAt(int index) => _userMessage()
+        ..['id'] = 'aaaaaaaa-aaaa-4aaa-8aaa-${index.toRadixString(16).padLeft(12, '0')}';
+      final initial = List.generate(50, (index) => userAt(index + 2));
+      final older = [userAt(0), userAt(1)];
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          if (request.url.path.endsWith('/conversations')) {
+            return meetingApiSuccess([]);
+          }
+          if (request.method == 'POST') {
+            submitted = true;
+            return meetingApiSuccess(_turn());
+          }
+          if (request.url.queryParameters.containsKey('beforeMessageId')) {
+            return meetingApiSuccess(_detail(messages: older));
+          }
+          return meetingApiSuccess(
+            _detail(
+              hasMore: true,
+              messages: submitted
+                  ? [...initial.skip(2), _userMessage(), _message()]
+                  : initial,
+            ),
+          );
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      controller.setActive(true);
+      await controller.open(_typedConversation());
+      await controller.loadOlder();
+      expect(controller.messages.length, 52);
+      await controller.submit('Câu hỏi');
+      expect(controller.pending, isNull);
+      expect(controller.messages.length, 54);
+      expect(controller.messages.first.id, older.first['id']);
+      expect(controller.messages.last.id, _assistantMessageId);
+    });
+
+    test('uncertain creation can be abandoned after access loss', () async {
+      var writes = 0;
+      final keys = <String?>[];
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          if (request.method == 'GET') return meetingApiSuccess([]);
+          writes++;
+          keys.add(request.headers['idempotency-key']);
+          if (writes == 1) throw TimeoutException('lost response');
+          if (writes == 2) {
+            return meetingApiFailure(404, 'RESOURCE_NOT_FOUND');
+          }
+          return meetingApiSuccess(_conversation(), status: 201);
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      controller.setActive(true);
+      await controller.create(testMeetingId, 'Weekly review');
+      await controller.retryCreation();
+      expect(controller.canDiscardCreation, isFalse);
+      expect(controller.canAbandonCreation, isTrue);
+      await controller.abandonCreation();
+      expect(controller.creation, isNull);
+      expect(await controller.create(testMeetingId, 'Another intent'), isNotNull);
+      expect(keys[0], keys[1]);
+      expect(keys[2], isNot(keys[0]));
+    });
+
+    test('terminal turn waits for both canonical message identities', () async {
+      var writes = 0;
+      var completeHistory = false;
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          if (request.url.path.endsWith('/conversations')) {
+            return meetingApiSuccess([]);
+          }
+          if (request.method == 'POST') {
+            writes++;
+            return meetingApiSuccess(_turn());
+          }
+          return meetingApiSuccess(
+            _detail(
+              messages: completeHistory ? [_userMessage(), _message()] : [],
+            ),
+          );
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      controller.setActive(true);
+      await controller.open(_typedConversation());
+      await controller.submit('Câu hỏi');
+      expect(controller.pending?.terminal, isTrue);
+      expect(controller.canSend, isFalse);
+      completeHistory = true;
+      await controller.reconcilePending();
+      expect(controller.pending, isNull);
+      expect(controller.messages.length, 2);
+      expect(writes, 1);
+    });
+
+    test('definitively rejected questions can be edited', () async {
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          if (request.url.path.endsWith('/conversations')) {
+            return meetingApiSuccess([]);
+          }
+          if (request.method == 'POST') {
+            return meetingApiFailure(422, 'VALIDATION_ERROR');
+          }
+          return meetingApiSuccess(_detail(messages: []));
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      controller.setActive(true);
+      await controller.open(_typedConversation());
+      await controller.submit('Câu hỏi');
+      expect(controller.pending?.canEdit, isTrue);
+      expect(controller.editRejectedQuestion(), 'Câu hỏi');
+      expect(controller.canSend, isTrue);
+    });
+
+    test('status reads stop when the workspace is deactivated', () async {
+      var reads = 0;
+      var writes = 0;
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          if (request.url.path.endsWith('/conversations')) {
+            return meetingApiSuccess([]);
+          }
+          if (request.url.path.endsWith('/turns/by-key')) {
+            reads++;
+            return meetingApiSuccess({
+              'turn': _turn(processing: true),
+              'recoveryEligible': false,
+            });
+          }
+          if (request.method == 'POST') {
+            writes++;
+            return meetingApiSuccess(_turn(processing: true), status: 202);
+          }
+          return meetingApiSuccess(_detail(messages: [_userMessage()]));
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      controller.setActive(true);
+      await controller.open(_typedConversation());
+      await controller.submit('Câu hỏi');
+      expect(reads, 1);
+      controller.setActive(false);
+      await controller.checkPending();
+      expect(reads, 1);
+      expect(writes, 1);
+      expect(controller.messages, isEmpty);
+    });
+
     test(
       'late history cannot replace the newly selected conversation',
       () async {
@@ -840,7 +1078,9 @@ void main() {
                   : meetingApiSuccess(_turn());
             }
             return meetingApiSuccess(
-              _detail(messages: keys.length > 1 ? [_message()] : []),
+              _detail(
+                messages: keys.length > 1 ? [_userMessage(), _message()] : [],
+              ),
             );
           }),
         );
@@ -857,7 +1097,10 @@ void main() {
         expect(keys.first, isNotNull);
         expect(keys.last, keys.first);
         expect(controller.pending, isNull);
-        expect(controller.messages.single.id, _assistantMessageId);
+        expect(controller.messages.map((message) => message.id), [
+          _userMessageId,
+          _assistantMessageId,
+        ]);
       },
     );
   });

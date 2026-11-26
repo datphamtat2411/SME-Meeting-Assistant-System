@@ -3,13 +3,34 @@ import 'package:intl/intl.dart';
 
 import 'assistant_models.dart';
 
-class AssistantMessageView extends StatelessWidget {
-  const AssistantMessageView({super.key, required this.message});
+class AssistantMessageView extends StatefulWidget {
+  const AssistantMessageView({
+    super.key,
+    required this.message,
+    this.onOpenCitation,
+  });
 
   final AssistantMessage message;
+  final ValueChanged<AssistantCitation>? onOpenCitation;
+
+  @override
+  State<AssistantMessageView> createState() => _AssistantMessageViewState();
+}
+
+class _AssistantMessageViewState extends State<AssistantMessageView> {
+  String? _selectedCitation;
+
+  @override
+  void didUpdateWidget(covariant AssistantMessageView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.message, widget.message)) {
+      _selectedCitation = null;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final message = widget.message;
     final colors = Theme.of(context).colorScheme;
     final mine = message.role == AssistantMessageRole.user;
     final assistant = message.role == AssistantMessageRole.assistant;
@@ -34,24 +55,22 @@ class AssistantMessageView extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     if (assistant) ...[
                       Icon(Icons.auto_awesome, size: 16, color: colors.primary),
-                      const SizedBox(width: 6),
                     ],
-                    Flexible(
-                      child: Text(
-                        mine
-                            ? 'Bạn'
-                            : assistant
-                            ? 'Trợ lý AI'
-                            : 'Hệ thống',
-                        style: Theme.of(context).textTheme.titleSmall,
-                      ),
+                    Text(
+                      mine
+                          ? 'Bạn'
+                          : assistant
+                          ? 'Trợ lý AI'
+                          : 'Hệ thống',
+                      style: Theme.of(context).textTheme.titleSmall,
                     ),
-                    const SizedBox(width: 8),
                     Text(time, style: Theme.of(context).textTheme.labelSmall),
                   ],
                 ),
@@ -84,6 +103,24 @@ class AssistantMessageView extends StatelessWidget {
                           : colors.onSurface,
                     ),
                   ),
+                  if (message.claims.any(
+                    (claim) => claim.support != AssistantClaimSupport.supported,
+                  ))
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Row(
+                        children: [
+                          Icon(Icons.info_outline, color: colors.error),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text(
+                              'Có thông tin chưa đủ bằng chứng hoặc xung đột. '
+                              'Xem chi tiết bên dưới.',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   if (message.claims.isNotEmpty || message.citations.isNotEmpty)
                     ExpansionTile(
                       tilePadding: EdgeInsets.zero,
@@ -110,7 +147,12 @@ class AssistantMessageView extends StatelessWidget {
                                     spacing: 6,
                                     children: [
                                       for (final id in claim.citationIds)
-                                        Chip(label: Text(id)),
+                                        ActionChip(
+                                          label: Text(id),
+                                          onPressed: () => setState(
+                                            () => _selectedCitation = id,
+                                          ),
+                                        ),
                                     ],
                                   ),
                               ],
@@ -121,14 +163,33 @@ class AssistantMessageView extends StatelessWidget {
                           ListTile(
                             dense: true,
                             contentPadding: EdgeInsets.zero,
+                            selected: _selectedCitation == citation.citationId,
                             leading: const Icon(Icons.description_outlined),
                             title: Text(
                               '${citation.citationId} · '
                               '${_sourceLabel(citation.sourceType)}',
                             ),
-                            subtitle: Text(
-                              'Phiên bản ${citation.sourceRevision}',
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Phiên bản ${citation.sourceRevision}'),
+                                if (_selectedCitation == citation.citationId)
+                                  Text(
+                                    'Hỗ trợ: ${citation.claimIds.join(', ')}',
+                                  ),
+                              ],
                             ),
+                            onTap: () => setState(
+                              () => _selectedCitation = citation.citationId,
+                            ),
+                            trailing: widget.onOpenCitation == null
+                                ? null
+                                : IconButton(
+                                    tooltip: 'Mở nguồn tham chiếu',
+                                    onPressed: () =>
+                                        widget.onOpenCitation!(citation),
+                                    icon: const Icon(Icons.open_in_new),
+                                  ),
                           ),
                       ],
                     ),

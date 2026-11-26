@@ -29,6 +29,8 @@ class _AssistantPageState extends State<AssistantPage>
     with WidgetsBindingObserver {
   late final AssistantWorkspaceController _controller;
   final _input = TextEditingController();
+  final Map<String, String> _drafts = {};
+  String? _draftOwner;
   String? _meetingTitle;
   int _selection = 0;
   bool _choosingMeeting = false;
@@ -38,6 +40,7 @@ class _AssistantPageState extends State<AssistantPage>
   void initState() {
     super.initState();
     _controller = AssistantWorkspaceController(widget.dependencies.assistant);
+    _controller.addListener(_workspaceChanged);
     WidgetsBinding.instance.addObserver(this);
     widget.dependencies.meetingInvalidation.addListener(_invalidate);
     widget.dependencies.resultsInvalidation.addListener(_invalidate);
@@ -49,6 +52,7 @@ class _AssistantPageState extends State<AssistantPage>
   void didUpdateWidget(covariant AssistantPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.active != widget.active) {
+      if (!widget.active) _selection++;
       _controller.setActive(widget.active && _foreground);
     }
   }
@@ -58,11 +62,33 @@ class _AssistantPageState extends State<AssistantPage>
     final foreground = state == AppLifecycleState.resumed;
     if (foreground == _foreground) return;
     _foreground = foreground;
+    if (!foreground) _selection++;
     _controller.setActive(widget.active && foreground);
   }
 
   void _invalidate() {
     if (widget.active && _foreground) unawaited(_controller.revalidate());
+  }
+
+  void _workspaceChanged() {
+    if (!_controller.current) {
+      _drafts.clear();
+      _draftOwner = null;
+      _input.clear();
+    } else if (_draftOwner != null &&
+        _controller.conversation == null &&
+        _controller.historyFailure != null) {
+      _drafts.remove(_draftOwner);
+      _draftOwner = null;
+      _input.clear();
+    }
+  }
+
+  void _saveDraft() {
+    final owner = _draftOwner;
+    if (owner != null && _controller.current) {
+      _drafts[owner] = _input.text;
+    }
   }
 
   @override
@@ -71,13 +97,20 @@ class _AssistantPageState extends State<AssistantPage>
     widget.dependencies.meetingInvalidation.removeListener(_invalidate);
     widget.dependencies.resultsInvalidation.removeListener(_invalidate);
     widget.dependencies.actionItemInvalidation.removeListener(_invalidate);
+    _controller.removeListener(_workspaceChanged);
+    _drafts.clear();
     _controller.dispose();
     _input.dispose();
     super.dispose();
   }
 
   Future<void> _chooseMeeting() async {
-    if (_choosingMeeting || _controller.creating) return;
+    if (_choosingMeeting ||
+        _controller.creating ||
+        _controller.creationCoolingDown) {
+      return;
+    }
+    final pickerSelection = _selection;
     setState(() => _choosingMeeting = true);
     try {
       final meeting = await Navigator.push<Meeting>(
@@ -90,11 +123,22 @@ class _AssistantPageState extends State<AssistantPage>
       if (!mounted ||
           meeting == null ||
           !widget.active ||
+          !_foreground ||
+          pickerSelection != _selection ||
           !_controller.current) {
         return;
       }
+      final selection = _selection;
       final created = await _controller.create(meeting.id, meeting.title);
-      if (!mounted || created == null || !widget.active) return;
+      if (!mounted ||
+          created == null ||
+          !widget.active ||
+          !_foreground ||
+          !_controller.current ||
+          selection != _selection ||
+          _controller.conversation != null) {
+        return;
+      }
       await _open(created, meetingTitle: meeting.title);
     } finally {
       if (mounted) setState(() => _choosingMeeting = false);
@@ -102,8 +146,17 @@ class _AssistantPageState extends State<AssistantPage>
   }
 
   Future<void> _retryCreation() async {
+    final selection = _selection;
     final created = await _controller.retryCreation();
-    if (!mounted || created == null || !widget.active) return;
+    if (!mounted ||
+        created == null ||
+        !widget.active ||
+        !_foreground ||
+        !_controller.current ||
+        selection != _selection ||
+        _controller.conversation != null) {
+      return;
+    }
     await _open(created);
   }
 
@@ -112,7 +165,9 @@ class _AssistantPageState extends State<AssistantPage>
     String? meetingTitle,
   }) async {
     final selection = ++_selection;
-    _input.clear();
+    _saveDraft();
+    _draftOwner = conversation.id;
+    _input.text = _drafts[conversation.id] ?? '';
     setState(() => _meetingTitle = meetingTitle);
     await _controller.open(conversation);
     if (!mounted ||
@@ -142,6 +197,8 @@ class _AssistantPageState extends State<AssistantPage>
 
   Future<void> _close() async {
     _selection++;
+    _saveDraft();
+    _draftOwner = null;
     _input.clear();
     setState(() => _meetingTitle = null);
     await _controller.closeConversation();
@@ -153,8 +210,59 @@ class _AssistantPageState extends State<AssistantPage>
       return;
     }
     FocusScope.of(context).unfocus();
-    _input.clear();
-    unawaited(_controller.submit(question));
+    final submission = _controller.submit(question);
+    if (_controller.pending?.request.question == question) {
+      _input.clear();
+      _drafts.remove(_draftOwner);
+    }
+    unawaited(submission);
+  }
+
+  Future<bool> _confirmRelease(String description) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Ngừng theo dõi yêu cầu?'),
+          content: Text(description),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Tiếp tục theo dõi'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Ngừng theo dõi'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+
+  Future<void> _abandonCreation() async {
+    final intent = _controller.creation;
+    if (await _confirmRelease(
+          'Máy chủ có thể đã tạo hội thoại. Thao tác này không hủy yêu cầu '
+          'trên máy chủ. Hãy kiểm tra danh sách trước khi tạo lại.',
+        ) &&
+        mounted &&
+        widget.active &&
+        _foreground &&
+        identical(_controller.creation, intent)) {
+      await _controller.abandonCreation();
+    }
+  }
+
+  Future<void> _abandonTurn(AssistantPendingTurn intent) async {
+    if (await _confirmRelease(
+          'Máy chủ có thể vẫn đang xử lý. Thao tác này chỉ ngừng theo dõi '
+          'trên thiết bị và không gửi lại câu hỏi.',
+        ) &&
+        mounted &&
+        widget.active &&
+        _foreground &&
+        identical(_controller.pending, intent)) {
+      await _controller.abandonPending();
+    }
   }
 
   @override
@@ -232,6 +340,7 @@ class _AssistantPageState extends State<AssistantPage>
                             onPressed:
                                 state.creating ||
                                     state.creation != null ||
+                                    state.creationCoolingDown ||
                                     _choosingMeeting
                                 ? null
                                 : _chooseMeeting,
@@ -243,6 +352,13 @@ class _AssistantPageState extends State<AssistantPage>
                     ),
                   ),
                 ),
+                if (state.creation == null && state.creationCoolingDown)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(
+                      'Có thể tạo hội thoại sau ${DateFormat('HH:mm:ss').format(state.creationRetryAt!.toLocal())}',
+                    ),
+                  ),
                 if (state.creation != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
@@ -258,7 +374,7 @@ class _AssistantPageState extends State<AssistantPage>
                           ),
                           if (state.creationFailure != null)
                             Text(assistantFailureLabel(state.creationFailure!)),
-                          if (state.creationRetryAt != null)
+                          if (state.creationCoolingDown)
                             Text(
                               'Thử lại sau ${DateFormat('HH:mm:ss').format(state.creationRetryAt!.toLocal())}',
                             ),
@@ -266,15 +382,20 @@ class _AssistantPageState extends State<AssistantPage>
                             spacing: 8,
                             children: [
                               TextButton(
-                                onPressed: state.creating
-                                    ? null
-                                    : _retryCreation,
+                                onPressed: state.canRetryCreation
+                                    ? _retryCreation
+                                    : null,
                                 child: const Text('Thử lại cùng yêu cầu'),
                               ),
                               if (state.canDiscardCreation)
                                 TextButton(
                                   onPressed: state.discardRejectedCreation,
                                   child: const Text('Bỏ yêu cầu'),
+                                ),
+                              if (state.canAbandonCreation)
+                                TextButton(
+                                  onPressed: _abandonCreation,
+                                  child: const Text('Ngừng theo dõi'),
                                 ),
                             ],
                           ),
@@ -414,7 +535,8 @@ class _AssistantPageState extends State<AssistantPage>
                           ),
                         ),
                 )
-              : messages.isEmpty && pending == null
+              : messages.isEmpty && pending == null &&
+                  state.historyFailure == null
               ? _suggestions(context)
               : ListView.builder(
                   key: ValueKey(selected.id),
@@ -459,7 +581,12 @@ class _AssistantPageState extends State<AssistantPage>
             ),
             child: SingleChildScrollView(child: _pendingPanel(pending)),
           ),
-        if (selected.status == AssistantConversationStatus.archived)
+        if (!state.historyVerified)
+          const Padding(
+            padding: EdgeInsets.all(12),
+            child: Text('Cần xác nhận quyền truy cập trước khi tiếp tục.'),
+          )
+        else if (selected.status == AssistantConversationStatus.archived)
           const Padding(
             padding: EdgeInsets.all(12),
             child: Text('Hội thoại đã lưu trữ · Chỉ đọc'),
@@ -557,7 +684,15 @@ class _AssistantPageState extends State<AssistantPage>
             pending.busy
                 ? 'Đang xử lý yêu cầu…'
                 : pending.terminal
-                ? 'Đang chờ đồng bộ kết quả'
+                ? switch (pending.turn!.state) {
+                    AssistantTurnState.completed =>
+                      'Đã hoàn tất · Chưa đồng bộ đủ lịch sử',
+                    AssistantTurnState.failed =>
+                      'Lượt hỏi thất bại · Chưa đồng bộ đủ lịch sử',
+                    AssistantTurnState.staleSource =>
+                      'Nguồn đã thay đổi · Chưa đồng bộ đủ lịch sử',
+                    AssistantTurnState.processing => 'Đang xử lý',
+                  }
                 : pending.turn?.state == AssistantTurnState.processing
                 ? 'AI đang xử lý câu hỏi'
                 : 'Chưa xác nhận được kết quả',
@@ -576,20 +711,35 @@ class _AssistantPageState extends State<AssistantPage>
             Wrap(
               spacing: 8,
               children: [
-                if (pending.canCheck || pending.terminal)
+                if (pending.uncertain || pending.turn != null)
                   TextButton(
-                    onPressed: pending.terminal
-                        ? _controller.refreshHistory
-                        : _controller.checkPending,
-                    child: const Text('Kiểm tra trạng thái'),
+                    onPressed: _controller.historyLoading
+                        ? null
+                        : pending.terminal
+                        ? _controller.reconcilePending
+                        : pending.canCheck
+                        ? _controller.checkPending
+                        : null,
+                    child: Text(
+                      pending.terminal ? 'Đồng bộ lịch sử' : 'Kiểm tra trạng thái',
+                    ),
                   ),
-                if (pending.retryAllowed && pending.retryAt != null)
+                if (pending.statusRetryAt != null &&
+                    DateTime.now().isBefore(pending.statusRetryAt!))
+                  Text(
+                    'Kiểm tra lại sau ${DateFormat('HH:mm:ss').format(pending.statusRetryAt!.toLocal())}',
+                  ),
+                if (pending.retryAllowed &&
+                    pending.retryAt != null &&
+                    DateTime.now().isBefore(pending.retryAt!))
                   Text(
                     'Thử lại sau ${DateFormat('HH:mm:ss').format(pending.retryAt!.toLocal())}',
                   ),
                 if (pending.retryAllowed)
                   TextButton(
-                    onPressed: _controller.retryPending,
+                    onPressed: pending.canRetry && !_controller.historyLoading
+                        ? _controller.retryPending
+                        : null,
                     child: const Text('Thử lại cùng câu hỏi'),
                   ),
                 if (pending.canEdit)
@@ -601,6 +751,18 @@ class _AssistantPageState extends State<AssistantPage>
                       }
                     },
                     child: const Text('Sửa câu hỏi'),
+                  ),
+                if (pending.canAbandon)
+                  TextButton(
+                    onPressed: () => _abandonTurn(pending),
+                    child: const Text('Ngừng theo dõi'),
+                  ),
+                if (pending.terminal)
+                  TextButton(
+                    onPressed: _controller.historyLoading
+                        ? null
+                        : _controller.releaseTerminalNotice,
+                    child: const Text('Đóng thông báo đồng bộ'),
                   ),
               ],
             ),

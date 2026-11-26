@@ -14,25 +14,60 @@ String _newKey() {
   ).join();
 }
 
+/// Only durable identities and state are needed for recovery. Answer payloads
+/// must come from freshly authorized canonical history.
+class AssistantPendingResult {
+  AssistantPendingResult(AssistantTurn turn)
+    : turnId = turn.turnId,
+      state = turn.state,
+      userMessageId = turn.userMessageId,
+      assistantMessageId = turn.assistantMessageId;
+
+  final String turnId;
+  final AssistantTurnState state;
+  final String userMessageId;
+  final String? assistantMessageId;
+
+  bool matches(AssistantTurn other) =>
+      turnId == other.turnId && userMessageId == other.userMessageId;
+}
+
 /// Session-owned intent. The server alone owns canonical messages.
 class AssistantPendingTurn {
   AssistantPendingTurn(this.request);
 
   final AssistantQuestionRequest request;
-  AssistantTurn? turn;
+  AssistantPendingResult? turn;
   AssistantFailure? failure;
   bool busy = true;
   bool retryAllowed = false;
   bool uncertain = false;
   DateTime? retryAt;
+  DateTime? statusRetryAt;
+  DateTime? automaticDeadline;
+  int automaticChecks = 0;
+
+  bool get automaticExhausted =>
+      automaticChecks >= 12 ||
+      (automaticDeadline != null &&
+          !DateTime.now().isBefore(automaticDeadline!));
+  bool get canRetry => !busy && retryAllowed && !_waiting(retryAt);
+  bool get canAbandon =>
+      !busy && uncertain && !terminal && (turn == null || retryAllowed);
 
   bool get terminal =>
       turn != null && turn!.state != AssistantTurnState.processing;
-  bool get canCheck => !busy && (uncertain || turn != null);
+  bool get canCheck =>
+      !busy &&
+      !terminal &&
+      (uncertain || turn != null) &&
+      !_waiting(statusRetryAt);
   bool get canEdit =>
       !busy &&
       !uncertain &&
-      failure?.outcome == AssistantMutationOutcome.rejected;
+      turn == null &&
+      (failure?.outcome == AssistantMutationOutcome.rejected ||
+          failure?.outcome == AssistantMutationOutcome.notDispatched);
 }
 
 /// Owns list, selected history and in-memory commands for one session.
@@ -47,6 +82,10 @@ class AssistantWorkspaceController extends ChangeNotifier {
   final AuthenticatedSessionScope scope;
   bool _disposed = false;
   bool _active = false;
+  Timer? _statusTimer;
+  Timer? _cooldownTimer;
+  int _historyDepth = 0;
+  static const _maxContinuationReads = 4;
   int _listGeneration = 0;
   int _historyGeneration = 0;
   int _nextPage = 0;
@@ -77,13 +116,24 @@ class AssistantWorkspaceController extends ChangeNotifier {
       current &&
       _active &&
       historyVerified &&
+      !historyLoading &&
       conversation?.status == AssistantConversationStatus.active &&
       pending == null;
   DateTime? get creationRetryAt => _creationRetryAt;
+  bool get creationCoolingDown => _waiting(_creationRetryAt);
+  bool get canRetryCreation =>
+      current &&
+      _active &&
+      !creating &&
+      creation != null &&
+      !_waiting(_creationRetryAt);
   bool get canDiscardCreation =>
       !creating &&
       !_creationUncertain &&
-      creationFailure?.outcome == AssistantMutationOutcome.rejected;
+      (creationFailure?.outcome == AssistantMutationOutcome.rejected ||
+          creationFailure?.outcome == AssistantMutationOutcome.notDispatched);
+  bool get canAbandonCreation =>
+      creation != null && !creating && _creationUncertain;
 
   void _publish() {
     if (current) notifyListeners();
@@ -98,6 +148,9 @@ class AssistantWorkspaceController extends ChangeNotifier {
     if (active) {
       unawaited(revalidate());
     } else {
+      _stopStatusMonitoring();
+      _cooldownTimer?.cancel();
+      _historyDepth = max(_historyDepth, _messages.length);
       _listGeneration++;
       _historyGeneration++;
       _conversations.clear();
@@ -114,10 +167,12 @@ class AssistantWorkspaceController extends ChangeNotifier {
     final selected = conversation;
     if (selected == null) {
       await refreshList();
+      _scheduleCooldownUpdate();
     } else {
       await refreshHistory();
-      if (conversation?.id == selected.id && pending?.canCheck == true) {
-        await checkPending();
+      if (conversation?.id == selected.id) {
+        _scheduleCooldownUpdate();
+        _scheduleStatusMonitoring();
       }
     }
   }
@@ -168,7 +223,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
   }
 
   Future<AssistantConversation?> create(String meetingId, String title) {
-    if (!current || !_active || creating || creation != null) {
+    if (!current || !_active || creating || creation != null ||
+        _waiting(_creationRetryAt)) {
       return Future.value(null);
     }
     creation = AssistantCreateConversationRequest(
@@ -177,7 +233,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       idempotencyKey: _newKey(),
     );
     _creationUncertain = false;
-    _creationRetryAt = null;
+    creationFailure = null;
     return retryCreation();
   }
 
@@ -201,6 +257,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
       if (!current || !identical(command, creation)) return null;
       creation = null;
       _creationRetryAt = null;
+      _creationUncertain = false;
+      if (_active) unawaited(refreshList());
       return created;
     } on AssistantFailure catch (error) {
       if (current && identical(command, creation)) {
@@ -208,12 +266,16 @@ class AssistantWorkspaceController extends ChangeNotifier {
         _creationUncertain =
             _creationUncertain ||
             error.outcome == AssistantMutationOutcome.unknown;
-        _creationRetryAt = _retryDeadline(error);
+        _creationRetryAt = _laterDeadline(
+          _creationRetryAt,
+          _retryDeadline(error),
+        );
       }
       return null;
     } finally {
       if (current) {
         creating = false;
+        _scheduleCooldownUpdate();
         _publish();
       }
     }
@@ -223,21 +285,39 @@ class AssistantWorkspaceController extends ChangeNotifier {
     if (!current || !canDiscardCreation) return;
     creation = null;
     creationFailure = null;
-    _creationRetryAt = null;
+    _scheduleCooldownUpdate();
     _publish();
+  }
+
+  Future<void> abandonCreation() async {
+    if (!current || !canAbandonCreation) return;
+    creation = null;
+    creationFailure = null;
+    _creationUncertain = false;
+    _scheduleCooldownUpdate();
+    _publish();
+    await refreshList();
   }
 
   Future<void> open(AssistantConversation selected) async {
     if (!current || !_active) return;
+    _stopStatusMonitoring();
+    if (conversation?.id != selected.id) {
+      _historyDepth = 0;
+      _messages.clear();
+    }
     conversation = selected;
     await refreshHistory();
-    if (conversation?.id == selected.id && pending?.canCheck == true) {
-      await checkPending();
+    if (conversation?.id == selected.id) {
+      _scheduleCooldownUpdate();
+      _scheduleStatusMonitoring();
     }
   }
 
   Future<void> closeConversation() async {
     if (!current) return;
+    _stopStatusMonitoring();
+    _historyDepth = 0;
     _historyGeneration++;
     conversation = null;
     _messages.clear();
@@ -249,43 +329,136 @@ class AssistantWorkspaceController extends ChangeNotifier {
     await refreshList();
   }
 
-  Future<void> refreshHistory() async {
+  Future<void> refreshHistory() => _syncHistory(authoritative: true);
+
+  Future<void> reconcilePending() => _syncHistory(authoritative: false);
+
+  bool _containsTurnMessages(
+    AssistantPendingTurn command,
+    List<AssistantMessage> messages,
+  ) {
+    final turn = command.turn;
+    if (turn == null || !command.terminal) return false;
+    return messages.any(
+          (message) =>
+              message.id == turn.userMessageId &&
+              message.role == AssistantMessageRole.user,
+        ) &&
+        messages.any(
+          (message) =>
+              message.id == turn.assistantMessageId &&
+              message.role == AssistantMessageRole.assistant,
+        );
+  }
+
+  Future<void> _syncHistory({required bool authoritative}) async {
     final selected = conversation;
     if (!current || !_active || selected == null) return;
+    if (!authoritative && historyLoading) return;
+    final previous = List<AssistantMessage>.of(_messages);
+    final previousHasMore = historyHasMore;
+    final desiredDepth = max(_historyDepth, previous.length);
     final generation = ++_historyGeneration;
+    final previousIds = previous.map((message) => message.id).toSet();
     historyLoading = true;
-    historyVerified = false;
-    historyHasMore = false;
     historyFailure = null;
-    _messages.clear();
+    if (authoritative) {
+      _stopStatusMonitoring();
+      historyVerified = false;
+      historyHasMore = false;
+      _messages.clear();
+    }
     _publish();
     try {
-      final result = await repository.getConversation(
+      var result = await repository.getConversation(
         selected.id,
         sessionScope: scope,
         expectedMeetingId: selected.meetingId,
       );
       if (!_ownsHistory(generation, selected.id)) return;
+      final fresh = List<AssistantMessage>.of(result.messages);
+      final freshIds = fresh.map((message) => message.id).toSet();
+      final command = _pending[selected.id];
+      var reads = 0;
+      bool overlaps() => freshIds.any(previousIds.contains);
+      bool needsContinuation() =>
+          (authoritative && fresh.length < desiredDepth) ||
+          (!authoritative && previous.isNotEmpty && !overlaps()) ||
+          (command != null &&
+              command.terminal &&
+              !_containsTurnMessages(command, fresh));
+      while (result.hasMore &&
+          fresh.isNotEmpty &&
+          reads < _maxContinuationReads &&
+          needsContinuation()) {
+        result = await repository.getConversation(
+          selected.id,
+          sessionScope: scope,
+          expectedMeetingId: selected.meetingId,
+          beforeMessageId: fresh.first.id,
+        );
+        if (!_ownsHistory(generation, selected.id)) return;
+        if (result.messages.any((message) => freshIds.contains(message.id))) {
+          throw StateError('Overlapping anchored history.');
+        }
+        freshIds.addAll(result.messages.map((message) => message.id));
+        fresh.insertAll(0, result.messages);
+        reads++;
+      }
       conversation = result.conversation;
-      _messages.addAll(result.messages);
-      historyHasMore = result.hasMore;
+      var retainedOlder = false;
+      if (!authoritative && fresh.isNotEmpty) {
+        final firstOverlap = previous.indexWhere(
+          (message) => freshIds.contains(message.id),
+        );
+        if (firstOverlap > 0 && result.hasMore) {
+          final older = previous.take(firstOverlap);
+          // Only retain a contiguous older prefix. If fresh reads start before
+          // the first overlapping record, retain only records older than that
+          // exact boundary, not arbitrary records from a disconnected window.
+          if (previous[firstOverlap].id == fresh.first.id) {
+            fresh.insertAll(0, older);
+            retainedOlder = true;
+          }
+        }
+      }
+      if (!authoritative &&
+          previous.isNotEmpty &&
+          !overlaps() &&
+          result.hasMore) {
+        historyFailure = StateError('History continuation required.');
+      }
+      _messages
+        ..clear()
+        ..addAll(fresh);
+      historyHasMore = retainedOlder ? previousHasMore : result.hasMore;
       historyVerified = true;
-      if (_pending[selected.id]?.terminal == true) {
+      _historyDepth = _messages.length;
+      if (command != null &&
+          identical(_pending[selected.id], command) &&
+          _containsTurnMessages(command, _messages)) {
         _pending.remove(selected.id);
+        _stopStatusMonitoring();
       }
     } catch (error) {
       if (!_ownsHistory(generation, selected.id)) return;
       historyFailure = error;
       if (_accessLost(error)) {
+        _stopStatusMonitoring();
+        _messages.clear();
+        historyVerified = false;
+        historyHasMore = false;
         _pending.remove(selected.id);
         _conversations.clear();
         listFailure = error;
         conversation = null;
+        _historyDepth = 0;
       }
     } finally {
       if (current && generation == _historyGeneration) {
         historyLoading = false;
         _publish();
+        _scheduleStatusMonitoring();
       }
     }
   }
@@ -321,6 +494,12 @@ class AssistantWorkspaceController extends ChangeNotifier {
       conversation = result.conversation;
       _messages.insertAll(0, result.messages);
       historyHasMore = result.hasMore;
+      _historyDepth = _messages.length;
+      final command = pending;
+      if (command != null && _containsTurnMessages(command, _messages)) {
+        _pending.remove(selected.id);
+        _stopStatusMonitoring();
+      }
     } catch (error) {
       if (!_ownsHistory(generation, selected.id)) return;
       historyFailure = error;
@@ -329,6 +508,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       if (_ownsHistory(generation, selected.id)) {
         historyLoading = false;
         _publish();
+        _scheduleStatusMonitoring();
       }
     }
   }
@@ -359,8 +539,10 @@ class AssistantWorkspaceController extends ChangeNotifier {
 
   Future<void> retryPending() async {
     final command = pending;
-    if (!_active ||
+    if (!current ||
+        !_active ||
         !historyVerified ||
+        historyLoading ||
         command == null ||
         command.busy ||
         command.terminal ||
@@ -368,6 +550,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         _waiting(command.retryAt)) {
       return;
     }
+    _stopStatusMonitoring();
     command.busy = true;
     command.retryAllowed = false;
     _publish();
@@ -383,7 +566,19 @@ class AssistantWorkspaceController extends ChangeNotifier {
         sessionScope: scope,
       );
       if (!_ownsCommand(command)) return;
-      command.turn = turn;
+      if (command.turn != null && !command.turn!.matches(turn)) {
+        command.failure = AssistantFailure.fromApi(
+          const ApiFailure(
+            200,
+            ApiFailure.invalidResponseCode,
+            'Turn identity changed.',
+            remoteOutcomeAmbiguous: true,
+          ),
+          mutation: true,
+        );
+      } else {
+        command.turn = AssistantPendingResult(turn);
+      }
       command.uncertain = true;
       command.retryAllowed = false;
     } on AssistantFailure catch (error) {
@@ -393,37 +588,63 @@ class AssistantWorkspaceController extends ChangeNotifier {
           command.uncertain ||
           error.outcome == AssistantMutationOutcome.unknown;
       command.retryAllowed =
-          error.category == AssistantFailureCategory.rateLimited;
-      command.retryAt = _retryDeadline(error);
+          (!command.uncertain &&
+              (error.outcome == AssistantMutationOutcome.notDispatched ||
+                  error.outcome == AssistantMutationOutcome.rejected)) ||
+          (command.turn == null &&
+              error.category == AssistantFailureCategory.rateLimited);
+      command.retryAt = _laterDeadline(command.retryAt, _retryDeadline(error));
+      if (_accessLost(error) ||
+          error.category == AssistantFailureCategory.sourceStale) {
+        _hideSelectedHistory(command);
+      }
     } finally {
       if (_ownsCommand(command)) {
         command.busy = false;
+        _scheduleCooldownUpdate();
         _publish();
       }
     }
     if (_ownsCommand(command) &&
         _active &&
         conversation?.id == command.request.conversation.id) {
-      await refreshHistory();
-      // Resolve uncertain outcomes by a read, not by replaying inference.
+      if (_accessLost(command.failure) ||
+          command.failure?.category == AssistantFailureCategory.sourceStale) {
+        await refreshHistory();
+      } else if (command.uncertain || command.turn != null) {
+        await reconcilePending();
+      }
       if (_ownsCommand(command) &&
           conversation?.id == command.request.conversation.id &&
-          command.canCheck) {
-        await checkPending();
+          command.canCheck &&
+          !command.automaticExhausted) {
+        await _checkPending(automatic: true);
       }
     }
   }
 
-  Future<void> checkPending() async {
+  Future<void> checkPending() => _checkPending();
+
+  Future<void> _checkPending({bool automatic = false}) async {
     final command = pending;
     if (!current ||
         !_active ||
         !historyVerified ||
         command == null ||
         !command.canCheck ||
-        command.terminal) {
+        historyLoading ||
+        command.terminal ||
+        (automatic && command.automaticExhausted)) {
       return;
     }
+    _stopStatusMonitoring();
+    if (automatic) {
+      command.automaticDeadline ??= DateTime.now().add(
+        const Duration(seconds: 120),
+      );
+      command.automaticChecks++;
+    }
+    final previousTurn = command.turn;
     command.busy = true;
     command.retryAllowed = false;
     _publish();
@@ -433,37 +654,162 @@ class AssistantWorkspaceController extends ChangeNotifier {
         sessionScope: scope,
       );
       if (!_ownsCommand(command)) return;
-      command.failure = null;
-      command.turn = status.turn;
-      command.uncertain = true;
-      command.retryAllowed = status.recoveryEligible;
+      if (previousTurn != null && !previousTurn.matches(status.turn)) {
+        command.failure = AssistantFailure.fromApi(
+          const ApiFailure(
+            200,
+            ApiFailure.invalidResponseCode,
+            'Turn identity changed.',
+          ),
+          mutation: false,
+        );
+      } else {
+        command.failure = null;
+        command.turn = AssistantPendingResult(status.turn);
+        command.uncertain = true;
+        command.retryAllowed = status.recoveryEligible;
+        if (status.turn.state == AssistantTurnState.staleSource) {
+          _hideSelectedHistory(command);
+        }
+      }
     } on AssistantFailure catch (error) {
       if (!_ownsCommand(command)) return;
       command.failure = error;
       // A missing turn is not proof a timed-out POST cannot arrive. Only
       // the original key and question may be submitted again.
-      command.retryAllowed = error.status == 404;
+      command.retryAllowed = error.status == 404 && previousTurn == null;
       final deadline = _retryDeadline(error);
-      if (deadline != null &&
-          (command.retryAt == null || deadline.isAfter(command.retryAt!))) {
-        command.retryAt = deadline;
+      command.statusRetryAt = _laterDeadline(command.statusRetryAt, deadline);
+      command.retryAt = _laterDeadline(command.retryAt, deadline);
+      if (_accessLost(error) ||
+          error.category == AssistantFailureCategory.sourceStale) {
+        _hideSelectedHistory(command);
       }
     } finally {
       if (_ownsCommand(command)) {
         command.busy = false;
+        _scheduleCooldownUpdate();
         _publish();
       }
     }
     if (_ownsCommand(command) &&
         _active &&
         conversation?.id == command.request.conversation.id) {
-      await refreshHistory();
+      final failure = command.failure;
+      if (_accessLost(failure) ||
+          failure?.category == AssistantFailureCategory.sourceStale ||
+          command.turn?.state == AssistantTurnState.staleSource) {
+        await refreshHistory();
+      } else if (command.terminal ||
+          (previousTurn == null && command.turn != null)) {
+        await reconcilePending();
+      }
+      _scheduleStatusMonitoring();
     }
+  }
+
+  void _hideSelectedHistory(AssistantPendingTurn command) {
+    if (conversation?.id != command.request.conversation.id) return;
+    _historyGeneration++;
+    _historyDepth = max(_historyDepth, _messages.length);
+    _messages.clear();
+    historyVerified = false;
+    historyHasMore = false;
+    historyLoading = false;
+    _stopStatusMonitoring();
+  }
+
+  void _stopStatusMonitoring() {
+    _statusTimer?.cancel();
+    _statusTimer = null;
+  }
+
+  void _scheduleStatusMonitoring() {
+    _stopStatusMonitoring();
+    final command = pending;
+    if (!current ||
+        !_active ||
+        !historyVerified ||
+        historyLoading ||
+        command == null ||
+        command.busy ||
+        command.terminal ||
+        command.retryAllowed ||
+        command.automaticExhausted ||
+        (!command.uncertain && command.turn == null)) {
+      return;
+    }
+    final now = DateTime.now();
+    command.automaticDeadline ??= now.add(const Duration(seconds: 120));
+    final seconds = switch (command.automaticChecks) {
+      0 || 1 => 2,
+      2 => 4,
+      3 => 8,
+      _ => 10,
+    };
+    var delay = Duration(seconds: seconds);
+    final retryAt = command.statusRetryAt;
+    if (retryAt != null && retryAt.difference(now) > delay) {
+      delay = retryAt.difference(now);
+    }
+    if (!now.add(delay).isBefore(command.automaticDeadline!)) return;
+    _statusTimer = Timer(delay, () {
+      _statusTimer = null;
+      if (identical(pending, command)) {
+        unawaited(_checkPending(automatic: true));
+      }
+    });
+  }
+
+  void _scheduleCooldownUpdate() {
+    _cooldownTimer?.cancel();
+    if (!current || !_active) return;
+    final now = DateTime.now();
+    final deadlines = [
+      _creationRetryAt,
+      pending?.retryAt,
+      pending?.statusRetryAt,
+    ].whereType<DateTime>().where((value) => value.isAfter(now)).toList()
+      ..sort();
+    if (deadlines.isEmpty) return;
+    _cooldownTimer = Timer(deadlines.first.difference(now), () {
+      _publish();
+      _scheduleCooldownUpdate();
+    });
+  }
+
+  Future<void> abandonPending() async {
+    final command = pending;
+    if (!current || !_active || command == null || !command.canAbandon) {
+      return;
+    }
+    _stopStatusMonitoring();
+    _pending.remove(command.request.conversation.id);
+    _publish();
+    await refreshHistory();
+  }
+
+  void releaseTerminalNotice() {
+    final command = pending;
+    if (!current ||
+        !_active ||
+        command == null ||
+        command.busy ||
+        !command.terminal ||
+        historyLoading) {
+      return;
+    }
+    _pending.remove(command.request.conversation.id);
+    historyFailure = StateError('Terminal result not fully reconciled.');
+    _publish();
   }
 
   String? editRejectedQuestion() {
     final command = pending;
-    if (command == null || !command.canEdit) return null;
+    if (!current || !_active || command == null || !command.canEdit) {
+      return null;
+    }
+    _stopStatusMonitoring();
     _pending.remove(command.request.conversation.id);
     _publish();
     return command.request.question;
@@ -471,6 +817,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
 
   void _sessionChanged() {
     if (_disposed || current) return;
+    _stopStatusMonitoring();
+    _cooldownTimer?.cancel();
     _listGeneration++;
     _historyGeneration++;
     _conversations.clear();
@@ -496,6 +844,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _stopStatusMonitoring();
+    _cooldownTimer?.cancel();
     repository.api.sessionCoordinator.removeListener(_sessionChanged);
     _pending.clear();
     _messages.clear();
@@ -506,14 +856,20 @@ class AssistantWorkspaceController extends ChangeNotifier {
   }
 }
 
-bool _accessLost(Object error) =>
+bool _accessLost(Object? error) =>
     error is ApiFailure && (error.status == 403 || error.status == 404);
 
 bool _waiting(DateTime? deadline) =>
     deadline != null && DateTime.now().isBefore(deadline);
 
 DateTime? _retryDeadline(AssistantFailure error) {
-  final seconds = int.tryParse(error.retryAfter ?? '');
-  if (seconds == null || seconds <= 0) return null;
-  return DateTime.now().add(Duration(seconds: seconds));
+  final now = DateTime.now();
+  final duration = error.retryAfterDuration(now: now);
+  return duration == null ? null : now.add(duration);
 }
+
+DateTime? _laterDeadline(DateTime? previous, DateTime? candidate) =>
+    candidate != null && (previous == null || candidate.isAfter(previous))
+        ? candidate
+        : previous;
+
