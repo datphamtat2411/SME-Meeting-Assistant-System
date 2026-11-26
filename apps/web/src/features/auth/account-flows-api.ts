@@ -1,15 +1,67 @@
-import { coreApi } from '@/lib/core-api'
+import { CoreApiError, coreApi } from '@/lib/core-api'
 
-export async function requestPasswordRecovery(email: string) {
-  // Always show neutral acknowledgement: user/account existence is private.
-  await coreApi.post('/auth/password-recovery', { email: email.trim() })
+const requestOptions = { timeout: 30_000 }
+
+interface NeutralAcknowledgement {
+  message: string
 }
-export async function resetAccountPassword(token: string, password: string) {
-  await coreApi.post('/auth/password-reset', { token, password })
+
+interface CredentialRequest {
+  token: string
+  password: string
 }
-export async function completeAccountSetup(token: string, password: string) {
-  await coreApi.post('/auth/account-setup', { token, password })
+
+function malformedResponse(): never {
+  throw new CoreApiError({
+    kind: 'malformed',
+    code: 'MALFORMED_RESPONSE',
+    message: 'Unexpected account-flow response.',
+  })
 }
-export function validNewPassword(value: string) {
-  return Array.from(value).length >= 15 && Array.from(value).length <= 128
+
+function verifyAcknowledgement(data: unknown): void {
+  if (
+    typeof data !== 'object' ||
+    data === null ||
+    !('message' in data) ||
+    typeof data.message !== 'string' ||
+    data.message.trim() === ''
+  ) {
+    malformedResponse()
+  }
+}
+
+export async function requestPasswordRecovery(email: string): Promise<void> {
+  const data = await coreApi.post<NeutralAcknowledgement>(
+    '/auth/password-recovery',
+    { email: email.trim() },
+    requestOptions
+  )
+  verifyAcknowledgement(data)
+}
+
+export async function completeAccountSetup(
+  token: string,
+  password: string
+): Promise<void> {
+  const payload: CredentialRequest = { token, password }
+  const data = await coreApi.post<null>(
+    '/auth/account-setup',
+    payload,
+    requestOptions
+  )
+  if (data !== null) malformedResponse()
+}
+
+export async function resetAccountPassword(
+  token: string,
+  password: string
+): Promise<void> {
+  const payload: CredentialRequest = { token, password }
+  const data = await coreApi.post<NeutralAcknowledgement>(
+    '/auth/password-reset',
+    payload,
+    requestOptions
+  )
+  verifyAcknowledgement(data)
 }

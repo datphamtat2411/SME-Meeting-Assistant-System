@@ -1,150 +1,90 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { toast } from 'sonner'
-import { normalizeCoreApiError } from '@/lib/core-api'
+import { CircleCheck } from 'lucide-react'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Label } from '@/components/ui/label'
-import { PasswordInput } from '@/components/password-input'
-import {
-  completeAccountSetup,
-  resetAccountPassword,
-  validNewPassword,
-} from './account-flows-api'
+import { completeAccountSetup, resetAccountPassword } from './account-flows-api'
+import { PasswordEstablishmentForm } from './account-flows/password-establishment-form'
+import { useAccountCapability } from './account-flows/use-account-capability'
 
 export function PasswordTokenForm({ kind }: { kind: 'setup' | 'reset' }) {
-  const [token, setToken] = useState(() => {
-    const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''))
-    const value = fragment.get('token')
-    return value && value.length <= 4096 ? value : ''
-  })
-  const [password, setPassword] = useState('')
-  const [confirmation, setConfirmation] = useState('')
-  const [busy, setBusy] = useState(false)
+  const { capability, clearCapability } = useAccountCapability()
   const [complete, setComplete] = useState(false)
-  const [submitError, setSubmitError] = useState('')
-  useEffect(() => {
-    // Immediately remove single-use bearer capability from the browser address bar/history.
-    if (window.location.hash)
-      window.history.replaceState(
-        null,
-        '',
-        window.location.pathname + window.location.search
-      )
-  }, [])
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    if (!validNewPassword(password)) {
-      toast.error('Use 15–128 Unicode characters for your password.')
-      return
-    }
-    if (password !== confirmation) {
-      toast.error('Passwords do not match.')
-      return
-    }
-    if (!token) {
-      toast.error('The account link is missing or expired.')
-      return
-    }
-    setBusy(true)
-    setSubmitError('')
-    try {
-      if (kind === 'setup') await completeAccountSetup(token, password)
-      else await resetAccountPassword(token, password)
-      setToken('')
-      setPassword('')
-      setConfirmation('')
-      setComplete(true)
-      toast.success(
-        kind === 'setup' ? 'Account setup complete' : 'Password reset complete'
-      )
-    } catch (error) {
-      const failure = normalizeCoreApiError(error)
-      const message =
-        failure.status === 404
-          ? 'This account flow is unavailable on the current server.'
-          : failure.status === 422
-            ? 'The link may have expired or the password did not meet organization policy. Review the password and request a new link if necessary.'
-            : failure.status === 429
-              ? 'Too many attempts. Try again later.'
-              : 'Unable to complete account verification. Try again.'
-      setSubmitError(message)
-      toast.error(message)
-    } finally {
-      setBusy(false)
-    }
-  }
-  if (complete)
+
+  if (complete) {
     return (
-      <div className='space-y-4'>
-        <p role='status' className='text-sm'>
-          Your password was set successfully. You can sign in with your
-          organizational email.
-        </p>
+      <div className='grid gap-4'>
+        <div
+          role='status'
+          tabIndex={-1}
+          ref={(element) => element?.focus()}
+          className='grid justify-items-center gap-2 text-center'
+        >
+          <CircleCheck className='size-8 text-primary' aria-hidden='true' />
+          <p className='font-medium'>
+            {kind === 'setup'
+              ? 'Account setup complete'
+              : 'Password reset complete'}
+          </p>
+          <p className='text-sm text-muted-foreground'>
+            {kind === 'setup'
+              ? 'Your account is ready. Sign in with your organizational email and the password you selected.'
+              : 'Your password was set successfully. You can sign in with your organizational email.'}
+          </p>
+        </div>
         <Button asChild>
-          <Link to='/sign-in'>Sign in</Link>
+          <Link to='/sign-in'>Continue to sign in</Link>
         </Button>
       </div>
     )
-  if (!token)
+  }
+
+  if (!capability) {
     return (
-      <div className='space-y-3'>
-        <p role='alert' className='text-sm text-destructive'>
-          This page requires a valid single-use authorization link from your
-          organization. Request a new email if it expired.
-        </p>
+      <div className='grid gap-4'>
+        <Alert variant='destructive'>
+          <AlertDescription>
+            This link is missing or invalid. Reopen the original email or{' '}
+            {kind === 'setup'
+              ? 'contact your administrator for a fresh setup link.'
+              : 'request a new recovery link.'}
+          </AlertDescription>
+        </Alert>
         <Button asChild variant='outline'>
-          <Link to={kind === 'reset' ? '/forgot-password' : '/sign-in'}>
-            {kind === 'reset' ? 'Request recovery' : 'Back to sign in'}
+          <Link to={kind === 'setup' ? '/sign-in' : '/forgot-password'}>
+            {kind === 'setup' ? 'Back to sign in' : 'Request recovery'}
           </Link>
         </Button>
       </div>
     )
+  }
+
   return (
-    <form className='space-y-4' onSubmit={submit}>
-      <div className='space-y-1'>
-        <Label htmlFor='new-password'>New password</Label>
-        <PasswordInput
-          id='new-password'
-          autoComplete='new-password'
-          minLength={15}
-          maxLength={128}
-          required
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        <p className='text-xs text-muted-foreground'>
-          15–128 characters. Unicode and spaces are supported; do not reuse a
-          compromised password.
-        </p>
-      </div>
-      <div className='space-y-1'>
-        <Label htmlFor='confirm-password'>Confirm password</Label>
-        <PasswordInput
-          id='confirm-password'
-          autoComplete='new-password'
-          minLength={15}
-          maxLength={128}
-          required
-          value={confirmation}
-          onChange={(e) => setConfirmation(e.target.value)}
-        />
-      </div>
-      {submitError && (
-        <p role='alert' className='text-sm text-destructive'>
-          {submitError}
+    <div className='grid gap-4'>
+      <PasswordEstablishmentForm
+        kind={kind}
+        onSubmit={(password) =>
+          kind === 'setup'
+            ? completeAccountSetup(capability, password)
+            : resetAccountPassword(capability, password)
+        }
+        onCompleted={() => {
+          clearCapability()
+          setComplete(true)
+        }}
+      />
+      {kind === 'setup' && (
+        <p className='text-center text-sm text-muted-foreground'>
+          Already activated?{' '}
+          <Link
+            to='/sign-in'
+            className='underline underline-offset-4 hover:text-primary'
+          >
+            Sign in
+          </Link>
+          .
         </p>
       )}
-      <Button
-        disabled={
-          busy || !validNewPassword(password) || password !== confirmation
-        }
-      >
-        {busy
-          ? 'Submitting…'
-          : kind === 'setup'
-            ? 'Activate account'
-            : 'Reset password'}
-      </Button>
-    </form>
+    </div>
   )
 }

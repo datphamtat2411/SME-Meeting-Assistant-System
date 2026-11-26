@@ -9,23 +9,27 @@ describe('ForgotPasswordForm', () => {
     vi.restoreAllMocks()
   })
 
-  it('requires an organization email before enabling recovery submission', async () => {
-    const post = vi.spyOn(coreApi, 'post').mockResolvedValue(undefined as never)
+  it('validates email inline before sending recovery requests', async () => {
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockResolvedValue({ message: 'Acknowledged' })
     const screen = await render(<ForgotPasswordForm />)
     const email = screen.getByRole('textbox', { name: 'Organization email' })
     const submit = screen.getByRole('button', { name: 'Send recovery link' })
 
-    await expect.element(email).toHaveValue('')
     await expect.element(submit).toBeDisabled()
-    expect(post).not.toHaveBeenCalled()
-
-    await userEvent.fill(email, 'employee@example.com')
-    await expect.element(submit).toBeEnabled()
+    await userEvent.fill(email, 'not-an-email')
+    await userEvent.click(submit)
+    await expect
+      .element(screen.getByText('Enter a valid email address.'))
+      .toBeInTheDocument()
     expect(post).not.toHaveBeenCalled()
   })
 
-  it('submits to password recovery and shows the neutral account-existence acknowledgement', async () => {
-    const post = vi.spyOn(coreApi, 'post').mockResolvedValue(undefined as never)
+  it('uses a neutral acknowledgement and allows a different email', async () => {
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockResolvedValue({ message: 'Acknowledged' })
     const screen = await render(<ForgotPasswordForm />)
     await userEvent.fill(
       screen.getByRole('textbox', { name: 'Organization email' }),
@@ -37,24 +41,23 @@ describe('ForgotPasswordForm', () => {
 
     await expect
       .element(screen.getByRole('status'))
-      .toHaveTextContent(/If an eligible account exists for that email/i)
-    expect(post).toHaveBeenCalledOnce()
-    expect(post).toHaveBeenCalledWith('/auth/password-recovery', {
-      email: 'employee@example.com',
-    })
+      .toHaveTextContent(/If an eligible account exists/i)
+    expect(post).toHaveBeenCalledExactlyOnceWith(
+      '/auth/password-recovery',
+      { email: 'employee@example.com' },
+      { timeout: 30_000 }
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Use a different email' })
+    )
     await expect
       .element(screen.getByRole('textbox', { name: 'Organization email' }))
-      .not.toBeInTheDocument()
+      .toHaveValue('')
   })
 
-  it('makes an unavailable deployment explicit and prevents repeated submission', async () => {
+  it('makes an unavailable deployment explicit', async () => {
     const post = vi.spyOn(coreApi, 'post').mockRejectedValue(
-      new CoreApiError({
-        message: 'Not found',
-        status: 404,
-        code: 'RESOURCE_NOT_FOUND',
-        kind: 'http',
-      })
+      new CoreApiError({ message: 'Not found', status: 404, kind: 'http' })
     )
     const screen = await render(<ForgotPasswordForm />)
     await userEvent.fill(
@@ -64,48 +67,37 @@ describe('ForgotPasswordForm', () => {
     await userEvent.click(
       screen.getByRole('button', { name: 'Send recovery link' })
     )
-
     await expect
       .element(screen.getByRole('alert'))
-      .toHaveTextContent(/recovery endpoint is unavailable/i)
+      .toHaveTextContent(/recovery is unavailable/i)
     await expect
       .element(screen.getByRole('button', { name: 'Send recovery link' }))
       .toBeDisabled()
-    await expect.element(screen.getByRole('status')).not.toBeInTheDocument()
     expect(post).toHaveBeenCalledOnce()
   })
 
-  it('allows a retry after a transient server failure without falsely reporting success', async () => {
-    const post = vi
-      .spyOn(coreApi, 'post')
-      .mockRejectedValueOnce(
-        new CoreApiError({
-          message: 'Service temporarily unavailable',
-          status: 503,
-          code: 'SERVICE_UNAVAILABLE',
-          kind: 'server',
-        })
-      )
-      .mockResolvedValueOnce(undefined as never)
+  it('reports an uncertain outcome and permits only an explicit recovery retry', async () => {
+    const post = vi.spyOn(coreApi, 'post')
+      .mockRejectedValueOnce(new CoreApiError({ message: 'private transport detail', kind: 'network' }))
+      .mockResolvedValueOnce({ message: 'Acknowledged' })
     const screen = await render(<ForgotPasswordForm />)
     await userEvent.fill(
       screen.getByRole('textbox', { name: 'Organization email' }),
       'employee@example.com'
     )
     const submit = screen.getByRole('button', { name: 'Send recovery link' })
-
     await userEvent.click(submit)
-    await expect.element(submit).toBeEnabled()
-    await expect.element(screen.getByRole('status')).not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('alert'))
+      .toHaveTextContent(/may have been processed/i)
+    await expect
+      .element(screen.getByRole('alert'))
+      .not.toHaveTextContent(/private transport detail/)
     expect(post).toHaveBeenCalledOnce()
-
     await userEvent.click(submit)
     await expect
       .element(screen.getByRole('status'))
-      .toHaveTextContent(/password reset instructions will be sent/i)
+      .toHaveTextContent(/If an eligible account exists/i)
     expect(post).toHaveBeenCalledTimes(2)
-    expect(post).toHaveBeenNthCalledWith(2, '/auth/password-recovery', {
-      email: 'employee@example.com',
-    })
   })
 })

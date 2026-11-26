@@ -1,28 +1,25 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { AuthLayout } from './auth-layout'
 
 describe('AuthLayout', () => {
-  beforeEach(() => {
-    window.history.pushState({}, '', '/account-setup#token=one-time-capability')
-  })
+  const originalUrl = window.location.href
+  const originalState: unknown = window.history.state
 
   afterEach(() => {
-    window.history.pushState({}, '', '/sign-in')
+    window.history.replaceState(originalState, '', originalUrl)
   })
 
-  it('removes callback capability fragments before the auth page paints', async () => {
+  it('does not mutate unrelated navigation fragments or history state', async () => {
+    window.history.replaceState({ marker: 'preserved' }, '', '/sign-in#help')
     const screen = await render(
       <AuthLayout>
-        <p>Activation form</p>
+        <p>Sign in form</p>
       </AuthLayout>
     )
 
-    await expect
-      .element(screen.getByText('Activation form'))
-      .toBeInTheDocument()
-    expect(window.location.pathname).toBe('/account-setup')
-    expect(window.location.hash).toBe('')
-    expect(window.location.href).not.toContain('one-time-capability')
+    await expect.element(screen.getByText('Sign in form')).toBeInTheDocument()
+    expect(window.location.hash).toBe('#help')
+    expect(window.history.state).toEqual({ marker: 'preserved' })
   })
 })
