@@ -957,6 +957,7 @@ void main() {
           'DECISION' => isA<DecisionEvidence>(),
           _ => isA<ActionItemEvidence>(),
         });
+        expect(artifact.meetingTitle, 'Weekly review');
         expect(artifactReads, type == 'DECISION' ? 2 : 1);
         revision++;
         await expectLater(
@@ -981,7 +982,13 @@ void main() {
         deny = true;
         await expectLater(
           resolver.verify(target, stillCurrent: () => true),
-          throwsA(isA<ApiFailure>()),
+          throwsA(
+            isA<AssistantEvidenceFailure>().having(
+              (error) => error.issue,
+              'issue',
+              AssistantEvidenceIssue.meetingUnavailable,
+            ),
+          ),
         );
         expect(artifactReads, before);
       });
@@ -1138,6 +1145,64 @@ void main() {
   });
 
   group('Assistant workspace recovery', () {
+    for (final meetingDenied in [true, false]) {
+      test('conversation denial checks meeting access: $meetingDenied', () async {
+        const siblingId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+        const unrelatedId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+        final sibling = _conversation()..['id'] = siblingId;
+        final unrelated = _conversation(meetingId: testRoomId)
+          ..['id'] = unrelatedId;
+        var denied = false;
+        var accessChecks = 0;
+        final repository = await _repository(
+          MeetingTestHttpClient((request) async {
+            final path = request.url.path;
+            if (path.endsWith('/conversations')) {
+              return meetingApiSuccess([]);
+            }
+            if (path.endsWith(siblingId)) {
+              return meetingApiSuccess(
+                _detail(messages: [])..['conversation'] = sibling,
+              );
+            }
+            if (path.endsWith(unrelatedId)) {
+              return meetingApiSuccess(
+                _detail(messages: [])..['conversation'] = unrelated,
+              );
+            }
+            if (denied) return meetingApiFailure(404, 'RESOURCE_NOT_FOUND');
+            return meetingApiSuccess(_detail(messages: []));
+          }),
+        );
+        final controller = AssistantWorkspaceController(
+          repository,
+          verifyMeetingReadAccess: ({required sessionScope, required meetingId}) async {
+            accessChecks++;
+            expect(sessionScope, repository.captureSession());
+            expect(meetingId, testMeetingId);
+            return !meetingDenied;
+          },
+        );
+        addTearDown(controller.dispose);
+        controller.setActive(true);
+        await controller.open(
+          AssistantConversation.fromJson(sibling, response: _result(sibling)),
+        );
+        controller.saveDraft(siblingId, 'Sibling draft');
+        await controller.open(
+          AssistantConversation.fromJson(unrelated, response: _result(unrelated)),
+        );
+        controller.saveDraft(unrelatedId, 'Unrelated draft');
+        denied = true;
+        await controller.open(_typedConversation());
+        expect(accessChecks, 1);
+        expect(controller.conversation, isNull);
+        expect(controller.messages, isEmpty);
+        expect(controller.draftFor(siblingId), meetingDenied ? '' : 'Sibling draft');
+        expect(controller.draftFor(unrelatedId), 'Unrelated draft');
+      });
+    }
+
     test('ASK cooldown survives editing and conversation switching', () async {
       const otherId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
       final other = _conversation()..['id'] = otherId;

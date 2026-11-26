@@ -147,7 +147,16 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
           );
           if (owns()) setState(() => _artifact = artifact);
         } on Object catch (error) {
-          if (owns()) setState(() => _failure = error);
+          if (owns()) {
+            if (error is AssistantEvidenceFailure &&
+                error.issue == AssistantEvidenceIssue.meetingUnavailable) {
+              widget.dependencies.forgetAssistantMeeting(
+                widget.target.scope,
+                widget.target.citation.meetingId,
+              );
+            }
+            setState(() => _failure = error);
+          }
         }
       }
     } finally {
@@ -177,7 +186,11 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
       body: SafeArea(
         child: artifact == null
             ? Center(
-                child: failure == null
+                child: !widget.dependencies.api.isCurrentAuthenticatedSession(
+                  widget.target.scope,
+                )
+                    ? const Text('Phiên đăng nhập không còn khả dụng.')
+                    : failure == null
                     ? const CircularProgressIndicator()
                     : Padding(
                         padding: const EdgeInsets.all(20),
@@ -203,6 +216,8 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
           subtitle:
               'Revision ${widget.target.citation.sourceRevision} · Chỉ đọc',
         ),
+        if (_artifact?.meetingTitle case final String meetingTitle)
+          Text(meetingTitle),
         if (detail != null) Text(detail),
       ],
     ),
@@ -276,7 +291,8 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
               if (item.details != null) SelectableText(item.details!),
               if (item.assignee != null)
                 Text('Phụ trách: ${item.assignee!.displayName}'),
-              if (item.dueDate != null) Text('Hạn: ${item.dueDate}'),
+              if (item.dueDate != null)
+                Text('Hạn: ${localDateLabel(item.dueDate)}'),
             ],
           ),
         ),

@@ -46,7 +46,18 @@ class AppDependencies {
     final existing = _assistantWorkspace;
     if (existing != null && existing.current) return existing;
     existing?.dispose();
-    return _assistantWorkspace = AssistantWorkspaceController(assistant);
+    return _assistantWorkspace = AssistantWorkspaceController(
+      assistant,
+      verifyMeetingReadAccess: results.verifyReadAccess,
+    );
+  }
+
+  /// Purge a known inaccessible meeting without creating a new workspace.
+  void forgetAssistantMeeting(AuthenticatedSessionScope scope, String meetingId) {
+    final owner = _assistantWorkspace;
+    if (owner != null && owner.scope == scope && owner.current) {
+      owner.forgetMeeting(meetingId);
+    }
   }
 
   late final ActionItemWorkflowOwner actionItemWorkflows;

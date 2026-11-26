@@ -80,12 +80,16 @@ class AssistantPendingTurn {
 /// Owns list, selected history and in-memory commands for one session.
 /// Separate generations fence independent list and conversation reads.
 class AssistantWorkspaceController extends ChangeNotifier {
-  AssistantWorkspaceController(this.repository)
+  AssistantWorkspaceController(this.repository, {this.verifyMeetingReadAccess})
     : scope = repository.captureSession() {
     repository.api.sessionCoordinator.addListener(_sessionChanged);
   }
 
   final AssistantRepository repository;
+  final Future<bool> Function({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+  })? verifyMeetingReadAccess;
   final AuthenticatedSessionScope scope;
   bool _disposed = false;
   bool _active = false;
@@ -199,6 +203,22 @@ class AssistantWorkspaceController extends ChangeNotifier {
     } else {
       _drafts[conversationId] = text;
       _draftMeetings[conversationId] = selected!.meetingId;
+    }
+  }
+
+  /// A conversation or turn 404 alone is not proof of meeting-wide denial.
+  /// Recheck the canonical meeting access boundary before discarding siblings.
+  Future<void> _confirmMeetingAccessLoss(String meetingId) async {
+    final verify = verifyMeetingReadAccess;
+    if (!current || verify == null) return;
+    try {
+      final allowed = await verify(sessionScope: scope, meetingId: meetingId);
+      if (current && !allowed) forgetMeeting(meetingId);
+    } on ApiFailure catch (error) {
+      if (current && _accessLost(error)) forgetMeeting(meetingId);
+    } on Object {
+      // The originating operation remains failed. An inconclusive access
+      // check must not destroy unrelated recovery state.
     }
   }
 
@@ -418,6 +438,9 @@ class AssistantWorkspaceController extends ChangeNotifier {
           _creationRetryAt,
           _retryDeadline(error),
         );
+        if (_accessLost(error)) {
+          await _confirmMeetingAccessLoss(command.meetingId);
+        }
       }
       return null;
     } finally {
@@ -610,6 +633,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
         listFailure = error;
         conversation = null;
         _historyDepth = 0;
+        _publish();
+        await _confirmMeetingAccessLoss(selected.meetingId);
       }
     } finally {
       if (current && generation == _historyGeneration) {
@@ -775,6 +800,10 @@ class AssistantWorkspaceController extends ChangeNotifier {
       if (_accessLost(error) ||
           error.category == AssistantFailureCategory.sourceStale) {
         _hideSelectedHistory(command);
+        if (_accessLost(error) &&
+            (!_active || conversation?.id != command.request.conversation.id)) {
+          await _confirmMeetingAccessLoss(command.request.conversation.meetingId);
+        }
       }
     } finally {
       if (_ownsCommand(command)) {
@@ -863,6 +892,10 @@ class AssistantWorkspaceController extends ChangeNotifier {
       if (_accessLost(error) ||
           error.category == AssistantFailureCategory.sourceStale) {
         _hideSelectedHistory(command);
+        if (_accessLost(error) &&
+            (!_active || conversation?.id != command.request.conversation.id)) {
+          await _confirmMeetingAccessLoss(command.request.conversation.meetingId);
+        }
       }
     } finally {
       if (_ownsCommand(command)) {

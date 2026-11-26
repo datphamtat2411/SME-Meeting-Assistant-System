@@ -39,6 +39,9 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
   late MeetingDetailController _controller;
   int _tab = 0;
   bool _openingAssistant = false;
+  bool _assistantOriginVisible = false;
+  bool _foreground = true;
+  int _assistantIntentGeneration = 0;
 
   @override
   void initState() {
@@ -48,6 +51,8 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
         : widget.initialResultsSection != null
         ? 1
         : 0;
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    _foreground = lifecycle == null || lifecycle == AppLifecycleState.resumed;
     WidgetsBinding.instance.addObserver(this);
     _createController();
   }
@@ -67,19 +72,31 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final visible = ModalRoute.isCurrentOf(context) ?? true;
+    if (_assistantOriginVisible == visible) return;
+    _assistantOriginVisible = visible;
+    if (!visible) _assistantIntentGeneration++;
+  }
+
+  @override
   void didUpdateWidget(covariant MeetingDetailPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.meetingId == widget.meetingId &&
         identical(oldWidget.dependencies, widget.dependencies)) {
       return;
     }
+    _assistantIntentGeneration++;
     _controller.dispose();
     _createController();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    _foreground = state == AppLifecycleState.resumed;
+    if (!_foreground) _assistantIntentGeneration++;
+    if (_foreground) {
       unawaited(_controller.revalidateOnResume());
     }
   }
@@ -235,22 +252,30 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
   }
 
   Future<void> _openAssistant(MeetingSnapshot snapshot) async {
-    if (_openingAssistant || !mounted) return;
+    if (_openingAssistant || !mounted || !_foreground || _tab != 0) return;
     final scope = snapshot.sessionScope;
     final meeting = snapshot.meeting;
+    final dependencies = widget.dependencies;
+    final generation = ++_assistantIntentGeneration;
+    bool owns() =>
+        mounted &&
+        _foreground &&
+        _assistantOriginVisible &&
+        _tab == 0 &&
+        generation == _assistantIntentGeneration &&
+        identical(dependencies, widget.dependencies) &&
+        widget.api.isCurrentAuthenticatedSession(scope) &&
+        _controller.state.snapshot?.meeting.id == meeting.id &&
+        (ModalRoute.of(context)?.isCurrent ?? true);
     setState(() => _openingAssistant = true);
     try {
       final allowed = await widget.dependencies.results.verifyReadAccess(
         sessionScope: scope,
         meetingId: meeting.id,
       );
-      if (!mounted ||
-          !widget.api.isCurrentAuthenticatedSession(scope) ||
-          _controller.state.snapshot?.meeting.id != meeting.id ||
-          !(ModalRoute.of(context)?.isCurrent ?? true)) {
-        return;
-      }
+      if (!owns()) return;
       if (!allowed) {
+        dependencies.forgetAssistantMeeting(scope, meeting.id);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Không thể truy cập nội dung cuộc họp.'),
@@ -274,7 +299,11 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
         ),
       );
     } on Object catch (error) {
-      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
+      if (owns()) {
+        if (error is ApiFailure &&
+            (error.status == 403 || error.status == 404)) {
+          dependencies.forgetAssistantMeeting(scope, meeting.id);
+        }
         showFailure(context, error);
       }
     } finally {
@@ -301,7 +330,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
             (participant) =>
                 participant.isActive &&
                 participant.userId.toLowerCase() ==
-                    widget.api.userId?.toLowerCase(),
+                    widget.api.userId.toLowerCase(),
           ),
     ).canReadMedia;
     final validInterval = MeetingScheduleDraft(
@@ -579,7 +608,12 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                             label: tab.$2,
                             child: GestureDetector(
                               onTap: state.activeMutation == null
-                                  ? () => setState(() => _tab = tab.$1)
+                                  ? () => setState(() {
+                                      if (_tab != tab.$1) {
+                                        _assistantIntentGeneration++;
+                                      }
+                                      _tab = tab.$1;
+                                    })
                                   : null,
                               child: Container(
                                 padding: const EdgeInsets.symmetric(

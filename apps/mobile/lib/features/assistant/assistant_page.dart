@@ -370,10 +370,9 @@ class _AssistantPageState extends State<AssistantPage>
     );
     setState(() => _openingEvidence = true);
     try {
-      await resolver.verify(target, stillCurrent: owns);
-      if (!mounted || !owns()) return;
-      // The destination performs its own verification; never pass a protected
-      // preflight snapshot across the navigation boundary as current evidence.
+      if (!owns()) return;
+      // The destination owns the full verification and shows a loading state.
+      // No protected artifact is passed across the navigation boundary.
       await Navigator.push<void>(
         context,
         MaterialPageRoute<void>(
@@ -389,15 +388,6 @@ class _AssistantPageState extends State<AssistantPage>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(assistantEvidenceFailureLabel(error))),
       );
-      if ((error is AssistantEvidenceFailure &&
-              (error.issue == AssistantEvidenceIssue.obsolete ||
-                  error.issue == AssistantEvidenceIssue.unavailable)) ||
-          (error is ApiFailure &&
-              (error.status == 401 ||
-                  error.status == 403 ||
-                  error.status == 404))) {
-        await _controller.refreshHistory();
-      }
     } finally {
       if (mounted) setState(() => _openingEvidence = false);
     }

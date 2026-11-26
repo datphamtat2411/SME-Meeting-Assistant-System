@@ -27,7 +27,13 @@ class AssistantEvidenceTarget {
   final String? beforeMessageId;
 }
 
-enum AssistantEvidenceIssue { unavailable, obsolete, syncRequired, interrupted }
+enum AssistantEvidenceIssue {
+  unavailable,
+  meetingUnavailable,
+  obsolete,
+  syncRequired,
+  interrupted,
+}
 
 class AssistantEvidenceFailure implements Exception {
   const AssistantEvidenceFailure(this.issue);
@@ -35,26 +41,27 @@ class AssistantEvidenceFailure implements Exception {
 }
 
 sealed class AssistantEvidenceArtifact {
-  const AssistantEvidenceArtifact();
+  const AssistantEvidenceArtifact({this.meetingTitle});
+  final String? meetingTitle;
 }
 
 final class TranscriptEvidence extends AssistantEvidenceArtifact {
-  const TranscriptEvidence(this.transcript);
+  const TranscriptEvidence(this.transcript, {super.meetingTitle});
   final Transcript transcript;
 }
 
 final class SummaryEvidence extends AssistantEvidenceArtifact {
-  const SummaryEvidence(this.summary);
+  const SummaryEvidence(this.summary, {super.meetingTitle});
   final ResultsSummary summary;
 }
 
 final class DecisionEvidence extends AssistantEvidenceArtifact {
-  const DecisionEvidence(this.decision);
+  const DecisionEvidence(this.decision, {super.meetingTitle});
   final MeetingDecision decision;
 }
 
 final class ActionItemEvidence extends AssistantEvidenceArtifact {
-  const ActionItemEvidence(this.item);
+  const ActionItemEvidence(this.item, {super.meetingTitle});
   final ActionItemResource item;
 }
 
@@ -91,13 +98,26 @@ class AssistantEvidenceResolver {
     final citation = target.citation;
     final meetingId = citation.meetingId;
     final scope = target.scope;
-    final allowed = await results.verifyReadAccess(
-      sessionScope: scope,
-      meetingId: meetingId,
-    );
+    final ResultsAccessVerification access;
+    try {
+      access = await results.verifyAccess(
+        sessionScope: scope,
+        meetingId: meetingId,
+      );
+    } on ApiFailure catch (error) {
+      check();
+      if (error.status == 403 || error.status == 404) {
+        throw const AssistantEvidenceFailure(
+          AssistantEvidenceIssue.meetingUnavailable,
+        );
+      }
+      rethrow;
+    }
     check();
-    if (!allowed) {
-      throw const AssistantEvidenceFailure(AssistantEvidenceIssue.unavailable);
+    if (!access.canRead) {
+      throw const AssistantEvidenceFailure(
+        AssistantEvidenceIssue.meetingUnavailable,
+      );
     }
     await _verifyOrigin(target, stillCurrent);
     check();
@@ -119,7 +139,7 @@ class AssistantEvidenceResolver {
               transcript.finalizedAt != null &&
               transcript.segments.isNotEmpty,
         );
-        artifact = TranscriptEvidence(transcript);
+        artifact = TranscriptEvidence(transcript, meetingTitle: access.meetingTitle);
       case AssistantSourceType.summary:
         final summary = await results.currentSummary(
           sessionScope: scope,
@@ -137,7 +157,7 @@ class AssistantEvidenceResolver {
                 'READY_WITH_WARNINGS',
               }.contains(summary.qualityStatus),
         );
-        artifact = SummaryEvidence(summary);
+        artifact = SummaryEvidence(summary, meetingTitle: access.meetingTitle);
       case AssistantSourceType.decision:
         final decision = await _decision(target, stillCurrent);
         check();
@@ -148,7 +168,7 @@ class AssistantEvidenceResolver {
           decision.version,
           decision.status == 'CONFIRMED' && !decision.stale,
         );
-        artifact = DecisionEvidence(decision);
+        artifact = DecisionEvidence(decision, meetingTitle: access.meetingTitle);
       case AssistantSourceType.actionItem:
         final snapshot = await actionItems.detail(
           citation.sourceId,
@@ -169,7 +189,7 @@ class AssistantEvidenceResolver {
           item.version,
           item.official && item.status != ActionItemStatus.proposed,
         );
-        artifact = ActionItemEvidence(item);
+        artifact = ActionItemEvidence(item, meetingTitle: access.meetingTitle);
     }
 
     // The origin may have been redacted while the artifact was being read.
@@ -298,6 +318,8 @@ String assistantEvidenceFailureLabel(Object error) {
     return switch (error.issue) {
       AssistantEvidenceIssue.unavailable =>
         'Nguồn hoặc câu trả lời không còn khả dụng.',
+      AssistantEvidenceIssue.meetingUnavailable =>
+        'Không thể truy cập nội dung cuộc họp này.',
       AssistantEvidenceIssue.obsolete =>
         'Nguồn đã thay đổi và không còn khớp với bằng chứng đã trích dẫn.',
       AssistantEvidenceIssue.syncRequired =>

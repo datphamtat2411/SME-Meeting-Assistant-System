@@ -8,10 +8,15 @@ import '../meetings/meeting_foundation.dart';
 import 'results_models.dart';
 
 class ResultsAccessVerification {
-  const ResultsAccessVerification({required this.canRead, this.canMutate});
+  const ResultsAccessVerification({
+    required this.canRead,
+    this.canMutate,
+    this.meetingTitle,
+  });
 
   final bool canRead;
   final bool? canMutate;
+  final String? meetingTitle;
 }
 
 /// Typed transport boundary for all existing Meeting Results operations.
@@ -74,6 +79,7 @@ class ResultsRepository {
       return ResultsAccessVerification(
         canRead: capabilities.canReadMedia,
         canMutate: capabilities.canReadMedia,
+        meetingTitle: capabilities.canReadMedia ? meeting.title : null,
       );
     }
     final records = await membershipRepository.listParticipants(
@@ -93,6 +99,7 @@ class ResultsRepository {
     return ResultsAccessVerification(
       canRead: capabilities.canReadMedia,
       canMutate: false,
+      meetingTitle: capabilities.canReadMedia ? meeting.title : null,
     );
   }
 
