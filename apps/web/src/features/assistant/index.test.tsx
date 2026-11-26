@@ -1646,7 +1646,9 @@ describe('AssistantPage', () => {
       .toBeVisible()
     await expect
       .element(
-        screen.getByText('This request identity belongs to a different question.')
+        screen.getByText(
+          'This request identity belongs to a different question.'
+        )
       )
       .toBeVisible()
     expect(post).toHaveBeenCalledTimes(1)
@@ -1721,7 +1723,8 @@ describe('AssistantPage', () => {
     )
     await expect
       .poll(
-        () => get.mock.calls.some(([url]) => url.endsWith('/turns/' + newTurnId)),
+        () =>
+          get.mock.calls.some(([url]) => url.endsWith('/turns/' + newTurnId)),
         { timeout: 6000 }
       )
       .toBe(true)

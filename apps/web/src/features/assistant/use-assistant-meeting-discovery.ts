@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react'
-import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import {
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query'
 import { dateInputToOffsetDateTime } from '@/features/meetings/data/date-filters'
 import {
   fetchMeetingDetail,

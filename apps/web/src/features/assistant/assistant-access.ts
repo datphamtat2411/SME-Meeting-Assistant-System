@@ -341,8 +341,7 @@ export function containAssistantMeetingDenial(
   const previous = token.meetingId
     ? stateFor(client).meetingDenials.get(token.meetingId)
     : undefined
-  if (previous?.error === error || stateFor(client).listError === error)
-    return
+  if (previous?.error === error || stateFor(client).listError === error) return
   containAssistantAccessFailure(client, token, error)
 }
 
