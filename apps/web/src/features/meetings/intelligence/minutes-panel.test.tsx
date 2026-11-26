@@ -1,6 +1,9 @@
+import { act } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { MinutesPanel } from './minutes-panel'
 
 const minutesData = vi.hoisted(() => ({
@@ -36,7 +39,26 @@ const minutesData = vi.hoisted(() => ({
       aiWarnings: [],
     },
     confirmedDecisions: [],
-    officialActionItems: [],
+    officialActionItems: [
+      {
+        id: '55555555-5555-4555-8555-555555555555',
+        title: 'Dated action',
+        status: 'OPEN',
+        sourceType: 'MANUAL',
+        assigneeUserId: null,
+        dueDate: '2026-11-23',
+        version: 1,
+      },
+      {
+        id: '66666666-6666-4666-8666-666666666666',
+        title: 'Undated action',
+        status: 'OPEN',
+        sourceType: 'MANUAL',
+        assigneeUserId: null,
+        dueDate: null,
+        version: 1,
+      },
+    ],
     transcript: {
       availability: 'AVAILABLE',
       id: '44444444-4444-4444-8444-444444444444',
@@ -86,5 +108,58 @@ describe('MinutesPanel proposal boundary', () => {
         )
       )
       .toBeInTheDocument()
+  })
+})
+
+describe('MinutesPanel regional due dates', () => {
+  it('formats civil deadlines by locale without shifting the day by timezone', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const preferences = {
+      timezone: 'Pacific/Honolulu',
+      locale: 'en-GB',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    }
+    queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+    queryClient.setQueryData(preferencesQueryKey, preferences)
+
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <RegionalPresentationProvider>
+          <MinutesPanel meetingId='11111111-1111-4111-8111-111111111111' />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByText(/due 23 Nov 2026 · version 1/))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText(/due none · version 1/))
+      .toBeInTheDocument()
+
+    await act(async () => {
+      queryClient.setQueryData(preferencesQueryKey, {
+        ...preferences,
+        timezone: 'Asia/Tokyo',
+      })
+    })
+    await expect
+      .element(screen.getByText(/due 23 Nov 2026 · version 1/))
+      .toBeInTheDocument()
+
+    await act(async () => {
+      queryClient.setQueryData(preferencesQueryKey, {
+        ...preferences,
+        timezone: 'Asia/Tokyo',
+        locale: 'en-US',
+      })
+    })
+    await expect
+      .element(screen.getByText(/due Nov 23, 2026 · version 1/))
+      .toBeInTheDocument()
+    expect(minutesData.value.officialActionItems[0].dueDate).toBe('2026-11-23')
   })
 })

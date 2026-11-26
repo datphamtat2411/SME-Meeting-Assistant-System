@@ -5,6 +5,7 @@ import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { RegionalCivilDate } from '@/components/regional-timestamp'
 import { RequestError, RequestLoading } from '@/components/request-state'
 import { minutesQuery } from './minutes-api'
 
@@ -291,7 +292,9 @@ export function MinutesPanel({
                   </div>
                   <p className='mt-2 text-xs text-muted-foreground'>
                     {item.sourceType} · Assignee: {person(item.assigneeUserId)}{' '}
-                    · due {item.dueDate ?? 'none'} · version {item.version}
+                    · due{' '}
+                    <RegionalCivilDate value={item.dueDate} fallback='none' />{' '}
+                    · version {item.version}
                   </p>
                 </article>
               ))}
