@@ -16,6 +16,7 @@ import 'package:sme_meeting_assistant/features/profile/profile_repository.dart';
 import 'package:sme_meeting_assistant/features/profile/regional_preference_dialog.dart';
 
 import 'support/http_test_support.dart';
+import 'support/widget_test_support.dart';
 
 const _userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
@@ -1229,13 +1230,9 @@ void main() {
     final identity = Completer<http.StreamedResponse>();
     var reloads = 0;
     var patches = 0;
-
-    // This fixture uses only in-memory credentials and controlled HTTP.
-    // Keep its futures in the widget binding's fake-async zone, so pumping
-    // frames also drives the transport and controller continuations.
-    ApiClient? initialized;
-    unawaited(
-      _authenticated(
+    bool? editorResult;
+    final api = (await tester.runAsync(
+      () => _authenticated(
         (request) {
           if (request.method == 'GET') {
             return _profileResponse('Original', '"v1"');
@@ -1252,32 +1249,28 @@ void main() {
           reloads++;
           return identity.future;
         },
-      ).then<void>((api) {
-        initialized = api;
-      }),
-    );
-    await tester.pump();
-    expect(initialized, isNotNull, reason: 'Authentication must finish');
-    final api = initialized!;
+      ),
+    ))!;
     final controller = ProfileController(ProfileRepository(api: api));
     addTearDown(controller.dispose);
-    unawaited(controller.refresh());
-    await tester.pump();
+    await tester.runAsync(controller.refresh);
     expect(controller.snapshot!.profile.displayName, 'Original');
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: Builder(
             builder: (context) => TextButton(
-              onPressed: () => showDialog<bool>(
-                context: context,
-                barrierDismissible: false,
-                builder: (_) => ProfileEditDialog(
-                  controller: controller,
-                  original: controller.snapshot!,
-                  initialName: controller.snapshot!.profile.displayName,
-                ),
-              ),
+              onPressed: () async {
+                editorResult = await showDialog<bool>(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (_) => ProfileEditDialog(
+                    controller: controller,
+                    original: controller.snapshot!,
+                    initialName: controller.snapshot!.profile.displayName,
+                  ),
+                );
+              },
               child: const Text('Open editor'),
             ),
           ),
@@ -1288,31 +1281,41 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'New name');
     await tester.tap(find.text('Lưu'));
-    await tester.pump();
-    expect(patches, 1, reason: 'The save must dispatch exactly one PATCH');
+    // Use the project's async-aware condition pump, not a fixed frame count
+    // or animation settlement while a response is intentionally withheld.
+    await pumpUntil(
+      tester,
+      () => patches == 1,
+      reason: 'the Profile PATCH to reach the controlled transport',
+    );
     expect(controller.saving, isTrue);
     expect(reloads, 0);
     expect(find.byType(ProfileEditDialog), findsOneWidget);
 
     patch.complete(await _profileResponse('New name', '"v2"'));
-    await tester.pump();
+    await pumpUntil(
+      tester,
+      () =>
+          controller.outcome == ProfileMutationOutcome.confirmed &&
+          reloads == 1,
+      reason: 'the canonical PATCH response and identity request dispatch',
+    );
     expect(controller.snapshot!.etag, '"v2"');
-    expect(controller.outcome, ProfileMutationOutcome.confirmed);
     expect(controller.saving, isFalse);
     expect(controller.identityStatus, IdentitySyncStatus.synchronizing);
     expect(controller.canMutate, isFalse);
-    expect(reloads, 1);
     expect(identity.isCompleted, isFalse);
     expect(api.displayName, 'Test User');
 
-    // Only the dialog's exit animation should remain. The identity response
-    // must stay withheld until the route is gone.
-    await tester.pumpAndSettle(
-      const Duration(milliseconds: 16),
-      EnginePhase.sendSemanticsUpdate,
-      const Duration(seconds: 3),
+    await pumpUntil(
+      tester,
+      () =>
+          editorResult == true &&
+          find.byType(ProfileEditDialog).evaluate().isEmpty,
+      reason: 'the successful editor to close before identity completes',
     );
     expect(find.byType(ProfileEditDialog), findsNothing);
+    expect(editorResult, isTrue);
     expect(controller.identityStatus, IdentitySyncStatus.synchronizing);
     expect(identity.isCompleted, isFalse);
     expect(patches, 1);
@@ -1320,8 +1323,11 @@ void main() {
     identity.complete(
       await jsonResponse(200, successEnvelope(_identity(name: 'New name'))),
     );
-    await tester.pumpAndSettle();
-    expect(controller.identityStatus, IdentitySyncStatus.synchronized);
+    await pumpUntil(
+      tester,
+      () => controller.identityStatus == IdentitySyncStatus.synchronized,
+      reason: 'the independent identity response to be applied',
+    );
     expect(controller.canMutate, isTrue);
     expect(api.displayName, 'New name');
     expect(patches, 1);
@@ -1489,9 +1495,14 @@ void main() {
   testWidgets('identity retry cooldown is independent and expires', (
     tester,
   ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(800, 1000);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     var reloads = 0;
     var patches = 0;
     var preferencePatches = 0;
+    DateTime? rateLimitedAt;
     final api = (await tester.runAsync(
       () => _authenticated(
         (request) async {
@@ -1515,7 +1526,10 @@ void main() {
           return _profileResponse('New name', '"v2"');
         },
         reloadIdentity: () {
-          if (++reloads == 1) return _rateLimitResponse();
+          if (++reloads == 1) {
+            rateLimitedAt = tester.binding.clock.now();
+            return _rateLimitResponse();
+          }
           return jsonResponse(
             200,
             successEnvelope(_identity(name: 'New name')),
@@ -1538,53 +1552,78 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
     final edit = find.byWidgetPredicate(
       (widget) =>
           widget is IconButton && widget.tooltip == 'Chỉnh sửa tên hiển thị',
+    );
+    final meetingEmail = find.widgetWithText(SwitchListTile, 'Email cuộc họp');
+    await pumpUntil(
+      tester,
+      () => edit.evaluate().isNotEmpty && meetingEmail.evaluate().isNotEmpty,
+      reason: 'both account resources to render',
     );
     await tester.tap(edit);
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'New name');
     await tester.tap(find.text('Lưu'));
-    await tester.pumpAndSettle();
+    final retry = find.widgetWithText(TextButton, 'Thử đồng bộ lại');
+    await pumpUntil(
+      tester,
+      () =>
+          find.byType(ProfileEditDialog).evaluate().isEmpty &&
+          retry.evaluate().isNotEmpty &&
+          find.byType(AccountRetryNotice).evaluate().isNotEmpty,
+      reason: 'the identity cooldown to render after the confirmed save',
+    );
     expect(find.byType(ProfileEditDialog), findsNothing);
     expect(find.text('New name'), findsOneWidget);
     expect(api.displayName, 'Test User');
     expect(patches, 1);
     expect(reloads, 1);
-    expect(find.byType(AccountRetryNotice), findsOneWidget);
-
-    final retry = find.widgetWithText(TextButton, 'Thử đồng bộ lại');
     expect(tester.widget<TextButton>(retry).onPressed, isNull);
     expect(tester.widget<IconButton>(edit).onPressed, isNotNull);
 
-    // Drive the real account surface instead of awaiting HTTP futures in the
-    // widget test body. The binding advances fake time only through pumps.
-    final meetingEmail = find.widgetWithText(SwitchListTile, 'Email cuộc họp');
-    final scrollable = find.byType(Scrollable).first;
-    await tester.scrollUntilVisible(meetingEmail, 160, scrollable: scrollable);
+    // Exercise the independent resource while identity retry is disabled.
+    await tester.ensureVisible(meetingEmail);
+    await tester.pump();
+    expect(meetingEmail.hitTestable(), findsOneWidget);
     expect(tester.widget<SwitchListTile>(meetingEmail).onChanged, isNotNull);
     await tester.tap(meetingEmail);
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () => !tester.widget<SwitchListTile>(meetingEmail).value,
+      reason: 'the independent preference mutation to be confirmed',
+    );
     expect(preferencePatches, 1);
-    expect(tester.widget<SwitchListTile>(meetingEmail).value, isFalse);
-
-    await tester.scrollUntilVisible(retry, -160, scrollable: scrollable);
-    await tester.tap(retry);
-    await tester.pumpAndSettle();
     expect(reloads, 1);
-    await tester.pump(const Duration(seconds: 20));
     expect(tester.widget<TextButton>(retry).onPressed, isNull);
-    await tester.pump(const Duration(seconds: 11));
+
+    // Measure against the actual fake-clock response instant, not against
+    // time elapsed since an arbitrary scroll or route animation completed.
+    final deadline = rateLimitedAt!.add(const Duration(seconds: 30));
+    final remaining = deadline.difference(tester.binding.clock.now());
+    expect(remaining, greaterThan(const Duration(seconds: 1)));
+    await tester.pump(remaining - const Duration(seconds: 1));
+    expect(tester.widget<TextButton>(retry).onPressed, isNull);
+    expect(reloads, 1);
+    await tester.pump(const Duration(seconds: 2));
+    await pumpUntil(
+      tester,
+      () => tester.widget<TextButton>(retry).onPressed != null,
+      reason: 'the cooldown timer to restore retry availability',
+    );
     expect(find.byType(AccountRetryNotice), findsNothing);
-    expect(tester.widget<TextButton>(retry).onPressed, isNotNull);
     expect(reloads, 1);
 
+    await tester.ensureVisible(retry);
+    await tester.pump();
+    expect(retry.hitTestable(), findsOneWidget);
     await tester.tap(retry);
-    await tester.pumpAndSettle();
-    expect(api.displayName, 'New name');
-    expect(retry, findsNothing);
+    await pumpUntil(
+      tester,
+      () => api.displayName == 'New name' && retry.evaluate().isEmpty,
+      reason: 'the explicit identity-only retry to succeed',
+    );
     expect(patches, 1);
     expect(reloads, 2);
     await tester.pumpWidget(const SizedBox.shrink());
