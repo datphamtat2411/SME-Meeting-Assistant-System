@@ -1727,9 +1727,7 @@ void main() {
                     status: 202,
                   );
                 }
-                return meetingApiSuccess(
-                  _detail(messages: [_userMessage()]),
-                );
+                return meetingApiSuccess(_detail(messages: [_userMessage()]));
               }),
             ),
           ))!;

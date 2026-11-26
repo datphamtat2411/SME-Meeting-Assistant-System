@@ -54,8 +54,7 @@ class AssistantPendingTurn {
 
   bool get automaticExhausted =>
       automaticChecks >= 12 ||
-      (automaticDeadline != null &&
-          !_now().isBefore(automaticDeadline!));
+      (automaticDeadline != null && !_now().isBefore(automaticDeadline!));
   bool get canRetry => !busy && retryAllowed && !_waiting(retryAt, _now());
   bool get canAbandon =>
       !busy &&
@@ -862,9 +861,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
     }
     _stopStatusMonitoring();
     if (automatic) {
-      command.automaticDeadline ??= _now().add(
-        const Duration(seconds: 120),
-      );
+      command.automaticDeadline ??= _now().add(const Duration(seconds: 120));
       command.automaticChecks++;
     }
     final previousTurn = command.turn;
