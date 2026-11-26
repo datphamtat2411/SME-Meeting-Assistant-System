@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import type { AssistantSelection } from './assistant-selection'
 import { Bot } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Header } from '@/components/layout/header'
@@ -18,18 +19,23 @@ import {
   useAssistantMeetingDiscovery,
 } from './use-assistant-meeting-discovery'
 
-export function AssistantPage() {
+type SelectionProps = {
+  selection: AssistantSelection
+  onSelectionChange: (selection: AssistantSelection) => void
+}
+
+export function AssistantPage(props: SelectionProps) {
   const generation = useSyncExternalStore(
     subscribeAuthLifecycle,
     () => getAuthLifecycleSnapshot().generation
   )
   if (isAuthLifecycleBlocking()) return null
-  return <AssistantWorkspace key={generation} />
+  return <AssistantWorkspace key={generation} {...props} />
 }
 
-function AssistantWorkspace() {
+function AssistantWorkspace({ selection, onSelectionChange }: SelectionProps) {
   const discovery = useAssistantMeetingDiscovery()
-  const conversation = useAssistantConversation()
+  const conversation = useAssistantConversation(selection, onSelectionChange)
   const selected = useAssistantMeetingContext(conversation.selectedMeetingId)
   const active = useAssistantMeetingContext(
     conversation.panel.selectedConversation?.meetingId

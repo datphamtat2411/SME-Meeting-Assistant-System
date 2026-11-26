@@ -2,7 +2,6 @@ import type { InfiniteData } from '@tanstack/react-query'
 import type {
   AssistantConversation,
   AssistantConversationDetail,
-  AssistantTurn,
 } from './assistant-api'
 
 export type Submission = {
@@ -10,20 +9,6 @@ export type Submission = {
   conversationId: string
   question: string
   idempotencyKey: string
-}
-
-export type AssistantUiScope = {
-  generation: number
-  session: number
-  meetingId?: string
-  conversationId?: string
-}
-
-export type ProcessingTurn = {
-  scope: AssistantUiScope
-  conversationId: string
-  submission: Submission
-  turn: AssistantTurn
 }
 
 export type ConversationListQuery = {

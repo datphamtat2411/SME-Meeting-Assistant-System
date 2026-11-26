@@ -1,17 +1,8 @@
-import { useCallback, useMemo, useRef, useState, type FormEvent } from 'react'
-import {
-  type InfiniteData,
-  useInfiniteQuery,
-  useMutation,
-  useQueryClient,
-} from '@tanstack/react-query'
-import { CoreApiError, normalizeCoreApiError } from '@/lib/core-api'
-import { getRequestRecoveryGeneration } from '@/lib/request-recovery'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
+import { normalizeCoreApiError } from '@/lib/core-api'
 import {
   assistantAccessError,
-  assertAssistantAccessCurrent,
-  beginAssistantQuestion,
-  captureAssistantAccess,
   captureAssistantCreationAccess,
   containAssistantAccessFailure,
   invalidateAssistantHistory,
@@ -19,7 +10,6 @@ import {
   retryAssistantAccess,
   revalidateAssistantHistory,
   useAssistantAccessRevision,
-  type AssistantAccessToken,
 } from './assistant-access'
 import {
   ASSISTANT_QUESTION_LIMIT,
@@ -27,593 +17,180 @@ import {
   assistantConversationsInfiniteQueryOptions,
   assistantQuestionLength,
   createAssistantConversation,
-  findAssistantTurnMessage,
   isBlankAssistantQuestion,
   newAssistantIdempotencyKey,
   normalizeAssistantQuestion,
-  submitAssistantQuestion,
   type AssistantConversation,
-  type AssistantConversationDetail,
-  type AssistantTurn,
 } from './assistant-api'
-import { canRetryAssistantSubmission } from './assistant-error-policy'
-import {
-  uniqueConversations,
-  useAssistantHistory,
-  useAssistantHistoryPolling,
-} from './assistant-history'
-import type {
-  AssistantUiScope,
-  ProcessingTurn,
-  Submission,
-} from './assistant-types'
+import { uniqueConversations } from './assistant-history'
+import { useAssistantTurnWorkflow } from './assistant-turn-workflow'
+import type { AssistantSelection } from './assistant-selection'
 
-type CreateOperation = {
-  access: AssistantAccessToken
-  operationId: number
-  scope: AssistantUiScope
-  meetingId: string
-  title?: string
-}
-
-type QuestionOperation = {
-  access: AssistantAccessToken
-  operationId: number
-  scope: AssistantUiScope
-  submission: Submission
-}
-
-type AcceptedTurnCache = {
-  submission: Submission
-  turn: AssistantTurn
-}
-
-export function useAssistantConversation() {
-  const queryClient = useQueryClient()
-  useAssistantAccessRevision(queryClient)
-  const [selectedMeetingId, setSelectedMeetingId] = useState<string>()
-  const selectedMeetingRef = useRef<string | undefined>(undefined)
-  const [selectedConversationId, setSelectedConversationId] = useState<
-    string | undefined
-  >()
+export function useAssistantConversation(
+  selection: AssistantSelection,
+  onSelectionChange: (selection: AssistantSelection) => void
+) {
+  const client = useQueryClient()
+  useAssistantAccessRevision(client)
+  const { meetingId: selectedMeetingId, conversationId: selectedConversationId } = selection
+  const [openedId, setOpenedId] = useState<string>()
   const [conversationTitle, setConversationTitle] = useState('')
   const [question, setQuestion] = useState('')
-  const [questionValidationError, setQuestionValidationError] = useState<
-    string | undefined
-  >()
-  const [submission, setSubmission] = useState<Submission>()
-  const submissionRef = useRef<Submission | undefined>(undefined)
-  const [submissionError, setSubmissionError] = useState<unknown>()
-  const [processingTurn, setProcessingTurn] = useState<ProcessingTurn>()
-  const [pollingStopped, setPollingStopped] = useState(false)
-  const [pollingError, setPollingError] = useState<unknown>()
-  const [pollingAttempts, setPollingAttempts] = useState(0)
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [questionValidationError, setQuestionValidationError] = useState<string>()
   const [isCreating, setIsCreating] = useState(false)
   const [createError, setCreateError] = useState<unknown>()
-  const [historyRefreshError, setHistoryRefreshError] = useState<unknown>()
-  const [isRefreshingHistory, setIsRefreshingHistory] = useState(false)
+  const [uncertainCreation, setUncertainCreation] = useState(false)
+  const creationRef = useRef(false)
+  const selectionRef = useRef(selection)
+  const selectionGeneration = useRef(0)
+  const [historyRefreshing, setHistoryRefreshing] = useState(false)
+  const [historyError, setHistoryError] = useState<unknown>()
 
-  const scopeRef = useRef<AssistantUiScope>({
-    generation: 0,
-    session: getRequestRecoveryGeneration(),
-  })
-  const createOperationRef = useRef<number | undefined>(undefined)
-  const questionOperationRef = useRef<number | undefined>(undefined)
-  const refreshOperationRef = useRef<number | undefined>(undefined)
-  const createSequenceRef = useRef(0)
-  const questionSequenceRef = useRef(0)
-  const refreshSequenceRef = useRef(0)
+  useEffect(() => {
+    selectionRef.current = selection
+    selectionGeneration.current += 1
+  }, [selectedConversationId, selectedMeetingId, selection])
 
-  const listAccessError = assistantAccessError(queryClient)
-  const detailAccessError = assistantAccessError(
-    queryClient,
-    selectedConversationId
-  )
+  useEffect(() => {
+    setQuestion('')
+    setQuestionValidationError(undefined)
+    setHistoryError(undefined)
+    setHistoryRefreshing(false)
+    if (selectedConversationId) {
+      retryAssistantAccess(client, selectedConversationId)
+      invalidateAssistantHistory(client, selectedConversationId)
+    }
+    setOpenedId(selectedConversationId)
+  }, [client, selectedConversationId])
+
+  const listAccessError = assistantAccessError(client)
+  const detailAccessError = assistantAccessError(client, selectedConversationId)
   const conversationsQuery = useInfiniteQuery({
     ...assistantConversationsInfiniteQueryOptions(),
     enabled: !listAccessError,
   })
   const detailQuery = useInfiniteQuery({
     ...assistantConversationHistoryQueryOptions(selectedConversationId),
-    enabled: Boolean(selectedConversationId) && !detailAccessError,
+    enabled: Boolean(selectedConversationId) && openedId === selectedConversationId && !detailAccessError,
     refetchOnMount: 'always',
   })
-
   const historyAccessReady =
+    openedId === selectedConversationId &&
     Boolean(detailQuery.data) &&
     !detailAccessError &&
+    !historyRefreshing &&
     (!detailQuery.isError || detailQuery.isFetchNextPageError) &&
     (!detailQuery.isFetching || detailQuery.isFetchingNextPage)
+  const detail = historyAccessReady ? detailQuery.data?.pages[0] : undefined
+  const selectedConversation = detail?.conversation
+  const turns = useAssistantTurnWorkflow(detail, historyAccessReady)
 
-  const allConversations = useMemo(
-    () =>
-      listAccessError
-        ? []
-        : uniqueConversations(conversationsQuery.data?.pages ?? []),
-    [conversationsQuery.data, listAccessError]
-  )
-  const selectedConversations = useMemo(
-    () =>
-      allConversations.filter(
-        (conversation) => conversation.meetingId === selectedMeetingId
-      ),
-    [allConversations, selectedMeetingId]
-  )
-
-  const createMutation = useMutation({
-    mutationFn: async (operation: CreateOperation) => {
-      assertAssistantAccessCurrent(queryClient, operation.access)
-      const conversation = await createAssistantConversation(
-        operation.meetingId,
-        operation.title
-      )
-      assertAssistantAccessCurrent(queryClient, operation.access)
-      return conversation
-    },
-    onSuccess: (conversation, operation) => {
-      if (!isAssistantAccessCurrent(queryClient, operation.access)) return
-      queryClient.setQueryData(
-        ['assistant', 'conversation', conversation.id, 'summary'],
-        conversation
-      )
-      void queryClient.invalidateQueries({
-        queryKey: ['assistant', 'conversations'],
-      })
-      if (conversation.meetingId !== operation.meetingId) {
-        if (isCurrentScope(operation.scope)) {
-          setCreateError(
-            new CoreApiError({
-              message: 'Core returned a conversation for a different meeting.',
-              code: 'MALFORMED_RESPONSE',
-              kind: 'malformed',
-            })
-          )
-        }
-        return
-      }
-      if (!isCurrentScope(operation.scope) || selectedMeetingRef.current !== operation.meetingId) return
-      scopeRef.current = {
-        ...operation.scope,
-        generation: operation.scope.generation + 1,
-        conversationId: conversation.id,
-        meetingId: conversation.meetingId,
-      }
-      setSelectedConversationId(conversation.id)
-      setConversationTitle('')
-      setQuestion('')
-      setSubmission(undefined)
-      submissionRef.current = undefined
-      setSubmissionError(undefined)
-      setProcessingTurn(undefined)
-      setCreateError(undefined)
-    },
-    onError: (error, operation) => {
-      const wasCurrent = isAssistantAccessCurrent(queryClient, operation.access)
-      containAssistantAccessFailure(queryClient, operation.access, error)
-      if (
-        wasCurrent &&
-        operation.scope.generation === scopeRef.current.generation &&
-        operation.scope.session === getRequestRecoveryGeneration() &&
-        !assistantAccessError(queryClient)
-      ) {
-        setCreateError(error)
-      }
-    },
-    onSettled: (_data, _error, operation) => {
-      if (operation.scope.session !== getRequestRecoveryGeneration()) return
-      if (createOperationRef.current !== operation.operationId) return
-      createOperationRef.current = undefined
-      setIsCreating(false)
-    },
-  })
-
-  const questionMutation = useMutation({
-    mutationFn: async (operation: QuestionOperation) => {
-      assertAssistantAccessCurrent(queryClient, operation.access)
-      const turn = await submitAssistantQuestion(
-        operation.submission.conversationId,
-        operation.submission.question,
-        operation.submission.idempotencyKey
-      )
-      assertAssistantAccessCurrent(queryClient, operation.access)
-      if (
-        turn.citations.some(
-          (citation) => citation.meetingId !== operation.submission.meetingId
-        )
-      ) {
-        throw new CoreApiError({
-          code: 'MALFORMED_RESPONSE',
-          kind: 'malformed',
-          message: 'Core returned Assistant evidence for a different meeting.',
-        })
-      }
-      return turn
-    },
-  })
-
-  const isCurrentScope = useCallback(
-    (expected: AssistantUiScope) => {
-      const current = scopeRef.current
-      return (
-        current.generation === expected.generation &&
-        current.session === expected.session &&
-        expected.session === getRequestRecoveryGeneration() &&
-        !assistantAccessError(queryClient, expected.conversationId) &&
-        current.meetingId === expected.meetingId &&
-        current.conversationId === expected.conversationId
-      )
-    },
-    [queryClient]
-  )
-
-  const { cacheHistoryPages, fetchNewestHistory } = useAssistantHistory()
-
-  const finishProcessingTurn = useCallback(
-    (accepted: ProcessingTurn) => {
-      if (!isCurrentScope(accepted.scope)) return
-      const latestKey = [
-        'assistant',
-        'turn',
-        accepted.conversationId,
-        'latest-accepted',
-      ] as const
-      const latest = queryClient.getQueryData<AcceptedTurnCache>(latestKey)
-      if (
-        latest?.submission.idempotencyKey === accepted.submission.idempotencyKey
-      ) {
-        queryClient.removeQueries({ queryKey: latestKey, exact: true })
-      }
-      setProcessingTurn(undefined)
-      setPollingStopped(false)
-      setPollingError(undefined)
-      setPollingAttempts(0)
-      if (
-        submissionRef.current?.idempotencyKey ===
-        accepted.submission.idempotencyKey
-      ) {
-        setQuestion('')
-        setSubmission(undefined)
-        submissionRef.current = undefined
-      }
-    },
-    [isCurrentScope, queryClient]
-  )
-
-  const createConversation = () => {
-    const currentScope = scopeRef.current
-    const meetingId = selectedMeetingRef.current
-    if (!meetingId || createOperationRef.current !== undefined || assistantAccessError(queryClient)) return
-    const operation: CreateOperation = {
-      access: captureAssistantCreationAccess(
-        queryClient,
-        meetingId
-      ),
-      operationId: ++createSequenceRef.current,
-      scope: { ...currentScope },
-      meetingId,
-      title: conversationTitle || undefined,
-    }
-    createOperationRef.current = operation.operationId
-    setCreateError(undefined)
-    setIsCreating(true)
-    createMutation.mutate(operation)
-  }
-
-  function clearConversationState(
-    meetingId?: string,
-    conversationId?: string
-  ): AssistantUiScope {
-    const nextScope: AssistantUiScope = {
-      generation: scopeRef.current.generation + 1,
-      session: getRequestRecoveryGeneration(),
-      meetingId,
-      conversationId,
-    }
-    scopeRef.current = nextScope
-    selectedMeetingRef.current = meetingId
-    setSelectedMeetingId(meetingId)
-    setSelectedConversationId(conversationId)
-    setConversationTitle('')
-    setQuestion('')
-    setQuestionValidationError(undefined)
-    setSubmission(undefined)
-    submissionRef.current = undefined
-    setSubmissionError(undefined)
-    setProcessingTurn(undefined)
-    setPollingStopped(false)
-    setPollingError(undefined)
-    setPollingAttempts(0)
-    setHistoryRefreshError(undefined)
-    setIsRefreshingHistory(false)
-    setIsSubmitting(false)
-    setIsCreating(false)
-    setCreateError(undefined)
-    createOperationRef.current = undefined
-    questionOperationRef.current = undefined
-    refreshOperationRef.current = undefined
-    createMutation.reset()
-    questionMutation.reset()
-    return nextScope
-  }
+  const allConversations = useMemo(() =>
+    listAccessError ? [] : uniqueConversations(conversationsQuery.data?.pages ?? []),
+    [conversationsQuery.data, listAccessError])
+  const conversations = allConversations.filter((item) =>
+    selectedMeetingId ? item.meetingId === selectedMeetingId : true)
 
   function selectMeeting(meetingId: string) {
-    selectedMeetingRef.current = meetingId || undefined
-    setSelectedMeetingId(meetingId || undefined)
+    const next = { ...selection, meetingId: meetingId || undefined }
+    selectionRef.current = next
+    selectionGeneration.current += 1
     setConversationTitle('')
     setCreateError(undefined)
+    onSelectionChange(next)
   }
 
   function openConversation(conversation: AssistantConversation) {
-    retryAssistantAccess(queryClient, conversation.id)
-    // Selecting even an already-mounted conversation requires a fresh Core
-    // read. Cached pages and in-flight pre-selection reads are not authority.
-    invalidateAssistantHistory(queryClient, conversation.id)
-    const scope = clearConversationState(
-      conversation.meetingId,
-      conversation.id
-    )
-    const accepted = queryClient.getQueryData<AcceptedTurnCache>([
-      'assistant',
-      'turn',
-      conversation.id,
-      'latest-accepted',
-    ])
-    if (
-      accepted?.turn.state === 'PROCESSING' &&
-      accepted.submission.meetingId === conversation.meetingId &&
-      accepted.submission.conversationId === conversation.id
-    ) {
-      submissionRef.current = accepted.submission
-      setSubmission(accepted.submission)
-      setQuestion(accepted.submission.question)
-      setProcessingTurn({
-        scope,
-        conversationId: conversation.id,
-        submission: accepted.submission,
-        turn: accepted.turn,
-      })
-    }
+    retryAssistantAccess(client, conversation.id)
+    if (conversation.id === selectedConversationId) invalidateAssistantHistory(client, conversation.id)
+    const next = { meetingId: conversation.meetingId, conversationId: conversation.id }
+    selectionRef.current = next
+    selectionGeneration.current += 1
+    onSelectionChange(next)
   }
 
-  async function submitQuestion(
-    event?: FormEvent<HTMLFormElement>,
-    retrySameQuestion = false
-  ) {
-    event?.preventDefault()
-    const activeScope = { ...scopeRef.current }
-    if (
-      !activeScope.meetingId ||
-      !activeScope.conversationId ||
-      !historyAccessReady ||
-      !isCurrentScope(activeScope) ||
-      questionOperationRef.current !== undefined
-    ) {
-      return
-    }
-
-    const normalizedQuestion = normalizeAssistantQuestion(question)
-    if (!retrySameQuestion && isBlankAssistantQuestion(normalizedQuestion)) {
-      setQuestionValidationError('Enter a question before submitting.')
-      return
-    }
-    if (
-      !retrySameQuestion &&
-      assistantQuestionLength(normalizedQuestion) > ASSISTANT_QUESTION_LIMIT
-    ) {
-      setQuestionValidationError(
-        'Questions must be at most 4096 Unicode code points.'
-      )
-      return
-    }
-
-    const previous = submissionRef.current
-    const replayAllowed = canRetryAssistantSubmission(submissionError)
-    if (retrySameQuestion && !replayAllowed) return
-    const previousMatchesScope =
-      previous?.meetingId === activeScope.meetingId &&
-      previous.conversationId === activeScope.conversationId
-    const current =
-      retrySameQuestion && previousMatchesScope && previous
-        ? previous
-        : previousMatchesScope &&
-            previous.question === normalizedQuestion &&
-            replayAllowed
-          ? previous
-          : {
-              meetingId: activeScope.meetingId,
-              conversationId: activeScope.conversationId,
-              question: normalizedQuestion,
-              idempotencyKey: newAssistantIdempotencyKey(),
-            }
-    const operation: QuestionOperation = {
-      access: beginAssistantQuestion(queryClient, current.conversationId),
-      operationId: ++questionSequenceRef.current,
-      scope: activeScope,
-      submission: current,
-    }
-
-    submissionRef.current = current
-    setSubmission(current)
-    setQuestionValidationError(undefined)
-    setSubmissionError(undefined)
-    setPollingError(undefined)
-    setPollingStopped(false)
-    setPollingAttempts(0)
-    questionOperationRef.current = operation.operationId
-    setIsSubmitting(true)
+  async function createConversation() {
+    const meetingId = selection.meetingId
+    if (!meetingId || creationRef.current || assistantAccessError(client)) return
+    if (uncertainCreation && !window.confirm('Core may already have created a conversation. Create another conversation explicitly?')) return
+    const access = captureAssistantCreationAccess(client, meetingId)
+    const generation = selectionGeneration.current
+    creationRef.current = true
+    setIsCreating(true)
+    setCreateError(undefined)
+    setUncertainCreation(false)
     try {
-      const turn = await questionMutation.mutateAsync(operation)
-      if (!isAssistantAccessCurrent(queryClient, operation.access)) return
-      const latestKey = [
-        'assistant',
-        'turn',
-        current.conversationId,
-        'latest-accepted',
-      ]
-      if (turn.state === 'PROCESSING') {
-        // Only the accepted processing identity is needed when reopening.
-        queryClient.setQueryData<AcceptedTurnCache>(latestKey, {
-          turn: { ...turn, answer: null, claims: [], citations: [] },
-          submission: current,
-        })
-      } else {
-        queryClient.removeQueries({ queryKey: latestKey, exact: true })
-      }
-      void queryClient.invalidateQueries({
-        queryKey: assistantConversationHistoryQueryOptions(
-          current.conversationId
-        ).queryKey,
-        refetchType: 'none',
-      })
-
-      if (turn.state === 'PROCESSING') {
-        if (isCurrentScope(operation.scope)) {
-          setProcessingTurn({
-            scope: operation.scope,
-            conversationId: current.conversationId,
-            submission: current,
-            turn,
-          })
-        }
-        return
-      }
-      if (turn.state === 'STALE_SOURCE') {
-        invalidateAssistantHistory(queryClient, current.conversationId)
-        if (isCurrentScope(operation.scope)) {
-          setSubmissionError(
-            new CoreApiError({
-              status: 409,
-              message: 'Assistant evidence is no longer current.',
-              code: 'ASSISTANT_SOURCE_STALE',
-              kind: 'http',
-            })
-          )
-        }
-        return
-      }
-      if (turn.state === 'FAILED') {
-        if (isCurrentScope(operation.scope)) {
-          setSubmissionError(
-            new CoreApiError({
-              status: 503,
-              message: 'Assistant answer is unavailable.',
-              code: 'ASSISTANT_TURN_FAILED',
-              kind: 'server',
-            })
-          )
-        }
-        return
-      }
-      await fetchNewestHistory(current.conversationId)
-      if (!isCurrentScope(operation.scope)) return
-      setQuestion('')
-      setSubmission(undefined)
-      submissionRef.current = undefined
+      const conversation = await createAssistantConversation(meetingId, conversationTitle || undefined)
+      if (!isAssistantAccessCurrent(client, access)) return
+      void client.invalidateQueries({ queryKey: ['assistant', 'conversations'] })
+      if (generation !== selectionGeneration.current || selectionRef.current.meetingId !== meetingId) return
+      setConversationTitle('')
+      openConversation(conversation)
     } catch (error) {
-      if (
-        containAssistantAccessFailure(queryClient, operation.access, error) ||
-        !isAssistantAccessCurrent(queryClient, operation.access)
-      ) {
-        return
+      const wasCurrent = isAssistantAccessCurrent(client, access)
+      containAssistantAccessFailure(client, access, error)
+      if (!wasCurrent) return
+      const failure = normalizeCoreApiError(error)
+      const uncertain = failure.isNetworkError || failure.isServerError || failure.kind === 'malformed' || failure.recoveryOutcome === 'uncertain'
+      if (uncertain) {
+        setUncertainCreation(true)
+        void client.invalidateQueries({ queryKey: ['assistant', 'conversations'] })
       }
-      if (normalizeCoreApiError(error).code === 'ASSISTANT_SOURCE_STALE') {
-        invalidateAssistantHistory(queryClient, current.conversationId)
-      }
-      if (isCurrentScope(operation.scope)) setSubmissionError(error)
+      if (generation === selectionGeneration.current) setCreateError(error)
     } finally {
-      if (
-        operation.scope.session === getRequestRecoveryGeneration() &&
-        questionOperationRef.current === operation.operationId
-      ) {
-        questionOperationRef.current = undefined
-        setIsSubmitting(false)
-      }
+      creationRef.current = false
+      setIsCreating(false)
     }
   }
 
   async function refreshConversation() {
-    const currentScope = { ...scopeRef.current }
-    if (!currentScope.conversationId || !isCurrentScope(currentScope)) return
-    const operationId = ++refreshSequenceRef.current
-    refreshOperationRef.current = operationId
-    setHistoryRefreshError(undefined)
-    setIsRefreshingHistory(true)
+    const id = selectedConversationId
+    if (!id) return
+    setHistoryRefreshing(true)
+    setHistoryError(undefined)
     try {
-      const access = captureAssistantAccess(
-        queryClient,
-        currentScope.conversationId
-      )
-      await revalidateAssistantHistory(queryClient, currentScope.conversationId)
-      assertAssistantAccessCurrent(queryClient, access)
-      if (
-        !isCurrentScope(currentScope) ||
-        refreshOperationRef.current !== operationId
-      ) {
-        return
-      }
-      const accepted =
-        processingTurn &&
-        isCurrentScope(processingTurn.scope) &&
-        processingTurn.conversationId === currentScope.conversationId
-          ? processingTurn
-          : undefined
-      const pages =
-        queryClient.getQueryData<
-          InfiniteData<AssistantConversationDetail, number>
-        >(
-          assistantConversationHistoryQueryOptions(currentScope.conversationId)
-            .queryKey
-        )?.pages ?? []
-      if (
-        accepted &&
-        pages.some((detail) => findAssistantTurnMessage(detail, accepted.turn))
-      ) {
-        finishProcessingTurn(accepted)
-      }
+      await revalidateAssistantHistory(client, id)
     } catch (error) {
-      if (isCurrentScope(currentScope)) setHistoryRefreshError(error)
+      if (selectionRef.current.conversationId === id) setHistoryError(error)
     } finally {
-      if (
-        currentScope.session === getRequestRecoveryGeneration() &&
-        refreshOperationRef.current === operationId
-      ) {
-        refreshOperationRef.current = undefined
-        setIsRefreshingHistory(false)
-      }
+      if (selectionRef.current.conversationId === id) setHistoryRefreshing(false)
     }
   }
 
-  useAssistantHistoryPolling({
-    processingTurn: historyAccessReady ? processingTurn : undefined,
-    pollingStopped,
-    isCurrentScope,
-    cacheHistoryPages,
-    finishProcessingTurn,
-    setPollingAttempts,
-    setPollingError,
-    setPollingStopped,
-  })
+  function submitQuestion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!selectedConversation || turns.busy || selectedConversation.status !== 'ACTIVE') return
+    const normalized = normalizeAssistantQuestion(question)
+    if (isBlankAssistantQuestion(normalized)) {
+      setQuestionValidationError('Enter a question before submitting.')
+      return
+    }
+    if (assistantQuestionLength(normalized) > ASSISTANT_QUESTION_LIMIT) {
+      setQuestionValidationError('Questions must be at most 4096 Unicode code points.')
+      return
+    }
+    setQuestionValidationError(undefined)
+    void turns.submit({
+      meetingId: selectedConversation.meetingId,
+      conversationId: selectedConversation.id,
+      question: normalized,
+      idempotencyKey: newAssistantIdempotencyKey(),
+    })
+    setQuestion('')
+  }
 
-  const questionCount = assistantQuestionLength(question)
-  const selectedConversation =
-    allConversations.find(
-      (conversation) => conversation.id === selectedConversationId
-    ) ?? detailQuery.data?.pages[0]?.conversation
-  const isQuestionBusy = isSubmitting || Boolean(processingTurn)
-
+  const inactive = selectedConversation?.status !== 'ACTIVE'
   return {
     selectedMeetingId,
     selectMeeting,
     selector: {
       listAccessError,
       onListAccessRetry: () => {
-        retryAssistantAccess(queryClient)
-        clearConversationState(selectedMeetingId)
+        retryAssistantAccess(client)
         void conversationsQuery.refetch()
       },
       selectedMeetingId,
-      conversations: selectedConversations,
+      conversations,
       allConversations,
       conversationsQuery,
       selectedConversationId,
@@ -621,53 +198,44 @@ export function useAssistantConversation() {
       onMeetingChange: selectMeeting,
       onConversationOpen: openConversation,
       onConversationTitleChange: setConversationTitle,
-      onCreate: createConversation,
+      onCreate: () => void createConversation(),
       createPending: isCreating,
       createError,
+      uncertainCreation,
       onLoadOlderConversations: () => void conversationsQuery.fetchNextPage(),
     },
     panel: {
       listAccessError,
       detailAccessError,
       onDetailAccessRetry: () => {
-        retryAssistantAccess(queryClient, selectedConversationId)
-        if (selectedConversationId) {
-          invalidateAssistantHistory(queryClient, selectedConversationId)
-        }
-        clearConversationState(selectedMeetingId, selectedConversationId)
-        void detailQuery.refetch()
+        retryAssistantAccess(client, selectedConversationId)
+        void refreshConversation()
       },
       selectedConversationId,
       selectedConversation,
       detailQuery,
       historyAccessReady,
-      historyRefreshError,
-      historyRefreshing: isRefreshingHistory,
-      onLoadOlderMessages: () =>
-        void detailQuery.fetchNextPage({ cancelRefetch: false }),
+      historyRefreshError: historyError ?? turns.historyRefreshError,
+      historyRefreshing,
+      onLoadOlderMessages: () => {
+        if (normalizeCoreApiError(detailQuery.error).code === 'ASSISTANT_HISTORY_ANCHOR_NOT_FOUND') void refreshConversation()
+        else void detailQuery.fetchNextPage({ cancelRefetch: false })
+      },
       question,
-      questionCount,
+      questionCount: assistantQuestionLength(question),
       questionValidationError,
       onQuestionChange: (value: string) => {
         setQuestion(value)
         setQuestionValidationError(undefined)
       },
-      onQuestionSubmit: (event: FormEvent<HTMLFormElement>) =>
-        void submitQuestion(event),
-      onQuestionRetry: () => void submitQuestion(undefined, true),
-      questionBusy: isQuestionBusy,
-      submission,
-      submissionError,
-      processingTurn,
-      pollingStopped,
-      pollingError,
-      pollingAttempts,
+      onQuestionSubmit: submitQuestion,
+      questionBusy: turns.busy || inactive,
+      workflow: turns.workflow,
+      onQuestionRetry: turns.retry,
+      onRecover: turns.recover,
+      onResumePolling: turns.resume,
       onRefresh: () => void refreshConversation(),
-      onResumePolling: () => {
-        setPollingError(undefined)
-        setPollingStopped(false)
-        setPollingAttempts(0)
-      },
+      inactive,
     },
   }
 }

@@ -13,11 +13,8 @@ import {
 import { AssistantError } from './assistant-error'
 import { canRetryAssistantSubmission } from './assistant-error-policy'
 import { chronologicalHistoryMessages } from './assistant-history'
-import type {
-  ConversationHistoryQuery,
-  ProcessingTurn,
-  Submission,
-} from './assistant-types'
+import type { ConversationHistoryQuery } from './assistant-types'
+import type { TurnWorkflow } from './assistant-turn-workflow'
 import { ConversationHistory } from './message-history'
 
 export function ConversationPanel({
@@ -39,12 +36,9 @@ export function ConversationPanel({
   onQuestionSubmit,
   onQuestionRetry,
   questionBusy,
-  submission,
-  submissionError,
-  processingTurn,
-  pollingStopped,
-  pollingError,
-  pollingAttempts,
+  workflow,
+  onRecover,
+  inactive,
   onRefresh,
   onResumePolling,
 }: {
@@ -66,12 +60,9 @@ export function ConversationPanel({
   onQuestionSubmit: (event: FormEvent<HTMLFormElement>) => void
   onQuestionRetry: () => void
   questionBusy: boolean
-  submission?: Submission
-  submissionError: unknown
-  processingTurn?: ProcessingTurn
-  pollingStopped: boolean
-  pollingError: unknown
-  pollingAttempts: number
+  workflow?: TurnWorkflow
+  onRecover: () => void
+  inactive: boolean
   onRefresh: () => void
   onResumePolling: () => void
 }) {
@@ -127,43 +118,32 @@ export function ConversationPanel({
         <AssistantError error={historyRefreshError} />
       )}
 
-      {(processingTurn || pollingStopped) && (
+      {workflow && workflow.phase !== 'settled' && (
         <Alert>
-          <LoaderCircle className='animate-spin' />
-          <AlertTitle>Core is processing this question.</AlertTitle>
+          <AlertTitle>
+            {workflow.phase === 'recoverable' ? 'Execution lease expired' :
+              workflow.phase === 'paused' ? 'Turn outcome is unresolved' :
+              workflow.phase === 'uncertain' || workflow.phase === 'lookup' ? 'Question submission is unresolved' :
+              'Core is processing this question.'}
+          </AlertTitle>
           <AlertDescription>
-            {pollingStopped
-              ? `Core accepted the turn, but completion was not observed after ${pollingAttempts} bounded checks. Refresh history or resume read-only status checks; the question will not be submitted again automatically.`
-              : 'The accepted turn remains PROCESSING. The Web is checking conversation history without creating another request.'}
-            {pollingStopped && (
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                onClick={onResumePolling}
-              >
-                Resume status checks
-              </Button>
+            {workflow.phase === 'recoverable' ? 'Recover this existing turn explicitly. No new question will be created.' :
+              workflow.phase === 'paused' ? 'Resume read-only status checks to reconcile the durable turn.' :
+              workflow.phase === 'uncertain' || workflow.phase === 'lookup' ? 'The original request identity is retained. No automatic resubmission will occur.' :
+              'The Web observes authoritative turn status without creating another request.'}
+            {workflow.phase === 'recoverable' && <Button type='button' size='sm' variant='outline' onClick={onRecover} disabled={inactive}>Recover turn</Button>}
+            {(workflow.phase === 'paused' || workflow.phase === 'uncertain') && (
+              <Button type='button' size='sm' variant='outline' onClick={onResumePolling}>Resume status checks</Button>
             )}
           </AlertDescription>
         </Alert>
       )}
-
-      {submissionError !== undefined && submissionError !== null && (
-        <AssistantError
-          error={submissionError}
-          onRetry={
-            submission && canRetryAssistantSubmission(submissionError)
-              ? onQuestionRetry
-              : undefined
-          }
+      {workflow?.error != null && (
+        <AssistantError error={workflow.error}
+          onRetry={workflow.phase === 'uncertain' && canRetryAssistantSubmission(workflow.error) ? onQuestionRetry : undefined}
         />
       )}
-      {pollingError !== undefined &&
-        pollingError !== null &&
-        submissionError === undefined && (
-          <AssistantError error={pollingError} onRetry={onResumePolling} />
-        )}
+      {inactive && <p className='text-sm text-muted-foreground'>This conversation is not active.</p>}
 
       <form className='space-y-3' onSubmit={onQuestionSubmit}>
         <label className='space-y-1.5 text-sm font-medium'>
@@ -193,7 +173,7 @@ export function ConversationPanel({
               questionCount > ASSISTANT_QUESTION_LIMIT
             }
           >
-            {questionMutationLabel(questionBusy, processingTurn)}
+            {questionMutationLabel(questionBusy, workflow)}
           </Button>
         </div>
       </form>
@@ -203,9 +183,9 @@ export function ConversationPanel({
 
 function questionMutationLabel(
   busy: boolean,
-  processingTurn?: ProcessingTurn
+  workflow?: TurnWorkflow
 ): ReactNode {
-  if (processingTurn) return 'Processing…'
+  if (workflow && workflow.phase !== 'settled') return 'Processing…'
   if (busy) return <LoaderCircle className='size-4 animate-spin' />
   return 'Ask Assistant'
 }

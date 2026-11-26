@@ -27,6 +27,7 @@ export function ConversationSelector({
   onCreate,
   createPending,
   createError,
+  uncertainCreation,
   onLoadOlderConversations,
 }: {
   listAccessError?: CoreApiError
@@ -47,6 +48,7 @@ export function ConversationSelector({
   onCreate: () => void
   createPending: boolean
   createError: unknown
+  uncertainCreation: boolean
   onLoadOlderConversations: () => void
 }) {
   return listAccessError ? (
@@ -103,7 +105,7 @@ export function ConversationSelector({
             Create conversation
           </Button>
         </div>
-        {selectedMeetingId && conversations.length ? (
+        {conversations.length ? (
           <div className='space-y-2'>
             {conversations.map((conversation) => (
               <div
@@ -178,6 +180,7 @@ export function ConversationSelector({
       </div>
 
       {createError && <AssistantError error={createError} />}
+      {uncertainCreation && <p role='status' className='text-sm text-muted-foreground'>The creation outcome is unresolved. Review the refreshed conversation list before creating another.</p>}
     </>
   )
 }

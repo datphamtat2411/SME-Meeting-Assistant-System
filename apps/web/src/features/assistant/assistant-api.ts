@@ -381,32 +381,30 @@ export function assistantConversationHistoryQueryOptions(
   size = ASSISTANT_PAGE_SIZE
 ) {
   return infiniteQueryOptions({
-    queryKey: [
-      'assistant',
-      'conversation',
-      conversationId,
-      'history',
-      size,
-    ] as const,
-    initialPageParam: 0,
+    queryKey: ['assistant', 'conversation', conversationId, 'history', size] as const,
+    initialPageParam: null as string | null,
     queryFn: ({
       pageParam,
       signal,
       client,
     }: {
-      pageParam: number
+      pageParam: string | null
       signal: AbortSignal
       client: QueryClient
     }) =>
-      readAssistantHistoryProtected(client, conversationId as string, () =>
-        fetchAssistantConversationDetail(conversationId as string, {
-          page: pageParam,
+      readAssistantHistoryProtected(client, conversationId as string, async () => {
+        const detail = await fetchAssistantConversationDetail(conversationId as string, {
+          ...(pageParam === null ? {} : { beforeMessageId: pageParam }),
           size,
           signal,
         })
-      ),
+        if (detail.hasMore && !detail.nextBeforeMessageId) {
+          throw malformedAssistantResponse('Core omitted the history continuation anchor.', undefined)
+        }
+        return detail
+      }),
     getNextPageParam: (lastPage: AssistantConversationDetail) =>
-      lastPage.hasMore ? lastPage.page + 1 : undefined,
+      lastPage.nextBeforeMessageId ?? undefined,
     enabled: Boolean(conversationId),
     structuralSharing: guardAssistantHistoryCache,
     retry: false,
