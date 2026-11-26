@@ -12,7 +12,6 @@ import {
 } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { compareInstants, instantCivilFields } from '@/lib/regional-time'
-import { formatMeetingSchedule } from '../data/meeting-schedule-format'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
@@ -75,6 +74,7 @@ import {
   type MeetingEditPayload,
   type MeetingEditValues,
 } from '../data/meeting-editing-api'
+import { formatMeetingSchedule } from '../data/meeting-schedule-format'
 import {
   getSchedulingFingerprint,
   resolveScheduleEndpoint,
@@ -418,7 +418,7 @@ function MeetingEditSession({
     : undefined
   const currentScheduleFingerprint = getSchedulingFingerprint(
     {
-      title,
+      title: title.trim(),
       description,
       date,
       endDate,
@@ -826,8 +826,10 @@ function MeetingEditSession({
     try {
       if (await reviewIfSnapshotChanged(base, scheduleIntent)) return
       if (
-        getSchedulingFingerprint(form.getValues(), candidate.schedule) !==
-        candidate.fingerprint
+        getSchedulingFingerprint(
+          { ...form.getValues(), title: form.getValues('title').trim() },
+          candidate.schedule
+        ) !== candidate.fingerprint
       ) {
         clearPreview()
         setErrorMessage('The schedule inputs changed. Review and save again.')
