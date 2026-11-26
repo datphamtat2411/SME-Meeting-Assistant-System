@@ -12,6 +12,8 @@ import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
+import { configureSessionRevalidation } from '@/features/auth/session/session-revalidation'
+import { ExportPanel } from './intelligence/export-panel'
 import type { MeetingView } from './data/detail-api'
 import type { MeetingListResponse } from './data/list-api'
 import { LiveMeetingPage } from './live-meeting'
@@ -517,6 +519,136 @@ describe('MeetingWorkspacePage', () => {
     vi.unstubAllGlobals()
     toastError.mockReset()
     toastSuccess.mockReset()
+  })
+
+  it('rechecks meeting membership and retires export recovery after an export status denial', async () => {
+    const actor = workspaceIdentity('dddddddd-dddd-4ddd-8ddd-dddddddddddd')
+    const meetingId = workspaceMinutesMeetingId
+    const exportId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    const key = `sme:meeting-minutes-export:v3:${actor.userId}:${actor.session.id}:${meetingId}`
+    let revoked = false
+    sessionStorage.setItem(
+      key,
+      JSON.stringify({
+        actorId: actor.userId,
+        sessionId: actor.session.id,
+        meetingId,
+        PDF: { idempotencyKey: 'existing-export-request', exportId },
+      })
+    )
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: {
+        ...detail,
+        id: meetingId,
+        organizerUserId: workspaceSummaryId,
+        roomId: null,
+      },
+      meta: {},
+      etag: 'workspace-export',
+    })
+    const membershipRead = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (url) => {
+        if (url.endsWith('/participants')) {
+          return {
+            data: revoked
+              ? []
+              : [
+                  {
+                    ...participants[0],
+                    meetingId,
+                    userId: actor.userId,
+                  },
+                ],
+            meta: {},
+          } as never
+        }
+        throw new Error('Unexpected metadata GET ' + url)
+      })
+    const get = vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url === '/auth/me') return actor as never
+      if (url.endsWith('/exports/capabilities')) {
+        return {
+          meetingId,
+          admission: true,
+          recovery: true,
+          status: true,
+          access: true,
+        } as never
+      }
+      if (url.endsWith('/minutes')) return workspaceMinutes() as never
+      if (url === '/exports/' + exportId) {
+        if (revoked) {
+          throw new CoreApiError({
+            status: 404,
+            kind: 'http',
+            message: 'Export unavailable',
+          })
+        }
+        return {
+          exportId,
+          meetingId,
+          format: 'PDF',
+          status: 'PENDING',
+          attemptCount: 0,
+          createdAt: '2026-11-25T12:00:00Z',
+          readyAt: null,
+          safeErrorCode: null,
+          freshness: 'NOT_APPLICABLE',
+          freshnessCheckedAt: null,
+          retryEligible: false,
+        } as never
+      }
+      if (url.endsWith('/media') || url.endsWith('/processing-jobs')) {
+        return [] as never
+      }
+      throw new Error('Unexpected GET ' + url)
+    })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(currentUserQueryKey, actor)
+    const dispose = configureSessionRevalidation({
+      queryClient: client,
+      onContainment: () => client.clear(),
+      onChanged: () => undefined,
+    })
+    try {
+      const screen = await render(
+        <QueryClientProvider client={client}>
+          <MeetingAuthorizationProvider meetingId={meetingId}>
+            <MeetingSessionProvider meetingId={meetingId}>
+              <ExportPanel meetingId={meetingId} canExport />
+            </MeetingSessionProvider>
+          </MeetingAuthorizationProvider>
+        </QueryClientProvider>
+      )
+      await expect.element(screen.getByText('Queued')).toBeVisible()
+      const reads = membershipRead.mock.calls.length
+      const verificationReads = get.mock.calls.filter(
+        ([url]) => url === '/auth/me'
+      ).length
+      revoked = true
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Refresh PDF status' })
+      )
+      await expect.poll(() => sessionStorage.getItem(key)).toBeNull()
+      await expect
+        .element(
+          screen.getByText('Export is unavailable for the current meeting access.')
+        )
+        .toBeVisible()
+      expect(membershipRead.mock.calls.length).toBeGreaterThan(reads)
+      expect(
+        get.mock.calls.filter(([url]) => url === '/auth/me').length
+      ).toBeGreaterThan(verificationReads)
+      expect(client.getQueriesData({ queryKey: ['export', exportId] })).toEqual(
+        []
+      )
+    } finally {
+      dispose()
+      sessionStorage.removeItem(key)
+    }
   })
 
   it('renders authorized operational metadata without mock intelligence or fabricated participant names', async () => {
