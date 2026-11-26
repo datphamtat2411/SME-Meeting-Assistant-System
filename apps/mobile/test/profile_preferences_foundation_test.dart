@@ -1291,27 +1291,21 @@ void main() {
     final identity = Completer<http.StreamedResponse>();
     var reads = 0;
     var patches = 0;
-    final api = await _authenticated(
-      (request) async {
-        if (request.url.path.endsWith('/me/preferences')) {
-          if (request.method == 'GET') {
-            return jsonResponse(200, successEnvelope(_preferences()));
-          }
-          return jsonResponse(
-            200,
-            successEnvelope(_preferences(meeting: false)),
-          );
-        }
+    final api = await _authenticated((request) async {
+      if (request.url.path.endsWith('/me/preferences')) {
         if (request.method == 'GET') {
-          return ++reads == 1
-              ? _profileResponse('Original', '"v1"')
-              : _profileResponse('New name', '"v2"');
+          return jsonResponse(200, successEnvelope(_preferences()));
         }
-        patches++;
-        return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Down'));
-      },
-      reloadIdentity: () => identity.future,
-    );
+        return jsonResponse(200, successEnvelope(_preferences(meeting: false)));
+      }
+      if (request.method == 'GET') {
+        return ++reads == 1
+            ? _profileResponse('Original', '"v1"')
+            : _profileResponse('New name', '"v2"');
+      }
+      patches++;
+      return jsonResponse(503, errorEnvelope('INTERNAL_ERROR', 'Down'));
+    }, reloadIdentity: () => identity.future);
     final repository = ProfileRepository(api: api);
     final profile = ProfileController(repository);
     final preferences = PreferencesController(repository);
