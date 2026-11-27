@@ -20,7 +20,7 @@ public interface MeetingMediaAccess {
     void requireProcessingAllowed(UUID meetingId, UUID actorId);
 
     /**
-     * Revalidate processing authorization from current persisted state after
+     * Revalidate shared upload/processing organizer authorization from persisted state after
      * the admission caller has acquired its user/meeting/job locks.
      */
     void requireLockedProcessingAllowed(UUID meetingId, UUID actorId);

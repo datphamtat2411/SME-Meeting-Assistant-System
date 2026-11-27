@@ -72,6 +72,10 @@ class DashboardController extends ChangeNotifier {
           throw response.invalidDataFailure();
         }
       }
+      if ((counts['overdue'] as int) >
+          (counts['open'] as int) + (counts['inProgress'] as int)) {
+        throw response.invalidDataFailure();
+      }
       _data = Map.unmodifiable(data);
     } catch (error) {
       if (!current) return;

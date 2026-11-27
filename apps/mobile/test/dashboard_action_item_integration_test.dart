@@ -405,6 +405,32 @@ void main() {
     expect(reads, 3);
   });
 
+  test('Dashboard rejects overdue counts exceeding active work', () async {
+    final client = MeetingTestHttpClient((request) async {
+      expect(request.url.path, endsWith('/dashboard/me'));
+      return meetingApiSuccess({
+        'assignedActionItems': {
+          'open': 1,
+          'inProgress': 1,
+          'done': 3,
+          'overdue': 3,
+        },
+      });
+    });
+    final api = createMeetingTestApi(client);
+    await signInMeetingTestApi(api);
+    final signal = ActionItemInvalidationSignal(api);
+    final controller = DashboardController(api: api, invalidation: signal);
+    addTearDown(() {
+      controller.dispose();
+      signal.dispose();
+      api.dispose();
+    });
+    await controller.refresh();
+    expect(controller.data, isNull);
+    expect(controller.failure, isNotNull);
+  });
+
   test('Dashboard fences an obsolete session response', () async {
     final started = Completer<void>();
     final pending = Completer<http.StreamedResponse>();

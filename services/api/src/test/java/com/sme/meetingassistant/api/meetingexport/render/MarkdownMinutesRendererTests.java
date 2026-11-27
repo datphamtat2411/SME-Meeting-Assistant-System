@@ -88,6 +88,22 @@ class MarkdownMinutesRendererTests {
     }
 
     @Test
+    void displayNamesCannotChangeVersionOneExportBytes() {
+        MinutesSnapshot base = sample();
+        MinutesSnapshot enriched = new MinutesSnapshot(base.schemaVersion(), base.assembledAt(),
+                base.sourceFingerprint(), base.completeness(), base.meeting(), base.summary(),
+                base.confirmedDecisions(), base.officialActionItems(), base.transcript(), base.warnings(),
+                base.proposalsIncluded(), new MinutesSnapshot.DisplayMetadata(
+                    java.util.Map.of(ORGANIZER, "Nguyễn Văn An")));
+        RenderedMarkdown original = RENDERER.render(base);
+        RenderedMarkdown withNames = RENDERER.render(enriched);
+        assertThat(withNames.utf8()).isEqualTo(original.utf8());
+        assertThat(withNames.sha256()).isEqualTo(original.sha256());
+        assertThat(withNames.sourceFingerprint()).isEqualTo(original.sourceFingerprint());
+        assertThat(withNames.text()).doesNotContain("Nguyễn Văn An");
+    }
+
+    @Test
     void hostileTitleSummaryAndActionDetailsCannotInjectHtmlHeadingsLinksOrImages() {
         String malicious = "# Fake heading\r\n<script>alert('x')</script>\n"
                 + "<img src=x onerror=alert(1)>\n"
