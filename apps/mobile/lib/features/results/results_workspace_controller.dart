@@ -9,6 +9,7 @@ import '../../core/paged_collection.dart';
 import '../meetings/meeting_foundation.dart';
 import '../recording/processing_manager.dart';
 import '../recording/media_contracts.dart';
+import '../recording/transcript_review_contract.dart';
 import 'decision_review_state.dart';
 import 'results_invalidation.dart';
 import 'results_models.dart';
@@ -283,10 +284,84 @@ class ResultsWorkspaceController extends ChangeNotifier
   }
 
   void clearDraft(String key, int epoch) {
-    if (ownsReview(epoch)) _mutations.clearDraft(key);
+    if (ownsReview(epoch)) {
+      _mutations.clearDraft(key);
+      notifyListeners();
+    }
   }
 
   bool mutationBusy(ResultsMutationGroup group) => _mutations.busy(group);
+
+  bool get canReviewProcessingTranscript =>
+      capabilities.canMutate &&
+      !_mutations.hasTranscriptDrafts &&
+      !_mutations.busy(ResultsMutationGroup.transcript) &&
+      _dialogs.isEmpty &&
+      _active.contains(ResultsResourceKind.transcript);
+
+  Future<bool> reviewProcessingTranscript(
+    TranscriptReviewHandoff handoff,
+    TranscriptReviewCommand command,
+    TranscriptReviewProof? proof, {
+    required int epoch,
+  }) async {
+    _requireMutation(epoch);
+    final manager = processingManager;
+    if (manager == null ||
+        handoff.meetingId != meetingId ||
+        !canReviewProcessingTranscript) {
+      throw const ApiFailure(
+        409,
+        'REVIEW_CONTEXT_CHANGED',
+        'Review the current transcript and resolve any pending edits first.',
+      );
+    }
+    final ticket = _mutations.begin(ResultsMutationGroup.transcript);
+    notifyListeners();
+    try {
+      final admitted = await manager.reviewTranscript(
+        handoff: handoff,
+        scope: sessionScope,
+        command: command,
+        displayedProof: proof,
+        readCurrentTranscript: () => repository.currentTranscript(
+          sessionScope: sessionScope,
+          meetingId: meetingId,
+        ),
+        stillAuthorized: () =>
+            ownsReview(epoch) &&
+            _mutations.owns(ResultsMutationGroup.transcript, ticket) &&
+            !_mutations.hasTranscriptDrafts &&
+            _dialogs.isEmpty &&
+            _active.contains(ResultsResourceKind.transcript) &&
+            (proof == null ||
+                (transcriptIsCurrent &&
+                    transcript.data != null &&
+                    proof.matches(transcript.data!))),
+        capabilities: MeetingCapabilityPolicy.evaluate(
+          callerId: sessionScope.userId,
+          meeting: meeting,
+        ),
+      );
+      _requireMutation(epoch);
+      return admitted;
+    } on ApiFailure catch (error) {
+      if (ownsReview(epoch)) {
+        if (error.status == 401 ||
+            error.status == 403 ||
+            error.status == 404) {
+          await handleProtectedReadFailure(error, epoch: readEpoch);
+        } else if (error.status == 409 || error.status == 412) {
+          await loadTranscript(force: true);
+          await loadCoverage(force: true);
+        }
+      }
+      rethrow;
+    } finally {
+      _mutations.finish(ResultsMutationGroup.transcript, ticket);
+      if (!_disposed) notifyListeners();
+    }
+  }
   String? get acceptedRegenerationJobId => _mutations.acceptedRegenerationJobId;
   ProcessingJobRecord? get regenerationJob =>
       capabilities.canRead ? _mutations.regeneration.job : null;

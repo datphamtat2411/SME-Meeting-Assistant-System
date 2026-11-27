@@ -40,6 +40,8 @@ class ResultsMutationCoordinator {
   bool get decisionOutcomeUnknown => decisionReview.unresolved != null;
   final Map<String, ResultsRecoveryDraft> _drafts =
       <String, ResultsRecoveryDraft>{};
+  bool get hasTranscriptDrafts =>
+      _drafts.keys.any((key) => key.startsWith('segment:'));
   ResultsRecoveryDraft? draft(String key) => _drafts[key];
   void keepDraft(String key, ResultsRecoveryDraft draft) =>
       _drafts[key] = draft;
