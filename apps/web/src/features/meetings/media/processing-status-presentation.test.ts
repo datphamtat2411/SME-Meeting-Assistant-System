@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { i18n } from '@/lib/i18n'
-import { presentProcessingStatus } from './processing-status-presentation'
+import {
+  presentProcessingJobType,
+  presentProcessingStage,
+  presentProcessingStatus,
+} from './processing-status-presentation'
 
 describe('processing status presentation', () => {
   it.each([
@@ -39,4 +43,21 @@ describe('processing status presentation', () => {
       })
     }
   )
+})
+
+describe('processing stage and job labels', () => {
+  it('translates known codes and retains unknown future codes', () => {
+    const t = i18n.getFixedT('vi')
+    expect(presentProcessingStage('TRANSCRIPTION', t)).toBe(
+      'Nhận dạng lời nói'
+    )
+    expect(presentProcessingStage('TRANSCRIPT_REVIEW', t)).toBe(
+      'Rà soát bản ghi lời thoại'
+    )
+    expect(presentProcessingStage('FUTURE_STAGE', t)).toBe('FUTURE_STAGE')
+    expect(presentProcessingJobType('OFFLINE_MEETING_PROCESSING', t)).toBe(
+      'Xử lý cuộc họp'
+    )
+    expect(presentProcessingJobType('FUTURE_JOB', t)).toBe('FUTURE_JOB')
+  })
 })

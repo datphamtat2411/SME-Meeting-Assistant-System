@@ -69,7 +69,10 @@ import {
   MeetingSessionBoundary,
   useOptionalMeetingSession,
 } from './media/meeting-session-context'
-import { presentProcessingStatus } from './media/processing-status-presentation'
+import {
+  presentProcessingStage,
+  presentProcessingStatus,
+} from './media/processing-status-presentation'
 import { useOptionalMeetingAuthorization } from './meeting-authorization-context'
 import { MeetingTools } from './meeting-tools'
 import {
@@ -1246,7 +1249,10 @@ function WorkspaceResultsOverview({
                         }),
                         observedJob.currentStage
                           ? t('workspace:currentStage', {
-                              stage: observedJob.currentStage,
+                              stage: presentProcessingStage(
+                                observedJob.currentStage,
+                                t
+                              ),
                             })
                           : undefined,
                         observedJob.warningSummary ?? undefined,

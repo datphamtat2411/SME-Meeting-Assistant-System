@@ -54,7 +54,10 @@ import {
   useMeetingSession,
 } from '../media/meeting-session-context'
 import { PlaybackControls } from '../media/playback-controls'
-import { presentProcessingStatus } from '../media/processing-status-presentation'
+import {
+  presentProcessingStage,
+  presentProcessingStatus,
+} from '../media/processing-status-presentation'
 import { useOptionalMeetingAuthorization } from '../meeting-authorization-context'
 import type { EvidenceReferenceIssue } from '../meeting-workspace-navigation'
 import { invalidateMeetingArtifacts } from './query-invalidation'
@@ -1130,7 +1133,7 @@ function TranscriptReviewWorkspaceContent({
               </div>
               <div className='flex flex-wrap gap-2'>
                 <Badge variant={statusBadgeVariant(transcriptValue.status)}>
-                  {t(`transcript:review_status_${transcriptValue.status}`, {
+                  {t(`transcript:status_${transcriptValue.status}`, {
                     defaultValue: transcriptValue.status,
                   })}
                 </Badge>
@@ -1326,7 +1329,7 @@ function TranscriptReviewWorkspaceContent({
                     (status) =>
                       [
                         status,
-                        t(`transcript:review_status_${status}`, {
+                        t(`transcript:status_${status}`, {
                           defaultValue: status,
                         }),
                       ] as const
@@ -1442,7 +1445,7 @@ function TranscriptReviewWorkspaceContent({
                             variant={statusBadgeVariant(segment.qualityStatus)}
                           >
                             {t(
-                              `transcript:review_status_${segment.qualityStatus}`,
+                              `transcript:status_${segment.qualityStatus}`,
                               { defaultValue: segment.qualityStatus }
                             )}
                           </Badge>
@@ -1771,7 +1774,7 @@ function ProcessingAvailability({
       </p>
     )
   }
-  const presentation = presentProcessingStatus(job.status)
+  const presentation = presentProcessingStatus(job.status, t)
   return (
     <div className='rounded-lg border p-4 text-sm'>
       <div className='flex items-center gap-2 font-medium'>
@@ -1784,7 +1787,9 @@ function ProcessingAvailability({
       </div>
       {job.currentStage && (
         <p className='mt-1 text-muted-foreground'>
-          {t('transcript:review_currentStage', { stage: job.currentStage })}
+          {t('transcript:review_currentStage', {
+            stage: presentProcessingStage(job.currentStage, t),
+          })}
         </p>
       )}
       {job.errorSummary && (
@@ -2287,7 +2292,7 @@ function ProvenanceCard({
             label={t('transcript:review_processingJob')}
             value={
               job
-                ? `${t(`transcript:review_status_${job.status}`, { defaultValue: job.status })}${job.currentStage ? ` · ${job.currentStage}` : ''}`
+                ? `${presentProcessingStatus(job.status, t).label}${job.currentStage ? ` · ${presentProcessingStage(job.currentStage, t)}` : ''}`
                 : transcript.processingJobId
             }
           />

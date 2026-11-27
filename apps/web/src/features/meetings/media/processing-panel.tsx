@@ -25,7 +25,11 @@ import {
   MeetingSessionBoundary,
   useMeetingSession,
 } from './meeting-session-context'
-import { presentProcessingStatus } from './processing-status-presentation'
+import {
+  presentProcessingJobType,
+  presentProcessingStage,
+  presentProcessingStatus,
+} from './processing-status-presentation'
 
 function processingErrorDescription(error: unknown): string | undefined {
   if (error instanceof CoreApiError)
@@ -284,7 +288,10 @@ function ProcessingPanelContent({
                         {t('processing:jobId', { id: operation.jobId })}
                         {operation.stageCode
                           ? t('processing:stageSuffix', {
-                              stage: operation.stageCode,
+                              stage: presentProcessingStage(
+                                operation.stageCode,
+                                t
+                              ),
                             })
                           : ''}
                       </p>
@@ -389,8 +396,10 @@ function ProcessingPanelContent({
                 <div className='flex flex-wrap items-center justify-between gap-2'>
                   <div>
                     <span className='font-medium'>
-                      {job.jobType} ·{' '}
-                      {job.currentStage || t('processing:pending')}
+                      {presentProcessingJobType(job.jobType, t)} ·{' '}
+                      {job.currentStage
+                        ? presentProcessingStage(job.currentStage, t)
+                        : t('processing:pending')}
                     </span>
                     <p className='text-xs text-muted-foreground'>
                       {t('processing:attempt', {
@@ -436,7 +445,7 @@ function ProcessingPanelContent({
                       >
                         <span>
                           {t('processing:stageAttempt', {
-                            stage: stage.stageCode,
+                            stage: presentProcessingStage(stage.stageCode, t),
                             attempt: stage.attemptNumber,
                           })}
                         </span>
@@ -447,7 +456,11 @@ function ProcessingPanelContent({
                               ? t('processing:stageRunning')
                               : stage.status === 'FAILED'
                                 ? t('processing:stageFailed')
-                                : stage.status}
+                                : stage.status === 'PENDING'
+                                  ? t('processing:pending')
+                                  : stage.status === 'CANCELLED'
+                                    ? t('processing:cancelled')
+                                    : stage.status}
                         </Badge>
                       </div>
                     ))}

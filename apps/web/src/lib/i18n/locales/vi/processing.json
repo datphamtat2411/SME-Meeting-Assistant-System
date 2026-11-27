@@ -61,5 +61,19 @@
   "warning": "Hoàn thành có cảnh báo",
   "failure": "Xử lý thất bại",
   "cancelled": "Đã hủy",
-  "unknown": "Không rõ trạng thái"
+  "unknown": "Không rõ trạng thái",
+  "stage_TRANSCRIPTION": "Nhận dạng lời nói",
+  "stage_TRANSCRIBING": "Nhận dạng lời nói",
+  "stage_CONTEXTUAL_CORRECTION": "Hiệu chỉnh bản ghi theo ngữ cảnh",
+  "stage_FINALIZING_TRANSCRIPT": "Hoàn tất bản ghi lời thoại",
+  "stage_TRANSCRIPT_REVIEW": "Rà soát bản ghi lời thoại",
+  "stage_DIARIZING": "Phân biệt người nói",
+  "stage_GENERATING_SUMMARY": "Tạo bản tóm tắt",
+  "stage_EXTRACTING_DECISIONS": "Trích xuất quyết định",
+  "stage_EXTRACTING_ACTION_ITEMS": "Trích xuất công việc",
+  "stage_INDEXING": "Lập chỉ mục",
+  "stage_INDEXED": "Đã lập chỉ mục",
+  "stage_MEETING_INTELLIGENCE": "Phân tích cuộc họp",
+  "jobType_OFFLINE_MEETING_PROCESSING": "Xử lý cuộc họp",
+  "jobType_DERIVED_STAGE_PROCESSING": "Xử lý kết quả AI"
 }

@@ -11,7 +11,10 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { presentProcessingStatus } from '../media/processing-status-presentation'
+import {
+  presentProcessingStage,
+  presentProcessingStatus,
+} from '../media/processing-status-presentation'
 import {
   useOptionalTranscriptReviewGate,
   useTranscriptReviewGate,
@@ -343,12 +346,14 @@ export function TranscriptReviewWorkflowStatus({
         <>
           <p className='font-medium'>
             {t('transcript:reviewGate_processing', {
-              status: presentProcessingStatus(job.status).label,
+              status: presentProcessingStatus(job.status, t).label,
             })}
           </p>
           {job.currentStage && (
             <p>
-              {t('transcript:reviewGate_stage', { stage: job.currentStage })}
+              {t('transcript:reviewGate_stage', {
+                stage: presentProcessingStage(job.currentStage, t),
+              })}
             </p>
           )}
           {job.warningSummary && (
