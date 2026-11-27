@@ -45,6 +45,13 @@ public final class ActionItemLifecycle {
         return manager || (!requiresManager(command) && officialAssignee);
     }
 
+    /** Advisory capabilities use the same predicates as authoritative commands. */
+    public static boolean isEligible(Command command, ActionItemStatus status,
+            boolean manager, boolean officialAssignee, boolean activeAssignee) {
+        return isAllowed(command, status) && canExecute(command, manager, officialAssignee)
+            && (!requiresActiveAssignee(command) || activeAssignee);
+    }
+
     public static boolean requiresManager(Command command) {
         return command == Command.CONFIRM || command == Command.REJECT
             || command == Command.CANCEL;

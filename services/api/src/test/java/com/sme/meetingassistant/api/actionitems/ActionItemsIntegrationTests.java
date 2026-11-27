@@ -104,6 +104,37 @@ class ActionItemsIntegrationTests {
             .andExpect(status().isNotFound());
     }
 
+    @Test void exactAssignmentCandidateLookupIsMeetingScopedAndActiveOnly() throws Exception {
+        String route = "/api/v1/action-items/assignee-candidates";
+        MvcResult self = mvc.perform(get(route).principal(principal(organizer))
+                .param("meetingId", meetingId.toString())
+                .param("candidateId", organizer.getId().toString()))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(self).path("data").size()).isEqualTo(1);
+        assertThat(body(self).path("data").get(0).path("id").asText())
+            .isEqualTo(organizer.getId().toString());
+        assertThat(body(self).path("data").get(0).path("active").asBoolean()).isTrue();
+        mvc.perform(get(route).principal(principal(outsider))
+                .param("meetingId", meetingId.toString())
+                .param("candidateId", organizer.getId().toString()))
+            .andExpect(status().isNotFound());
+        mvc.perform(get(route).principal(principal(organizer))
+                .param("meetingId", meetingId.toString()))
+            .andExpect(status().isBadRequest());
+        mvc.perform(get(route).principal(principal(organizer))
+                .param("meetingId", meetingId.toString())
+                .param("candidateId", organizer.getId().toString()).param("q", "Action"))
+            .andExpect(status().isBadRequest());
+        ReflectionTestUtils.setField(assignee, "accountStatus", AccountStatus.INACTIVE);
+        users.saveAndFlush(assignee);
+        MvcResult inactive = mvc.perform(get(route).principal(principal(organizer))
+                .param("meetingId", meetingId.toString())
+                .param("candidateId", assignee.getId().toString()))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(inactive).path("data").size()).isZero();
+        assertThat(body(inactive).path("meta").path("pagination").path("totalElements").asLong()).isZero();
+    }
+
     @Test void schemaUsesCanonicalStatusesAndDoesNotPersistOverdueState() {
         assertThat(jdbc.queryForList("""
             SELECT check_clause FROM information_schema.check_constraints
@@ -888,6 +919,8 @@ class ActionItemsIntegrationTests {
             assertThat(webRow.path("id").asText()).isEqualTo(mobileRow.path("id").asText());
             assertThat(webRow.path("label").asText())
                 .isEqualTo("Restricted meeting (" + webRow.path("id").asText() + ")");
+            assertThat(webRow.path("restricted").isBoolean()).isTrue();
+            assertThat(webRow.path("restricted").asBoolean()).isTrue();
             assertThat(mobileRow.path("title").isNull()).isTrue();
             assertThat(mobileRow.path("canReadMeetingContext").asBoolean()).isFalse();
             order.add(webRow.path("id").asText());
@@ -918,6 +951,10 @@ class ActionItemsIntegrationTests {
             JsonNode row = body(visible).path("data").get(0);
             assertThat(row.path("id").asText()).isEqualTo(second.toString());
             assertThat(row.path(path.equals(web) ? "label" : "title").asText()).isEqualTo("Secret alpha");
+            if (path.equals(web)) {
+                assertThat(row.path("restricted").isBoolean()).isTrue();
+                assertThat(row.path("restricted").asBoolean()).isFalse();
+            }
         }
         jdbc.update("DELETE FROM manager_scope_units WHERE user_id=? AND org_unit_id=?",
             manager.getId(), unitId);

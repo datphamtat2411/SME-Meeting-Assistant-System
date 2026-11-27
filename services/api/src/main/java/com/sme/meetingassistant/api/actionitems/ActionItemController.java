@@ -75,10 +75,14 @@ public class ActionItemController {
     @GetMapping("/assignee-candidates")
     public ApiResponse<List<ActionItemService.AssigneeCandidate>> assigneeCandidates(
             @RequestParam UUID meetingId,
-            @RequestParam @Size(max=200) String q,
+            @RequestParam(required=false) @Size(max=200) String q,
+            @RequestParam(required=false) UUID candidateId,
             @RequestParam(defaultValue="0") @Min(0) int page,
             @RequestParam(defaultValue="20") @Min(1) @Max(20) int size) {
-        return responses.successPage(service.assigneeCandidates(caller.requireUserId(), meetingId, q, page, size));
+        if ((q == null) == (candidateId == null)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+        }
+        return responses.successPage(service.assigneeCandidates(caller.requireUserId(), meetingId, q, candidateId, page, size));
     }
 
     @GetMapping("/creation-meetings")

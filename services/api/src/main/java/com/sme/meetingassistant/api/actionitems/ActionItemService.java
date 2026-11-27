@@ -287,23 +287,18 @@ public class ActionItemService {
         ActionItemView.Capabilities capabilities = new ActionItemView.Capabilities(
             editable,
             editable,
-            ActionItemLifecycle.isAllowed(Command.CONFIRM, visible.status())
-                && ActionItemLifecycle.canExecute(Command.CONFIRM, manageable, officialAssignee)
-                && (!ActionItemLifecycle.requiresActiveAssignee(Command.CONFIRM) || activeAssignee),
-            ActionItemLifecycle.isAllowed(Command.REJECT, visible.status())
-                && ActionItemLifecycle.canExecute(Command.REJECT, manageable, officialAssignee),
-            ActionItemLifecycle.isAllowed(Command.START, visible.status())
-                && ActionItemLifecycle.canExecute(Command.START, manageable, officialAssignee)
-                && (!ActionItemLifecycle.requiresActiveAssignee(Command.START) || activeAssignee),
-            ActionItemLifecycle.isAllowed(Command.COMPLETE, visible.status())
-                && ActionItemLifecycle.canExecute(Command.COMPLETE, manageable, officialAssignee)
-                && (!ActionItemLifecycle.requiresActiveAssignee(Command.COMPLETE) || activeAssignee),
-            ActionItemLifecycle.isAllowed(Command.CANCEL, visible.status())
-                && ActionItemLifecycle.canExecute(Command.CANCEL, manageable, officialAssignee)
-                && (!ActionItemLifecycle.requiresActiveAssignee(Command.CANCEL) || activeAssignee),
-            ActionItemLifecycle.isAllowed(Command.REOPEN, visible.status())
-                && ActionItemLifecycle.canExecute(Command.REOPEN, manageable, officialAssignee)
-                && (!ActionItemLifecycle.requiresActiveAssignee(Command.REOPEN) || activeAssignee),
+            ActionItemLifecycle.isEligible(Command.CONFIRM, visible.status(),
+                manageable, officialAssignee, activeAssignee),
+            ActionItemLifecycle.isEligible(Command.REJECT, visible.status(),
+                manageable, officialAssignee, activeAssignee),
+            ActionItemLifecycle.isEligible(Command.START, visible.status(),
+                manageable, officialAssignee, activeAssignee),
+            ActionItemLifecycle.isEligible(Command.COMPLETE, visible.status(),
+                manageable, officialAssignee, activeAssignee),
+            ActionItemLifecycle.isEligible(Command.CANCEL, visible.status(),
+                manageable, officialAssignee, activeAssignee),
+            ActionItemLifecycle.isEligible(Command.REOPEN, visible.status(),
+                manageable, officialAssignee, activeAssignee),
             contentVisible,
             contentVisible && "AI_EXTRACTED".equals(visible.sourceType()));
         ActionItemView.MeetingDisplay meeting = contentVisible
@@ -394,7 +389,8 @@ public class ActionItemService {
 
     private ActionItemView transition(UUID id, UUID actor, String tag, Command command) {
         meetingAccess.requireCurrentActiveActor(actor);
-        ActionItemView old = byId(id);
+        // Re-read the canonical row after any competing writer has finished.
+        ActionItemView old = byIdForUpdate(id);
         boolean manager = meetingAccess.canManageActionItems(old.meetingId(), actor);
         boolean assignee = actor.equals(old.assigneeUserId()) && isOfficial(old);
         if (!ActionItemLifecycle.canExecute(command, manager, assignee)) {
@@ -622,7 +618,7 @@ public class ActionItemService {
         }
     }
 
-    public record ManagementTarget(UUID id, String label) { }
+    public record ManagementTarget(UUID id, String label, boolean restricted) { }
 
     public record ManagementCapability(boolean canCreate) { }
 
@@ -651,25 +647,42 @@ public class ActionItemService {
         validateLookupPage(page, size);
         return manageableMeetings(actorId, query, PageRequest.of(page, size))
             .map(meeting -> new ManagementTarget(meeting.id(), meeting.canReadMeetingContext()
-                ? meeting.title() : "Restricted meeting (" + meeting.id() + ")"));
+                ? meeting.title() : "Restricted meeting (" + meeting.id() + ")",
+                !meeting.canReadMeetingContext()));
     }
 
     @Transactional(readOnly = true)
     public Page<AssigneeCandidate> assigneeCandidates(UUID actorId, UUID meetingId, String query, int page, int size) {
+        return assigneeCandidates(actorId, meetingId, query, null, page, size);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<AssigneeCandidate> assigneeCandidates(UUID actorId, UUID meetingId, String query,
+            UUID candidateId, int page, int size) {
         meetingAccess.requireCurrentActiveActor(actorId);
         meetingAccess.requireManageActionItems(meetingId, actorId);
         validateLookupPage(page, size);
-        String pattern = lookupPattern(query);
+        if ((query == null) == (candidateId == null)) throw invalid();
         String condition = """
             FROM users candidate
              LEFT JOIN organizational_units unit
                ON unit.id=candidate.primary_org_unit_id AND unit.status='ACTIVE'
              WHERE candidate.account_status='ACTIVE'
-               AND (lower(candidate.display_name) LIKE ? ESCAPE '\\'
-                    OR lower(candidate.email_normalized) LIKE ? ESCAPE '\\')
             """;
-        Object[] params = { pattern, pattern };
-        Long total = jdbc.queryForObject("SELECT count(*) " + condition, Long.class, params);
+        List<Object> params = new ArrayList<>();
+        if (candidateId != null) {
+            condition += " AND candidate.id=?";
+            params.add(candidateId);
+        } else {
+            String pattern = lookupPattern(query);
+            condition += " AND (lower(candidate.display_name) LIKE ? ESCAPE '\\'"
+                + " OR lower(candidate.email_normalized) LIKE ? ESCAPE '\\')";
+            params.add(pattern);
+            params.add(pattern);
+        }
+        Long total = jdbc.queryForObject("SELECT count(*) " + condition, Long.class, params.toArray());
+        params.add(size);
+        params.add((long) page * size);
         List<AssigneeCandidate> candidates = jdbc.query("""
             SELECT candidate.id, candidate.display_name, candidate.email, unit.name
               """ + condition + """
@@ -678,7 +691,7 @@ public class ActionItemService {
             """, (rs, ignored) -> new AssigneeCandidate(
                 rs.getObject("id", UUID.class), rs.getString("display_name"),
                 rs.getString("email"), rs.getString("name"), true),
-            pattern, pattern, size, (long) page * size);
+            params.toArray());
         return new PageImpl<>(candidates, PageRequest.of(page, size), total == null ? 0 : total);
     }
 
