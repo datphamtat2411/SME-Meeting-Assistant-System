@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Search as SearchIcon,
 } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
 import {
@@ -44,28 +45,28 @@ import {
 } from '../data/list-api'
 
 const statusOptions = [
-  { label: 'Draft', value: 'DRAFT' },
-  { label: 'Upcoming', value: 'SCHEDULED' },
-  { label: 'Live', value: 'IN_PROGRESS' },
-  { label: 'Completed', value: 'ENDED' },
-  { label: 'Cancelled', value: 'CANCELLED' },
+  { label: 'meetings:badgeDraft', value: 'DRAFT' },
+  { label: 'meetings:badgeUpcoming', value: 'SCHEDULED' },
+  { label: 'meetings:live', value: 'IN_PROGRESS' },
+  { label: 'meetings:badgeCompleted', value: 'ENDED' },
+  { label: 'meetings:badgeCancelled', value: 'CANCELLED' },
 ] as const
 
 const relationshipOptions = [
-  { label: 'Organizer or participant', value: 'all' },
-  { label: 'Organizer', value: 'ORGANIZER' },
-  { label: 'Participant', value: 'PARTICIPANT' },
+  { label: 'meetings:organizerOrParticipant', value: 'all' },
+  { label: 'meetings:organizer', value: 'ORGANIZER' },
+  { label: 'meetings:participant', value: 'PARTICIPANT' },
 ] as const
 
 const sortOptions = [
-  { label: 'Newest created', value: 'createdAt,desc' },
-  { label: 'Oldest created', value: 'createdAt,asc' },
-  { label: 'Soonest scheduled', value: 'scheduledStartAt,asc' },
-  { label: 'Latest scheduled', value: 'scheduledStartAt,desc' },
-  { label: 'Title A-Z', value: 'title,asc' },
-  { label: 'Title Z-A', value: 'title,desc' },
-  { label: 'Status A-Z', value: 'status,asc' },
-  { label: 'Status Z-A', value: 'status,desc' },
+  { label: 'meetings:newestCreated', value: 'createdAt,desc' },
+  { label: 'meetings:oldestCreated', value: 'createdAt,asc' },
+  { label: 'meetings:soonestScheduled', value: 'scheduledStartAt,asc' },
+  { label: 'meetings:latestScheduled', value: 'scheduledStartAt,desc' },
+  { label: 'meetings:titleAsc', value: 'title,asc' },
+  { label: 'meetings:titleDesc', value: 'title,desc' },
+  { label: 'meetings:statusAsc', value: 'status,asc' },
+  { label: 'meetings:statusDesc', value: 'status,desc' },
 ] as const
 
 export function MeetingFilters({
@@ -91,6 +92,7 @@ export function MeetingFilters({
   onSortChange: (value: MeetingSort) => void
   onReset: () => void
 }) {
+  const { t } = useUiTranslation()
   const regional = useRegionalPresentation()
   const [dateError, setDateError] = useState<string>()
   const fromDate = dateInputValue(search.from, false, regional.timezone)
@@ -102,7 +104,7 @@ export function MeetingFilters({
       value &&
       !dateInputToOffsetDateTime(value, key === 'to', regional.timezone)
     ) {
-      setDateError('Choose a valid calendar day in the displayed timezone.')
+      setDateError('meetings:invalidDateFilter')
       return
     }
     setDateError(undefined)
@@ -161,8 +163,8 @@ export function MeetingFilters({
           <Input
             value={search.q ?? ''}
             onChange={(event) => onSearchChange(event.target.value)}
-            placeholder='Search meeting titles...'
-            aria-label='Search meeting titles'
+            placeholder={t('meetings:searchTitlePlaceholder')}
+            aria-label={t('meetings:searchTitle')}
             className='pl-9'
           />
         </div>
@@ -174,15 +176,15 @@ export function MeetingFilters({
         >
           <SelectTrigger
             className='w-full lg:w-44'
-            aria-label='Filter meetings by status'
+            aria-label={t('meetings:filterStatus')}
           >
-            <SelectValue placeholder='All statuses' />
+            <SelectValue placeholder={t('meetings:allStatuses')} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value='all'>All statuses</SelectItem>
+            <SelectItem value='all'>{t('meetings:allStatuses')}</SelectItem>
             {statusOptions.map((option) => (
               <SelectItem key={option.value} value={option.value}>
-                {option.label}
+                {t(option.label)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -195,14 +197,14 @@ export function MeetingFilters({
         >
           <SelectTrigger
             className='w-full lg:w-52'
-            aria-label='Filter meetings by relationship'
+            aria-label={t('meetings:filterRelationship')}
           >
-            <SelectValue placeholder='All relationships' />
+            <SelectValue placeholder={t('meetings:allRelationships')} />
           </SelectTrigger>
           <SelectContent>
             {relationshipOptions.map((option) => (
               <SelectItem key={option.value} value={option.value}>
-                {option.label}
+                {t(option.label)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -211,29 +213,29 @@ export function MeetingFilters({
 
       <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1fr_1fr_auto]'>
         <label className='grid gap-1.5 text-sm font-medium'>
-          From
+          {t('meetings:from')}
           <Input
             type='date'
             value={fromDate}
             disabled={regional.status === 'loading'}
             onChange={(event) => changeDate('from', event.target.value)}
-            aria-label='Filter meetings from date'
+            aria-label={t('meetings:filterFrom')}
           />
         </label>
         <label className='grid gap-1.5 text-sm font-medium'>
-          To
+          {t('meetings:to')}
           <Input
             type='date'
             value={toDate}
             disabled={regional.status === 'loading'}
             onChange={(event) => changeDate('to', event.target.value)}
-            aria-label='Filter meetings to date'
+            aria-label={t('meetings:filterTo')}
           />
         </label>
         <MeetingFilterLookup
-          label='Room'
-          placeholder='All rooms'
-          searchPlaceholder='Search rooms...'
+          label={t('meetings:room')}
+          placeholder={t('meetings:allRooms')}
+          searchPlaceholder={t('meetings:searchRooms')}
           open={roomLookupOpen}
           onOpenChange={setRoomLookupOpen}
           searchValue={roomLookupSearch}
@@ -263,9 +265,9 @@ export function MeetingFilters({
           )}
         />
         <MeetingFilterLookup
-          label='Organizer'
-          placeholder='All organizers'
-          searchPlaceholder='Search organizers...'
+          label={t('meetings:organizer')}
+          placeholder={t('meetings:allOrganizers')}
+          searchPlaceholder={t('meetings:searchOrganizers')}
           open={organizerLookupOpen}
           onOpenChange={setOrganizerLookupOpen}
           searchValue={organizerLookupSearch}
@@ -299,13 +301,13 @@ export function MeetingFilters({
           value={search.sort ?? defaultMeetingSort}
           onValueChange={(value) => onSortChange(value as MeetingSort)}
         >
-          <SelectTrigger className='mt-auto w-full' aria-label='Sort meetings'>
-            <SelectValue placeholder='Sort meetings' />
+          <SelectTrigger className='mt-auto w-full' aria-label={t('meetings:sortMeetings')}>
+            <SelectValue placeholder={t('meetings:sortMeetings')} />
           </SelectTrigger>
           <SelectContent>
             {sortOptions.map((option) => (
               <SelectItem key={option.value} value={option.value}>
-                {option.label}
+                {t(option.label)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -319,50 +321,50 @@ export function MeetingFilters({
             onReset()
           }}
         >
-          Reset filters
+          {t('meetings:resetFilters')}
         </Button>
       </div>
       <p className='text-xs text-muted-foreground'>
-        Date filters use {regional.timezone}. The To date includes the entire
-        selected day.
-        {regional.status === 'loading' && ' Loading regional preferences…'}
+        {t('meetings:dateFilterTimezone', {
+          timezone: regional.timezone,
+        })}
+        {regional.status === 'loading' && t('meetings:loadingRegional')}
         {(regional.status === 'unavailable' || regional.timezoneFallback) &&
-          ' Using a fallback timezone.'}
+          t('meetings:fallbackTimezone')}
       </p>
       {dateError && (
         <p role='alert' className='text-sm text-destructive'>
-          {dateError}
+          {t(dateError)}
         </p>
       )}
       {(partialFrom || partialTo) && (
         <div role='status' className='space-y-1 rounded-md border p-3 text-sm'>
           <p>
-            The existing filter retains its exact timestamps. Select a date to
-            replace a boundary.
+            {t('meetings:partialDateFilter')}
           </p>
           {partialFrom && search.from && (
             <div>
-              From (inclusive): {formatBoundary(search.from)}{' '}
+              {t('meetings:fromBoundary', { date: formatBoundary(search.from) })}{' '}
               <Button
                 type='button'
                 variant='link'
                 size='sm'
                 onClick={() => changeDate('from', '')}
               >
-                Clear start
+                {t('meetings:clearStart')}
               </Button>
             </div>
           )}
           {partialTo && search.to && (
             <div>
-              To (exclusive): {formatBoundary(search.to)}{' '}
+              {t('meetings:toBoundary', { date: formatBoundary(search.to) })}{' '}
               <Button
                 type='button'
                 variant='link'
                 size='sm'
                 onClick={() => changeDate('to', '')}
               >
-                Clear end
+                {t('meetings:clearEnd')}
               </Button>
             </div>
           )}
@@ -421,6 +423,7 @@ function MeetingFilterLookup({
   selectedLoading: boolean
   selectedUnavailable: boolean
 }) {
+  const { t } = useUiTranslation()
   const currentPage = pagination ? pagination.page + 1 : page
   const totalPages = Math.max(pagination?.totalPages ?? 0, 1)
 
@@ -432,16 +435,16 @@ function MeetingFilterLookup({
           variant='outline'
           role='combobox'
           aria-expanded={open}
-          aria-label={`Filter meetings by ${label.toLowerCase()}`}
+          aria-label={t('meetings:filterBy', { label: label.toLowerCase() })}
           className='mt-auto w-full justify-between font-normal'
         >
           <span className='truncate'>
             {selectedOption
               ? formatOption(selectedOption)
               : selectedLoading
-                ? `Loading ${label.toLowerCase()}...`
+                ? t('meetings:loadingLookup', { label: label.toLowerCase() })
                 : selectedUnavailable
-                  ? `${label} unavailable`
+                  ? t('meetings:lookupUnavailable', { label: label })
                   : placeholder}
           </span>
           <ChevronRight className='size-4 rotate-90 opacity-50' />
@@ -457,11 +460,11 @@ function MeetingFilterLookup({
           <CommandList>
             {isLoading ? (
               <div role='status' className='px-3 py-6 text-center text-sm'>
-                Loading {label.toLowerCase()} options...
+                {t('meetings:loadingLookupOptions', { label: label.toLowerCase() })}
               </div>
             ) : isError ? (
               <div className='grid gap-2 px-3 py-6 text-center text-sm'>
-                <span>Could not load {label.toLowerCase()} options.</span>
+                <span>{t('meetings:lookupFailed', { label: label.toLowerCase() })}</span>
                 <Button
                   type='button'
                   variant='outline'
@@ -469,12 +472,12 @@ function MeetingFilterLookup({
                   onClick={onRetry}
                   className='mx-auto'
                 >
-                  Try again
+                  {t('meetings:tryAgain')}
                 </Button>
               </div>
             ) : options.length === 0 ? (
               <CommandEmpty>
-                No {label.toLowerCase()} options found.
+                {t('meetings:lookupEmpty', { label: label.toLowerCase() })}
               </CommandEmpty>
             ) : (
               <CommandGroup>
@@ -508,7 +511,7 @@ function MeetingFilterLookup({
                     }}
                     className='justify-center text-center'
                   >
-                    Clear {label.toLowerCase()} filter
+                    {t('meetings:clearLookup', { label: label.toLowerCase() })}
                   </CommandItem>
                 </CommandGroup>
               </>
@@ -519,7 +522,7 @@ function MeetingFilterLookup({
               role='status'
               className='border-t px-3 py-2 text-xs text-muted-foreground'
             >
-              Updating options...
+              {t('meetings:updatingOptions')}
             </p>
           )}
           {!isLoading &&
@@ -531,20 +534,20 @@ function MeetingFilterLookup({
                   type='button'
                   variant='ghost'
                   size='sm'
-                  aria-label={`Previous ${label.toLowerCase()} options page`}
+                  aria-label={t('meetings:previousLookup', { label: label.toLowerCase() })}
                   onClick={() => onPageChange(page - 1)}
                   disabled={!pagination.hasPrevious}
                 >
                   <ChevronLeft />
                 </Button>
                 <span className='text-xs text-muted-foreground'>
-                  Page {currentPage} of {totalPages}
+                  {t('page', { current: currentPage, total: totalPages })}
                 </span>
                 <Button
                   type='button'
                   variant='ghost'
                   size='sm'
-                  aria-label={`Next ${label.toLowerCase()} options page`}
+                  aria-label={t('meetings:nextLookup', { label: label.toLowerCase() })}
                   onClick={() => onPageChange(page + 1)}
                   disabled={!pagination.hasNext}
                 >

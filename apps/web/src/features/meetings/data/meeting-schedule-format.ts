@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n'
+
 const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
 
 type MeetingScheduleValue = string | null | undefined
@@ -8,7 +10,7 @@ export function formatMeetingSchedule(
   timeZone = presentationTimeZone,
   locale = 'en-US'
 ) {
-  if (!scheduledStartAt || !scheduledEndAt) return 'Unscheduled'
+  if (!scheduledStartAt || !scheduledEndAt) return i18n.t('meetings:unscheduled')
 
   const startsAt = new Date(scheduledStartAt)
   const endsAt = new Date(scheduledEndAt)
@@ -16,7 +18,7 @@ export function formatMeetingSchedule(
     !Number.isFinite(startsAt.getTime()) ||
     !Number.isFinite(endsAt.getTime())
   ) {
-    return 'Unscheduled'
+    return i18n.t('meetings:unscheduled')
   }
 
   const dateFormatter = new Intl.DateTimeFormat(locale, {

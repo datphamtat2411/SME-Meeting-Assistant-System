@@ -30,6 +30,22 @@ export const canonicalLabels: Record<MeetingLifecycleStatus, string> = {
   CANCELLED: 'Cancelled',
 }
 
+export const meetingStatusTranslationKeys: Record<
+  MeetingStatus | MeetingLifecycleStatus,
+  string
+> = {
+  scheduled: 'meetings:badgeUpcoming',
+  in_progress: 'meetings:live',
+  processing: 'meetings:badgeProcessing',
+  completed: 'meetings:badgeCompleted',
+  cancelled: 'meetings:badgeCancelled',
+  DRAFT: 'meetings:badgeDraft',
+  SCHEDULED: 'meetings:badgeUpcoming',
+  IN_PROGRESS: 'meetings:live',
+  ENDED: 'meetings:badgeCompleted',
+  CANCELLED: 'meetings:badgeCancelled',
+}
+
 export const canonicalStyles: Record<MeetingLifecycleStatus, string> = {
   DRAFT:
     'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300',

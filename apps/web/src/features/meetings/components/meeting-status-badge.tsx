@@ -1,12 +1,12 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import type { MeetingStatus } from '../data'
 import type { MeetingLifecycleStatus } from '../data/list-api'
 import {
-  canonicalLabels,
   canonicalStyles,
-  meetingStatusLabels,
   meetingStatusStyles,
+  meetingStatusTranslationKeys,
 } from './meeting-status-badge-config'
 
 type MeetingStatusBadgeStatus = MeetingStatus | MeetingLifecycleStatus
@@ -24,6 +24,7 @@ export function MeetingStatusBadge({
   status: MeetingStatusBadgeStatus
   className?: string
 }) {
+  const { t } = useUiTranslation()
   const canonical = isCanonicalStatus(status)
 
   return (
@@ -34,7 +35,7 @@ export function MeetingStatusBadge({
         className
       )}
     >
-      {canonical ? canonicalLabels[status] : meetingStatusLabels[status]}
+      {t(meetingStatusTranslationKeys[status])}
     </Badge>
   )
 }
