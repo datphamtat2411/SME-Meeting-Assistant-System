@@ -159,7 +159,7 @@ export function MeetingsPage() {
 
   const hasActiveFilters = hasMeetingFilters(search)
   const totalMeetings = meetingsQuery.data?.pagination.totalElements ?? 0
-  const is{t('meetings:refreshing')} = meetingsQuery.isFetching && !meetingsQuery.isPending
+  const isRefreshing = meetingsQuery.isFetching && !meetingsQuery.isPending
 
   return (
     <>
@@ -207,7 +207,7 @@ export function MeetingsPage() {
                 {isRefreshing && (
                   <span role='status' className='flex items-center gap-1.5'>
                     <RefreshCw className='size-3.5 animate-spin' />
-                    Refreshing
+                     {t('meetings:refreshing')}
                   </span>
                 )}
                 {meetingsQuery.data && (
