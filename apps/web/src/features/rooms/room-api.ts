@@ -1,3 +1,4 @@
+import { i18n } from '@/lib/i18n'
 import { z } from 'zod'
 import { queryOptions, skipToken } from '@tanstack/react-query'
 import {
@@ -473,40 +474,41 @@ export function classifyRoomMutationOutcome(
 
 export function roomOperationErrorMessage(
   error: unknown,
-  operation: 'create' | 'edit' | 'deactivate'
+  operation: 'create' | 'edit' | 'deactivate',
+  translate: (key: string) => string = (key) => i18n.t(key)
 ): string {
   const normalized = normalizeCoreApiError(error)
   if (normalized.status === 401) {
-    return 'Your session could not be verified. Follow the existing sign-in recovery and try again.'
+    return translate('rooms:operationUnauthorized')
   }
   if (normalized.status === 403) {
-    return 'You do not have permission to perform this room operation.'
+    return translate('rooms:operationForbidden')
   }
   if (normalized.status === 404) {
-    return 'This room no longer exists. The directory has been refreshed.'
+    return translate('rooms:operationNotFound')
   }
   if (normalized.status === 412) {
-    return 'This room changed on the server. Your unsaved changes are preserved; reload and review the latest room before starting another operation.'
+    return translate('rooms:operationStale')
   }
   if (normalized.status === 428) {
-    return 'The server rejected the missing or unusable concurrency precondition. No unconditional change was sent; reload and review the latest room.'
+    return translate('rooms:operationMissingPrecondition')
   }
   if (normalized.status === 409) {
     return operation === 'deactivate'
-      ? 'The room could not be deactivated because its current state or reservations conflict with the request.'
-      : 'The room conflicts with current server data. Review the room directory and correct any duplicate identity.'
+      ? translate('rooms:deactivateConflict')
+      : translate('rooms:identityConflict')
   }
   if (normalized.status === 400 || normalized.status === 422) {
-    return 'The Core API rejected these room values. Review the highlighted fields.'
+    return translate('rooms:operationInvalid')
   }
   if (normalized.status === 429) {
-    return 'Too many requests were sent. Wait briefly before trying again.'
+    return translate('rooms:operationRateLimited')
   }
   if (normalized.isNetworkError || normalized.kind === 'malformed') {
-    return 'The operation outcome could not be confirmed. Authoritative room data is being refreshed; review it before deciding whether to try again.'
+    return translate('rooms:operationUncertain')
   }
   if (normalized.isServerError || (normalized.status ?? 0) >= 500) {
-    return 'The server did not confirm the operation. Authoritative room data is being refreshed; review it before deciding whether to try again.'
+    return translate('rooms:operationServerUnconfirmed')
   }
-  return 'The server response did not confirm the operation. Authoritative room data is being refreshed; review it before deciding whether to try again.'
+  return translate('rooms:operationResponseUnconfirmed')
 }
