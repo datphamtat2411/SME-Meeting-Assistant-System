@@ -895,7 +895,7 @@ class RetrievalEngine:
             expires = _parse_timestamp(context.scope.expires_at)
             if (
                 context.scope.authority != "CORE_APPROVED"
-                or context.scope.scope_id != request.authorized_scope.scope_id
+                or context.scope != request.authorized_scope
                 or context.scope_digest != _scope_digest(context.scope)
                 or now < issued
                 or now >= expires

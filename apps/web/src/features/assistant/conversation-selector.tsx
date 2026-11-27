@@ -36,6 +36,7 @@ export function ConversationSelector({
   onConversationTitleChange,
   onCreate,
   createPending,
+  createRetryAt,
   createError,
   uncertainCreation,
   onLoadOlderConversations,
@@ -58,6 +59,7 @@ export function ConversationSelector({
   onConversationTitleChange: (title: string) => void
   onCreate: () => void
   createPending: boolean
+  createRetryAt: number
   createError: unknown
   uncertainCreation: boolean
   onLoadOlderConversations: () => void
@@ -140,7 +142,9 @@ export function ConversationSelector({
               <Button
                 type='button'
                 onClick={onCreate}
-                disabled={!selectedMeetingReady || createPending}
+                disabled={
+                  !selectedMeetingReady || createPending || createRetryAt > 0
+                }
               >
                 {createPending && (
                   <LoaderCircle className='size-4 animate-spin' />

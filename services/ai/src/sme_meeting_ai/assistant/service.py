@@ -165,6 +165,8 @@ class TrustedFinalVerifier:
             or not _scope_current(scope, now)
         ):
             raise FinalVerificationError("INVALID_AUTHORIZATION")
+        if not evidence:
+            return  # Authorization-only verification before sending dialogue to a model.
         if self.source_provider is None:
             raise FinalVerificationError("SOURCE_VERIFICATION_UNAVAILABLE")
 
@@ -388,6 +390,37 @@ class AssistantOrchestrator:
                     retrieval_status=None,
                     category=AssistantFailureCategory.INSUFFICIENT_CONTEXT,
                     conversation_messages_used=len(current_messages),
+                )
+            # Contextualization sends protected dialogue to the model before retrieval.
+            # Verify the exact Core scope first, not only after generation.
+            try:
+                await _within_deadline(
+                    _call(
+                        self.final_verifier.verify,
+                        request.authorized_scope,
+                        (),
+                        now=self.clock().astimezone(timezone.utc),
+                    ),
+                    deadline,
+                )
+            except asyncio.CancelledError:
+                raise
+            except FinalVerificationError as error:
+                category = (
+                    AssistantFailureCategory.INVALID_AUTHORIZATION
+                    if error.category == "INVALID_AUTHORIZATION"
+                    else AssistantFailureCategory.AUTHORIZATION_UNAVAILABLE
+                )
+                return _failure(
+                    request.request_id,
+                    category,
+                    retryable=category is AssistantFailureCategory.AUTHORIZATION_UNAVAILABLE,
+                )
+            except Exception:
+                return _failure(
+                    request.request_id,
+                    AssistantFailureCategory.AUTHORIZATION_UNAVAILABLE,
+                    retryable=True,
                 )
             try:
                 contextualized_value = await _within_deadline(

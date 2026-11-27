@@ -25,7 +25,7 @@ import {
 } from './assistant-api'
 import { uniqueConversations } from './assistant-history'
 import type { AssistantSelection } from './assistant-selection'
-import { useAssistantTurnWorkflow } from './assistant-turn-workflow'
+import { retryAt, useAssistantTurnWorkflow } from './assistant-turn-workflow'
 import { isAssistantMeetingReady } from './use-assistant-meeting-discovery'
 
 export function useAssistantConversation(
@@ -48,6 +48,16 @@ export function useAssistantConversation(
   const [createError, setCreateError] = useState<unknown>()
   const [uncertainCreation, setUncertainCreation] = useState(false)
   const creationRef = useRef(false)
+  const creationDeadline = useRef(0)
+  const [createRetryAt, setCreateRetryAt] = useState(0)
+  useEffect(() => {
+    if (!createRetryAt) return
+    const timer = setTimeout(
+      () => setCreateRetryAt(0),
+      Math.max(0, createRetryAt - Date.now())
+    )
+    return () => clearTimeout(timer)
+  }, [createRetryAt])
   // Keep unresolved intents scoped to the exact payload and access generation.
   const creationIntents = useRef(
     new Map<string, { key: string; access: AssistantAccessToken }>()
@@ -162,6 +172,7 @@ export function useAssistantConversation(
     if (
       !meetingId ||
       creationRef.current ||
+      Date.now() < creationDeadline.current ||
       assistantAccessError(client) ||
       !isAssistantMeetingReady(client, meetingId)
     )
@@ -220,8 +231,14 @@ export function useAssistantConversation(
         failure.isServerError ||
         failure.kind === 'malformed' ||
         failure.recoveryOutcome === 'uncertain'
-      if (!uncertain && failure.status !== 429)
-        creationIntents.current.delete(intentId)
+      if (failure.status === 429 && failure.retryAfter) {
+        creationDeadline.current = Math.max(
+          creationDeadline.current,
+          retryAt(error)
+        )
+        setCreateRetryAt(creationDeadline.current)
+      }
+      if (!uncertain && !existing) creationIntents.current.delete(intentId)
       if (uncertain) {
         setUncertainCreation(true)
         void client.invalidateQueries({
@@ -310,6 +327,7 @@ export function useAssistantConversation(
       onConversationTitleChange: setConversationTitle,
       onCreate: () => void createConversation(),
       createPending: isCreating,
+      createRetryAt,
       createError,
       uncertainCreation,
       onLoadOlderConversations: () => void conversationsQuery.fetchNextPage(),

@@ -345,6 +345,30 @@ def test_expired_scope_fails_closed_without_qdrant_access():
     assert store.calls == 0
 
 
+def test_authorization_provider_cannot_widen_a_scope_with_the_same_id():
+    candidate = _candidate(_compatibility(), text="nội dung ngoài phạm vi")
+    scope = _scope(str(uuid4()))
+    widened = scope.model_copy(
+        update={"allowed_meeting_ids": (candidate.provenance.meeting_id,)}
+    )
+    engine, embedding, store = _engine(candidate, scope=scope)
+    provider = StaticAuthorizationProvider([widened])
+
+    class WideningProvider:
+        def verify(self, supplied, *, now):
+            return provider.verify(widened, now=now)
+
+    engine.authorization_provider = WideningProvider()
+    result = engine.retrieve(
+        RetrievalRequest(contractVersion="1.0", query="Nội dung là gì?", authorizedScope=scope)
+    )
+
+    assert result.status is RetrievalStatus.INVALID_AUTHORIZATION
+    assert store.calls == 0
+    assert embedding.queries == []
+    assert result.evidence == ()
+
+
 def test_user_meeting_filter_only_intersects_authorized_scope():
     compatibility = _compatibility()
     allowed = _candidate(compatibility, text="kế hoạch", meeting_id=str(uuid4()))

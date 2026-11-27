@@ -490,6 +490,48 @@ def test_scope_changed_dialogue_is_not_reused_for_follow_up():
     assert generator.calls == []
 
 
+def test_expired_scope_never_sends_protected_dialogue_to_contextualizer():
+    evidence = _evidence("Kế hoạch phát hành vào thứ Sáu.")
+    scope = _scope(evidence.provenance.meeting_id).model_copy(
+        update={"expires_at": "2026-11-09T11:59:59Z"}
+    )
+    retrieval = FakeRetrieval(_retrieval_result(scope, (evidence,)), scope, (evidence,))
+    generator = FakeGenerator(_generation())
+    context = (
+        {
+            "role": "ASSISTANT",
+            "content": "Nội dung cuộc họp cần bảo vệ.",
+            "scopeId": scope.scope_id,
+            "scopeVersion": scope.scope_version,
+        },
+    )
+
+    result = asyncio.run(
+        _orchestrator(retrieval, generator).answer(
+            _request(scope, question="Vậy deadline của việc đó là khi nào?", context=context)
+        )
+    )
+
+    assert result.status is AssistantAnswerStatus.FAILED
+    assert result.failures[0].category is AssistantFailureCategory.INVALID_AUTHORIZATION
+    assert generator.contextualization_calls == []
+    assert generator.calls == []
+    assert retrieval.calls == []
+
+
+def test_out_of_scope_evidence_never_reaches_generation():
+    evidence = _evidence("Kế hoạch mật thuộc cuộc họp khác.")
+    scope = _scope(str(uuid4()))
+    retrieval = FakeRetrieval(_retrieval_result(scope, (evidence,)), scope, (evidence,))
+    generator = FakeGenerator(_generation())
+
+    result = asyncio.run(_orchestrator(retrieval, generator).answer(_request(scope)))
+
+    assert result.status is AssistantAnswerStatus.FAILED
+    assert result.failures[0].category is AssistantFailureCategory.RETRIEVAL_FAILURE
+    assert generator.calls == []
+
+
 def test_final_source_invalidation_fails_closed_after_generation():
     evidence = _evidence("Kế hoạch phát hành vào thứ Sáu.")
     scope = _scope(evidence.provenance.meeting_id)
