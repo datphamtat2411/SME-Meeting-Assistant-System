@@ -119,6 +119,32 @@ class ExportS3StorageIntegrationTests {
     }
 
     @Test
+    void legacySnapshotReconciliationAcceptsOnlyIdenticalFrozenJsonWithoutOverwriting() throws Exception {
+        String key = ExportDigests.snapshotKey(UUID.randomUUID(), "a".repeat(64));
+        byte[] original = "{\"names\":{\"a\":\"An\",\"b\":\"Binh\"}}".getBytes(StandardCharsets.UTF_8);
+        byte[] reordered = "{\"names\":{\"b\":\"Binh\",\"a\":\"An\"}}".getBytes(StandardCharsets.UTF_8);
+        byte[] changed = "{\"names\":{\"b\":\"Binh\",\"a\":\"Bo\"}}".getBytes(StandardCharsets.UTF_8);
+        var codec = new ExportSnapshotCodec(new tools.jackson.databind.ObjectMapper());
+        exports.putVerified(key, original, "application/json", ExportSnapshotCodec.sha256(original));
+        exports.putLegacySnapshotVerified(key, reordered,
+                observed -> codec.sameLegacySnapshot(reordered, observed));
+        assertThat(storage.readBounded(key, 1024)).isEqualTo(original);
+        assertThatThrownBy(() -> exports.putLegacySnapshotVerified(key, changed,
+                observed -> codec.sameLegacySnapshot(changed, observed)))
+                .isInstanceOf(ExportArtifactStore.IntegrityFailure.class);
+        assertThatThrownBy(() -> exports.putVerified(key, reordered, "application/json",
+                ExportSnapshotCodec.sha256(reordered)))
+                .isInstanceOf(ExportArtifactStore.IntegrityFailure.class);
+        assertThat(codec.sameLegacySnapshot(original,
+                "{\"names\":{\"a\":\"Bo\",\"a\":\"An\",\"b\":\"Binh\"}}"
+                        .getBytes(StandardCharsets.UTF_8))).isFalse();
+        assertThat(codec.sameLegacySnapshot(original,
+                (new String(original, StandardCharsets.UTF_8) + " {}")
+                        .getBytes(StandardCharsets.UTF_8))).isFalse();
+        assertThat(storage.readBounded(key, 1024)).isEqualTo(original);
+    }
+
+    @Test
     void sourceTamperAndDeletedObjectCannotGenerateNewCapability() {
         UUID id=UUID.randomUUID();
         byte[] original="# Cần xác nhận".getBytes(StandardCharsets.UTF_8);

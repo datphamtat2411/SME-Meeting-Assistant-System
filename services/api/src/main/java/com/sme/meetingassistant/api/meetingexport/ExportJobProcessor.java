@@ -122,7 +122,12 @@ public final class ExportJobProcessor {
         byte[] snapshotBytes = codec.snapshotBytes(envelope, frozen);
         String snapshotSha = ExportSnapshotCodec.sha256(snapshotBytes);
         String snapshotKey = ExportDigests.snapshotKey(claim.id(), snapshot.sourceFingerprint());
-        storage.putVerified(snapshotKey, snapshotBytes, "application/json", snapshotSha);
+        if (envelope.schemaVersion() == ExportSnapshotCodec.LEGACY_INTAKE_VERSION) {
+            storage.putLegacySnapshotVerified(snapshotKey, snapshotBytes,
+                    observed -> codec.sameLegacySnapshot(snapshotBytes, observed));
+        } else {
+            storage.putVerified(snapshotKey, snapshotBytes, "application/json", snapshotSha);
+        }
         if (!stillOwner.get()) return false;
 
         boolean enriched = envelope.schemaVersion() == ExportSnapshotCodec.CURRENT_INTAKE_VERSION;

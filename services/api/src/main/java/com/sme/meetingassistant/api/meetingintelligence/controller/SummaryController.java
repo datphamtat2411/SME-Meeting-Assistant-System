@@ -49,15 +49,45 @@ public class SummaryController {
             .body(responses.successPage(service.versions(meetingId,page,size)));
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+            description = "Current representation updated", useReturnTypeSchema = true)
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
+            description = "Current business state conflicts with the operation",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "412",
+            description = "Invalid or stale If-Match",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "428",
+            description = "If-Match required",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
     @PostMapping("/versions/{versionId}/activate")
     public ResponseEntity<ApiResponse<SummaryView>> activate(
             @PathVariable UUID meetingId, @PathVariable UUID versionId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, invalid or stale returns 412")
             @RequestHeader(value=HttpHeaders.IF_MATCH,required=false) String ifMatch) {
         return privateSummary(service.activate(meetingId,versionId,ifMatch));
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+            description = "Current representation updated", useReturnTypeSchema = true)
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
+            description = "Current business state conflicts with the operation",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "412",
+            description = "Invalid or stale If-Match",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "428",
+            description = "If-Match required",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
     @PatchMapping
     public ResponseEntity<ApiResponse<SummaryView>> edit(@PathVariable UUID meetingId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, invalid or stale returns 412")
             @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
             @Valid @RequestBody EditSummaryRequest request) {
         return privateSummary(service.edit(meetingId, ifMatch, request));

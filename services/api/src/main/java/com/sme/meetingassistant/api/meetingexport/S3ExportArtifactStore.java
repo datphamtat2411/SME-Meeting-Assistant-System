@@ -46,6 +46,39 @@ public final class S3ExportArtifactStore implements ExportArtifactStore, ExportD
     }
 
     @Override
+    public void putLegacySnapshotVerified(String key, byte[] bytes,
+            java.util.function.Predicate<byte[]> sameFrozenContent) {
+        requireNamespace(key);
+        if (!key.matches("exports/[0-9a-f-]{36}/snapshots/[0-9a-f]{64}[.]json")) {
+            throw new IllegalArgumentException("Legacy reconciliation is snapshot-only");
+        }
+        Objects.requireNonNull(sameFrozenContent);
+        if (bytes == null || bytes.length == 0
+                || bytes.length > ExportSnapshotCodec.MAX_INTAKE_BYTES) {
+            throw new IntegrityFailure("Invalid legacy snapshot size");
+        }
+        String digest = ExportSnapshotCodec.sha256(bytes);
+        try {
+            boolean created = storage.putImmutableBytesIfAbsent(
+                    key, bytes, "application/json", digest);
+            var head = storage.head(key);
+            if (head.sizeBytes() != bytes.length
+                    || !"application/json".equals(head.contentType())) {
+                throw new IntegrityFailure("Persisted legacy snapshot metadata mismatch");
+            }
+            byte[] observed = storage.readBounded(key, bytes.length);
+            if (observed.length != bytes.length
+                    || (!digest.equals(ExportSnapshotCodec.sha256(observed))
+                        && (created || !sameFrozenContent.test(observed)))) {
+                throw new IntegrityFailure("Persisted legacy snapshot content mismatch");
+            }
+        } catch (IOException | RuntimeException ex) {
+            if (ex instanceof IntegrityFailure integrity) throw integrity;
+            throw new StorageFailure("Private legacy snapshot verification failed", ex);
+        }
+    }
+
+    @Override
     public byte[] readVerified(String key, String expectedSha256, int maximumBytes) {
         requireNamespace(key);
         ExportDigests.requireDigest(expectedSha256);

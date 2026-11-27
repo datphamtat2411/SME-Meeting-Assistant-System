@@ -72,6 +72,49 @@ class OpenApiDocumentationTests {
   assertHeader(paths, "/api/v1/meetings/{meetingId}/transcript/segments/{segmentId}", "patch", "If-Match", true);
  }
 
+ @Test
+ void generatedIntelligenceMutationContractRequiresCurrentVersionAndDocumentsErrors() throws Exception {
+  String body = this.mockMvc.perform(get("/v3/api-docs"))
+    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+  JsonNode document = this.objectMapper.readTree(body);
+  JsonNode paths = document.path("paths");
+  String decision = "/api/v1/meetings/{meetingId}/decisions/{decisionId}";
+  String summary = "/api/v1/meetings/{meetingId}/summary";
+  assertVersionedMutation(document, decision, "patch");
+  assertVersionedMutation(document, decision + "/confirm", "post");
+  assertVersionedMutation(document, decision + "/reject", "post");
+  assertVersionedMutation(document, summary, "patch");
+  assertVersionedMutation(document, summary + "/versions/{versionId}/activate", "post");
+  assertThat(paths.path(decision).path("patch").path("requestBody")
+    .path("required").asBoolean()).isTrue();
+  assertThat(paths.path(summary).path("patch").path("requestBody")
+    .path("required").asBoolean()).isTrue();
+ }
+
+ private static void assertVersionedMutation(JsonNode document, String path, String method) {
+  JsonNode paths = document.path("paths");
+  assertHeader(paths, path, method, "If-Match", true);
+  for (String code : java.util.List.of("200", "409", "412", "428")) {
+   assertResponse(paths, path, method, code);
+   JsonNode schema = paths.path(path).path(method).path("responses").path(code)
+     .path("content").path("application/json").path("schema");
+   // Springdoc can choose */* for an unconstrained success representation.
+   if ("200".equals(code) && schema.isMissingNode()) {
+    schema = paths.path(path).path(method).path("responses").path(code)
+      .path("content").path("*/*").path("schema");
+   }
+   String ref = schema.path("$ref").asText();
+   if (ref.startsWith("#/components/schemas/")) {
+    schema = document.path("components").path("schemas")
+      .path(ref.substring("#/components/schemas/".length()));
+   }
+   JsonNode properties = schema.path("properties");
+   assertThat(properties.has("success") && properties.has("code")
+     && properties.has("data") && properties.has("meta"))
+     .as("%s %s HTTP %s documents the common envelope", method, path, code).isTrue();
+  }
+ }
+
  private static void assertResponse(JsonNode paths, String path, String method, String code) {
   assertThat(paths.path(path).path(method).path("responses").has(code))
     .as("%s %s documents HTTP %s", method, path, code).isTrue();

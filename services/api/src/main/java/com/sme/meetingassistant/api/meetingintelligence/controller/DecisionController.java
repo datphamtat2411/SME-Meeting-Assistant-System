@@ -52,24 +52,69 @@ public class DecisionController {
         return decision(service.create(meetingId, request), HttpStatus.CREATED);
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+            description = "Current representation updated", useReturnTypeSchema = true)
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
+            description = "Current business state conflicts with the operation",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "412",
+            description = "Invalid or stale If-Match",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "428",
+            description = "If-Match required",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
     @PatchMapping("/{decisionId}")
     public ResponseEntity<ApiResponse<DecisionView>> edit(@PathVariable UUID meetingId,
             @PathVariable UUID decisionId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, invalid or stale returns 412")
             @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
             @Valid @RequestBody EditDecisionRequest request) {
         return decision(service.edit(meetingId, decisionId, ifMatch, request), HttpStatus.OK);
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+            description = "Current representation updated", useReturnTypeSchema = true)
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
+            description = "Current business state conflicts with the operation",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "412",
+            description = "Invalid or stale If-Match",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "428",
+            description = "If-Match required",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
     @PostMapping("/{decisionId}/confirm")
     public ResponseEntity<ApiResponse<DecisionView>> confirm(@PathVariable UUID meetingId,
             @PathVariable UUID decisionId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, invalid or stale returns 412")
             @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch) {
         return decision(service.confirm(meetingId, decisionId, ifMatch), HttpStatus.OK);
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+            description = "Current representation updated", useReturnTypeSchema = true)
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
+            description = "Current business state conflicts with the operation",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "412",
+            description = "Invalid or stale If-Match",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "428",
+            description = "If-Match required",
+            content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(implementation = ApiResponse.class)))
     @PostMapping("/{decisionId}/reject")
     public ResponseEntity<ApiResponse<DecisionView>> reject(@PathVariable UUID meetingId,
             @PathVariable UUID decisionId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, invalid or stale returns 412")
             @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch) {
         return decision(service.reject(meetingId, decisionId, ifMatch), HttpStatus.OK);
     }

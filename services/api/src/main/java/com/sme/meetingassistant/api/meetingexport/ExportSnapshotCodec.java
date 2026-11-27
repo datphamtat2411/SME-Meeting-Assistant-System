@@ -94,6 +94,24 @@ public final class ExportSnapshotCodec {
         }
     }
 
+    /**
+     * Compare complete JSON (including display metadata and timestamps), not
+     * just the canonical fingerprint. Duplicate fields and trailing content
+     * are never accepted as an equivalent historical snapshot.
+     */
+    boolean sameLegacySnapshot(byte[] expected, byte[] observed) {
+        try {
+            var reader = json.readerFor(tools.jackson.databind.JsonNode.class)
+                    .with(tools.jackson.databind.DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
+                    .with(tools.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+            tools.jackson.databind.JsonNode left = reader.readValue(expected);
+            tools.jackson.databind.JsonNode right = reader.readValue(observed);
+            return left != null && left.isObject() && left.equals(right);
+        } catch (JacksonException ex) {
+            return false;
+        }
+    }
+
     public byte[] snapshotBytes(MinutesSnapshot snapshot) {
         checkSnapshot(snapshot, snapshot.meeting().id());
         try {
