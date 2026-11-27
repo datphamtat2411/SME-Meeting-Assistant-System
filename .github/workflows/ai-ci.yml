@@ -53,6 +53,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+          # AI's cross-language contract fixtures invoke the Core API Maven build.
+          cache: maven
+          cache-dependency-path: |
+            services/api/pom.xml
+            services/api/.mvn/wrapper/maven-wrapper.properties
 
       - name: Set up Python
         uses: actions/setup-python@v6

@@ -5,11 +5,56 @@ Core API continues to own conversation authorization, durable turn identity,
 admission, lease ownership, and canonical result persistence. AI inference
 remains synchronous and outside the database transaction.
 
+## Public creation and wire contract
+
+Base path: /api/v1/assistant/conversations. GET lists the current caller's
+authorized conversations (page defaults to 0, size to 20); POST creates a
+meeting-scoped conversation. Create requires meetingId UUID and an optional
+title (max 255 characters); blank title normalizes to null. The optional
+Idempotency-Key header is 1–128 ASCII characters matching
+[A-Za-z0-9][A-Za-z0-9._:-]{0,127}. V67 binds the owner-scoped SHA-256 key digest
+to a digest of the normalized meeting ID/title intent. Same-intent replay
+reauthorizes and returns the same conversation, without charging quota again;
+both creation and replay currently return 201 and Location. Different intent
+under the key returns 409 CONFLICT. Unkeyed creation is not idempotent.
+No global scope or new public route is introduced.
+
+The merged AssistantModels records are the exact server wire definition;
+the following documents the nullable fields and state invariants. Required
+arrays are non-null, possibly empty. IDs are UUIDs and timestamps are
+offset-aware.
+
+| DTO | Fields / nullability |
+| --- | --- |
+| ConversationView | id, meetingId, status, createdAt, updatedAt required; title nullable |
+| MessageView | id, role (USER/ASSISTANT), visibility (VISIBLE/SOURCE_UNAVAILABLE), claims, citations, createdAt required; content and answerStatus nullable |
+| ConversationDetail | conversation, messages, page, size, hasMore required; nextBeforeMessageId and pendingTurn nullable |
+| TurnStatusView | conversationId, turnId, state, userMessageId required; leaseStatus, assistantMessageId, answerStatus nullable according to state |
+| TurnView | turnId, state, userMessageId, claims, citations required; assistantMessageId, answerStatus, answer nullable |
+| ClaimView | claimId, text, support, citationIds |
+| CitationView | citationId, sourceType, sourceId, meetingId, sourceRevision, retrievalChunkId, claimIds |
+| MessageEvidence | conversationId, messageId, meetingId, evidence |
+| EvidenceView | citationId, sourceType, sourceId, sourceRevision, label, meetingTitle, preview, claimIds, navigation (target, precision); source-specific projection/preview restrictions are documented in ASSISTANT-EVIDENCE-RESOLUTION.md |
+
+The answer status vocabulary is GROUNDED, PARTIAL, INSUFFICIENT_EVIDENCE and
+FAILED. PROCESSING turn observations have an ACTIVE/EXPIRED lease and null
+assistantMessageId/answerStatus; terminal observations have null leaseStatus
+and the persisted assistant message ID/status. A stale completed answer has
+state STALE_SOURCE. Unavailable message content is null with empty claims and
+citations, not a fabricated answer. Both clients must preserve these distinctions.
+
+POST /{conversationId}/messages requires the original Idempotency-Key and
+a non-null question; replay of the same normalized question recovers the
+durable outcome, while a different question conflicts. GET
+/{conversationId}/messages/{messageId}/evidence resolves current authorized
+sources only. GET /{conversationId}/turns is exact header lookup; the
+branch-only /turns/by-key is retired in the integrated consumer contract.
+
 ## History
 
 `GET /api/v1/assistant/conversations/{conversationId}`
 
-- Existing zero-based `page` and `size` parameters remain supported (size 1–50).
+- Existing zero-based `page` and `size` parameters remain supported (page 0–10000; size 1–50; default history size 50).
 - Optional `beforeMessageId` is an exclusive older-history anchor. Do not
   combine it with an explicit `page` parameter. Its identity must belong to
   the authorized conversation. Invalid anchors return a scoped 404

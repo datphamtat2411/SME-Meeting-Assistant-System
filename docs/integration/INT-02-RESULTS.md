@@ -65,3 +65,16 @@ assignee command rejection. See DEFERRED-INTEGRATION-ITEMS.md for remaining
 owners. Local verification of the correction has not been executed by the
 GitHub connector; its CI results must be checked on the corrective SHA. Do not
 reuse the 57/698/55 test counts above as proof of the corrective commit.
+
+### CI dependency failure investigation
+
+GitHub Actions AI CI run 45931257695 for the original merge failed in the
+cross-language Java classifier fixture: Maven Central returned HTTP 429 while
+resolving spring-boot-starter-parent:4.1.1. The pytest summary was 4730 passed,
+7 skipped, 24 deselected and 271 setup errors; the classifier never started.
+AI CI now enables Maven caching with the same dependency paths as API CI,
+because the AI tests execute Core API Maven tests. The original dependencies,
+Java fixture, assertions and required verification are unchanged. A cache
+miss or upstream rate limit can still block verification; no success is
+asserted without a new successful run. This is infrastructure remediation,
+not a suppression of test failures.
