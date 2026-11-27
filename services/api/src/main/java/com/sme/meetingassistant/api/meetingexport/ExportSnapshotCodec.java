@@ -68,6 +68,32 @@ public final class ExportSnapshotCodec {
         }
     }
 
+    /**
+     * Called only after decode has verified the exact frozen intake digest and
+     * canonical source. V2 preserves the JSON field/map order from that intake:
+     * Map.copyOf iteration order can vary across JVMs, but immutable storage keys
+     * must survive worker restarts. V1 retains its original serialization path.
+     */
+    byte[] snapshotBytes(Envelope verified, byte[] frozenIntake) {
+        if (verified.schemaVersion() == LEGACY_INTAKE_VERSION) {
+            return snapshotBytes(verified.snapshot());
+        }
+        if (verified.schemaVersion() != CURRENT_INTAKE_VERSION) {
+            throw new IllegalArgumentException("Unsupported export intake version");
+        }
+        try {
+            var node = json.readTree(frozenIntake).path("snapshot");
+            if (!node.isObject()) throw new IllegalArgumentException("Missing pinned snapshot");
+            byte[] data = json.writeValueAsBytes(node);
+            if (data.length < 1 || data.length > MAX_INTAKE_BYTES) {
+                throw new IllegalArgumentException("Pinned snapshot is too large");
+            }
+            return data;
+        } catch (JacksonException ex) {
+            throw new IllegalArgumentException("Pinned snapshot serialization failed", ex);
+        }
+    }
+
     public byte[] snapshotBytes(MinutesSnapshot snapshot) {
         checkSnapshot(snapshot, snapshot.meeting().id());
         try {

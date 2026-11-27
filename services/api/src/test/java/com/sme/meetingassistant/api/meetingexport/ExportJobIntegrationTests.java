@@ -195,6 +195,10 @@ class ExportJobIntegrationTests {
         var ready = records.require(current.id());
         assertThat(ready.status()).isEqualTo(ExportStatus.READY);
         assertThat(ready.rendererVersion()).isEqualTo("markdown-v2");
+        String intakeKey = jdbc.queryForObject("SELECT object_key FROM meeting_export_intakes WHERE export_id=?",
+                String.class, current.id());
+        assertThat(storage.objects.get(ready.snapshotObjectKey())).isEqualTo(
+                json.writeValueAsBytes(json.readTree(storage.objects.get(intakeKey)).path("snapshot")));
         assertThat(ready.sourceFingerprint()).isEqualTo(hash);
         assertThat(new String(storage.readVerified(ready.objectKey(), ready.artifactSha256(),
                 8*1024*1024), java.nio.charset.StandardCharsets.UTF_8))

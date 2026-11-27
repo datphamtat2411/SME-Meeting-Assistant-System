@@ -119,7 +119,7 @@ public final class ExportJobProcessor {
         var snapshot = envelope.snapshot();
         if (!stillOwner.get()) return false;
 
-        byte[] snapshotBytes = codec.snapshotBytes(snapshot);
+        byte[] snapshotBytes = codec.snapshotBytes(envelope, frozen);
         String snapshotSha = ExportSnapshotCodec.sha256(snapshotBytes);
         String snapshotKey = ExportDigests.snapshotKey(claim.id(), snapshot.sourceFingerprint());
         storage.putVerified(snapshotKey, snapshotBytes, "application/json", snapshotSha);
