@@ -56,11 +56,74 @@ export function requestErrorKey(failure: {
   if (failure.status === 404) return 'errors:notFound'
   if (failure.isNetworkError) return 'errors:network'
   if (failure.status === 412) return 'errors:stale'
-  return errorCodeKey(failure.code)
+  const key = errorCodeKey(failure.code)
+  if (key) return key
+  if (failure.status === 401 || /^AUTH_/.test(failure.code ?? ''))
+    return 'errors:authRequired'
+  if (/^AUTHZ_/.test(failure.code ?? '')) return 'errors:forbidden'
+  if (/^INTERNAL_/.test(failure.code ?? '')) return 'errors:internal'
+  return undefined
 }
 
-// An HTTP category can explain an unrecognized failure, but cannot replace
-// its actionable server message. The request-state UI presents both.
+// Preserve public business details for generic validation/conflict codes,
+// while keeping authentication, authorization and internal errors safe.
+const genericBusinessCodes = new Set([
+  'VALIDATION_ERROR',
+  'VALIDATION_FAILED',
+  'RESOURCE_CONFLICT',
+  'CONFLICT',
+])
+
+const genericBusinessMessages = new Set([
+  'Request validation failed.',
+  'The request conflicts with the current state.',
+])
+
+export function requestErrorDetail(
+  failure: {
+    code?: string
+    status?: number
+    message: string
+    isNetworkError?: boolean
+  },
+  message: string
+) {
+  const { code, status } = failure
+  if (
+    failure.isNetworkError ||
+    status === 401 ||
+    status === 403 ||
+    status === 404 ||
+    status === 412 ||
+    status === 500 ||
+    /^(AUTH|AUTHZ|INTERNAL)_/.test(code ?? '')
+  ) {
+    return undefined
+  }
+
+  const key = requestErrorKey(failure)
+  const statusKey = requestStatusErrorKey(status)
+  const genericBusiness =
+    code !== undefined &&
+    genericBusinessCodes.has(code) &&
+    (status === 400 || status === 409 || status === 422)
+
+  if (!genericBusiness && (key || !statusKey)) return undefined
+
+  const detail = failure.message.trim()
+  const categoryKey = key ?? statusKey
+  if (
+    !detail ||
+    detail === message ||
+    genericBusinessMessages.has(detail) ||
+    (categoryKey && detail === i18n.t(categoryKey, { lng: 'en' }))
+  ) {
+    return undefined
+  }
+  return detail
+}
+
+// A localized HTTP category may accompany a safe, actionable public message.
 export function requestStatusErrorKey(status: number | undefined) {
   switch (status) {
     case 400:

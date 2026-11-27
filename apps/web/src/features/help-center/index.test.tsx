@@ -1,3 +1,4 @@
+import { act } from 'react'
 import {
   createMemoryHistory,
   createRootRoute,
@@ -5,9 +6,11 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
+import { setUiLanguage } from '@/lib/i18n'
+import { UI_LANGUAGE_STORAGE_KEY } from '@/lib/i18n/language-preference'
 import { ThemeProvider } from '@/context/theme-provider'
 import { AuthenticatedLayout } from '@/components/layout/authenticated-layout'
 import { HelpCenter } from './index'
@@ -41,7 +44,28 @@ function createTestRouter() {
   })
 }
 
+afterEach(async () => {
+  await setUiLanguage('en')
+  localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY)
+})
+
 describe('Help Center', () => {
+  it('switches the help content without changing its route', async () => {
+    await setUiLanguage('en')
+    const router = createTestRouter()
+    const screen = await render(<RouterProvider router={router} />)
+    await act(async () => {
+      await setUiLanguage('vi')
+    })
+    await expect
+      .element(screen.getByRole('heading', { name: 'Trung tâm trợ giúp' }))
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('link', { name: 'Về trang Tổng quan' }))
+      .toHaveAttribute('href', '/')
+    expect(router.history.location.pathname).toBe('/help-center')
+  })
+
   it('uses the authenticated shell and offers truthful Dashboard recovery', async () => {
     const router = createTestRouter()
     const screen = await render(<RouterProvider router={router} />)

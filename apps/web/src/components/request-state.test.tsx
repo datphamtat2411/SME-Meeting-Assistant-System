@@ -33,6 +33,66 @@ describe('RequestError presentation', () => {
     await expect.element(screen.getByText('Work unavailable')).toBeVisible()
   })
 
+  it('keeps safe business details when a generic code is mapped', async () => {
+    await setUiLanguage('en')
+    const error = new CoreApiError({
+      message: 'The room is already reserved.',
+      status: 409,
+      code: 'RESOURCE_CONFLICT',
+      kind: 'http',
+    })
+    const screen = await render(<RequestError error={error} />)
+    await expect
+      .element(screen.getByText(i18n.t('errors:conflict')))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('The room is already reserved.'))
+      .toBeVisible()
+    await act(async () => {
+      await setUiLanguage('vi')
+    })
+    await expect
+      .element(screen.getByText(i18n.t('errors:conflict')))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('The room is already reserved.'))
+      .toBeVisible()
+  })
+
+  it('does not repeat a generic validation message in Vietnamese', async () => {
+    await setUiLanguage('vi')
+    const error = new CoreApiError({
+      message: 'Request validation failed.',
+      status: 422,
+      code: 'VALIDATION_FAILED',
+      kind: 'http',
+    })
+    const screen = await render(<RequestError error={error} />)
+    await expect
+      .element(screen.getByText(i18n.t('errors:validation')))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('Request validation failed.'))
+      .not.toBeInTheDocument()
+  })
+
+  it('does not disclose details of an unmapped authentication failure', async () => {
+    await setUiLanguage('vi')
+    const error = new CoreApiError({
+      message: 'Account exists but its password is incorrect.',
+      status: 401,
+      code: 'AUTH_CUSTOM_FAILURE',
+      kind: 'http',
+    })
+    const screen = await render(<RequestError error={error} />)
+    await expect
+      .element(screen.getByText(i18n.t('errors:authRequired')))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('Account exists but its password is incorrect.'))
+      .not.toBeInTheDocument()
+  })
+
   it('keeps permission failures on their explicit safe presentation', async () => {
     await setUiLanguage('vi')
     const error = new CoreApiError({

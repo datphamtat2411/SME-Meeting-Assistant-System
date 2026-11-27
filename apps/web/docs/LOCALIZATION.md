@@ -67,6 +67,10 @@ control labels follow UI language. Shared errors map canonical API and
 transport codes. For unrecognized or absent codes, a localized HTTP category
 can accompany the existing safe server message without replacing it. Existing
 permission, not-found, stale and network presentation remains unchanged.
+Generic validation and conflict codes may retain a distinct public business
+message in the request error detail. Authentication, authorization, concealed
+resources and internal errors do not expose additional raw detail. Keep
+feature-specific validation and recovery guidance at the owning feature.
 Use `REQUIRED_VALIDATION_MESSAGE`, `INVALID_EMAIL_VALIDATION_MESSAGE` and
 `lengthValidationMessage` from the presentation module for shared form
 validation; markers are translated at render time, including after a language

@@ -33,5 +33,16 @@
   "requestNotReplayed": "Yêu cầu chưa được gửi lại sau khi gia hạn phiên. Hãy kiểm tra trạng thái hiện tại trước khi thử lại.",
   "invalidEmail": "Nhập địa chỉ email hợp lệ.",
   "minLength_other": "Nhập ít nhất {{count}} ký tự.",
-  "maxLength_other": "Nhập tối đa {{count}} ký tự."
+  "maxLength_other": "Nhập tối đa {{count}} ký tự.",
+  "forbiddenPageTitle": "Không có quyền truy cập",
+  "forbiddenPageDescription": "Bạn không có quyền truy cập tài nguyên này.",
+  "generalPageTitle": "Đã xảy ra lỗi",
+  "generalPageDescription": "Xin lỗi vì sự bất tiện này. Vui lòng thử lại sau.",
+  "maintenancePageTitle": "Website đang bảo trì",
+  "maintenancePageDescription": "Website hiện chưa khả dụng. Chúng tôi sẽ sớm hoạt động trở lại.",
+  "unauthorizedPageTitle": "Yêu cầu đăng nhập",
+  "unauthorizedPageDescription": "Vui lòng đăng nhập bằng tài khoản phù hợp để truy cập tài nguyên này.",
+  "notFoundPageTitle": "Không tìm thấy trang",
+  "notFoundRoutePrefix": "Đường dẫn",
+  "notFoundRouteSuffix": "không khả dụng trong không gian làm việc này."
 }
