@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Temporal } from '@js-temporal/polyfill'
 import { CalendarDays, Clock3, MapPin, Users } from 'lucide-react'
+import { i18n, useUiTranslation } from '@/lib/i18n'
 import { formatCivilDate, instantCivilFields } from '@/lib/regional-time'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
@@ -126,6 +127,7 @@ function CalendarAgendaSkeleton() {
 }
 
 function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
+  const { t } = useUiTranslation()
   if (state.kind === 'loading') {
     return (
       <div
@@ -133,7 +135,7 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
         className='flex items-center gap-2 rounded-lg border bg-muted/30 px-4 py-3 text-sm text-muted-foreground'
       >
         <CalendarDays aria-hidden='true' className='size-4' />
-        Loading Calendar meetings…
+        {t('calendar:loading')}
       </div>
     )
   }
@@ -141,14 +143,12 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
   if (state.kind === 'forbidden') {
     const message =
       state.status === 401
-        ? 'Your session is not authorized to load Calendar meetings.'
-        : 'You do not have permission to access Calendar meetings.'
+        ? t('calendar:unauthorized')
+        : t('calendar:forbidden')
     const retainedResults =
       state.loadedCount === undefined
         ? ''
-        : ` ${state.loadedCount} previously loaded meetings remain visible${
-            state.incomplete ? ', but this calendar is incomplete.' : '.'
-          }`
+        : ' ' + t(state.incomplete ? 'calendar:retainedIncomplete' : 'calendar:retained', { count: state.loadedCount })
     return (
       <div
         role='alert'
@@ -165,7 +165,7 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
             variant='outline'
             onClick={() => void state.onRetry?.()}
           >
-            Retry request
+            {t('calendar:retryRequest')}
           </Button>
         )}
       </div>
@@ -184,17 +184,17 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
   if (state.authorizationStatus) {
     const message =
       state.authorizationStatus === 401
-        ? 'Your session is not authorized to load additional Calendar meetings.'
-        : 'Calendar access to additional meetings was denied.'
+        ? t('calendar:additionalUnauthorized')
+        : t('calendar:additionalDenied')
     return (
       <div
         role='alert'
         className='rounded-lg border border-destructive/30 bg-destructive/5 p-4'
       >
         <p className='text-sm'>
-          {message} Showing {state.loadedCount} previously loaded meetings
-          {state.totalCount === undefined ? '' : ` of ${state.totalCount}`}
-          {state.complete ? '.' : '; the calendar is incomplete.'}
+          {message} {t('calendar:additionalRetained', { count: state.loadedCount })}
+          {state.totalCount === undefined ? '' : t('calendar:ofTotal', { total: state.totalCount })}
+          {state.complete ? '.' : t('calendar:incompleteSuffix')}
         </p>
         {state.onRetry && (
           <Button
@@ -203,7 +203,7 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
             variant='outline'
             onClick={() => void state.onRetry?.()}
           >
-            Retry request
+            {t('calendar:retryRequest')}
           </Button>
         )}
       </div>
@@ -217,15 +217,11 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
         className='rounded-lg border border-amber-500/30 bg-amber-500/5 p-4'
       >
         <p className='text-sm'>
-          Calendar pagination ended after the Core API reported{' '}
-          {state.totalCount ?? 'an unknown number of'} meetings, but only{' '}
-          {state.loadedCount} unique meetings were returned. Loaded meetings
-          remain visible, but this calendar may be incomplete.
+          {t('calendar:paginationMismatch', { total: state.totalCount ?? t('calendar:unknownTotal'), loaded: state.loadedCount })}
         </p>
         {Boolean(state.refreshError) && (
           <p className='mt-2 text-sm'>
-            The latest refresh also failed; previously loaded meetings are
-            retained.
+            {t('calendar:refreshAlsoFailed')}
           </p>
         )}
         {state.onRetry && (
@@ -235,7 +231,7 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
             variant='outline'
             onClick={() => void state.onRetry?.()}
           >
-            Reload Calendar meetings
+            {t('calendar:reloadMeetings')}
           </Button>
         )}
       </div>
@@ -249,8 +245,8 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
         className='rounded-lg border border-destructive/30 bg-destructive/5 p-4'
       >
         <p className='text-sm'>
-          Calendar refresh failed. Previously loaded meetings are still shown.
-          {!state.complete && ' The calendar remains incomplete.'}
+          {t('calendar:refreshFailed')}
+          {!state.complete && t('calendar:incompleteNotice')}
         </p>
         {state.onRetry && (
           <Button
@@ -259,7 +255,7 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
             variant='outline'
             onClick={() => void state.onRetry?.()}
           >
-            Retry refresh
+            {t('calendar:retryRefresh')}
           </Button>
         )}
       </div>
@@ -273,10 +269,7 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
         className='rounded-lg border border-destructive/30 bg-destructive/5 p-4'
       >
         <p className='text-sm'>
-          More meetings could not be loaded. Showing {state.loadedCount}
-          {state.totalCount === undefined ? '' : ` of ${state.totalCount}`}{' '}
-          meetings. Previously retrieved entries remain visible, but this
-          calendar is incomplete.
+          {t('calendar:pageError', { count: state.loadedCount, total: state.totalCount === undefined ? '' : t('calendar:ofTotal', { total: state.totalCount }) })}
         </p>
         {state.onRetry && (
           <Button
@@ -285,7 +278,7 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
             variant='outline'
             onClick={() => void state.onRetry?.()}
           >
-            Retry loading meetings
+            {t('calendar:retryLoad')}
           </Button>
         )}
       </div>
@@ -294,17 +287,16 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
 
   if (!state.complete) {
     const total =
-      state.totalCount === undefined ? '' : ` of ${state.totalCount} meetings`
+      state.totalCount === undefined ? '' : t('calendar:ofTotalMeetings', { total: state.totalCount })
     return (
       <div
         role='status'
         className='flex flex-col gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between'
       >
         <span>
-          Showing {state.loadedCount}
-          {total}. The calendar is incomplete.
-          {state.isLoadingMore ? ' Loading more meetings…' : ''}
-          {state.isRefreshing ? ' Refreshing Calendar meetings…' : ''}
+          {t('calendar:incompleteShowing', { count: state.loadedCount, total })}
+          {state.isLoadingMore ? t('calendar:loadingMore') : ''}
+          {state.isRefreshing ? t('calendar:refreshingSuffix') : ''}
         </span>
         {state.canLoadMore && !state.isLoadingMore && state.onLoadMore && (
           <Button
@@ -312,7 +304,7 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
             variant='outline'
             onClick={() => void state.onLoadMore?.()}
           >
-            Load more meetings
+            {t('calendar:loadMore')}
           </Button>
         )}
       </div>
@@ -325,7 +317,7 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
         role='status'
         className='rounded-lg border bg-muted/30 px-4 py-3 text-sm text-muted-foreground'
       >
-        Refreshing Calendar meetings…
+        {t('calendar:refreshing')}
       </div>
     )
   }
@@ -340,14 +332,15 @@ function CalendarEmptyState({
   state: CalendarDataPresentation
   hasOmissions: boolean
 }) {
+  const { t } = useUiTranslation()
   if (state.kind !== 'ready' || !state.complete || state.authorizationStatus) {
     return null
   }
   const title = hasOmissions
-    ? 'No meetings with valid scheduled dates to show.'
+    ? t('calendar:noValidDates')
     : state.filterActive
-      ? 'No accessible meetings match these filters this month.'
-      : 'No accessible meetings overlap this month.'
+      ? t('calendar:noFilteredMeetings')
+      : t('calendar:noMonthMeetings')
   return (
     <div className='mt-4 flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-4 text-center'>
       <CalendarDays
@@ -357,7 +350,7 @@ function CalendarEmptyState({
       <p className='font-medium'>{title}</p>
       {state.filterActive && (
         <p className='text-sm text-muted-foreground'>
-          Try changing a filter or resetting the filters.
+          {t('calendar:changeFilter')}
         </p>
       )}
     </div>
@@ -368,11 +361,11 @@ function roomLabel(meeting: MeetingListItem) {
   const room = meeting.display.roomName?.trim()
   const location = meeting.display.roomLocation?.trim()
   if (room && location) return `${room} · ${location}`
-  return room || location || 'Room not assigned'
+  return room || location || i18n.t('calendar:roomNotAssigned')
 }
 
 function organizerLabel(meeting: MeetingListItem) {
-  return meeting.display.organizerName?.trim() || 'Organizer not available'
+  return meeting.display.organizerName?.trim() || i18n.t('calendar:organizerUnavailable')
 }
 
 function participantLabel(meeting: MeetingListItem) {
@@ -380,7 +373,7 @@ function participantLabel(meeting: MeetingListItem) {
   const names = meeting.display.participantPreview
     .map((participant) => participant.displayName?.trim())
     .filter((name): name is string => Boolean(name))
-  const countLabel = `${count} participant${count === 1 ? '' : 's'}`
+  const countLabel = i18n.t('calendar:participants', { count })
   return names.length ? `${countLabel} · ${names.join(', ')}` : countLabel
 }
 
@@ -390,15 +383,15 @@ function segmentOccupancyLabel(
   timezone: string
 ) {
   if (segment.continuesFromPreviousDay && segment.continuesIntoNextDay) {
-    return 'Occupies this full day'
+    return i18n.t('calendar:fullDay')
   }
   if (segment.continuesFromPreviousDay) {
     const end = instantCivilFields(segment.segmentEndAt, timezone)
     const isMidnight = end?.time === '00:00' && end.date !== segment.dayKey
-    return `This day: until ${isMidnight ? 'midnight' : timeLabel(segment.segmentEndAt)}`
+    return i18n.t('calendar:until', { time: isMidnight ? i18n.t('calendar:midnight') : timeLabel(segment.segmentEndAt) })
   }
   if (segment.continuesIntoNextDay) {
-    return `This day: from ${timeLabel(segment.segmentStartAt)}`
+    return i18n.t('calendar:from', { time: timeLabel(segment.segmentStartAt) })
   }
   return `${timeLabel(segment.segmentStartAt)} – ${timeLabel(segment.segmentEndAt)}`
 }
@@ -412,6 +405,7 @@ export function CalendarMeetingEntry({
   variant: 'compact' | 'agenda'
   onMeetingSelect?: (meeting: MeetingListItem) => void
 }) {
+  const { t } = useUiTranslation()
   const { locale, timezone } = useRegionalPresentation()
   const timeFormat = new Intl.DateTimeFormat(locale, {
     hour: 'numeric',
@@ -436,8 +430,8 @@ export function CalendarMeetingEntry({
     segment.continuesFromPreviousDay || segment.continuesIntoNextDay
   const dayLabel = formatCivilDate(segment.dayKey, locale)
   const accessibleDescription = isMultiDay
-    ? `Scheduled ${originalSchedule}. ${occupancy}.`
-    : `Scheduled ${occupancy}.`
+    ? t('calendar:scheduledMulti', { schedule: originalSchedule, occupancy })
+    : t('calendar:scheduledShort', { occupancy })
 
   if (variant === 'compact') {
     return (
@@ -445,7 +439,7 @@ export function CalendarMeetingEntry({
         to='/meetings/$meetingId'
         params={{ meetingId: meeting.id }}
         onClick={() => onMeetingSelect?.(meeting)}
-        aria-label={`Open ${meeting.title} workspace. ${meeting.status.replace(/_/g, ' ')}. ${accessibleDescription}`}
+        aria-label={t('calendar:openCompact', { title: meeting.title, status: i18n.language === 'vi' ? t(`calendar:status.${meeting.status}`) : meeting.status.replace(/_/g, ' '), description: accessibleDescription })}
         className='block min-w-0 rounded-md border bg-card px-1.5 py-1 text-left text-xs leading-tight transition-colors hover:border-primary/50 hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring sm:px-2'
       >
         <span className='flex min-w-0 items-center gap-1.5'>
@@ -457,9 +451,9 @@ export function CalendarMeetingEntry({
         <span className='mt-0.5 flex items-center justify-between gap-1 text-[10px] text-muted-foreground'>
           <span className='truncate'>
             {meeting.status === 'DRAFT'
-              ? roomLabel(meeting) === 'Room not assigned'
-                ? 'Tentative · no room reservation'
-                : `Tentative · requested room: ${roomLabel(meeting)}`
+              ? !meeting.display.roomName?.trim() && !meeting.display.roomLocation?.trim()
+                ? t('calendar:tentative')
+                : t('calendar:requestedRoom', { room: roomLabel(meeting) })
               : roomLabel(meeting)}
           </span>
           <MeetingStatusBadge
@@ -470,9 +464,9 @@ export function CalendarMeetingEntry({
         {(segment.continuesFromPreviousDay || segment.continuesIntoNextDay) && (
           <span className='mt-0.5 flex gap-1 text-[10px] text-muted-foreground'>
             {segment.continuesFromPreviousDay && (
-              <span>← from previous day</span>
+              <span>{t('calendar:previousDayArrow')}</span>
             )}
-            {segment.continuesIntoNextDay && <span>→ continues next day</span>}
+            {segment.continuesIntoNextDay && <span>{t('calendar:nextDayArrow')}</span>}
           </span>
         )}
       </Link>
@@ -485,7 +479,7 @@ export function CalendarMeetingEntry({
         to='/meetings/$meetingId'
         params={{ meetingId: meeting.id }}
         onClick={() => onMeetingSelect?.(meeting)}
-        aria-label={`Open ${meeting.title} workspace${description ? `. ${description}` : ''}`}
+        aria-label={t('calendar:openAgenda', { title: meeting.title, description: description ? `. ${description}` : '' })}
         className='group block rounded-xl border bg-card p-4 transition-colors hover:border-primary/50 hover:bg-accent/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:p-5'
       >
         <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
@@ -497,7 +491,7 @@ export function CalendarMeetingEntry({
               <MeetingStatusBadge status={meeting.status} />
               {meeting.status === 'DRAFT' && (
                 <span className='text-xs font-medium text-muted-foreground'>
-                  Tentative — no room reservation
+                  {t('calendar:tentativeNoReservation')}
                 </span>
               )}
             </div>
@@ -514,14 +508,14 @@ export function CalendarMeetingEntry({
               {isMultiDay && (
                 <span className='inline-flex items-center gap-1.5'>
                   {segment.continuesFromPreviousDay && (
-                    <span>Continues from previous day</span>
+                    <span>{t('calendar:continuesFrom')}</span>
                   )}
                   {segment.continuesFromPreviousDay &&
                     segment.continuesIntoNextDay && (
                       <span aria-hidden='true'>·</span>
                     )}
                   {segment.continuesIntoNextDay && (
-                    <span>Continues into next day</span>
+                    <span>{t('calendar:continuesInto')}</span>
                   )}
                 </span>
               )}
@@ -533,16 +527,16 @@ export function CalendarMeetingEntry({
                 <Users aria-hidden='true' className='size-4 shrink-0' />
                 {participantLabel(meeting)}
               </span>
-              <span>Organizer: {organizerLabel(meeting)}</span>
+              <span>{t('calendar:organizer', { name: organizerLabel(meeting) })}</span>
             </div>
             {isMultiDay && (
               <p className='text-sm text-muted-foreground'>
-                Full meeting schedule: {originalSchedule}
+                {t('calendar:fullSchedule', { schedule: originalSchedule })}
               </p>
             )}
             {meeting.status === 'DRAFT' && (
               <p className='sr-only'>
-                Draft meetings are tentative and do not reserve the room.
+                {t('calendar:draftHelp')}
               </p>
             )}
           </div>
@@ -576,6 +570,7 @@ export function CalendarMonthView({
   onDaySelect,
   onMeetingSelect,
 }: CalendarViewProps) {
+  const { t } = useUiTranslation()
   const { locale, timezone } = useRegionalPresentation()
   const weekDays = weekdayLabels(locale)
   const monthKey = month
@@ -666,11 +661,11 @@ export function CalendarMonthView({
         <Card className='overflow-hidden'>
           <CardContent className='p-2 sm:p-4'>
             <table
-              aria-label={`${monthLabel} calendar`}
+              aria-label={t('calendar:monthCalendar', { month: monthLabel })}
               className='w-full table-fixed border-collapse'
             >
               <caption className='sr-only'>
-                Monday-first calendar for {monthLabel}
+                {t('calendar:monthCaption', { month: monthLabel })}
               </caption>
               <thead>
                 <tr>
@@ -708,9 +703,7 @@ export function CalendarMonthView({
                       const overflowSegments = daySegments.slice(3)
                       const overflowId = `calendar-overflow-${cell.dayKey}`
                       const meetingCount =
-                        daySegments.length === 1
-                          ? '1 meeting'
-                          : `${daySegments.length} meetings`
+                        t('calendar:meetingCount', { count: daySegments.length })
 
                       return (
                         <td
@@ -724,7 +717,7 @@ export function CalendarMonthView({
                             aria-label={
                               cell.inMonth
                                 ? `${dateLabel}, ${meetingCount}`
-                                : `${dateLabel}, outside selected month; schedule not loaded`
+                                : t('calendar:outsideDate', { date: dateLabel })
                             }
                             aria-current={isToday ? 'date' : undefined}
                             aria-pressed={isSelected}
@@ -743,7 +736,7 @@ export function CalendarMonthView({
                             <>
                               <span className='mt-1 block truncate text-[10px] text-muted-foreground sm:hidden'>
                                 {daySegments.length
-                                  ? `${daySegments.length > 99 ? '99+' : daySegments.length} meetings`
+                                  ? t('calendar:mobileCount', { count: daySegments.length > 99 ? '99+' : String(daySegments.length) })
                                   : ''}
                               </span>
                               <div className='mt-1 hidden space-y-1 sm:block'>
@@ -779,20 +772,20 @@ export function CalendarMonthView({
                                   size='sm'
                                   aria-expanded={expanded}
                                   aria-controls={`${overflowId} calendar-selected-day`}
-                                  aria-label={`Show ${overflowSegments.length} more meetings on ${dateLabel}`}
+                                  aria-label={t('calendar:showMore', { count: overflowSegments.length, date: dateLabel })}
                                   className='mt-1 h-6 w-full justify-start px-1 text-[10px] text-primary'
                                   onClick={() => {
                                     selectDay(cell.dayKey)
                                     toggleExpanded(cell.dayKey)
                                   }}
                                 >
-                                  +{overflowSegments.length} more
+                                  {t('calendar:more', { count: overflowSegments.length })}
                                 </Button>
                               )}
                             </>
                           ) : (
                             <span className='mt-1 hidden text-[10px] leading-tight text-muted-foreground sm:block'>
-                              Outside month · schedule not loaded
+                              {t('calendar:outsideMonth')}
                             </span>
                           )}
                         </td>
@@ -813,14 +806,14 @@ export function CalendarMonthView({
         )}
       <section
         id='calendar-selected-day'
-        aria-label='Selected day meetings'
+        aria-label={t('calendar:selectedDayMeetings')}
         aria-live='polite'
         className='space-y-3 sm:hidden'
       >
         <h3 className='font-semibold'>
           {selectedDay
             ? formatCivilDate(selectedDay.dayKey, locale, fullDateOptions)
-            : 'Selected day'}
+            : t('calendar:selectedDay')}
         </h3>
         {state.kind === 'loading' ? (
           <div aria-hidden='true' className='space-y-2'>
@@ -829,8 +822,7 @@ export function CalendarMonthView({
           </div>
         ) : selectedDay && !selectedDay.inMonth ? (
           <p className='rounded-lg border border-dashed p-4 text-sm text-muted-foreground'>
-            This date is outside the selected month; its meetings have not been
-            loaded.
+            {t('calendar:outsideDay')}
           </p>
         ) : selectedSegments.length ? (
           <ul className='space-y-2'>
@@ -845,7 +837,7 @@ export function CalendarMonthView({
           </ul>
         ) : state.kind === 'ready' && state.complete ? (
           <p className='rounded-lg border border-dashed p-4 text-sm text-muted-foreground'>
-            No meetings loaded for this day.
+            {t('calendar:noDayMeetings')}
           </p>
         ) : null}
       </section>
@@ -862,6 +854,7 @@ export function CalendarAgendaView({
   onMeetingSelect,
 }: CalendarViewProps) {
   const { locale } = useRegionalPresentation()
+  const { t } = useUiTranslation()
   const groups = useMemo(() => groupCalendarDaySegments(segments), [segments])
   const monthKey = month
   const projectedGroups = groups.filter(([dayKey]) =>
@@ -889,10 +882,10 @@ export function CalendarAgendaView({
                     <Button
                       variant='ghost'
                       size='sm'
-                      aria-label={`Select ${formatCivilDate(dayKey, locale, fullDateOptions)}`}
+                      aria-label={t('calendar:selectDate', { date: formatCivilDate(dayKey, locale, fullDateOptions) })}
                       onClick={() => onDaySelect(dayKey)}
                     >
-                      Select day
+                      {t('calendar:selectDay')}
                     </Button>
                   )}
                 </div>
