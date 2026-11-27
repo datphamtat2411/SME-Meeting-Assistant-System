@@ -32,14 +32,22 @@ export function CurrentSummary({
   return (
     <section className='space-y-4'>
       <div className='flex flex-wrap items-center gap-2'>
-        <Badge>{t('summary:currentVersion', { version: summary.versionNumber })}</Badge>
-        <Badge variant='outline'>{t(`summary:status_${summary.sourceType}`, {
+        <Badge>
+          {t('summary:currentVersion', { version: summary.versionNumber })}
+        </Badge>
+        <Badge variant='outline'>
+          {t(`summary:status_${summary.sourceType}`, {
             defaultValue: summary.sourceType,
-          })}</Badge>
-        <Badge variant='outline'>{t(`summary:status_${summary.qualityStatus}`, {
+          })}
+        </Badge>
+        <Badge variant='outline'>
+          {t(`summary:status_${summary.qualityStatus}`, {
             defaultValue: summary.qualityStatus,
-          })}</Badge>
-        {summary.isStale && <Badge variant='destructive'>{t('summary:staleSource')}</Badge>}
+          })}
+        </Badge>
+        {summary.isStale && (
+          <Badge variant='destructive'>{t('summary:staleSource')}</Badge>
+        )}
       </div>
       <div className='grid gap-2 text-xs text-muted-foreground sm:grid-cols-2'>
         <span>
@@ -152,12 +160,15 @@ export function VersionRow({
           {!version.isCurrent && version.sourceType === 'AI_GENERATED' && (
             <Badge variant='secondary'>{t('summary:candidate')}</Badge>
           )}
-          {version.isStale && <Badge variant='destructive'>{t('summary:stale')}</Badge>}
+          {version.isStale && (
+            <Badge variant='destructive'>{t('summary:stale')}</Badge>
+          )}
         </span>
         <span className='mt-1 block text-xs text-muted-foreground'>
           {t(`summary:status_${version.sourceType}`, {
             defaultValue: version.sourceType,
-          })} · <RegionalTimestamp value={version.createdAt} />
+          })}{' '}
+          · <RegionalTimestamp value={version.createdAt} />
         </span>
       </button>
     </div>

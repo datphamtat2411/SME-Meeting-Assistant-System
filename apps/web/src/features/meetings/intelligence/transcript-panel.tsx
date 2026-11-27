@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
 import {
   localizedValidationMessage,
   operationErrorFormMessage,
   UiPresentationError,
 } from '@/lib/i18n/presentation'
-import { normalizeCoreApiError } from '@/lib/core-api'
-import { i18n, useUiTranslation } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -56,7 +56,8 @@ export function TranscriptPanel({
       if (!canCorrectRef.current) {
         throw new UiPresentationError('transcript:correctionUnauthorized')
       }
-      if (!editing) throw new UiPresentationError('transcript:noSegmentSelected')
+      if (!editing)
+        throw new UiPresentationError('transcript:noSegmentSelected')
       return correctTranscriptSegment(
         meetingId,
         editing,
@@ -72,7 +73,9 @@ export function TranscriptPanel({
     },
     onError: (error) => {
       toast.error(i18n.t('transcript:correctionFailed'), {
-        description: localizedValidationMessage(operationErrorFormMessage(error)),
+        description: localizedValidationMessage(
+          operationErrorFormMessage(error)
+        ),
       })
       void transcript.refetch()
     },
@@ -103,11 +106,21 @@ export function TranscriptPanel({
         ) : (
           <>
             <div className='flex flex-wrap items-center gap-2 text-sm'>
-              <Badge variant='outline'>{t(`transcript:status_${transcript.data.status}`, {
+              <Badge variant='outline'>
+                {t(`transcript:status_${transcript.data.status}`, {
                   defaultValue: transcript.data.status,
-                })}</Badge>
-              <span>{t('transcript:version', { number: transcript.data.versionNumber })}</span>
-              <span>{t('transcript:revision', { number: transcript.data.contentRevision })}</span>
+                })}
+              </Badge>
+              <span>
+                {t('transcript:version', {
+                  number: transcript.data.versionNumber,
+                })}
+              </span>
+              <span>
+                {t('transcript:revision', {
+                  number: transcript.data.contentRevision,
+                })}
+              </span>
             </div>
             {coverage.data &&
               coverage.data.some(
@@ -129,11 +142,14 @@ export function TranscriptPanel({
                           {timecode(segment.startMs)}–{timecode(segment.endMs)}
                         </span>
                         <strong>
-                          {segment.speakerLabel || t('transcript:unknownSpeaker')}
+                          {segment.speakerLabel ||
+                            t('transcript:unknownSpeaker')}
                         </strong>
-                        <Badge variant='outline'>{t(`transcript:status_${segment.qualityStatus}`, {
-                          defaultValue: segment.qualityStatus,
-                        })}</Badge>
+                        <Badge variant='outline'>
+                          {t(`transcript:status_${segment.qualityStatus}`, {
+                            defaultValue: segment.qualityStatus,
+                          })}
+                        </Badge>
                       </div>
                       {canCorrectTranscript && (
                         <Button
