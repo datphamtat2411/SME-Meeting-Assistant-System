@@ -4,10 +4,12 @@ import enCalendar from './locales/en/calendar.json'
 import enCommon from './locales/en/common.json'
 import enDashboard from './locales/en/dashboard.json'
 import enErrors from './locales/en/errors.json'
+import enExport from './locales/en/export.json'
 import enHelpCenter from './locales/en/help-center.json'
 import enMedia from './locales/en/media.json'
 import enMeetings from './locales/en/meetings.json'
 import enMembers from './locales/en/members.json'
+import enMinutes from './locales/en/minutes.json'
 import enNavigation from './locales/en/navigation.json'
 import enProcessing from './locales/en/processing.json'
 import enRooms from './locales/en/rooms.json'
@@ -23,10 +25,12 @@ import viCalendar from './locales/vi/calendar.json'
 import viCommon from './locales/vi/common.json'
 import viDashboard from './locales/vi/dashboard.json'
 import viErrors from './locales/vi/errors.json'
+import viExport from './locales/vi/export.json'
 import viHelpCenter from './locales/vi/help-center.json'
 import viMedia from './locales/vi/media.json'
 import viMeetings from './locales/vi/meetings.json'
 import viMembers from './locales/vi/members.json'
+import viMinutes from './locales/vi/minutes.json'
 import viNavigation from './locales/vi/navigation.json'
 import viProcessing from './locales/vi/processing.json'
 import viRooms from './locales/vi/rooms.json'
@@ -45,10 +49,12 @@ export const resources = {
     common: enCommon,
     dashboard: enDashboard,
     errors: enErrors,
+    export: enExport,
     'help-center': enHelpCenter,
     media: enMedia,
     meetings: enMeetings,
     members: enMembers,
+    minutes: enMinutes,
     rooms: enRooms,
     processing: enProcessing,
     navigation: enNavigation,
@@ -66,10 +72,12 @@ export const resources = {
     common: viCommon,
     dashboard: viDashboard,
     errors: viErrors,
+    export: viExport,
     'help-center': viHelpCenter,
     media: viMedia,
     meetings: viMeetings,
     members: viMembers,
+    minutes: viMinutes,
     rooms: viRooms,
     processing: viProcessing,
     navigation: viNavigation,
