@@ -7,6 +7,7 @@ import {
   featureValidationMessage,
   localizedValidationMessage,
 } from '@/lib/i18n/presentation'
+import { MemberPolicyError } from './member-administration-policy'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -273,8 +274,10 @@ export function MemberAdministrationDialog({
       setLocalError(
         error instanceof NoMemberChangesError
           ? featureValidationMessage('members:noChanges')
-          : error instanceof Error
-            ? error.message
+          : error instanceof MemberPolicyError && error.messageKey
+            ? featureValidationMessage(error.messageKey)
+            : error instanceof Error
+              ? error.message
             : featureValidationMessage('members:invalidValues')
       )
     }

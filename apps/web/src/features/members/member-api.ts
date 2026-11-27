@@ -1,3 +1,4 @@
+import { i18n } from '@/lib/i18n'
 import { z } from 'zod'
 import { queryOptions, skipToken } from '@tanstack/react-query'
 import {
@@ -495,51 +496,53 @@ export function classifyMemberMutationOutcome(
 
 export function memberOperationErrorMessage(
   error: unknown,
-  operation: 'create' | 'edit' | MemberLifecycleAction
+  operation: 'create' | 'edit' | MemberLifecycleAction,
+  translate: (key: string) => string = (key) => i18n.t(key)
 ): string {
-  if (error instanceof MemberPolicyError) return error.message
+  if (error instanceof MemberPolicyError)
+    return error.messageKey ? translate(error.messageKey) : error.message
   const normalized = normalizeCoreApiError(error)
   if (normalized.status === 401) {
-    return 'Your session could not be verified. Follow sign-in recovery before trying again.'
+    return translate('members:recovery_session')
   }
   if (normalized.status === 403) {
-    return 'You do not have permission to perform this member operation.'
+    return translate('members:recovery_forbidden')
   }
   if (normalized.status === 404) {
-    return 'This member is no longer available in your authorized scope.'
+    return translate('members:recovery_notFound')
   }
   if (normalized.status === 412) {
-    return 'This member changed on the server. Your reviewed data is preserved; load the latest account and review it before trying again.'
+    return translate('members:recovery_stale')
   }
   if (normalized.status === 428) {
-    return 'The server rejected the missing or unusable concurrency precondition. No unconditional change was sent; review the latest account before trying again.'
+    return translate('members:recovery_missingPrecondition')
   }
   if (normalized.status === 409) {
     if (operation === 'deactivate') {
-      return 'The account could not be deactivated because its current lifecycle state or actor relationship conflicts with the request.'
+      return translate('members:recovery_deactivateConflict')
     }
     if (operation === 'reactivate') {
-      return 'The account cannot be reactivated until its secure credential setup requirement is satisfied.'
+      return translate('members:recovery_reactivateConflict')
     }
     if (operation === 'account-setup/reissue') {
-      return 'A new setup process cannot be requested in the account’s current state or rate-limit window.'
+      return translate('members:recovery_setupConflict')
     }
     return operation === 'create'
-      ? 'An account with this normalized email already exists. Review the authorized directory before trying again.'
-      : 'The member conflicts with current server data. Review the latest account values.'
+      ? translate('members:recovery_duplicate')
+      : translate('members:recovery_editConflict')
   }
   if (normalized.status === 400 || normalized.status === 422) {
-    return 'The Core API rejected these member values. Review the highlighted fields.'
+    return translate('members:recovery_invalid')
   }
   if (normalized.status === 429) {
-    return 'Too many requests were sent. Wait before trying this operation again.'
+    return translate('members:recovery_rate')
   }
   if (
     normalized.isNetworkError ||
     normalized.kind === 'malformed' ||
     normalized.isServerError
   ) {
-    return 'The operation outcome could not be confirmed. Authoritative member data is being refreshed; review it before deciding whether to try again.'
+    return translate('members:recovery_uncertain')
   }
-  return 'The server response did not confirm the operation. Review authoritative member data before deciding whether to try again.'
+  return translate('members:recovery_unconfirmed')
 }

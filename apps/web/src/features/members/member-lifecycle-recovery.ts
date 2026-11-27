@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n'
+import { featureValidationMessage, requestErrorFormMessage } from '@/lib/i18n/presentation'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import type { AuthContext } from '@/features/auth/session/current-user'
 import {
@@ -43,20 +45,21 @@ function desiredStatePresent(
   return false
 }
 
-function setupReissueMessage(snapshot: MemberSnapshot): string {
+function setupReissueMessage(snapshot: MemberSnapshot, translate: (key: string) => string): string {
   if (snapshot.member.accountStatus === 'PENDING_SETUP') {
-    return 'The account remains pending secure setup. Available account metadata cannot confirm whether the previous reissue request was applied or whether a setup email was delivered; it cannot independently establish whether the previous reissue was applied or whether a setup email was delivered.'
+    return translate('members:recovery_setupPending')
   }
   if (snapshot.member.accountStatus === 'ACTIVE') {
-    return 'The latest account state is active. Initial account setup reissue is no longer available. The previous reissue outcome cannot be independently established from the available account metadata.'
+    return translate('members:recovery_setupActive')
   }
-  return 'The latest account state is inactive. Initial account setup reissue is not available in this state. The previous reissue outcome remains unconfirmed.'
+  return translate('members:recovery_setupInactive')
 }
 
 function lifecycleVerification(
   action: MemberLifecycleAction,
   snapshot: MemberSnapshot,
-  identity: AuthContext | undefined
+  identity: AuthContext | undefined,
+  translate: (key: string) => string = (key) => i18n.t(key)
 ): LifecycleVerificationResult {
   const status = snapshot.member.accountStatus
   const desired = desiredStatePresent(action, snapshot)
@@ -73,45 +76,36 @@ function lifecycleVerification(
         status === 'PENDING_SETUP' && eligible
           ? 'outcome-inconclusive'
           : 'ineligible',
-      message: setupReissueMessage(snapshot),
+      message: setupReissueMessage(snapshot, translate),
     }
   }
 
   if (desired) {
-    const label = action === 'deactivate' ? 'inactive' : 'active'
     return {
       latestSnapshot: snapshot,
       desiredStatePresent: true,
       eligible: false,
       classification: 'desired-state-present',
-      message: `The server currently verifies this account as ${label}. We cannot determine whether this request caused that state; no second request was sent.`,
+      message: translate(`members:recovery_desired_${action}`),
     }
   }
 
   if (eligible) {
-    const label = action === 'deactivate' ? 'active' : 'inactive'
-    const requested = action === 'deactivate' ? 'deactivation' : 'reactivation'
     return {
       latestSnapshot: snapshot,
       desiredStatePresent: false,
       eligible: true,
       classification: 'eligible-renewed-review',
-      message: `The server currently verifies this account as ${label}. The previous ${requested} outcome remains unconfirmed; review this current version before deciding whether to confirm another request.`,
+      message: translate(`members:recovery_eligible_${action}`),
     }
   }
 
-  const stateLabel =
-    status === 'ACTIVE'
-      ? 'active'
-      : status === 'INACTIVE'
-        ? 'inactive'
-        : 'pending secure setup'
   return {
     latestSnapshot: snapshot,
     desiredStatePresent: false,
     eligible: false,
     classification: 'ineligible',
-    message: `The latest account state is ${stateLabel}. This lifecycle operation is no longer eligible for the current account or member state; the previous outcome remains unconfirmed.`,
+    message: translate(`members:recovery_ineligible_${status}`),
   }
 }
 
@@ -149,7 +143,7 @@ export function createMemberLifecycleRecovery(
   }
 
   const verificationDeferredMessage =
-    'Current administration access could not be verified while checking the request outcome. The protected response was discarded; verify access and reload the authoritative state before continuing.'
+    featureValidationMessage('members:recovery_verificationDeferred')
 
   async function verifyLifecycle(input: {
     operationId: number
@@ -197,7 +191,8 @@ export function createMemberLifecycleRecovery(
       const result = lifecycleVerification(
         input.action,
         latest,
-        dependencies.getIdentity()
+        dependencies.getIdentity(),
+        featureValidationMessage
       )
       dependencies.dispatch({
         type: 'VERIFICATION_SUCCEEDED',
@@ -235,7 +230,7 @@ export function createMemberLifecycleRecovery(
         operationId: input.operationId,
         contextKey: input.contextKey,
         requestId: request.requestId,
-        error: normalizeCoreApiError(error).message,
+        error: requestErrorFormMessage(normalizeCoreApiError(error)),
       })
     } finally {
       dependencies.requests.completeRequest(request)
