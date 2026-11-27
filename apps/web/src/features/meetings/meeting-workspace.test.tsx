@@ -575,7 +575,7 @@ describe('MeetingWorkspacePage', () => {
         .element(screen.getByRole('tab', { name: 'Bản ghi lời thoại' }))
         .toBeInTheDocument()
       await expect
-        .element(screen.getByRole('heading', { name: 'Thông tin cuộc họp' }))
+        .element(screen.getByText('Thông tin cuộc họp', { exact: true }))
         .toBeInTheDocument()
       expect(queryClient.getQueryData(detailKey)).toEqual(cachedDetail)
     } finally {

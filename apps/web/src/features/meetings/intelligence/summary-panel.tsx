@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Columns2, FileText, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import { localizedValidationMessage, operationErrorFormMessage, UiPresentationError } from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RegionalTimestamp } from '@/components/regional-timestamp'
@@ -23,7 +25,6 @@ import {
   activateSummary,
   editSummary,
   summaryQuery,
-  summaryVersionPageLabel,
   summaryVersionsQuery,
   type SummarySnapshot,
   type SummaryVersion,
@@ -45,12 +46,13 @@ type SummaryPanelProps = {
 }
 
 export function SummaryPanel(props: SummaryPanelProps) {
+  const { t } = useUiTranslation()
   const authorization = useOptionalMeetingAuthorization()
   if (!intelligenceReadAllowed(authorization)) {
     return (
       <RequestEmpty
-        title='Summary unavailable'
-        description='Meeting content access must be verified.'
+        title={t('summary:unavailable')}
+        description={t('summary:accessRequired')}
       />
     )
   }
@@ -67,6 +69,7 @@ function SummaryPanelContent({
   canEdit,
   canRegenerate,
 }: SummaryPanelProps) {
+  const { t } = useUiTranslation()
   const queryClient = useQueryClient()
   const session = useOptionalMeetingSession()
   const authorization = useOptionalMeetingAuthorization()
@@ -186,15 +189,13 @@ function SummaryPanelContent({
             !currentAuthorization.capabilities.canMutateIntelligence ||
             currentAuthorization.isConfirmedAccessLoss))
       ) {
-        throw new Error('Summary editing is no longer authorized.')
+        throw new UiPresentationError('summary:editUnauthorized')
       }
       if (!editorSnapshot || editConflict)
-        throw new Error('Review the current summary before saving.')
+        throw new UiPresentationError('summary:reviewBeforeSave')
       const content = draft.trim()
       if (!content || content.length > 20_000) {
-        throw new Error(
-          'Summary content must be between 1 and 20,000 characters.'
-        )
+        throw new UiPresentationError('summary:invalidLength')
       }
       return editSummary(meetingId, content, editorSnapshot)
     },
@@ -210,9 +211,9 @@ function SummaryPanelContent({
           editorSnapshot?.summary.versionNumber &&
         result.summary.content === editorSnapshot.summary.content
       ) {
-        toast.success('Summary is already up to date')
+        toast.success(i18n.t('summary:alreadyCurrent'))
       } else {
-        toast.success('Summary version saved')
+        toast.success(i18n.t('summary:saved'))
       }
     },
     onError: (error, _variables, ownsScope) => {
@@ -229,11 +230,11 @@ function SummaryPanelContent({
         })
         return
       }
-      toast.error('Cannot save summary', {
+      toast.error(i18n.t('summary:saveFailed'), {
         description:
           normalized.status === 403
-            ? 'Your summary editing permission is no longer available.'
-            : normalized.message,
+            ? i18n.t('summary:editPermissionLost')
+            : localizedValidationMessage(operationErrorFormMessage(error)),
       })
     },
   })
@@ -250,18 +251,16 @@ function SummaryPanelContent({
             !currentAuthorization.capabilities.canMutateIntelligence ||
             currentAuthorization.isConfirmedAccessLoss))
       ) {
-        throw new Error('Summary activation is no longer authorized.')
+        throw new UiPresentationError('summary:activationUnauthorized')
       }
       if (!activationReview || activationConflict || editorSnapshot) {
-        throw new Error(
-          'Review the current summary before activating a version.'
-        )
+        throw new UiPresentationError('summary:reviewBeforeActivate')
       }
       const candidate = versions.data?.items.find(
         (version) => version.id === activationReview.candidate.id
       )
       if (!candidate || candidate.isCurrent || candidate.isStale) {
-        throw new Error('Only a fresh historical version can be activated.')
+        throw new UiPresentationError('summary:freshOnly')
       }
       return activateSummary(meetingId, candidate.id, activationReview.baseline)
     },
@@ -273,7 +272,7 @@ function SummaryPanelContent({
       setActivationReview(null)
       setActivationLatest(null)
       refreshArtifacts()
-      toast.success('Selected summary version is now current')
+      toast.success(i18n.t('summary:activated'))
     },
     onError: (error, _variables, ownsScope) => {
       if (!ownsScope?.()) return
@@ -289,8 +288,8 @@ function SummaryPanelContent({
         })
         return
       }
-      toast.error('Could not activate version', {
-        description: normalized.message,
+      toast.error(i18n.t('summary:activationFailed'), {
+        description: localizedValidationMessage(operationErrorFormMessage(error)),
       })
     },
   })
@@ -312,36 +311,34 @@ function SummaryPanelContent({
             !currentAuthorization.capabilities.canAdmitProcessing ||
             currentAuthorization.isConfirmedAccessLoss))
       ) {
-        throw new Error('Summary regeneration is no longer authorized.')
+        throw new UiPresentationError('summary:regenerationUnauthorized')
       }
       if (session) {
         return recovering
           ? session.processing.recoverOperation(regenerationIdentity)
           : session.processing.regenerateSummary()
       }
-      throw new Error(
-        'Summary regeneration requires the meeting processing owner.'
-      )
+      throw new UiPresentationError('summary:requiresOwner')
     },
     onSuccess: (result, { recovering, observing }, ownsScope) => {
       if (!ownsScope?.()) return
       if (result.status === 'blocked') {
-        toast.error('Regeneration is not available', {
+        toast.error(i18n.t('summary:regenerationBlocked'), {
           description:
-            'Refresh the meeting authorization and processing state before trying again.',
+            i18n.t('summary:refreshBeforeRetry'),
         })
         return
       }
       refreshArtifacts()
       toast.success(
         observing
-          ? 'Regeneration status refreshed'
+          ? i18n.t('summary:regenerationRefreshed')
           : recovering
-            ? 'Original regeneration request recovered'
-            : 'Summary regeneration admitted',
+            ? i18n.t('summary:regenerationRecovered')
+            : i18n.t('summary:regenerationAdmitted'),
         {
           description:
-            'Follow the admitted job status and review any resulting version.',
+            i18n.t('summary:followJob'),
         }
       )
     },
@@ -355,15 +352,15 @@ function SummaryPanelContent({
           'admittedJobId' in error)
       toast.error(
         admitted
-          ? 'Regeneration status is unavailable'
+          ? i18n.t('summary:statusUnavailable')
           : normalized.recoveryOutcome === 'uncertain'
-            ? 'Regeneration admission is uncertain'
-            : 'Could not request regeneration',
+            ? i18n.t('summary:admissionUncertain')
+            : i18n.t('summary:requestFailed'),
         {
           description:
             normalized.status === 503
-              ? 'Summary generation is currently unavailable because the worker is not ready.'
-              : normalized.message,
+              ? i18n.t('summary:workerUnavailable')
+              : localizedValidationMessage(operationErrorFormMessage(error)),
         }
       )
     },
@@ -395,11 +392,10 @@ function SummaryPanelContent({
           <div className='space-y-1'>
             <CardTitle className='flex items-center gap-2'>
               <FileText className='size-5 text-primary' />
-              Meeting summary
+              {t('summary:heading')}
             </CardTitle>
             <p className='max-w-2xl text-sm text-muted-foreground'>
-              Review the authoritative current version separately from AI
-              candidates and human edits.
+              {t('summary:description')}
             </p>
           </div>
           <div className='flex flex-wrap gap-2'>
@@ -424,7 +420,7 @@ function SummaryPanelContent({
                   setEditConflict(null)
                 }}
               >
-                Edit current
+                {t('summary:edit')}
               </Button>
             )}
             {canRegenerate && (
@@ -454,10 +450,10 @@ function SummaryPanelContent({
                   className={regenerate.isPending ? 'animate-spin' : undefined}
                 />
                 {regenerationInProgress
-                  ? 'Regeneration in progress'
+                  ? t('summary:regenerating')
                   : regenerationUncertain
-                    ? 'Retry unresolved regeneration'
-                    : 'Regenerate'}
+                    ? t('summary:retryRegeneration')
+                    : t('summary:regenerate')}
               </Button>
             )}
           </div>
@@ -471,8 +467,8 @@ function SummaryPanelContent({
           >
             <p>
               {session.processing.summaryObservationStatus === 'unavailable'
-                ? 'Regeneration was admitted, but its current status is unavailable. Refresh the exact job without requesting generation again.'
-                : 'Regeneration was admitted. Tracking the exact job independently of the processing list.'}
+                ? t('summary:admittedUnavailable')
+                : t('summary:admittedTracking')}
             </p>
             <Button
               size='sm'
@@ -484,7 +480,7 @@ function SummaryPanelContent({
                 void session.processing.refreshSummaryObservation?.()
               }
             >
-              Refresh regeneration status
+              {t('summary:refreshRegeneration')}
             </Button>
           </div>
         )}
@@ -495,9 +491,9 @@ function SummaryPanelContent({
           >
             <p className='font-medium'>
               {session?.processing.summaryObservationStatus === 'unavailable'
-                ? 'Last observed regeneration status:'
-                : 'Summary regeneration:'}{' '}
-              {regenerationJob.status.replace(/_/g, ' ').toLowerCase()}
+                ? t('summary:lastObserved')
+                : t('summary:regenerationStatus')}{' '}
+              {t(`summary:job_${regenerationJob.status}`, { defaultValue: regenerationJob.status.replace(/_/g, ' ').toLowerCase() })}
             </p>
             {regenerationJob.warningSummary && (
               <p>{regenerationJob.warningSummary}</p>
@@ -508,13 +504,13 @@ function SummaryPanelContent({
           </div>
         )}
         {summary.isPending ? (
-          <RequestLoading label='Loading the current summary snapshot…' />
+          <RequestLoading label={t('summary:loading')} />
         ) : summary.isError ? (
           normalizeCoreApiError(summary.error).status === 404 &&
           protectedScopeReady ? (
             <RequestEmpty
-              title='No summary available'
-              description='No authoritative version is available yet. Eligible regeneration can create a reviewable candidate.'
+              title={t('summary:empty')}
+              description={t('summary:emptyDescription')}
             />
           ) : (
             <RequestError
@@ -539,7 +535,7 @@ function SummaryPanelContent({
               if (
                 editorSnapshot &&
                 draft !== editorSnapshot.summary.content &&
-                !window.confirm('Discard unsaved summary changes?')
+                !window.confirm(t('summary:discard'))
               )
                 return
               setEditorSnapshot(null)
@@ -556,27 +552,26 @@ function SummaryPanelContent({
           >
             <p className='flex items-center gap-2 font-medium'>
               <AlertTriangle className='size-4' />
-              This summary changed while you were editing.
+              {t('summary:editConflict')}
             </p>
             <div className='grid gap-3 lg:grid-cols-2'>
               <ConflictColumn
-                title='Your reviewed version'
+                title={t('summary:reviewed')}
                 content={editConflict.reviewed.summary.content}
               />
               {editConflict.latest ? (
                 <ConflictColumn
-                  title='Latest server version'
+                  title={t('summary:latest')}
                   content={editConflict.latest.summary.content}
                 />
               ) : (
                 <p>
-                  The latest version has not been verified. Retry before saving.
+                  {t('summary:latestUnverified')}
                 </p>
               )}
             </div>
             <p className='text-muted-foreground'>
-              Your pending changes remain in the editor. Review the latest
-              version before establishing a new baseline.
+              {t('summary:draftRetained')}
             </p>
             <Button
               size='sm'
@@ -602,8 +597,8 @@ function SummaryPanelContent({
               }}
             >
               {editConflict.latest
-                ? 'Use latest as editing baseline'
-                : 'Retry loading latest version'}
+                ? t('summary:newBaseline')
+                : t('summary:retryLatest')}
             </Button>
           </div>
         )}
@@ -613,16 +608,15 @@ function SummaryPanelContent({
             role='alert'
             className='rounded-lg border border-amber-300/70 bg-amber-50 p-4 text-sm dark:bg-amber-950/20'
           >
-            The current summary changed before activation. Review the refreshed
-            current version and explicitly select Activate again.
+            {t('summary:activationConflict')}
             {activationLatest && activationReview && (
               <div className='mt-3 grid gap-3 lg:grid-cols-2'>
                 <ConflictColumn
-                  title='Previously reviewed current'
+                  title={t('summary:previouslyReviewed')}
                   content={activationReview.baseline.summary.content}
                 />
                 <ConflictColumn
-                  title='Latest current'
+                  title={t('summary:latestCurrent')}
                   content={activationLatest.summary.content}
                 />
               </div>
@@ -638,7 +632,7 @@ function SummaryPanelContent({
                 setActivationLatest(null)
               }}
             >
-              Close outdated activation review
+              {t('summary:closeActivation')}
             </Button>
           </div>
         )}
@@ -646,20 +640,19 @@ function SummaryPanelContent({
         <section className='space-y-4 border-t pt-5'>
           <div className='flex flex-wrap items-end justify-between gap-3'>
             <div>
-              <h3 className='font-semibold'>Version history</h3>
+              <h3 className='font-semibold'>{t('summary:history')}</h3>
               <p className='text-sm text-muted-foreground'>
-                Historical versions are read-only until an eligible fresh
-                version is explicitly activated.
+                {t('summary:historyDescription')}
               </p>
             </div>
             {versions.data && (
               <span className='text-xs text-muted-foreground'>
-                {summaryVersionPageLabel(versions.data.page)}
+                {versions.data.page.totalElements === 0 ? t('summary:noPage') : t('summary:page', { page: versions.data.page.page + 1, total: versions.data.page.totalPages })}
               </span>
             )}
           </div>
           {versions.isPending ? (
-            <RequestLoading label='Loading summary versions…' />
+            <RequestLoading label={t('summary:loadingVersions')} />
           ) : historyError ? (
             <RequestError
               error={versions.error}
@@ -667,8 +660,8 @@ function SummaryPanelContent({
             />
           ) : !versions.data?.items.length ? (
             <RequestEmpty
-              title='No summary versions'
-              description='Generated and human-reviewed versions will appear here.'
+              title={t('summary:noVersions')}
+              description={t('summary:versionsDescription')}
             />
           ) : (
             <>
@@ -703,11 +696,10 @@ function SummaryPanelContent({
                     setHistoryPage((page) => Math.max(0, page - 1))
                   }}
                 >
-                  Previous
+                  {t('summary:previous')}
                 </Button>
                 <span className='text-xs text-muted-foreground'>
-                  {versions.data.page.totalElements} total version
-                  {versions.data.page.totalElements === 1 ? '' : 's'}
+                  {t('summary:totalVersions', { count: versions.data.page.totalElements })}
                 </span>
                 <Button
                   size='sm'
@@ -720,7 +712,7 @@ function SummaryPanelContent({
                     setHistoryPage((page) => page + 1)
                   }}
                 >
-                  Next
+                  {t('summary:next')}
                 </Button>
               </div>
             </>
@@ -732,12 +724,12 @@ function SummaryPanelContent({
             <div className='flex flex-wrap items-start justify-between gap-3'>
               <div>
                 <h3 className='font-semibold'>
-                  Version {selectedVersion.versionNumber} preview
+                  {t('summary:preview', { version: selectedVersion.versionNumber })}
                 </h3>
                 <p className='text-xs text-muted-foreground'>
-                  {selectedVersion.sourceType} · created{' '}
+                  {t(`summary:status_${selectedVersion.sourceType}`, { defaultValue: selectedVersion.sourceType })} · {t('summary:createdLower')}{' '}
                   <RegionalTimestamp value={selectedVersion.createdAt} />
-                  {selectedVersion.isStale ? ' · source is stale' : ''}
+                  {selectedVersion.isStale ? t('summary:staleNotice') : ''}
                 </p>
               </div>
               <Button
@@ -747,7 +739,7 @@ function SummaryPanelContent({
                 disabled={!currentSummary}
               >
                 <Columns2 />
-                {comparisonOpen ? 'Hide comparison' : 'Compare with current'}
+                {comparisonOpen ? t('summary:hideComparison') : t('summary:compare')}
               </Button>
             </div>
             {selectedVersion.aiWarnings?.map((warning, index) => (
@@ -776,22 +768,21 @@ function SummaryPanelContent({
                     setActivationConflict(false)
                   }}
                 >
-                  Review activation
+                  {t('summary:reviewActivation')}
                 </Button>
               )}
             {activationReview && (
               <section className='space-y-3 rounded-md border p-3'>
                 <h4 className='font-medium'>
-                  Review activation of version{' '}
-                  {activationReview.candidate.versionNumber}
+                  {t('summary:reviewActivationOf', { version: activationReview.candidate.versionNumber })}
                 </h4>
                 <div className='grid gap-3 lg:grid-cols-2'>
                   <PreviewColumn
-                    title={`Reviewed current v${activationReview.baseline.summary.versionNumber}`}
+                    title={t('summary:reviewedVersion', { version: activationReview.baseline.summary.versionNumber })}
                     content={activationReview.baseline.summary.content}
                   />
                   <PreviewColumn
-                    title={`Candidate v${activationReview.candidate.versionNumber}`}
+                    title={t('summary:candidateVersion', { version: activationReview.candidate.versionNumber })}
                     content={activationReview.candidate.content}
                   />
                 </div>
@@ -807,7 +798,7 @@ function SummaryPanelContent({
                     }
                     onClick={() => activate.mutate()}
                   >
-                    Activate reviewed version
+                    {t('summary:activate')}
                   </Button>
                   <Button
                     variant='outline'
@@ -819,7 +810,7 @@ function SummaryPanelContent({
                       setActivationLatest(null)
                     }}
                   >
-                    Cancel activation
+                    {t('summary:cancelActivation')}
                   </Button>
                 </div>
               </section>
@@ -827,11 +818,11 @@ function SummaryPanelContent({
             {comparisonOpen && currentSummary ? (
               <div className='grid gap-4 lg:grid-cols-2'>
                 <PreviewColumn
-                  title={`Historical version ${selectedVersion.versionNumber}`}
+                  title={t('summary:historicalVersion', { version: selectedVersion.versionNumber })}
                   content={selectedVersion.content}
                 />
                 <PreviewColumn
-                  title={`Current version ${currentSummary.versionNumber}`}
+                  title={t('summary:currentVersionTitle', { version: currentSummary.versionNumber })}
                   content={currentSummary.content}
                 />
               </div>
