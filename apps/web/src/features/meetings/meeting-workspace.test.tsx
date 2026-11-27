@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { setUiLanguage } from '@/lib/i18n'
 import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import {
   currentUserQueryKey,
@@ -547,6 +548,32 @@ describe('MeetingWorkspacePage', () => {
     vi.unstubAllGlobals()
     toastError.mockReset()
     toastSuccess.mockReset()
+  })
+
+  it('localizes the workspace header without changing meeting data', async () => {
+    const { screen, queryClient } = await renderEditableWorkspace()
+    try {
+      await expect
+        .element(screen.getByRole('button', { name: 'Edit meeting' }))
+        .toBeInTheDocument()
+      const detailKey = ['meetings', 'detail', 'meeting-1']
+      const cachedDetail = queryClient.getQueryData(detailKey)
+      expect(cachedDetail).toBeDefined()
+      await act(async () => {
+        await setUiLanguage('vi')
+      })
+      await expect
+        .element(screen.getByRole('button', { name: 'Chỉnh sửa cuộc họp' }))
+        .toBeInTheDocument()
+      await expect
+        .element(screen.getByRole('heading', { name: editableMeeting.title }))
+        .toBeInTheDocument()
+      expect(queryClient.getQueryData(detailKey)).toEqual(cachedDetail)
+    } finally {
+      await act(async () => {
+        await setUiLanguage('en')
+      })
+    }
   })
 
   it('rechecks meeting membership and retires export recovery after an export status denial', async () => {

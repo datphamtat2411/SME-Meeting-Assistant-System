@@ -1,0 +1,17 @@
+{
+  "exportMinutes": "Export minutes",
+  "editMeeting": "Edit meeting",
+  "participantDetailsUnavailable": "Participant details unavailable",
+  "participantMembershipRequired": "Active membership is required to view the participant list.",
+  "participantMembershipLoadFailed": "Participant memberships could not be loaded.",
+  "organizedBy": "Organized by",
+  "roomNotAssigned": "Room not assigned",
+  "loadingRoom": "Loading room",
+  "organizerUnavailable": "Organizer unavailable",
+  "loadingOrganizer": "Loading organizer",
+  "loadingParticipants": "Loading participants",
+  "participantsUnavailable": "Participants unavailable",
+  "activeParticipants_one": "{{count}} active participant",
+  "activeParticipants_other": "{{count}} active participants",
+  "participantNamesUnavailable": "Names are shown only when projected by Core API."
+}

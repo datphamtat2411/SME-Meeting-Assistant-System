@@ -11,6 +11,7 @@ import enNavigation from './locales/en/navigation.json'
 import enRooms from './locales/en/rooms.json'
 import enSettings from './locales/en/settings.json'
 import enStatus from './locales/en/status.json'
+import enWorkspace from './locales/en/workspace.json'
 import viActionItems from './locales/vi/action-items.json'
 import viAuth from './locales/vi/auth.json'
 import viCalendar from './locales/vi/calendar.json'
@@ -24,6 +25,7 @@ import viNavigation from './locales/vi/navigation.json'
 import viRooms from './locales/vi/rooms.json'
 import viSettings from './locales/vi/settings.json'
 import viStatus from './locales/vi/status.json'
+import viWorkspace from './locales/vi/workspace.json'
 
 export const resources = {
   en: {
@@ -40,6 +42,7 @@ export const resources = {
     navigation: enNavigation,
     settings: enSettings,
     status: enStatus,
+    workspace: enWorkspace,
   },
   vi: {
     'action-items': viActionItems,
@@ -55,5 +58,6 @@ export const resources = {
     navigation: viNavigation,
     settings: viSettings,
     status: viStatus,
+    workspace: viWorkspace,
   },
 }

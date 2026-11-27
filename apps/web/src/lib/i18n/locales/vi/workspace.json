@@ -1,0 +1,16 @@
+{
+  "exportMinutes": "Xuất biên bản",
+  "editMeeting": "Chỉnh sửa cuộc họp",
+  "participantDetailsUnavailable": "Không thể xem thông tin người tham gia",
+  "participantMembershipRequired": "Bạn cần là thành viên đang tham gia cuộc họp để xem danh sách người tham gia.",
+  "participantMembershipLoadFailed": "Không thể tải danh sách thành viên cuộc họp.",
+  "organizedBy": "Người tổ chức:",
+  "roomNotAssigned": "Chưa chọn phòng",
+  "loadingRoom": "Đang tải thông tin phòng",
+  "organizerUnavailable": "Không có thông tin người tổ chức",
+  "loadingOrganizer": "Đang tải thông tin người tổ chức",
+  "loadingParticipants": "Đang tải danh sách người tham gia",
+  "participantsUnavailable": "Không thể xem danh sách người tham gia",
+  "activeParticipants_other": "{{count}} người đang tham gia",
+  "participantNamesUnavailable": "Tên chỉ hiển thị khi Core API cung cấp."
+}
