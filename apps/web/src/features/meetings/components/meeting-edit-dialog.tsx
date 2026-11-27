@@ -1,3 +1,5 @@
+import { useUiTranslation } from '@/lib/i18n'
+import { featureValidationMessage, localizedValidationMessage, requestErrorFormMessage } from '@/lib/i18n/presentation'
 import { useDeferredValue, useEffect, useRef, useState } from 'react'
 import { z } from 'zod'
 import { useForm, useWatch } from 'react-hook-form'
@@ -91,7 +93,7 @@ import { SelectedRoomSchedulePreview } from './selected-room-schedule-preview'
 
 const meetingEditFormSchema = z
   .object({
-    title: z.string().trim().min(1, 'Title is required.').max(255),
+    title: z.string().trim().min(1, featureValidationMessage('meetings:edit_titleRequired')).max(255),
     description: z.string(),
     date: z.string(),
     endDate: z.string(),
@@ -116,28 +118,28 @@ const meetingEditFormSchema = z
       context.addIssue({
         code: 'custom',
         path: ['date'],
-        message: 'Date is required when scheduling details are entered.',
+        message: featureValidationMessage('meetings:edit_dateRequired'),
       })
     }
     if (!values.endDate) {
       context.addIssue({
         code: 'custom',
         path: ['endDate'],
-        message: 'End date is required when scheduling details are entered.',
+        message: featureValidationMessage('meetings:edit_endDateRequired'),
       })
     }
     if (!values.startTime) {
       context.addIssue({
         code: 'custom',
         path: ['startTime'],
-        message: 'Start time is required when scheduling details are entered.',
+        message: featureValidationMessage('meetings:edit_startRequired'),
       })
     }
     if (!values.endTime) {
       context.addIssue({
         code: 'custom',
         path: ['endTime'],
-        message: 'End time is required when scheduling details are entered.',
+        message: featureValidationMessage('meetings:edit_endRequired'),
       })
     }
     if (!values.date || !values.startTime || !values.endTime) return
@@ -182,7 +184,7 @@ const meetingEditFormSchema = z
       context.addIssue({
         code: 'custom',
         path: ['endTime'],
-        message: 'End time must be after start time.',
+        message: featureValidationMessage('meetings:edit_endAfterStart'),
       })
     }
   })
@@ -268,6 +270,7 @@ type MeetingEditorSession = {
 }
 
 export function MeetingEditDialog(props: MeetingEditDialogProps) {
+  const { t } = useUiTranslation()
   const regional = useRegionalPresentation()
   const queryClient = useQueryClient()
   const [session, setSession] = useState<MeetingEditorSession | null>(null)
@@ -300,8 +303,8 @@ export function MeetingEditDialog(props: MeetingEditDialogProps) {
       <Dialog open onOpenChange={props.onOpenChange}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit meeting</DialogTitle>
-            <DialogDescription>Loading regional preferences…</DialogDescription>
+            <DialogTitle>{t('meetings:edit_title')}</DialogTitle>
+            <DialogDescription>{t('meetings:edit_loadingRegional')}</DialogDescription>
           </DialogHeader>
         </DialogContent>
       </Dialog>
@@ -333,6 +336,7 @@ function MeetingEditSession({
   session: MeetingEditorSession
   onDiscardSession: () => void
 }) {
+  const { t } = useUiTranslation()
   const queryClient = useQueryClient()
   const { locale } = useRegionalPresentation()
   const form = useForm<MeetingEditFormValues>({
@@ -660,21 +664,21 @@ function MeetingEditSession({
       )
       if (!lifecycleEditable) {
         setErrorMessage(
-          `The meeting is now ${latest.meeting.status}. Editing is disabled; your local changes were preserved.`
+          featureValidationMessage(`meetings:edit_statusPreserved_${latest.meeting.status}`)
         )
       } else if (!ownsMeeting) {
         setErrorMessage(
-          'You are no longer the organizer of this meeting. Editing is disabled; your local changes were preserved.'
+          featureValidationMessage('meetings:edit_ownershipLost')
         )
       } else if (mode === 'precondition') {
-        setErrorMessage('The meeting changed on the server.')
+        setErrorMessage(featureValidationMessage('meetings:edit_serverChanged'))
       } else if (intentMatchesMeeting(latest.meeting, intent)) {
         setErrorMessage(
-          'The latest server state matches your requested changes, but the original request outcome could not be independently confirmed. Review the meeting before making another change.'
+          featureValidationMessage('meetings:edit_outcomeMatches')
         )
       } else {
         setErrorMessage(
-          'The operation outcome could not be confirmed. The latest meeting data is available for review; your local edits were preserved.'
+          featureValidationMessage('meetings:edit_outcomeUnknown')
         )
       }
       setReconciliationIntent(null)
@@ -687,12 +691,12 @@ function MeetingEditSession({
       }
       setErrorMessage(
         detailApiError.status === 401
-          ? 'Your session could not be confirmed while refreshing the meeting version.'
+          ? featureValidationMessage('meetings:edit_sessionRefresh')
           : detailApiError.status === 403
-            ? 'You are no longer authorized to refresh this meeting version.'
+            ? featureValidationMessage('meetings:edit_refreshForbidden')
             : detailApiError.status === 404
-              ? 'This meeting is no longer available. Its latest version could not be verified.'
-              : 'The mutation outcome is unknown and the current meeting version could not be verified. Your edits were preserved; retry refresh before retrying the mutation.'
+              ? featureValidationMessage('meetings:edit_unavailable')
+              : featureValidationMessage('meetings:edit_versionUnverified')
       )
       setPhase('version_unverified')
     } finally {
@@ -833,7 +837,7 @@ function MeetingEditSession({
         ) !== candidate.fingerprint
       ) {
         clearPreview()
-        setErrorMessage('The schedule inputs changed. Review and save again.')
+        setErrorMessage(featureValidationMessage('meetings:edit_inputsChanged'))
         setPhase('idle')
         operationInFlight.current = false
         return
@@ -886,7 +890,7 @@ function MeetingEditSession({
           clearPreview()
           setLatestDetail(patchedResult)
           setErrorMessage(
-            'Draft changes were saved, but the confirmed schedule or room differs from the checked values. Review the latest draft before scheduling.'
+            featureValidationMessage('meetings:edit_draftScheduleChanged')
           )
           setPhase('idle')
           operationInFlight.current = false
@@ -968,8 +972,8 @@ function MeetingEditSession({
       ) {
         setErrorMessage(
           preview.roomConflict
-            ? 'The selected room is no longer available for this interval. No meeting changes were committed.'
-            : 'The Core API did not approve this schedule preview. No meeting changes were committed.'
+            ? featureValidationMessage('meetings:edit_roomConflict')
+            : featureValidationMessage('meetings:edit_previewRejected')
         )
         setPendingSchedule(null)
         setScheduleCheckFingerprint(null)
@@ -1001,7 +1005,7 @@ function MeetingEditSession({
     if (!isEditableMeeting(base.meeting)) {
       setEditingBlocked(true)
       setErrorMessage(
-        `The meeting is now ${base.meeting.status}. Editing is disabled.`
+        featureValidationMessage(`meetings:edit_statusLocked_${base.meeting.status}`)
       )
       return
     }
@@ -1022,7 +1026,7 @@ function MeetingEditSession({
     }
     const payload = buildMeetingEditPayload(base.meeting, editValues)
     if (!hasMeetingEditChanges(payload)) {
-      setErrorMessage('No changes to save.')
+      setErrorMessage(featureValidationMessage('meetings:edit_noChanges'))
       return
     }
     const scheduleChanged = hasScheduleChange(payload)
@@ -1034,7 +1038,7 @@ function MeetingEditSession({
     ) {
       form.setError('fallbackAcknowledged', {
         type: 'manual',
-        message: 'Confirm the scheduling timezone before saving.',
+        message: featureValidationMessage('meetings:edit_confirmZoneSave'),
       })
       return
     }
@@ -1070,7 +1074,7 @@ function MeetingEditSession({
     if (!isEditableMeeting(base.meeting) || base.meeting.status !== 'DRAFT') {
       setEditingBlocked(true)
       setErrorMessage(
-        `The meeting is now ${base.meeting.status}. Scheduling is disabled.`
+        featureValidationMessage(`meetings:edit_statusScheduleLocked_${base.meeting.status}`)
       )
       return
     }
@@ -1085,7 +1089,7 @@ function MeetingEditSession({
     if (values.fallbackRequired && !values.fallbackAcknowledged) {
       form.setError('fallbackAcknowledged', {
         type: 'manual',
-        message: 'Confirm the scheduling timezone before scheduling.',
+        message: featureValidationMessage('meetings:edit_confirmZoneSchedule'),
       })
       return
     }
@@ -1138,7 +1142,7 @@ function MeetingEditSession({
       latestDetail.meeting.status !== 'SCHEDULED'
     ) {
       setErrorMessage(
-        'This meeting lifecycle no longer permits editing. No local changes were discarded.'
+        featureValidationMessage('meetings:edit_lifecycleLocked')
       )
       setReloadConfirmationOpen(false)
       return
@@ -1182,7 +1186,7 @@ function MeetingEditSession({
     setErrorMessage(null)
     if (!ownsMeeting) {
       setErrorMessage(
-        'You are no longer the organizer of this meeting. Editing is disabled.'
+        featureValidationMessage('meetings:edit_organizerLost')
       )
     }
     setOutcome(null)
@@ -1216,10 +1220,9 @@ function MeetingEditSession({
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
           <DialogHeader>
-            <DialogTitle>Edit meeting</DialogTitle>
+            <DialogTitle>{t('meetings:edit_title')}</DialogTitle>
             <DialogDescription>
-              Changes are checked and committed by Core API using the
-              meeting&apos;s current version.
+              {t('meetings:edit_hint')}
             </DialogDescription>
           </DialogHeader>
 
@@ -1231,9 +1234,9 @@ function MeetingEditSession({
                   name='title'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Title</FormLabel>
+                      <FormLabel>{t('meetings:edit_fieldTitle')}</FormLabel>
                       <FormControl>
-                        <Input {...field} placeholder='Meeting title' />
+                        <Input {...field} placeholder={t('meetings:edit_titlePlaceholder')} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -1245,11 +1248,11 @@ function MeetingEditSession({
                   name='description'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Description</FormLabel>
+                      <FormLabel>{t('meetings:edit_description')}</FormLabel>
                       <FormControl>
                         <Textarea
                           {...field}
-                          placeholder='What should the team accomplish?'
+                          placeholder={t('meetings:edit_descriptionExample')}
                           rows={3}
                         />
                       </FormControl>
@@ -1265,7 +1268,7 @@ function MeetingEditSession({
                   name='roomId'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Meeting room</FormLabel>
+                      <FormLabel>{t('meetings:edit_room')}</FormLabel>
                       <MeetingRoomLookup
                         value={field.value}
                         onChange={(value) => {
@@ -1293,8 +1296,7 @@ function MeetingEditSession({
                         selectedUnavailable={roomUnavailable}
                       />
                       <FormDescription>
-                        The selected-room preview is advisory. Core API rechecks
-                        the reservation when the change is committed.
+                        {t('meetings:edit_roomHint')}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
@@ -1304,8 +1306,7 @@ function MeetingEditSession({
               <div className='flex items-center gap-2 text-sm text-muted-foreground'>
                 <CalendarDays className='size-4' />
                 <span>
-                  Editing an existing {workingMeeting.status} meeting as a
-                  server-authorized organizer.
+                  {t('meetings:edit_editingStatus', { status: t(`status:meeting.${workingMeeting.status}`) })}
                 </span>
               </div>
 
@@ -1339,17 +1340,13 @@ function MeetingEditSession({
               {latestDetail && (
                 <Alert variant='destructive'>
                   <AlertCircle />
-                  <AlertTitle>Meeting changed on the server</AlertTitle>
+                  <AlertTitle>{t('meetings:edit_changedTitle')}</AlertTitle>
                   <AlertDescription>
                     <p>
-                      The latest server title is{' '}
-                      <span className='font-medium'>
-                        {latestDetail.meeting.title}
-                      </span>
-                      . Your local edits are still in the form.
+                      {t('meetings:edit_latestTitle', { title: latestDetail.meeting.title })}
                     </p>
                     <p>
-                      Latest schedule:{' '}
+                      {t('meetings:edit_latestSchedule')}{' '}
                       {formatMeetingSchedule(
                         latestDetail.meeting.scheduledStartAt,
                         latestDetail.meeting.scheduledEndAt,
@@ -1359,16 +1356,14 @@ function MeetingEditSession({
                       ({scheduleTimezone})
                     </p>
                     <p>
-                      Latest room:{' '}
+                      {t('meetings:edit_latestRoom')}{' '}
                       {latestRoomId
                         ? (latestRoomQuery.data?.name ??
-                          'Room details unavailable')
-                        : 'No room assigned'}
+                          t('meetings:edit_roomDetailsUnavailable'))
+                        : t('meetings:edit_noRoom')}
                     </p>
                     <p>
-                      Review the new version before saving. Keeping edits
-                      updates untouched fields and requires a new schedule
-                      check.
+                      {t('meetings:edit_reviewVersion')}
                     </p>
                     <Button
                       type='button'
@@ -1377,7 +1372,7 @@ function MeetingEditSession({
                       disabled={editingBlocked || busy}
                       onClick={() => adoptLatestMeeting(true)}
                     >
-                      Review and keep my edits
+                      {t('meetings:edit_keepEditsReview')}
                     </Button>
                     <Button
                       type='button'
@@ -1386,7 +1381,7 @@ function MeetingEditSession({
                       onClick={() => setReloadConfirmationOpen(true)}
                     >
                       <RefreshCw />
-                      Reload latest data
+                      {t('meetings:edit_reload')}
                     </Button>
                   </AlertDescription>
                 </Alert>
@@ -1397,11 +1392,11 @@ function MeetingEditSession({
                   <AlertCircle />
                   <AlertTitle>
                     {phase === 'version_unverified'
-                      ? 'Meeting version needs verification'
-                      : 'Meeting operation did not complete'}
+                      ? t('meetings:edit_verifyVersion')
+                      : t('meetings:edit_operationFailed')}
                   </AlertTitle>
                   <AlertDescription>
-                    <p>{errorMessage}</p>
+                    <p>{localizedValidationMessage(errorMessage, t)}</p>
                     {phase === 'version_unverified' &&
                       reconciliationIntent &&
                       !editingBlocked && (
@@ -1413,7 +1408,7 @@ function MeetingEditSession({
                           disabled={busy}
                         >
                           <RefreshCw />
-                          Retry refresh
+                          {t('meetings:edit_retryRefresh')}
                         </Button>
                       )}
                   </AlertDescription>
@@ -1423,19 +1418,18 @@ function MeetingEditSession({
               {outcome === 'saved' && (
                 <Alert>
                   <Check />
-                  <AlertTitle>Meeting changes saved</AlertTitle>
+                  <AlertTitle>{t('meetings:edit_changesSaved')}</AlertTitle>
                   <AlertDescription>
-                    Core API confirmed the updated meeting details and current
-                    lifecycle.
+                    {t('meetings:edit_changesSavedHint')}
                   </AlertDescription>
                 </Alert>
               )}
               {outcome === 'scheduled' && (
                 <Alert>
                   <Check />
-                  <AlertTitle>Meeting scheduled</AlertTitle>
+                  <AlertTitle>{t('meetings:edit_scheduled')}</AlertTitle>
                   <AlertDescription>
-                    Core API confirmed the DRAFT to SCHEDULED transition.
+                    {t('meetings:edit_scheduledHint')}
                   </AlertDescription>
                 </Alert>
               )}
@@ -1445,7 +1439,7 @@ function MeetingEditSession({
           <DialogFooter>
             <DialogClose asChild>
               <Button type='button' variant='outline' disabled={busy}>
-                Close
+                {t('meetings:edit_close')}
               </Button>
             </DialogClose>
             <Button
@@ -1462,7 +1456,7 @@ function MeetingEditSession({
               {phase === 'saving' ? (
                 <LoaderCircle className='animate-spin' />
               ) : null}
-              {phase === 'saving' ? 'Saving...' : 'Save changes'}
+              {phase === 'saving' ? t('meetings:edit_saving') : t('meetings:edit_save')}
             </Button>
             {(latestDetail?.meeting.status ?? workingMeeting.status) ===
               'DRAFT' && (
@@ -1480,10 +1474,10 @@ function MeetingEditSession({
                   <LoaderCircle className='animate-spin' />
                 ) : null}
                 {phase === 'checking'
-                  ? 'Checking...'
+                  ? t('meetings:edit_checking')
                   : phase === 'scheduling'
-                    ? 'Scheduling...'
-                    : 'Save & Schedule'}
+                    ? t('meetings:edit_scheduling')
+                    : t('meetings:edit_saveSchedule')}
               </Button>
             )}
           </DialogFooter>
@@ -1496,17 +1490,15 @@ function MeetingEditSession({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Reload the latest meeting data?</AlertDialogTitle>
+            <AlertDialogTitle>{t('meetings:edit_reloadConfirm')}</AlertDialogTitle>
             <AlertDialogDescription>
-              This discards the unsaved values currently in the form and uses
-              the latest authoritative meeting data and ETag. No mutation will
-              be retried automatically.
+              {t('meetings:edit_reloadConfirmHint')}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep my edits</AlertDialogCancel>
+            <AlertDialogCancel>{t('meetings:edit_keepEdits')}</AlertDialogCancel>
             <AlertDialogAction onClick={() => adoptLatestMeeting(false)}>
-              Reload latest data
+              {t('meetings:edit_reload')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1631,19 +1623,19 @@ function setScheduleRequiredErrors(
 ) {
   form?.setError('date', {
     type: 'manual',
-    message: 'A complete date and time interval is required.',
+    message: featureValidationMessage('meetings:edit_fullInterval'),
   })
   form?.setError('endDate', {
     type: 'manual',
-    message: 'End date is required.',
+    message: featureValidationMessage('meetings:edit_endDate'),
   })
   form?.setError('startTime', {
     type: 'manual',
-    message: 'Start time is required.',
+    message: featureValidationMessage('meetings:edit_startTime'),
   })
   form?.setError('endTime', {
     type: 'manual',
-    message: 'End time is required.',
+    message: featureValidationMessage('meetings:edit_endTime'),
   })
 }
 
@@ -1653,15 +1645,19 @@ function formatEditError(
   kind: MeetingMutationErrorKind
 ) {
   if (kind === 'unauthenticated') {
-    return 'Your session is no longer authenticated. The request was not retried automatically.'
+    return featureValidationMessage('meetings:edit_unauthenticated')
   }
   if (kind === 'forbidden') {
-    return `You are not authorized to ${operation.toLowerCase()}. No local success was recorded.`
+    return featureValidationMessage(({
+    'Saving meeting changes': 'meetings:edit_error_forbidden_saving',
+    'Scheduling the meeting': 'meetings:edit_error_forbidden_scheduling',
+    'Checking the meeting schedule': 'meetings:edit_error_forbidden_checking',
+  } as Record<string, string>)[operation] ?? 'meetings:edit_error_forbidden_generic')
   }
   if (kind === 'conflict') {
     const code = error.code?.toLowerCase() ?? ''
     if (code.includes('room') || code.includes('reservation')) {
-      return 'The selected room is no longer available. Review the interval and room before trying again.'
+      return featureValidationMessage('meetings:edit_roomUnavailable')
     }
     if (
       code.includes('lifecycle') ||
@@ -1670,23 +1666,35 @@ function formatEditError(
       code.includes('status_conflict') ||
       code.includes('invalid_state')
     ) {
-      return 'This meeting lifecycle no longer permits editing or scheduling.'
+      return featureValidationMessage('meetings:edit_lifecycleConflict')
     }
-    return error.message || 'The meeting conflicts with current Core API state.'
+    return requestErrorFormMessage(error) || featureValidationMessage('meetings:edit_stateConflict')
   }
   if (kind === 'precondition') {
-    return 'The meeting changed on the server.'
+    return featureValidationMessage('meetings:edit_serverChanged')
   }
   if (kind === 'validation') {
-    return error.message || 'Core API rejected the meeting details.'
+    return requestErrorFormMessage(error) || featureValidationMessage('meetings:edit_detailsRejected')
   }
   if (kind === 'network') {
-    return `The Core API could not be reached while ${operation.toLowerCase()}. The outcome is being verified without retrying the mutation.`
+    return featureValidationMessage(({
+    'Saving meeting changes': 'meetings:edit_error_network_saving',
+    'Scheduling the meeting': 'meetings:edit_error_network_scheduling',
+    'Checking the meeting schedule': 'meetings:edit_error_network_checking',
+  } as Record<string, string>)[operation] ?? 'meetings:edit_error_network_generic')
   }
   if (kind === 'temporary') {
-    return `Core API temporarily failed while ${operation.toLowerCase()}. The outcome is being verified without retrying the mutation.`
+    return featureValidationMessage(({
+    'Saving meeting changes': 'meetings:edit_error_temporary_saving',
+    'Scheduling the meeting': 'meetings:edit_error_temporary_scheduling',
+    'Checking the meeting schedule': 'meetings:edit_error_temporary_checking',
+  } as Record<string, string>)[operation] ?? 'meetings:edit_error_temporary_generic')
   }
   return (
-    error.message || `Core API could not complete ${operation.toLowerCase()}.`
+    requestErrorFormMessage(error) || featureValidationMessage(({
+    'Saving meeting changes': 'meetings:edit_error_fallback_saving',
+    'Scheduling the meeting': 'meetings:edit_error_fallback_scheduling',
+    'Checking the meeting schedule': 'meetings:edit_error_fallback_checking',
+  } as Record<string, string>)[operation] ?? 'meetings:edit_error_fallback_generic')
   )
 }
