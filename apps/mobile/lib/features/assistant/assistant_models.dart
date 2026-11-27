@@ -1,6 +1,42 @@
 import 'package:sme_meeting_assistant/core/api_model_validation.dart';
 import 'package:sme_meeting_assistant/core/api_response.dart';
 
+// Match Java String.trim and String.isBlank, not Dart's Unicode trim.
+const assistantQuestionLimit = 4096;
+
+String normalizeAssistantQuestion(String value) {
+  var start = 0;
+  var end = value.length;
+  while (start < end && value.codeUnitAt(start) <= 32) {
+    start++;
+  }
+  while (end > start && value.codeUnitAt(end - 1) <= 32) {
+    end--;
+  }
+  return value.substring(start, end);
+}
+
+int assistantQuestionLength(String value) =>
+    normalizeAssistantQuestion(value).runes.length;
+
+bool isBlankAssistantQuestion(String value) =>
+    normalizeAssistantQuestion(value).runes.every(
+      (code) =>
+          (code >= 9 && code <= 13) ||
+          (code >= 28 && code <= 32) ||
+          code == 0x1680 ||
+          (code >= 0x2000 && code <= 0x2006) ||
+          (code >= 0x2008 && code <= 0x200a) ||
+          code == 0x2028 ||
+          code == 0x2029 ||
+          code == 0x205f ||
+          code == 0x3000,
+    );
+
+bool isValidAssistantQuestion(String value) =>
+    !isBlankAssistantQuestion(value) &&
+    assistantQuestionLength(value) <= assistantQuestionLimit;
+
 enum AssistantConversationStatus { active, archived }
 
 enum AssistantMessageRole { user, assistant, systemEvent }

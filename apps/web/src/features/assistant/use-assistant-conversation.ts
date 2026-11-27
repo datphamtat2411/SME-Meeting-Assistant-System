@@ -181,7 +181,7 @@ export function useAssistantConversation(
     const title = conversationTitle.trim() || undefined
     const intentId = JSON.stringify([meetingId, title])
     for (const [id, intent] of creationIntents.current) {
-      if (!isAssistantAccessCurrent(client, intent.access))
+      if (intent.access.session !== access.session)
         creationIntents.current.delete(id)
     }
     const existing = creationIntents.current.get(intentId)
@@ -222,7 +222,11 @@ export function useAssistantConversation(
       const wasCurrent = isAssistantAccessCurrent(client, access)
       containAssistantAccessFailure(client, access, error)
       if (!wasCurrent) {
-        creationIntents.current.delete(intentId)
+        if (
+          captureAssistantCreationAccess(client, meetingId).session !==
+          access.session
+        )
+          creationIntents.current.delete(intentId)
         return
       }
       const failure = normalizeCoreApiError(error)

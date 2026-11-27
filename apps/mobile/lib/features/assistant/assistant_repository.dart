@@ -284,9 +284,8 @@ class AssistantRepository {
     AssistantQuestionRequest input, {
     required AuthenticatedSessionScope sessionScope,
   }) async {
-    final question = input.question.trim();
-    // Core admission limits Unicode code points after normalization.
-    if (question.isEmpty || question.runes.length > 4096) {
+    final question = normalizeAssistantQuestion(input.question);
+    if (!isValidAssistantQuestion(question)) {
       throw AssistantFailure.invalidInput('question');
     }
     _validateKey(input.idempotencyKey);

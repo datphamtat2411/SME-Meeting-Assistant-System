@@ -93,27 +93,7 @@ class AssistantEvidenceResolver {
     final citation = target.citation;
     final meetingId = citation.meetingId;
     final scope = target.scope;
-    final ResultsAccessVerification access;
-    try {
-      access = await results.verifyAccess(
-        sessionScope: scope,
-        meetingId: meetingId,
-      );
-    } on ApiFailure catch (error) {
-      check();
-      if (error.status == 403 || error.status == 404) {
-        throw const AssistantEvidenceFailure(
-          AssistantEvidenceIssue.meetingUnavailable,
-        );
-      }
-      rethrow;
-    }
-    check();
-    if (!access.canRead) {
-      throw const AssistantEvidenceFailure(
-        AssistantEvidenceIssue.meetingUnavailable,
-      );
-    }
+    await _requireMeetingAccess(target, stillCurrent);
     final proof = await _verifyCanonical(target, stillCurrent);
     check();
 
@@ -182,6 +162,32 @@ class AssistantEvidenceResolver {
     return artifact;
   }
 
+  Future<void> _requireMeetingAccess(
+    AssistantEvidenceTarget target,
+    bool Function() stillCurrent,
+  ) async {
+    try {
+      final access = await results.verifyAccess(
+        sessionScope: target.scope,
+        meetingId: target.citation.meetingId,
+      );
+      _requireCurrent(target, stillCurrent);
+      if (!access.canRead) {
+        throw const AssistantEvidenceFailure(
+          AssistantEvidenceIssue.meetingUnavailable,
+        );
+      }
+    } on ApiFailure catch (error) {
+      _requireCurrent(target, stillCurrent);
+      if (error.status == 403 || error.status == 404) {
+        throw const AssistantEvidenceFailure(
+          AssistantEvidenceIssue.meetingUnavailable,
+        );
+      }
+      rethrow;
+    }
+  }
+
   Future<AssistantResolvedCitation> _verifyCanonical(
     AssistantEvidenceTarget target,
     bool Function() stillCurrent,
@@ -203,16 +209,7 @@ class AssistantEvidenceResolver {
       }
       if (error.status == 403 || error.status == 404) {
         // A missing message is not proof of meeting-wide denial.
-        final access = await results.verifyAccess(
-          sessionScope: target.scope,
-          meetingId: target.citation.meetingId,
-        );
-        _requireCurrent(target, stillCurrent);
-        if (!access.canRead) {
-          throw const AssistantEvidenceFailure(
-            AssistantEvidenceIssue.meetingUnavailable,
-          );
-        }
+        await _requireMeetingAccess(target, stillCurrent);
         throw const AssistantEvidenceFailure(
           AssistantEvidenceIssue.unavailable,
         );

@@ -543,6 +543,29 @@ class AssistantAdmissionIntegrationTests {
     }
 
     @Test
+    void concurrentKeyedConversationCreationConsumesOneQuotaEvent() throws Exception {
+        UUID owner = user(), meeting = meeting(owner);
+        String body = json.writeValueAsString(Map.of("meetingId", meeting, "title", "Cross-client intent"));
+        List<Callable<Integer>> requests = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            requests.add(() -> mvc.perform(post("/api/v1/assistant/conversations")
+                .principal(principal(owner)).header("Idempotency-Key", "one-conversation")
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andReturn().getResponse().getStatus());
+        }
+        try (ConcurrentRequests running = launch(requests)) {
+            assertThat(running.results()).containsOnly(201).hasSize(8);
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_conversations WHERE user_id=?",
+            Long.class, owner)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM assistant_admission_events
+             WHERE user_id=? AND event_type='CONVERSATION_CREATE'
+            """, Long.class, owner)).isEqualTo(1L);
+        verifyNoAiCalls();
+    }
+
+    @Test
     void revokedParticipantCannotStartInferenceAfterGlobalAdmissionWait() throws Exception {
         UUID owner = user(), participant = user();
         UUID meeting = meeting(owner, participant);

@@ -726,6 +726,21 @@ describe('AssistantPage', () => {
       .toBeVisible()
   })
 
+  it('respects the creation Retry-After without generating another request', async () => {
+    setupReads({ detail: createConversationDetail() })
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockRejectedValueOnce(
+        coreError(429, 'Rate limited', { retryAfter: '30' })
+      )
+    const screen = await renderPage()
+    await selectMeeting(screen)
+    const create = screen.getByRole('button', { name: 'Create conversation' })
+    await userEvent.click(create)
+    await expect.element(create).toBeDisabled()
+    expect(post.mock.calls).toHaveLength(1)
+  })
+
   it('does not open a conversation created for a meeting after selection changes', async () => {
     const createdConversation = {
       ...conversation,

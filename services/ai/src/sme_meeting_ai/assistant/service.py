@@ -383,6 +383,12 @@ class AssistantOrchestrator:
                     retrieval_status=None,
                     category=AssistantFailureCategory.INSUFFICIENT_CONTEXT,
                 )
+            if not request.authorized_scope.allowed_meeting_ids:
+                return _insufficient(
+                    request,
+                    retrieval_status=RetrievalStatus.EMPTY_AUTHORIZATION,
+                    category=AssistantFailureCategory.INSUFFICIENT_CONTEXT,
+                )
             contextualizer = getattr(self.generator, "contextualize", None)
             if not callable(contextualizer):
                 return _insufficient(

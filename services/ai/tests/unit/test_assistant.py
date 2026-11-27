@@ -519,6 +519,30 @@ def test_expired_scope_never_sends_protected_dialogue_to_contextualizer():
     assert retrieval.calls == []
 
 
+def test_empty_scope_never_sends_dialogue_to_contextualizer():
+    scope = _scope()
+    retrieval = FakeRetrieval(_retrieval_result(scope), scope)
+    generator = FakeGenerator(_generation())
+    context = (
+        {
+            "role": "ASSISTANT",
+            "content": "Nội dung không được phép.",
+            "scopeId": scope.scope_id,
+            "scopeVersion": scope.scope_version,
+        },
+    )
+    result = asyncio.run(
+        _orchestrator(retrieval, generator).answer(
+            _request(scope, question="Vậy deadline là khi nào?", context=context)
+        )
+    )
+
+    assert result.status is AssistantAnswerStatus.INSUFFICIENT_EVIDENCE
+    assert generator.contextualization_calls == []
+    assert generator.calls == []
+    assert retrieval.calls == []
+
+
 def test_out_of_scope_evidence_never_reaches_generation():
     evidence = _evidence("Kế hoạch mật thuộc cuộc họp khác.")
     scope = _scope(str(uuid4()))

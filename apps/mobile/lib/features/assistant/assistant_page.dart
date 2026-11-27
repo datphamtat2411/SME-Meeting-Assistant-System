@@ -400,11 +400,10 @@ class _AssistantPageState extends State<AssistantPage>
   }
 
   void _send() {
-    final question = _input.text.trim();
+    final question = normalizeAssistantQuestion(_input.text);
     if (!_presenting ||
         !_controller.canSend ||
-        question.isEmpty ||
-        question.length > 4096) {
+        !isValidAssistantQuestion(question)) {
       return;
     }
     FocusScope.of(context).unfocus();
@@ -857,19 +856,13 @@ class _AssistantPageState extends State<AssistantPage>
                     enabled: state.canCompose,
                     minLines: 1,
                     maxLines: 4,
-                    maxLength: 4096,
                     onChanged: (_) => setState(() {}),
                     textInputAction: TextInputAction.newline,
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       hintText: 'Hỏi về cuộc họp này…',
-                      counterText: '',
+                      counterText:
+                          '${assistantQuestionLength(_input.text)}/$assistantQuestionLimit',
                     ),
-                    buildCounter: (
-                      context, {
-                      required currentLength,
-                      required isFocused,
-                      required maxLength,
-                    }) => Text('${_input.text.trim().length}/4096'),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -877,8 +870,7 @@ class _AssistantPageState extends State<AssistantPage>
                   tooltip: 'Gửi câu hỏi',
                   onPressed:
                       state.canSend &&
-                          _input.text.trim().isNotEmpty &&
-                          _input.text.trim().length <= 4096
+                          isValidAssistantQuestion(_input.text)
                       ? _send
                       : null,
                   icon: const Icon(Icons.arrow_upward),

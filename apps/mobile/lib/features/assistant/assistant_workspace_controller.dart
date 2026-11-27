@@ -740,11 +740,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
 
   Future<void> submit(String rawQuestion) async {
     final selected = conversation;
-    final question = rawQuestion.trim();
-    if (!canSend ||
-        selected == null ||
-        question.isEmpty ||
-        question.runes.length > 4096) {
+    final question = normalizeAssistantQuestion(rawQuestion);
+    if (!canSend || selected == null || !isValidAssistantQuestion(question)) {
       return;
     }
     final command = AssistantPendingTurn(

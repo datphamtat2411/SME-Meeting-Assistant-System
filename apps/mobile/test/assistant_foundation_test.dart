@@ -351,6 +351,44 @@ void main() {
       );
     });
 
+    test('normalizes questions and counts Unicode like Core', () {
+      expect(normalizeAssistantQuestion('  Câu hỏi  '), 'Câu hỏi');
+      expect(
+        normalizeAssistantQuestion('\u00a0Câu hỏi\u00a0'),
+        '\u00a0Câu hỏi\u00a0',
+      );
+      expect(isBlankAssistantQuestion('\u2003\u3000'), isTrue);
+      expect(isBlankAssistantQuestion('\u00a0'), isFalse);
+      final limit = List.filled(assistantQuestionLimit, '😀').join();
+      expect(assistantQuestionLength(limit), assistantQuestionLimit);
+      expect(isValidAssistantQuestion(' $limit '), isTrue);
+      expect(isValidAssistantQuestion('${limit}a'), isFalse);
+    });
+
+    test('rejects a mismatched canonical evidence proof', () {
+      final raw = _message();
+      final citation = AssistantMessage.fromJson(
+        raw,
+        response: _result(raw),
+        meetingId: testMeetingId,
+      ).citations.single;
+      for (final invalid in [
+        _resolvedEvidence(_citation())..['messageId'] = _userMessageId,
+        _resolvedEvidence(_citation()..['sourceRevision'] = 1),
+        _resolvedEvidence(_citation()..['claimIds'] = ['A2']),
+      ]) {
+        expect(
+          () => AssistantResolvedCitation.fromResult(
+            _result(invalid),
+            conversationId: _conversationId,
+            messageId: _assistantMessageId,
+            expected: citation,
+          ),
+          throwsA(_invalidResponse()),
+        );
+      }
+    });
+
     test('requires HTTP and durable turn state to agree', () {
       final processing = AssistantTurn.fromResult(
         _result(_turn(processing: true), status: 202),
@@ -854,6 +892,7 @@ void main() {
         var revision = 2;
         var redact = false;
         var deny = false;
+        var revokeDuringArtifactRead = false;
         var artifactReads = 0;
         var evidenceReads = 0;
         final citationJson = _citation()
@@ -881,12 +920,14 @@ void main() {
           if (path.endsWith('/messages/$_assistantMessageId/evidence')) {
             evidenceReads++;
             expect(request.method, 'GET');
+            if (deny) return meetingApiFailure(403, 'AUTHZ_FORBIDDEN');
             if (redact || revision != 2) {
               return meetingApiFailure(409, 'ASSISTANT_SOURCE_STALE');
             }
             return meetingApiSuccess(_resolvedEvidence(citationJson));
           }
           artifactReads++;
+          if (revokeDuringArtifactRead) deny = true;
           if (path.endsWith('/transcript')) {
             return meetingApiSuccess(
               {
@@ -1030,6 +1071,18 @@ void main() {
           ),
         );
         expect(artifactReads, before);
+        deny = false;
+        revokeDuringArtifactRead = true;
+        await expectLater(
+          resolver.verify(target, stillCurrent: () => true),
+          throwsA(
+            isA<AssistantEvidenceFailure>().having(
+              (error) => error.issue,
+              'issue',
+              AssistantEvidenceIssue.meetingUnavailable,
+            ),
+          ),
+        );
       });
     }
   });
