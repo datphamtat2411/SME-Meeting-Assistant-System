@@ -273,15 +273,58 @@ describe('MinutesPanel canonical document experience', () => {
       ],
     }
     const screen = await renderPanel(snapshot, {}, queryClient)
-    await expect.element(screen.getByText('23 Nov 2026')).toBeVisible()
-    await expect.element(screen.getByText('No due date')).toBeVisible()
+    // Scope each deadline to its own action, not another date on the page.
+    const datedAction = screen.getByRole('article').filter({
+      has: screen.getByText('Dated action', { exact: true }),
+    })
+    const undatedAction = screen.getByRole('article').filter({
+      has: screen.getByText('Undated action', { exact: true }),
+    })
+
+    async function expectPresentation(
+      timezone: string,
+      locale: string,
+      deadline: string
+    ) {
+      const expectedEnd = new Intl.DateTimeFormat(locale, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: timezone,
+        calendar: 'gregory',
+      }).format(new Date(snapshot.meeting.endedAt))
+      await expect
+        .element(screen.getByText('Times shown in ' + timezone + '.'))
+        .toBeVisible()
+      await expect
+        .element(
+          screen.getByText('Not recorded – ' + expectedEnd, { exact: true })
+        )
+        .toBeVisible()
+      await expect
+        .element(datedAction.getByText(deadline, { exact: true }))
+        .toBeVisible()
+      await expect
+        .element(undatedAction.getByText('No due date', { exact: true }))
+        .toBeVisible()
+      expect(queryClient.getQueryData(['minutes', meetingId])).toMatchObject({
+        meeting: { endedAt: '2026-11-23T00:00:00Z' },
+        officialActionItems: [
+          { id: action.id, dueDate: '2026-11-23' },
+          { id: snapshot.officialActionItems[1].id, dueDate: null },
+        ],
+      })
+    }
+
+    // Honolulu renders the meeting on Nov 22; Tokyo renders it on Nov 23.
+    // The date-only action deadline must remain Nov 23 in both timezones.
+    await expectPresentation('Pacific/Honolulu', 'en-GB', '23 Nov 2026')
     await act(async () => {
       queryClient.setQueryData(preferencesQueryKey, {
         ...preferences,
         timezone: 'Asia/Tokyo',
       })
     })
-    await expect.element(screen.getByText('23 Nov 2026')).toBeVisible()
+    await expectPresentation('Asia/Tokyo', 'en-GB', '23 Nov 2026')
     await act(async () => {
       queryClient.setQueryData(preferencesQueryKey, {
         ...preferences,
@@ -289,7 +332,6 @@ describe('MinutesPanel canonical document experience', () => {
         locale: 'en-US',
       })
     })
-    await expect.element(screen.getByText('Nov 23, 2026')).toBeVisible()
-    expect(action.dueDate).toBe('2026-11-23')
+    await expectPresentation('Asia/Tokyo', 'en-US', 'Nov 23, 2026')
   })
 })
