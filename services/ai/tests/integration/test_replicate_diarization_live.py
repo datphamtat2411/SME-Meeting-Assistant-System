@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from sme_meeting_ai.core.config import Settings
+from sme_meeting_ai.core.config import load_settings
 from sme_meeting_ai.providers import replicate_diarization
 from sme_meeting_ai.providers.replicate_diarization import ReplicateDiarizationAdapter
 
@@ -19,7 +19,7 @@ def test_live_replicate_diarization(monkeypatch):
     audio_path = os.environ.get("AI_DIARIZATION_LIVE_AUDIO")
     if not audio_path or not Path(audio_path).is_file():
         pytest.skip("Set AI_DIARIZATION_LIVE_AUDIO to an existing permitted two-speaker audio file")
-    settings = Settings(service_name="live-test", service_identity="ai-core")
+    settings = load_settings()
     if not settings.replicate_api_token or not settings.replicate_api_token.get_secret_value().strip():
         pytest.skip("Configure REPLICATE_API_TOKEN in the environment or .env")
 
@@ -95,12 +95,17 @@ def test_live_replicate_diarization(monkeypatch):
 
 def test_live_configuration_loads_dotenv(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AI_SETTINGS_ENV_FILE", raising=False)
     monkeypatch.delenv("REPLICATE_API_TOKEN", raising=False)
     monkeypatch.setenv("AI_RUN_REPLICATE_LIVE", "1")
     audio = tmp_path / "fixture.wav"
     audio.write_bytes(b"test")
     monkeypatch.setenv("AI_DIARIZATION_LIVE_AUDIO", str(audio))
-    (tmp_path / ".env").write_text("REPLICATE_API_TOKEN=dotenv-test-token\n")
+    (tmp_path / ".env").write_text(
+        "AI_SERVICE_NAME=live-test\n"
+        "AI_SERVICE_IDENTITY=ai-core\n"
+        "REPLICATE_API_TOKEN=dotenv-test-token\n"
+    )
     observed = []
 
     class FakeAdapter:
@@ -121,6 +126,9 @@ def test_live_configuration_loads_dotenv(tmp_path, monkeypatch):
 @pytest.mark.parametrize("missing", ["opt_in", "audio", "token"])
 def test_live_configuration_skips_when_required_input_missing(tmp_path, monkeypatch, missing):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AI_SETTINGS_ENV_FILE", raising=False)
+    monkeypatch.setenv("AI_SERVICE_NAME", "live-test")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
     audio = tmp_path / "fixture.wav"
     audio.write_bytes(b"test")
     monkeypatch.setenv("AI_RUN_REPLICATE_LIVE", "1" if missing != "opt_in" else "0")
