@@ -1,15 +1,22 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/meeting_models.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_manager.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/processing_timeline_panel.dart';
 import 'package:sme_meeting_assistant/features/recording/transcript_review_contract.dart';
 
 import 'support/meeting_test_support.dart';
+import 'support/widget_test_support.dart';
 
 const _job = '11111111-1111-4111-8111-111111111111';
 const _media = '22222222-2222-4222-8222-222222222222';
@@ -88,6 +95,206 @@ Map<String, dynamic> _receipt(Map<String, dynamic> proof) => {
 };
 
 void main() {
+  testWidgets('Processing handoff requires separate review and admission', (
+    tester,
+  ) async {
+    var admitted = false;
+    final calls = <String>[];
+    final keys = <String?>[];
+    final source = _source();
+    final proof = _proof(source);
+    final client = MeetingTestHttpClient((request) async {
+      final path = request.url.path;
+      if (path.endsWith('/transcript-review/acknowledge')) {
+        calls.add('acknowledge');
+        keys.add(request.headers['idempotency-key']);
+        final body = decodeRequestBody(request);
+        expect(body, proof.toJson());
+        return meetingApiSuccess(_receipt(body));
+      }
+      if (path.endsWith('/meeting-intelligence/admit')) {
+        calls.add('admit');
+        keys.add(request.headers['idempotency-key']);
+        expect(decodeRequestBody(request), {
+          ...proof.toJson(),
+          'reviewId': _review,
+        });
+        admitted = true;
+        return meetingApiSuccess(_jobJson(true), status: 202);
+      }
+      if (path.endsWith('/processing-jobs/$_job')) {
+        return meetingApiSuccess(_jobJson(admitted));
+      }
+      if (path.endsWith('/processing-jobs')) {
+        return meetingApiSuccess([_jobJson(admitted)]);
+      }
+      if (path.endsWith('/transcript')) {
+        return meetingApiSuccess({
+          'id': source.id,
+          'meetingId': source.meetingId,
+          'sourceMediaId': source.sourceMediaId,
+          'processingJobId': source.processingJobId,
+          'versionNumber': source.versionNumber,
+          'languageCode': source.languageCode,
+          'status': source.status,
+          'durationMs': source.durationMs,
+          'finalizedAt': source.finalizedAt!.toIso8601String(),
+          'contentRevision': source.contentRevision,
+          'segments': [
+            for (final segment in source.segments)
+              {
+                'id': segment.id,
+                'ordinal': segment.ordinal,
+                'text': segment.text,
+                'startMs': segment.startMs,
+                'endMs': segment.endMs,
+                'speakerLabel': segment.speakerLabel,
+                'speakerClusterId': segment.speakerClusterId,
+                'qualityStatus': segment.quality,
+                'version': segment.version,
+                'etag': segment.etag,
+              },
+          ],
+        }, headers: {'etag': source.etag!});
+      }
+      if (path.endsWith('/transcript/coverage')) {
+        return meetingApiSuccess([
+          {
+            'id': 'coverage-1',
+            'startMs': 0,
+            'endMs': 1500,
+            'coverageStatus': 'COVERED',
+            'recovered': false,
+            'retryCount': 0,
+          },
+        ]);
+      }
+      if (path.endsWith('/participants') ||
+          path.endsWith('/media') ||
+          path.endsWith('/speaker-clusters')) {
+        return meetingApiSuccess(const <dynamic>[]);
+      }
+      if (path.endsWith('/meetings/$testMeetingId')) {
+        return meetingApiSuccess(
+          meetingTestJson(),
+          headers: const {'etag': testMeetingEtag},
+        );
+      }
+      return meetingApiFailure(404, 'NOT_FOUND');
+    });
+    final deps = (await tester.runAsync(() async {
+      final dependencies = AppDependencies.create(
+        apiBaseUri: Uri.parse('https://api.example.test/api/v1'),
+        httpClient: client,
+        credentialStorage: InMemoryCredentialStorage(),
+      );
+      await signInMeetingTestApi(dependencies.api);
+      return dependencies;
+    }))!;
+    addTearDown(deps.dispose);
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MeetingDetailPage(dependencies: deps, meetingId: testMeetingId),
+        ),
+      );
+      final processingTab = find.text('Xử lý');
+      await pumpUntil(
+        tester,
+        () => processingTab.evaluate().isNotEmpty,
+        reason: 'meeting to load',
+      );
+      await tester.ensureVisible(processingTab);
+      await tester.tap(processingTab);
+      final handoff = find.text('Mở duyệt bản ghi');
+      await pumpUntil(
+        tester,
+        () => handoff.evaluate().isNotEmpty,
+        reason: 'waiting job to offer review',
+      );
+      await tester.ensureVisible(handoff);
+      await tester.tap(handoff);
+      final acknowledge = find.widgetWithText(
+        OutlinedButton,
+        'Xác nhận đã duyệt transcript',
+      );
+      final admit = find.widgetWithText(
+        FilledButton,
+        'Tiếp tục phân tích cuộc họp',
+      );
+      await pumpUntil(
+        tester,
+        () =>
+            acknowledge.evaluate().isNotEmpty &&
+            tester.widget<OutlinedButton>(acknowledge).onPressed != null,
+        reason: 'current bound transcript and coverage',
+      );
+      expect(tester.widget<FilledButton>(admit).onPressed, isNull);
+      expect(calls, isEmpty);
+      await tester.ensureVisible(acknowledge);
+      await tester.tap(acknowledge);
+      await pumpUntil(
+        tester,
+        () =>
+            admit.evaluate().isNotEmpty &&
+            tester.widget<FilledButton>(admit).onPressed != null,
+        reason: 'receipt to enable explicit admission',
+      );
+      expect(calls, ['acknowledge']);
+      // Leave the review and reopen the same handoff. The receipt is owned
+      // by the application manager, not the discarded Results widget.
+      await tester.ensureVisible(processingTab);
+      await tester.tap(processingTab);
+      await pumpUntil(
+        tester,
+        () => handoff.evaluate().isNotEmpty,
+        reason: 'waiting job after leaving review',
+      );
+      await tester.ensureVisible(handoff);
+      await tester.tap(handoff);
+      await pumpUntil(
+        tester,
+        () =>
+            admit.evaluate().isNotEmpty &&
+            tester.widget<FilledButton>(admit).onPressed != null,
+        reason: 'restored receipt',
+      );
+      expect(calls, ['acknowledge']);
+      await tester.ensureVisible(admit);
+      await tester.tap(admit);
+      await pumpUntil(
+        tester,
+        () =>
+            admitted &&
+            find.byType(ProcessingTimelinePanel).evaluate().isNotEmpty,
+        reason: 'admitted job to return to Processing',
+      );
+      expect(calls, ['acknowledge', 'admit']);
+      expect(keys, [proof.key(), proof.key(reviewId: _review)]);
+      expect(tester.takeException(), isNull);
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      var shutdownCompleted = false;
+      Object? shutdownFailure;
+      unawaited(
+        deps.shutdown().then<void>(
+          (_) => shutdownCompleted = true,
+          onError: (Object error, StackTrace stack) {
+            shutdownFailure = error;
+            shutdownCompleted = true;
+          },
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () => shutdownCompleted,
+        reason: 'application dependencies to finish shutdown',
+      );
+      expect(shutdownFailure, isNull);
+    }
+  });
+
+
   test('correction digest agrees with Web and Core UTF-8 golden fixtures', () {
     expect(
       transcriptCorrectionDigest([]),

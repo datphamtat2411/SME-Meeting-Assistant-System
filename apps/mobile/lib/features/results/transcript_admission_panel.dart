@@ -135,7 +135,7 @@ class TranscriptAdmissionPanel extends StatelessWidget {
                   'Xác nhận bản đã xem trước khi tiếp tục phân tích.',
                 ),
               if (sourceCurrent &&
-                  (transcript!.status == 'READY_WITH_WARNINGS' ||
+                  (transcript.status == 'READY_WITH_WARNINGS' ||
                       coverage.data!.regions.any(
                         (region) => region.status != 'COVERED',
                       )))
