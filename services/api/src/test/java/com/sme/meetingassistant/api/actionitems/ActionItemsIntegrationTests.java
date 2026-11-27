@@ -711,6 +711,13 @@ class ActionItemsIntegrationTests {
         assertThat(body(inactive).path("data").path("capabilities").path("canStart").asBoolean()).isFalse();
         assertThat(body(inactive).path("data").path("capabilities").path("canComplete").asBoolean()).isFalse();
 
+        for (String command : List.of("start", "complete")) {
+            mvc.perform(post("/api/v1/action-items/{id}/" + command, item)
+                    .principal(principal(organizer))
+                    .header(HttpHeaders.IF_MATCH, inactive.getResponse().getHeader(HttpHeaders.ETAG)))
+                .andExpect(status().isUnprocessableEntity());
+        }
+
         // A deactivated assignee retains database provenance, not API permissions.
         assertThat(jdbc.queryForObject(
             "SELECT assignee_user_id FROM action_items WHERE id=?",UUID.class,item))
@@ -850,6 +857,79 @@ class ActionItemsIntegrationTests {
         MvcResult revoked = mvc.perform(get("/api/v1/action-items/creation-meetings")
                 .principal(principal(manager))).andExpect(status().isOk()).andReturn();
         assertThat(body(revoked).path("data").size()).isZero();
+    }
+
+    @Test void managementDiscoveryUsesSameRightsAndNeverSearchesOrSortsHiddenTitles() throws Exception {
+        UUID unitId = unit();
+        organizer.assignPrimaryOrgUnit(unitId);
+        users.saveAndFlush(organizer);
+        UserEntity manager = user(GlobalRole.DEPARTMENT_MANAGER, unitId);
+        jdbc.update("INSERT INTO manager_scope_units(user_id,org_unit_id,granted_by_user_id) VALUES (?,?,?)",
+            manager.getId(), unitId, organizer.getId());
+        UUID first = newMeeting(List.of(assignee.getId()));
+        UUID second = newMeeting(List.of(assignee.getId()));
+        jdbc.update("UPDATE meetings SET title=? WHERE id=?", "Secret alpha", first);
+        jdbc.update("UPDATE meetings SET title=? WHERE id=?", "Secret omega", second);
+
+        String web = "/api/v1/action-items/management-targets";
+        String mobile = "/api/v1/action-items/creation-meetings";
+        var order = new java.util.ArrayList<String>();
+        for (int page = 0; page < 2; page++) {
+            MvcResult webPage = mvc.perform(get(web).principal(principal(manager))
+                    .param("size", "1").param("page", String.valueOf(page)))
+                .andExpect(status().isOk()).andReturn();
+            MvcResult mobilePage = mvc.perform(get(mobile).principal(principal(manager))
+                    .param("size", "1").param("page", String.valueOf(page)))
+                .andExpect(status().isOk()).andReturn();
+            JsonNode webPayload = body(webPage);
+            JsonNode webRow = webPayload.path("data").get(0);
+            JsonNode mobileRow = body(mobilePage).path("data").get(0);
+            assertThat(webPayload.path("meta").path("pagination").path("totalElements").asLong()).isEqualTo(2);
+            assertThat(webRow.path("id").asText()).isEqualTo(mobileRow.path("id").asText());
+            assertThat(webRow.path("label").asText())
+                .isEqualTo("Restricted meeting (" + webRow.path("id").asText() + ")");
+            assertThat(mobileRow.path("title").isNull()).isTrue();
+            assertThat(mobileRow.path("canReadMeetingContext").asBoolean()).isFalse();
+            order.add(webRow.path("id").asText());
+        }
+        assertThat(order).containsExactlyInAnyOrder(first.toString(), second.toString());
+
+        // Changing only hidden titles must not change counts, matches or order.
+        jdbc.update("UPDATE meetings SET title=? WHERE id=?", "Secret omega", first);
+        jdbc.update("UPDATE meetings SET title=? WHERE id=?", "Secret alpha", second);
+        for (String path : List.of(web, mobile)) {
+            MvcResult hidden = mvc.perform(get(path).principal(principal(manager)).param("q", "Secret"))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(hidden).path("data").size()).isZero();
+            assertThat(body(hidden).path("meta").path("pagination").path("totalElements").asLong()).isZero();
+            MvcResult all = mvc.perform(get(path).principal(principal(manager)))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(all).path("data").get(0).path("id").asText()).isEqualTo(order.get(0));
+            assertThat(body(all).path("data").get(1).path("id").asText()).isEqualTo(order.get(1));
+            MvcResult byId = mvc.perform(get(path).principal(principal(manager)).param("q", first.toString()))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(byId).path("data").size()).isEqualTo(1);
+            assertThat(body(byId).path("data").get(0).path("id").asText()).isEqualTo(first.toString());
+            MvcResult unauthorized = mvc.perform(get(path).principal(principal(outsider)).param("q", first.toString()))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(unauthorized).path("data").size()).isZero();
+            MvcResult visible = mvc.perform(get(path).principal(principal(organizer)).param("q", "Secret alpha"))
+                .andExpect(status().isOk()).andReturn();
+            JsonNode row = body(visible).path("data").get(0);
+            assertThat(row.path("id").asText()).isEqualTo(second.toString());
+            assertThat(row.path(path.equals(web) ? "label" : "title").asText()).isEqualTo("Secret alpha");
+        }
+        jdbc.update("DELETE FROM manager_scope_units WHERE user_id=? AND org_unit_id=?",
+            manager.getId(), unitId);
+        for (String path : List.of(web, mobile)) {
+            MvcResult revoked = mvc.perform(get(path).principal(principal(manager)).param("q", first.toString()))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(revoked).path("data").size()).isZero();
+            assertThat(body(revoked).path("meta").path("pagination").path("totalElements").asLong()).isZero();
+        }
+        MvcResult capability = mvc.perform(get("/api/v1/action-items/management-capability")
+                .principal(principal(manager))).andExpect(status().isOk()).andReturn();
+        assertThat(body(capability).path("data").path("canCreate").asBoolean()).isFalse();
     }
 
     @Test void waveOneRightsStayConsistentAcrossDiscoveryReadsAndMutations() throws Exception {

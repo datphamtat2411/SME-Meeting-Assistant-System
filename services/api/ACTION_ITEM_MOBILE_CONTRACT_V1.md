@@ -52,9 +52,23 @@ Each row is `{id, title, canReadMeetingContext}`. A manageable meeting without
 content access has a null title. Search matches authorized titles or exact
 opaque meeting UUIDs; it never matches a restricted title. Ordering uses only
 the visible title and UUID as a deterministic tie-breaker. Creation independently
-revalidates eligibility. Assignment discovery reuses the existing
-`/users/meeting-candidates` contract; the current active caller can be offered
-separately for self assignment. No new directory or evidence API is added.
+revalidates eligibility. The existing Web `GET /api/v1/action-items/management-targets` returns
+`{id, label}` (size 1–20) from exactly the same authorized, paginated query.
+An inaccessible title is represented as `Restricted meeting (<opaque UUID>)`,
+never as a searchable hidden title. Blank search browses the authorized set.
+The Mobile creation-meetings projection remains a transitional compatibility
+route until INT-04/05 migrate consumers and verify API versioning/compatibility.
+The distinct `management-capability` endpoint returns `{canCreate}` for the
+current actor, globally or for an optional meetingId, without metadata.
+
+Assignment discovery differs from invitation discovery:
+`/action-items/assignee-candidates` requires current management authority on
+the requested meeting and returns active organizational users including self;
+`/users/meeting-candidates` is the active-actor invitation directory excluding
+self. Mobile's existing invite-directory-plus-self adapter is not a grant of
+assignment authority; actual assignment always revalidates management rights.
+INT-04/05 own migration to the meeting-scoped assignment lookup. Neither
+endpoint may be treated as permission to mutate a resource.
 
 ## Mobile foundation boundary
 

@@ -492,7 +492,7 @@ export function managementTargetsQuery(search: string, page = 0) {
         z.object({ id: z.string().uuid(), label: z.string() }),
         signal
       ),
-    enabled: search.trim().length >= 2,
+    enabled: search.trim().length === 0 || search.trim().length >= 2,
     retry: false,
   })
 }

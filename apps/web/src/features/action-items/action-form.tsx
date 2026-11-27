@@ -63,6 +63,7 @@ export function ActionForm({
   const [meetingLabel, setMeetingLabel] = useState(item?.meeting?.label ?? '')
   const [dueDate, setDueDate] = useState(item?.dueDate ?? '')
   const [meetingSearch, setMeetingSearch] = useState('')
+  const [meetingPage, setMeetingPage] = useState(0)
   const [userSearch, setUserSearch] = useState('')
   const [snapshot, setSnapshot] = useState<
     | (ActionMutationResult & {
@@ -113,8 +114,11 @@ export function ActionForm({
     ? canAssignCurrent && snapshot?.item.capabilities.canAssign === true
     : canManageActionItems
   const targets = useQuery({
-    ...managementTargetsQuery(meetingSearch),
-    enabled: open && !isFixedMeeting && meetingSearch.trim().length >= 2,
+    ...managementTargetsQuery(meetingSearch, meetingPage),
+    enabled:
+      open &&
+      !isFixedMeeting &&
+      (meetingSearch.trim().length === 0 || meetingSearch.trim().length >= 2),
   })
   const candidates = useQuery({
     ...assigneeCandidatesQuery(userSearch, meeting),
@@ -543,10 +547,13 @@ export function ActionForm({
               <>
                 <Input
                   aria-label='Find authorized Action Item meeting'
-                  placeholder='Search meetings you may manage (2+ characters)'
+                  placeholder='Search visible titles or meeting IDs'
                   value={meetingSearch}
                   disabled={mutation.isPending || Boolean(unresolvedCreate)}
-                  onChange={(event) => setMeetingSearch(event.target.value)}
+                  onChange={(event) => {
+                    setMeetingSearch(event.target.value)
+                    setMeetingPage(0)
+                  }}
                 />
                 {meeting ? (
                   <Badge variant='secondary'>
@@ -554,7 +561,8 @@ export function ActionForm({
                   </Badge>
                 ) : (
                   <p className='text-xs text-muted-foreground'>
-                    Only management-authorized meetings are listed.
+                    Only management-authorized meetings are listed. Restricted
+                    titles are hidden; use the meeting ID or browse the list.
                   </p>
                 )}
                 <div className='max-h-36 space-y-1 overflow-y-auto rounded-lg border p-1'>
@@ -566,6 +574,7 @@ export function ActionForm({
                   {targets.data?.items.map((target) => (
                     <button
                       key={target.id}
+                      title={target.label}
                       type='button'
                       className='flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover:bg-accent'
                       disabled={mutation.isPending || Boolean(unresolvedCreate)}
@@ -589,6 +598,32 @@ export function ActionForm({
                     </p>
                   )}
                 </div>
+                {targets.data && (
+                  <div className='flex items-center justify-between text-xs'>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      disabled={
+                        !targets.data.page.hasPrevious || targets.isFetching
+                      }
+                      onClick={() =>
+                        setMeetingPage((page) => Math.max(0, page - 1))
+                      }
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      disabled={!targets.data.page.hasNext || targets.isFetching}
+                      onClick={() => setMeetingPage((page) => page + 1)}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                )}
               </>
             )}
           </div>

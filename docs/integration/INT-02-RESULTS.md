@@ -52,3 +52,16 @@ The public contract choices are:
   validation. It is not a migration collision or blocker.
 - Web ESLint reports five existing Fast Refresh export warnings; no lint errors
   were introduced by this integration.
+
+## Independent review correction
+
+The initial local PASS above refers only to the assembled merge. A later source
+review found that Web management-targets used an independent raw-title query.
+The corrective commit consolidates discovery on the Mobile rights expression,
+removes the unused alternate capability projection, and enables authorized Web
+browsing without hidden titles. Regression tests cover both discovery routes,
+hidden-title search/count/order, exact opaque IDs, revocation and inactive
+assignee command rejection. See DEFERRED-INTEGRATION-ITEMS.md for remaining
+owners. Local verification of the correction has not been executed by the
+GitHub connector; its CI results must be checked on the corrective SHA. Do not
+reuse the 57/698/55 test counts above as proof of the corrective commit.
