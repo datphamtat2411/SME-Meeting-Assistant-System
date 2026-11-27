@@ -179,8 +179,6 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     appearance.initialize();
   }
 
-  void changeTheme(ThemeMode next) => appearance.setMode(next);
-
   @override
   void dispose() {
     _linkReceiver?.dispose();
@@ -529,8 +527,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         key: ValueKey(api.authenticatedSessionScope),
         dependencies: widget.dependencies,
         api: api,
-        themeMode: appearance.mode,
-        onThemeChanged: changeTheme,
+        appearance: appearance,
         onOpenAccountLink: _openAccountLinkPaste,
       ),
     };
@@ -759,15 +756,13 @@ String _recoveryMessage(AuthSessionState state) {
 class AppShell extends StatefulWidget {
   final AppDependencies dependencies;
   final ApiClient api;
-  final ThemeMode themeMode;
-  final ValueChanged<ThemeMode> onThemeChanged;
+  final AppearanceController appearance;
   final VoidCallback? onOpenAccountLink;
   const AppShell({
     super.key,
     required this.dependencies,
     required this.api,
-    required this.themeMode,
-    required this.onThemeChanged,
+    required this.appearance,
     this.onOpenAccountLink,
   });
 
@@ -838,8 +833,9 @@ class _AppShellState extends State<AppShell> {
       AssistantPage(dependencies: widget.dependencies, active: index == 3),
       ProfilePage(
         api: widget.api,
-        themeMode: widget.themeMode,
-        onThemeChanged: widget.onThemeChanged,
+        repository: widget.dependencies.profileRepository,
+        appearance: widget.appearance,
+        active: index == 4,
         onOpenAccountLink: widget.onOpenAccountLink,
       ),
     ];
@@ -871,6 +867,7 @@ class _AppShellState extends State<AppShell> {
                           .toList(),
                     ),
                   Expanded(
+                    key: const ValueKey('authenticated-destinations'),
                     child: IndexedStack(index: index, children: pages),
                   ),
                 ],

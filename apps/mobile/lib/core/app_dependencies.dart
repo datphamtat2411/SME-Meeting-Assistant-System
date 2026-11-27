@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'api_client.dart';
 import 'models.dart';
 import 'appearance_preferences.dart';
+import '../features/profile/profile_repository.dart';
 
 import 'package:sme_meeting_assistant/features/action_items/action_item_invalidation.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_repository.dart';
@@ -35,6 +36,7 @@ import 'package:sme_meeting_assistant/features/results/results_repository.dart';
 class AppDependencies {
   final ApiClient api;
   final AppearancePreferences appearancePreferences;
+  late final ProfileRepository profileRepository = ProfileRepository(api: api);
   final http.Client httpClient;
   late final ActionItemInvalidationSignal actionItemInvalidation;
   late final ActionItemRepository actionItems;

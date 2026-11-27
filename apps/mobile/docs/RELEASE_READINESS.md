@@ -19,6 +19,12 @@ native checks and both Android debug builds); live integration remains
 pending, including the compatible Web/Core revision, SMTP, trusted-domain
 association and physical-device acceptance.
 
+For Profile & Preferences, see [account workspace acceptance](PROFILE_PREFERENCES_ACCEPTANCE.md).
+The Wave 03 baseline passed 613 tests and the complete Android CI gate;
+the focused closure candidate has its own branch CI evidence. Integrated
+Mobile CI and live backend, cross-client and Android runtime acceptance
+remain separate gates.
+
 ## Verified foundation capabilities
 
 The locally verified foundation currently includes:

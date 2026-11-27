@@ -151,6 +151,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
   DateTime? _lastRefreshRetryNotBefore;
   int _lifecycleEpoch = 0;
   int _protectedAccessGeneration = 0;
+  int _identityReloadGeneration = 0;
   ({int epoch, AuthUuid userId, AuthUuid sessionId})? _reconciliationOwner;
   Completer<AuthReconciliationOutcome>? _reconciliationWaiter;
   int? _interactiveSignInEpoch;
@@ -655,22 +656,50 @@ class AuthSessionCoordinator extends ChangeNotifier {
         expectedEpoch: epoch,
       );
 
-  Future<void> loadIdentity() async {
-    final scope = authenticatedSessionScope;
-    if (scope == null) {
+  Future<void> loadIdentity({AuthenticatedSessionScope? expectedScope}) async {
+    if (expectedScope == null && !_state.isAuthenticated) {
       throw StateError('Identity reload requires a verified session.');
     }
-
-    final previous = _state.identity!;
-    final identity = await _retrieveIdentity(
-      expectedEpoch: scope.lifecycleEpoch,
-      expectedScope: scope,
-    );
-    _requireScope(scope);
-    if (identity.userId != previous.userId ||
-        identity.session.id != previous.session.id) {
-      await _invalidateIdentityMismatch(scope.lifecycleEpoch);
-      return;
+    final scope = expectedScope ?? requireAuthenticatedSessionScope();
+    requireCurrentAuthenticatedSession(scope);
+    final sessionId = _state.identity!.session.id.value;
+    final generation = ++_identityReloadGeneration;
+    final epoch = scope.lifecycleEpoch;
+    final AuthIdentity identity;
+    try {
+      identity = await _retrieveIdentity(
+        expectedEpoch: epoch,
+        expectedScope: scope,
+      );
+    } on ApiFailure catch (failure) {
+      if (isCurrentAuthenticatedSession(scope) &&
+          generation == _identityReloadGeneration) {
+        final category = _classifier.classify(failure, AuthEndpoint.identity);
+        if (category == AuthFailureCategory.authorizationDenied ||
+            category == AuthFailureCategory.sessionInvalidated) {
+          await _handleRestoreFailure(failure, AuthEndpoint.identity, epoch);
+        }
+      }
+      rethrow;
+    }
+    requireCurrentAuthenticatedSession(scope);
+    if (generation != _identityReloadGeneration) {
+      throw const ApiFailure(
+        0,
+        'AUTH_IDENTITY_RELOAD_SUPERSEDED',
+        'Một lần đồng bộ danh tính mới hơn đã được bắt đầu.',
+      );
+    }
+    if (identity.userId.value != scope.userId ||
+        identity.session.id.value != sessionId ||
+        !identity.isEligibleMobileIdentity) {
+      final failure = AuthSessionFailure._(
+        category: AuthFailureCategory.sessionInvalidated,
+        code: 'AUTH_IDENTITY_MISMATCH',
+        message: 'Danh tính không khớp với phiên đăng nhập hiện tại.',
+      );
+      await _requireReauthentication(failure, expectedEpoch: epoch);
+      throw AuthSessionException(failure);
     }
     _setState(
       AuthSessionState._(

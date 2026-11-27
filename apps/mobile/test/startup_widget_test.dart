@@ -13,6 +13,8 @@ import 'package:sme_meeting_assistant/features/auth/account_flow.dart';
 import 'package:sme_meeting_assistant/features/auth/account_link.dart';
 import 'package:sme_meeting_assistant/features/auth/account_forms.dart';
 import 'package:sme_meeting_assistant/features/auth/credential_workflow.dart';
+import 'package:sme_meeting_assistant/features/profile/preferences_panel.dart';
+import 'package:sme_meeting_assistant/features/profile/profile_page.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
@@ -1666,6 +1668,232 @@ void main() {
     },
   );
 
+  for (final scenario in ['confirmed', 'unconfirmed', 'storage']) {
+    testWidgets('Account sign-out presents the $scenario outcome', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(600, 1000);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final credentials = scenario == 'storage'
+          ? _FailingDeleteStorage()
+          : InMemoryCredentialStorage();
+      await _writeRefreshCredential(credentials, 'refresh-0');
+      final client = _authClient(
+        logoutStatus: scenario == 'unconfirmed' ? 503 : null,
+      );
+      final harness = _Harness.create(client, credentials);
+      await tester.pumpWidget(
+        MeetingAssistantApp(dependencies: harness.dependencies),
+      );
+      await pumpUntil(
+        tester,
+        () =>
+            harness.api.signedIn &&
+            find.byType(NavigationBar).evaluate().isNotEmpty,
+        reason: 'authenticated Account navigation',
+      );
+      await tester.tap(find.text('Tài khoản'));
+      await pumpUntil(
+        tester,
+        () => find.text('Test User').evaluate().isNotEmpty,
+        reason: 'canonical profile to render',
+      );
+      final logout = find.text('Đăng xuất');
+      await tester.scrollUntilVisible(
+        logout,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(logout);
+      await tester.tap(logout);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Đăng xuất'));
+      final message = switch (scenario) {
+        'confirmed' => 'Đã đăng xuất khỏi thiết bị.',
+        'unconfirmed' => 'Thiết bị đã đăng xuất, nhưng máy chủ chưa xác nhận việc thu hồi phiên.',
+        _ => 'Không thể xác nhận xóa phiên bảo mật',
+      };
+      await pumpUntil(
+        tester,
+        () => find.text(message).evaluate().isNotEmpty,
+        reason: 'Account sign-out destination outcome',
+      );
+      expect(harness.api.signedIn, isFalse);
+      expect(find.byType(AppShell), findsNothing);
+      expect(
+        client.requests.where(
+          (request) => request.url.path.endsWith('/auth/logout'),
+        ),
+        hasLength(1),
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('device appearance survives Account theme changes and login', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(600, 1000);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final credentials = InMemoryCredentialStorage();
+    await _writeRefreshCredential(credentials, 'refresh-0');
+    var replacement = false;
+    final client = _authClient(
+      identityProvider: () => replacement
+          ? _identity(
+              userId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+              email: 'other@example.test',
+              displayName: 'Other User',
+              sessionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            )
+          : _identity(),
+    );
+    final harness = _Harness.create(client, credentials);
+    int accountRequests() {
+      return client.requests.where((request) {
+        final path = request.url.path;
+        return path.endsWith('/me/profile') || path.endsWith('/me/preferences');
+      }).length;
+    }
+
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.signedIn &&
+          find.byType(NavigationBar).evaluate().isNotEmpty,
+      reason: 'authenticated navigation',
+    );
+    expect(accountRequests(), 0);
+    await tester.tap(find.text('Tài khoản'));
+    final panel = find.byType(PreferencesPanel);
+    await pumpUntil(
+      tester,
+      () =>
+          panel.evaluate().isNotEmpty &&
+          tester.widget<PreferencesPanel>(panel).controller.snapshot != null,
+      reason: 'initial Account preferences',
+    );
+    await tester.pumpAndSettle();
+    expect(accountRequests(), 2);
+    final workspace = find.byType(ProfilePage);
+    final workspaceState = tester.state(workspace);
+    final owner = tester.widget<PreferencesPanel>(panel).controller;
+
+    final scroll = find.descendant(
+      of: workspace,
+      matching: find.byType(Scrollable),
+    );
+    final modes = find.byType(SegmentedButton<ThemeMode>);
+    final darkMode = find.descendant(of: modes, matching: find.text('Tối'));
+    await revealScrollableControl(
+      tester,
+      darkMode,
+      scrollable: scroll,
+      delta: 250,
+    );
+    await tester.tap(darkMode);
+    await pumpUntil(
+      tester,
+      () =>
+          tester.widget<MaterialApp>(find.byType(MaterialApp)).themeMode ==
+          ThemeMode.dark,
+      reason: 'application theme change',
+    );
+    await tester.pumpAndSettle();
+    expect(
+      await harness.dependencies.appearancePreferences.loadThemeMode(),
+      ThemeMode.dark,
+    );
+    expect(tester.state(workspace), same(workspaceState));
+    final meetingEmail = find.widgetWithText(SwitchListTile, 'Email cuộc họp');
+    await tester.scrollUntilVisible(meetingEmail, -250, scrollable: scroll);
+    await tester.pump();
+    expect(tester.widget<PreferencesPanel>(panel).controller, same(owner));
+    expect(accountRequests(), 2);
+
+    final logout = find.text('Đăng xuất');
+    await revealScrollableControl(
+      tester,
+      logout,
+      scrollable: scroll,
+      delta: 250,
+    );
+    await tester.tap(logout);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Đăng xuất'));
+    await pumpUntil(
+      tester,
+      () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'sign-out destination',
+    );
+    expect(owner.current, isFalse);
+    expect(owner.snapshot, isNull);
+    expect(find.byType(AppShell), findsNothing);
+    expect(
+      tester.widget<MaterialApp>(find.byType(MaterialApp)).themeMode,
+      ThemeMode.dark,
+    );
+
+    replacement = true;
+    // Logout originated in the widget test zone. Keep login in that same
+    // zone: awaiting it inside runAsync can strand the token-store queue.
+    await tester.enterText(
+      find.byType(TextFormField).at(0),
+      'other@example.test',
+    );
+    await tester.enterText(find.byType(TextFormField).at(1), 'password');
+    final login = find.widgetWithText(FilledButton, 'Đăng nhập');
+    await tester.ensureVisible(login);
+    await tester.pump();
+    expect(login.hitTestable(), findsOneWidget);
+    await tester.tap(login);
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.signedIn &&
+          find.byType(NavigationBar).evaluate().isNotEmpty,
+      reason: 'replacement authenticated shell',
+    );
+    expect(
+      harness.api.sessionState.identity?.userId.value,
+      'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    );
+    expect(
+      client.requests.where(
+        (request) => request.url.path.endsWith('/auth/login'),
+      ),
+      hasLength(1),
+    );
+    expect(
+      tester.widget<MaterialApp>(find.byType(MaterialApp)).themeMode,
+      ThemeMode.dark,
+    );
+    expect(accountRequests(), 2);
+    await tester.tap(find.text('Tài khoản'));
+    await pumpUntil(
+      tester,
+      () =>
+          find.text('Other User').evaluate().isNotEmpty &&
+          panel.evaluate().isNotEmpty &&
+          tester.widget<PreferencesPanel>(panel).controller.snapshot != null,
+      reason: 'fresh Account resources for the replacement identity',
+    );
+    expect(
+      tester.widget<PreferencesPanel>(panel).controller,
+      isNot(same(owner)),
+    );
+    expect(accountRequests(), 4);
+    expect(find.text('Test User'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('a fresh authenticated shell is created after logout and login', (
     tester,
   ) async {
@@ -1992,6 +2220,7 @@ class _Harness {
 RecordingHttpClient _authClient({
   int? refreshStatus,
   int identityFailures = 0,
+  Map<String, dynamic> Function()? identityProvider,
   int? loginStatus,
   int? logoutStatus,
   bool recoveryThrottle = false,
@@ -2113,7 +2342,10 @@ RecordingHttpClient _authClient({
           errorEnvelope('SERVICE_UNAVAILABLE', 'Try again later.'),
         );
       }
-      return jsonResponse(200, successEnvelope(_identity()));
+      return jsonResponse(
+        200,
+        successEnvelope(identityProvider?.call() ?? _identity()),
+      );
     }
     if (path.endsWith('/auth/login')) {
       expect(request.headers['Authorization'], isNull);
@@ -2148,6 +2380,36 @@ RecordingHttpClient _authClient({
       }
       return jsonResponse(200, successEnvelope(null));
     }
+    if (path.endsWith('/me/profile')) {
+      final identity = identityProvider?.call() ?? _identity();
+      return streamedResponse(
+        200,
+        body: utf8.encode(
+          jsonEncode(
+            successEnvelope({
+              'id': identity['userId'],
+              'email': identity['email'],
+              'displayName': identity['displayName'],
+              'globalRole': identity['globalRole'],
+              'accountStatus': identity['accountStatus'],
+              'primaryOrgUnitId': identity['primaryOrgUnitId'],
+            }),
+          ),
+        ),
+        headers: {'content-type': 'application/json', 'etag': '"v1"'},
+      );
+    }
+    if (path.endsWith('/me/preferences')) {
+      return jsonResponse(
+        200,
+        successEnvelope({
+          'timezone': null,
+          'locale': null,
+          'meetingEmailEnabled': true,
+          'actionItemEmailEnabled': true,
+        }),
+      );
+    }
     return jsonResponse(200, successEnvelope(<String, dynamic>{}));
   });
 }
@@ -2163,10 +2425,15 @@ Map<String, dynamic> _tokens(String access, String refresh) =>
 String _accessToken(String access) =>
     'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.$access';
 
-Map<String, dynamic> _identity() => <String, dynamic>{
-  'userId': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-  'email': 'user@example.test',
-  'displayName': 'Test User',
+Map<String, dynamic> _identity({
+  String userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  String email = 'user@example.test',
+  String displayName = 'Test User',
+  String sessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+}) => <String, dynamic>{
+  'userId': userId,
+  'email': email,
+  'displayName': displayName,
   'globalRole': 'EMPLOYEE',
   'accountStatus': 'ACTIVE',
   'primaryOrgUnitId': null,
@@ -2175,7 +2442,7 @@ Map<String, dynamic> _identity() => <String, dynamic>{
     'unitIds': <String>[],
   },
   'session': <String, dynamic>{
-    'id': 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    'id': sessionId,
     'clientType': 'MOBILE',
     'createdAt': '2026-11-22T10:00:00Z',
     'lastSeenAt': null,
