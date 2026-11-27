@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { useState } from 'react'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { ExternalLink, ListChecks, Plus } from 'lucide-react'
@@ -59,6 +60,7 @@ export function MeetingActionsPanel({
     contentRevision?: number
   ) => void
 }) {
+  const { t } = useUiTranslation()
   const [view, setView] = useState<'proposals' | 'official' | 'history'>(
     'proposals'
   )
@@ -82,11 +84,10 @@ export function MeetingActionsPanel({
         <CardHeader className='flex flex-row flex-wrap items-center justify-between gap-3 border-b'>
           <div>
             <CardTitle className='flex items-center gap-2'>
-              <ListChecks className='size-5' /> Meeting Action Items
+              <ListChecks className='size-5' /> {t('action-items:meetingPanel_heading')}
             </CardTitle>
             <CardDescription>
-              Review AI candidates, then manage the official follow-up
-              obligations assembled for this meeting.
+              {t('action-items:meetingPanel_description')}
             </CardDescription>
           </div>
           {canCreate && (
@@ -97,7 +98,7 @@ export function MeetingActionsPanel({
                 setOpen(true)
               }}
             >
-              <Plus className='size-4' /> Add official work
+              <Plus className='size-4' /> {t('action-items:meetingPanel_addOfficial')}
             </Button>
           )}
         </CardHeader>
@@ -106,13 +107,13 @@ export function MeetingActionsPanel({
             !canManageActionItems &&
             management.isError && (
               <div className='mb-4 flex flex-wrap items-center gap-2 text-sm text-muted-foreground'>
-                Creation authority could not be verified.
+                {t('action-items:meetingPanel_creationUnverified')}
                 <Button
                   variant='outline'
                   size='sm'
                   onClick={() => void management.refetch()}
                 >
-                  Retry permission check
+                  {t('action-items:meetingPanel_retryPermission')}
                 </Button>
               </div>
             )}
@@ -121,9 +122,9 @@ export function MeetingActionsPanel({
             onValueChange={(value) => setView(value as typeof view)}
           >
             <TabsList className='mb-4'>
-              <TabsTrigger value='proposals'>Proposal review</TabsTrigger>
-              <TabsTrigger value='official'>Official follow-up</TabsTrigger>
-              <TabsTrigger value='history'>Historical</TabsTrigger>
+              <TabsTrigger value='proposals'>{t('action-items:meetingPanel_proposalReview')}</TabsTrigger>
+              <TabsTrigger value='official'>{t('action-items:meetingPanel_officialFollowup')}</TabsTrigger>
+              <TabsTrigger value='history'>{t('action-items:meetingPanel_historical')}</TabsTrigger>
             </TabsList>
             <TabsContent value='proposals' className='mt-0'>
               <ProposalCollection
@@ -182,6 +183,7 @@ function ProposalCollection({
     contentRevision?: number
   ) => void
 }) {
+  const { t } = useUiTranslation()
   const { query, setPage } = useMeetingActionPage(meetingId, {
     official: false,
     status: 'PROPOSED',
@@ -194,8 +196,8 @@ function ProposalCollection({
   if (!query.data.items.length && query.data.page.page === 0)
     return (
       <RequestEmpty
-        title='No proposals await review'
-        description='AI candidates appear here until an authorized human confirms or rejects them.'
+        title={t('action-items:meetingPanel_noProposals')}
+        description={t('action-items:meetingPanel_proposalDescription')}
       />
     )
   return (
@@ -209,23 +211,23 @@ function ProposalCollection({
             <div>
               <h3 className='font-semibold'>{item.title}</h3>
               <p className='mt-1 text-sm text-muted-foreground'>
-                {item.details ?? 'No proposed details.'}
+                {item.details ?? t('action-items:meetingPanel_noProposedDetails')}
               </p>
             </div>
-            <Badge variant='outline'>AI proposal</Badge>
+            <Badge variant='outline'>{t('action-items:meetingPanel_aiProposal')}</Badge>
           </div>
           <div className='flex flex-wrap gap-3 text-xs text-muted-foreground'>
             <span>
-              Suggested due date:{' '}
-              <RegionalCivilDate value={item.dueDate} fallback='none' />
+              {t('action-items:meetingPanel_suggestedDue')}{' '}
+              <RegionalCivilDate value={item.dueDate} fallback={t('action-items:meetingPanel_none')} />
             </span>
             <span>
               {item.assignee?.displayName
-                ? `Suggested responsibility: ${item.assignee.displayName}`
-                : 'Unassigned proposal'}
+                ? t('action-items:meetingPanel_suggestedResponsibility', { name: item.assignee.displayName })
+                : t('action-items:meetingPanel_unassignedProposal')}
             </span>
             {canReadMeetingContent && item.capabilities.canAccessEvidence && (
-              <span>Evidence: {item.evidence.references.length}</span>
+              <span>{t('action-items:meetingPanel_evidenceCount', { count: item.evidence.references.length })}</span>
             )}
           </div>
           {canReadMeetingContent && item.evidence.limitation && (
@@ -252,7 +254,7 @@ function ProposalCollection({
                         )
                       }
                     >
-                      Evidence {index + 1}{' '}
+                      {t('action-items:meetingPanel_evidenceNumber', { number: index + 1 })}{' '}
                       {reference.preview ? `· ${reference.preview}` : ''}{' '}
                       <ExternalLink className='size-3' />
                     </Button>
@@ -261,7 +263,7 @@ function ProposalCollection({
                       key={reference.segmentId}
                       className='text-xs text-muted-foreground'
                     >
-                      Evidence {index + 1}
+                      {t('action-items:meetingPanel_evidenceNumber', { number: index + 1 })}
                     </span>
                   )
                 )}
@@ -274,7 +276,7 @@ function ProposalCollection({
                 variant='outline'
                 onClick={() => onSelect(item)}
               >
-                Correct proposal
+                {t('action-items:meetingPanel_correctProposal')}
               </Button>
             )}
             <ActionCommands item={item} />
@@ -283,7 +285,7 @@ function ProposalCollection({
       ))}
       <CollectionPager
         page={query.data.page}
-        pageLabel='Proposal page'
+        pageLabel={t('action-items:meetingPanel_proposalPage')}
         onPageChange={setPage}
       />
     </div>
@@ -297,6 +299,7 @@ function OfficialCollection({
   meetingId: string
   onSelect: (item: ActionItem) => void
 }) {
+  const { t } = useUiTranslation()
   const { query, setPage } = useMeetingActionPage(meetingId, {
     official: true,
   })
@@ -305,12 +308,13 @@ function OfficialCollection({
       query={query}
       onPageChange={setPage}
       onSelect={onSelect}
-      empty='No official follow-up work for this meeting.'
+      empty={t('action-items:meetingPanel_noOfficial')}
     />
   )
 }
 
 function HistoryCollections({ meetingId }: { meetingId: string }) {
+  const { t } = useUiTranslation()
   const done = useMeetingActionPage(meetingId, {
     official: true,
     status: 'DONE',
@@ -326,17 +330,17 @@ function HistoryCollections({ meetingId }: { meetingId: string }) {
   return (
     <div className='space-y-5'>
       <HistoryGroup
-        title='Completed official work'
+        title={t('action-items:meetingPanel_completedOfficial')}
         query={done.query}
         onPageChange={done.setPage}
       />
       <HistoryGroup
-        title='Cancelled official work'
+        title={t('action-items:meetingPanel_cancelledOfficial')}
         query={cancelled.query}
         onPageChange={cancelled.setPage}
       />
       <HistoryGroup
-        title='Rejected proposals'
+        title={t('action-items:meetingPanel_rejectedProposals')}
         query={rejected.query}
         onPageChange={rejected.setPage}
       />
@@ -369,6 +373,7 @@ function HistoryGroup({
   query: ActionItemsQuery
   onPageChange: (page: number) => void
 }) {
+  const { t } = useUiTranslation()
   if (query.isPending)
     return (
       <section>
@@ -388,7 +393,7 @@ function HistoryGroup({
       <h3 className='font-semibold'>{title}</h3>
       {!query.data.items.length ? (
         <p className='text-sm text-muted-foreground'>
-          No records in this collection.
+          {t('action-items:meetingPanel_emptyCollection')}
         </p>
       ) : (
         <div className='space-y-2'>
@@ -399,7 +404,7 @@ function HistoryGroup({
             >
               <span>{item.title}</span>
               <Badge variant={item.isOfficial ? 'secondary' : 'outline'}>
-                {item.status}
+                {t(`action-items:meetingPanel_status_${item.status}`, { defaultValue: item.status })}
               </Badge>
             </div>
           ))}
@@ -425,6 +430,7 @@ function ActionListState({
   onSelect: (item: ActionItem) => void
   empty: string
 }) {
+  const { t } = useUiTranslation()
   if (query.isPending) return <RequestLoading />
   if (query.isError)
     return (
@@ -454,23 +460,23 @@ function ActionListState({
                     : 'outline'
               }
             >
-              {item.status}
+              {t(`action-items:meetingPanel_status_${item.status}`, { defaultValue: item.status })}
             </Badge>
           </div>
           <div className='mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground'>
             <span>
-              Responsible: {item.assignee?.displayName ?? 'Unassigned'}
+              {t('action-items:meetingPanel_responsible', { name: item.assignee?.displayName ?? t('action-items:meetingPanel_unassigned') })}
             </span>
             <span>
-              Due: <RegionalCivilDate value={item.dueDate} fallback='none' />
+              {t('action-items:meetingPanel_due')} <RegionalCivilDate value={item.dueDate} fallback={t('action-items:meetingPanel_none')} />
             </span>
-            {item.overdue && <Badge variant='destructive'>Overdue</Badge>}
+            {item.overdue && <Badge variant='destructive'>{t('action-items:meetingPanel_overdue')}</Badge>}
           </div>
           <div className='mt-3 flex flex-wrap gap-2'>
             <ActionCommands item={item} />
             {item.capabilities.canEdit && (
               <Button size='sm' variant='ghost' onClick={() => onSelect(item)}>
-                Edit
+                {t('action-items:meetingPanel_edit')}
               </Button>
             )}
           </div>
@@ -478,7 +484,7 @@ function ActionListState({
       ))}
       <CollectionPager
         page={query.data.page}
-        pageLabel='Official work page'
+        pageLabel={t('action-items:meetingPanel_officialPage')}
         onPageChange={onPageChange}
       />
     </div>
@@ -494,10 +500,11 @@ function CollectionPager({
   page: { hasPrevious: boolean; hasNext: boolean; page: number }
   pageLabel: string
 }) {
+  const { t } = useUiTranslation()
   return (
     <div className='flex items-center justify-between text-sm text-muted-foreground'>
       <span>
-        {pageLabel} {page.page + 1}
+        {t('action-items:meetingPanel_collectionPage', { label: pageLabel, page: page.page + 1 })}
       </span>
       <div className='flex gap-2'>
         <Button
@@ -506,7 +513,7 @@ function CollectionPager({
           disabled={!page.hasPrevious}
           onClick={() => onPageChange(page.page - 1)}
         >
-          Previous
+          {t('action-items:meetingPanel_previous')}
         </Button>
         <Button
           size='sm'
@@ -514,7 +521,7 @@ function CollectionPager({
           disabled={!page.hasNext}
           onClick={() => onPageChange(page.page + 1)}
         >
-          Next
+          {t('action-items:meetingPanel_next')}
         </Button>
       </div>
     </div>
