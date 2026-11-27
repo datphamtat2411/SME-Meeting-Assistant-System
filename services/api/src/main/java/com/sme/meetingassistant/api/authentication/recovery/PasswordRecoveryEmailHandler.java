@@ -1,5 +1,7 @@
 package com.sme.meetingassistant.api.authentication.recovery;
 
+import com.sme.meetingassistant.api.config.ApplicationPageUrlPolicy;
+import com.sme.meetingassistant.api.config.RuntimeProperties;
 import com.sme.meetingassistant.api.notification.email.TransactionalEmailHandler;
 import java.net.URI;
 import java.time.OffsetDateTime;
@@ -18,17 +20,16 @@ public class PasswordRecoveryEmailHandler implements TransactionalEmailHandler {
     private final RecoveryCapabilityCodec codec;
     private final URI destination;
     public PasswordRecoveryEmailHandler(JdbcTemplate jdbc, RecoveryCapabilityCodec codec,
-            @Value("${app.auth.recovery.reset-url:}") String configuredUrl) {
+            @Value("${app.auth.recovery.reset-url:}") String configuredUrl,
+            RuntimeProperties runtimeProperties) {
         this.jdbc=jdbc;
         this.codec=codec;
         try {
-            destination=URI.create(configuredUrl);
-            if (!"https".equalsIgnoreCase(destination.getScheme()) || destination.getHost()==null
-                || destination.getUserInfo()!=null || destination.getFragment()!=null
-                || destination.getRawQuery()!=null)
-                throw new IllegalArgumentException();
+            destination=ApplicationPageUrlPolicy.validate(
+                configuredUrl, runtimeProperties.getEnvironment(), "Password recovery");
         } catch(RuntimeException invalid) {
-            throw new IllegalStateException("Password recovery link requires configured HTTPS page");
+            throw new IllegalStateException(
+                "Password recovery link requires an approved HTTPS page or a loopback HTTP development page");
         }
     }
     @Override public String notificationType() {return "PASSWORD_RECOVERY";}
