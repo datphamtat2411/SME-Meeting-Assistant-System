@@ -155,7 +155,7 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
                     const SizedBox(height: 8),
                     if (controller.failure != null)
                       Text(
-                        controller.failure!.message,
+                        profileFailureLabel(controller.failure!),
                         style: TextStyle(
                           color: Theme.of(context).colorScheme.error,
                         ),

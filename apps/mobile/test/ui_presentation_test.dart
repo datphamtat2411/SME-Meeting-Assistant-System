@@ -25,6 +25,25 @@ void main() {
     expect(apiFailureLabel(room), contains('chọn phòng hoặc thời gian khác'));
   });
 
+  test('structured field errors remain useful and local errors stay distinct', () {
+    const validation = ApiFailure(
+      422,
+      'VALIDATION_ERROR',
+      'Validation failed.',
+      errors: [
+        ApiFieldError(
+          field: 'startsAt',
+          code: 'INVALID_VALUE',
+          message: 'Giờ bắt đầu không hợp lệ.',
+        ),
+      ],
+    );
+    expect(apiFailureLabel(validation), contains('Giờ bắt đầu không hợp lệ.'));
+    const local = ApiFailure(0, 'MEMBERSHIP_OUTCOME_UNKNOWN', 'Unknown.');
+    expect(apiFailureLabel(local), contains('Chưa xác định'));
+    expect(apiFailureLabel(local), isNot(contains('kết nối')));
+  });
+
   test('unknown exceptions do not reach presentation', () {
     expect(
       apiFailureLabel(StateError('private diagnostic')),

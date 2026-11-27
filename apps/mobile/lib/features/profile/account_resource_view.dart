@@ -1,7 +1,17 @@
 import 'package:flutter/material.dart';
 
+import '../../core/ui_presentation.dart';
 import '../../core/widgets.dart';
 import 'profile_repository.dart';
+
+String profileFailureLabel(ProfileFailure failure) {
+  final authFailure = failure.authFailure;
+  if (authFailure != null) return authFailure.message;
+  if (failure.outcome == ProfileMutationOutcome.unknown) {
+    return 'Chưa xác định được kết quả lưu. Hãy kiểm tra cài đặt trên máy chủ trước khi thử lại.';
+  }
+  return apiFailureLabel(failure);
+}
 
 /// Keeps a previously loaded, authorized resource visible during refresh.
 class AccountResourceView<T> extends StatelessWidget {
@@ -38,7 +48,11 @@ class AccountResourceView<T> extends StatelessWidget {
       return ContentCard(
         child: Column(
           children: [
-            Text(failure?.message ?? 'Chưa tải được dữ liệu tài khoản.'),
+            Text(
+              failure == null
+                  ? 'Chưa tải được dữ liệu tài khoản.'
+                  : profileFailureLabel(failure!),
+            ),
             if (retryNotBefore case final deadline?)
               AccountRetryNotice(deadline: deadline),
             TextButton(
@@ -64,7 +78,7 @@ class AccountResourceView<T> extends StatelessWidget {
                 Text(
                   needsReconciliation
                       ? 'Cần tải lại dữ liệu từ máy chủ trước khi lưu tiếp.'
-                      : failure!.message,
+                      : profileFailureLabel(failure!),
                 ),
                 TextButton(
                   onPressed: canRetry && !loading && !saving ? retry : null,
