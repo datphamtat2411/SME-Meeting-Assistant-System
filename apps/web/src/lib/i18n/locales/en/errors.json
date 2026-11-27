@@ -1,0 +1,16 @@
+{
+  "generic": "Something went wrong!",
+  "noContent": "No content.",
+  "notModified": "Content not modified!",
+  "internal": "Internal Server Error!",
+  "forbidden": "You do not have permission to access this resource.",
+  "notFound": "The requested resource was not found.",
+  "network": "The server is unreachable. Check your connection.",
+  "stale": "This item has changed. Reload before editing.",
+  "invalidCredentials": "Invalid email or password.",
+  "sessionExpired": "Your session has expired. Please sign in again.",
+  "validation": "Please check the entered information.",
+  "conflict": "The request conflicts with the current resource state.",
+  "rateLimit": "Too many requests. Please try again later.",
+  "required": "This field is required."
+}

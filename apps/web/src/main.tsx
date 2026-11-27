@@ -9,6 +9,7 @@ import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { handleServerError } from '@/lib/handle-server-error'
+import { i18n } from '@/lib/i18n'
 import { setRequestRecoverySessionLossHandler } from '@/lib/request-recovery'
 import { configureAuthLifecycle } from '@/features/auth/session/auth-lifecycle'
 import { getSafeSessionRedirect } from '@/features/auth/session/current-user'
@@ -56,7 +57,7 @@ const queryClient = new QueryClient({
         handleServerError(error)
 
         if (apiError.status === 304) {
-          toast.error('Content not modified!')
+          toast.error(i18n.t('errors:notModified'))
         }
       },
     },
@@ -73,7 +74,7 @@ const queryClient = new QueryClient({
       if (apiError.recoveryOutcome) return
 
       if (apiError.status === 500) {
-        toast.error('Internal Server Error!')
+        toast.error(i18n.t('errors:internal'))
         // Only navigate to error page in production to avoid disrupting HMR in development
         if (import.meta.env.PROD) {
           router.navigate({ to: '/500' })

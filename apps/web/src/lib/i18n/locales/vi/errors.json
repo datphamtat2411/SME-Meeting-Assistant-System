@@ -1,0 +1,16 @@
+{
+  "generic": "Đã xảy ra lỗi!",
+  "noContent": "Không có nội dung.",
+  "notModified": "Nội dung chưa thay đổi!",
+  "internal": "Lỗi máy chủ!",
+  "forbidden": "Bạn không có quyền truy cập tài nguyên này.",
+  "notFound": "Không tìm thấy tài nguyên yêu cầu.",
+  "network": "Không thể kết nối máy chủ. Hãy kiểm tra kết nối mạng.",
+  "stale": "Mục này đã thay đổi. Hãy tải lại trước khi chỉnh sửa.",
+  "invalidCredentials": "Email hoặc mật khẩu không đúng.",
+  "sessionExpired": "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.",
+  "validation": "Vui lòng kiểm tra thông tin đã nhập.",
+  "conflict": "Yêu cầu xung đột với trạng thái hiện tại.",
+  "rateLimit": "Có quá nhiều yêu cầu. Vui lòng thử lại sau.",
+  "required": "Trường này là bắt buộc."
+}

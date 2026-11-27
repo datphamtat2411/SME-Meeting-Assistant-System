@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { Menu } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -19,6 +20,7 @@ type TopNavProps = React.HTMLAttributes<HTMLElement> & {
 }
 
 export function TopNav({ className, links, ...props }: TopNavProps) {
+  const { t } = useUiTranslation()
   return (
     <>
       <DropdownMenu modal={false}>
@@ -29,12 +31,12 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
             className={cn('md:size-7 lg:hidden', className)}
           >
             <Menu />
-            <span className='sr-only'>Toggle navigation menu</span>
+            <span className='sr-only'>{t('toggleNavigation')}</span>
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent side='bottom' align='start'>
           {links.map(({ title, href, isActive, disabled }) => (
-            <DropdownMenuItem key={`${title}-${href}`} asChild>
+            <DropdownMenuItem key={href} asChild>
               <Link
                 to={href}
                 className={!isActive ? 'text-muted-foreground' : ''}
@@ -56,7 +58,7 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
       >
         {links.map(({ title, href, isActive, disabled }) => (
           <Link
-            key={`${title}-${href}`}
+            key={href}
             to={href}
             disabled={disabled}
             className={`text-sm font-medium transition-colors hover:text-primary ${isActive ? '' : 'text-muted-foreground'}`}

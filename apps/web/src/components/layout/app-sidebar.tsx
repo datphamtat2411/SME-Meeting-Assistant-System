@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { useLayout } from '@/context/layout-provider'
 import {
   Sidebar,
@@ -20,6 +21,7 @@ export function AppSidebar({
   user?: UserPresentation
   identity?: AuthContext | null
 }) {
+  const { t } = useUiTranslation()
   const { collapsible, variant } = useLayout()
   const groups = getNavigationGroups(identity)
   return (
@@ -28,9 +30,13 @@ export function AppSidebar({
         <AppTitle />
       </SidebarHeader>
       <SidebarContent>
-        <nav aria-label='Primary navigation'>
+        <nav aria-label={t('primaryNav')}>
           {groups.map((props) => (
-            <NavGroup key={props.title} {...props} activeGroups={groups} />
+            <NavGroup
+              key={props.titleKey ?? props.title}
+              {...props}
+              activeGroups={groups}
+            />
           ))}
         </nav>
       </SidebarContent>

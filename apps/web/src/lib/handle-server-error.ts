@@ -1,5 +1,8 @@
 import { AxiosError } from 'axios'
 import { toast } from 'sonner'
+import { CoreApiError } from './core-api'
+import { i18n } from './i18n'
+import { errorCodeKey } from './i18n/presentation'
 
 export function handleServerError(error: unknown) {
   if (import.meta.env.DEV) {
@@ -7,7 +10,7 @@ export function handleServerError(error: unknown) {
     console.log(error)
   }
 
-  let errMsg = 'Something went wrong!'
+  let errMsg = i18n.t('errors:generic')
 
   if (
     error &&
@@ -15,7 +18,7 @@ export function handleServerError(error: unknown) {
     'status' in error &&
     Number(error.status) === 204
   ) {
-    errMsg = 'No content.'
+    errMsg = i18n.t('errors:noContent')
   }
 
   if (error instanceof AxiosError) {
@@ -25,5 +28,12 @@ export function handleServerError(error: unknown) {
     }
   }
 
-  toast.error(errMsg)
+  const code =
+    error instanceof CoreApiError
+      ? error.code
+      : error instanceof AxiosError
+        ? error.response?.data?.code
+        : undefined
+  const key = errorCodeKey(code)
+  toast.error(key ? i18n.t(key) : errMsg)
 }

@@ -1,4 +1,5 @@
 import { useNavigate, useLocation } from '@tanstack/react-router'
+import { useUiTranslation } from '@/lib/i18n'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { beginAuthLifecycleLogout } from '@/features/auth/session/auth-lifecycle'
 import { useAuthLifecycleState } from '@/features/auth/session/logout-status'
@@ -9,6 +10,7 @@ interface SignOutDialogProps {
 }
 
 export function SignOutDialog({ open, onOpenChange }: SignOutDialogProps) {
+  const { t } = useUiTranslation()
   const navigate = useNavigate()
   const location = useLocation()
   const lifecycleState = useAuthLifecycleState()
@@ -34,9 +36,9 @@ export function SignOutDialog({ open, onOpenChange }: SignOutDialogProps) {
     <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
-      title='Sign out'
-      desc='Are you sure you want to sign out? You will need to sign in again to access your account.'
-      confirmText={isPending ? 'Signing out...' : 'Sign out'}
+      title={t('signOut')}
+      desc={t('signOutDesc')}
+      confirmText={isPending ? t('signingOut') : t('signOut')}
       destructive
       isLoading={isPending}
       handleConfirm={handleSignOut}

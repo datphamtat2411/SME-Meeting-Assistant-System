@@ -10,6 +10,8 @@ import {
 } from 'react-hook-form'
 import * as LabelPrimitive from '@radix-ui/react-label'
 import { Slot } from '@radix-ui/react-slot'
+import { useUiTranslation } from '@/lib/i18n'
+import { localizedValidationMessage } from '@/lib/i18n/presentation'
 import { cn } from '@/lib/utils'
 import { Label } from '@/components/ui/label'
 
@@ -133,8 +135,11 @@ function FormDescription({ className, ...props }: React.ComponentProps<'p'>) {
 }
 
 function FormMessage({ className, ...props }: React.ComponentProps<'p'>) {
+  const { t } = useUiTranslation()
   const { error, formMessageId } = useFormField()
-  const body = error ? String(error?.message ?? '') : props.children
+  const body = error
+    ? localizedValidationMessage(String(error.message ?? ''), (key) => t(key))
+    : props.children
 
   if (!body) {
     return null

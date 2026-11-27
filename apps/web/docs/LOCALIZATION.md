@@ -1,0 +1,62 @@
+# UI localization
+
+LOC-01 establishes a Web-only presentation layer. English remains the default
+until LOC-05; Vietnamese is available through the header and authentication
+layout. Language preference is local to the browser and separate from regional
+preferences, timezone, and backend account data.
+
+## Implementation
+
+Use `useUiTranslation()` from `@/lib/i18n` in React components and
+`i18n.t()` in non-React presentation code. Keep stable semantic keys in
+`src/lib/i18n/locales/{en,vi}/`, adding feature namespaces to resources as
+needed. Use interpolation and language-specific plurals rather than concatenating
+translated fragments. Both language catalogs must have matching semantic
+coverage; do not pass arbitrary user or server content to the translator.
+Use the existing stable API codes for presentation mapping, without changing
+transport, authentication, permissions, or lifecycle behavior.
+
+## Natural Vietnamese glossary
+
+| English | Vietnamese |
+| --- | --- |
+| Dashboard | Tổng quan |
+| Meetings | Cuộc họp |
+| Calendar | Lịch |
+| Meeting Rooms | Phòng họp |
+| Members | Thành viên |
+| Action Items | Công việc |
+| AI Assistant | Trợ lý AI |
+| Settings | Cài đặt |
+| Profile | Hồ sơ |
+| Account | Tài khoản |
+| Organizer | Người tổ chức |
+| Participant | Người tham gia |
+| Transcript | Bản ghi lời thoại |
+| Summary | Tóm tắt |
+| Minutes | Biên bản |
+| Decisions | Quyết định |
+| Speaker | Người nói |
+| Employee | Nhân viên |
+| Department Manager | Trưởng phòng |
+| Administrator | Quản trị viên |
+
+Use natural Vietnamese, not literal word-for-word translations. AI, Chat,
+Email, audio, video, file, timeline, link, PDF, Markdown, online/offline, and
+format identifiers may remain English where familiar and concise. Examples:
+"Tải lên file audio", "Chat với AI", "Sao chép link", "Xuất Markdown".
+Do not put English in parentheses after every label. Preserve the distinction
+between meeting state, processing state, AI proposals, and confirmed records.
+
+Keep meeting titles, names, transcripts, summaries, assistant messages, file
+names, identifiers, canonical values and payloads unchanged. Mobile should
+reuse this terminology in its Vietnamese UI without requiring bilingual
+support or importing Web source code.
+
+## Verification
+
+Verify switching without remounting, reload persistence, invalid storage
+values, catalog coverage, permission-sensitive navigation, command search,
+keyboard accessibility, responsive layout, and Vietnamese accents in Inter,
+Manrope, and System fonts. Run the focused browser tests and existing Web CI.
+Feature-local strings remain the responsibility of LOC-02 and LOC-03.

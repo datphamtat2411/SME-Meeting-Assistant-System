@@ -1,0 +1,15 @@
+{
+  "unknown": "Unknown status",
+  "meeting": {
+    "DRAFT": "Draft",
+    "SCHEDULED": "Scheduled",
+    "IN_PROGRESS": "In progress",
+    "ENDED": "Ended",
+    "CANCELLED": "Cancelled"
+  },
+  "role": {
+    "EMPLOYEE": "Employee",
+    "DEPARTMENT_MANAGER": "Department Manager",
+    "ADMINISTRATOR": "Administrator"
+  }
+}

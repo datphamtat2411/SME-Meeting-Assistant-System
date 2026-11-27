@@ -20,39 +20,47 @@ import { type NavGroup } from '../types'
 export const navigationGroups = [
   {
     title: 'General',
+    titleKey: 'navigation:general',
     items: [
       {
         title: 'Dashboard',
+        titleKey: 'navigation:dashboard',
         url: '/',
         icon: LayoutDashboard,
       },
       {
         title: 'Meetings',
+        titleKey: 'navigation:meetings',
         url: '/meetings',
         icon: Video,
       },
       {
         title: 'Calendar',
+        titleKey: 'navigation:calendar',
         url: '/calendar',
         icon: CalendarDays,
       },
       {
         title: 'Action Items',
+        titleKey: 'navigation:actionItems',
         url: '/action-items',
         icon: ListChecks,
       },
       {
         title: 'AI Assistant',
+        titleKey: 'navigation:assistant',
         url: '/assistant',
         icon: Bot,
       },
       {
         title: 'Meeting Rooms',
+        titleKey: 'navigation:rooms',
         url: '/rooms',
         icon: DoorOpen,
       },
       {
         title: 'Members',
+        titleKey: 'navigation:members',
         url: '/members',
         icon: Users,
       },
@@ -60,28 +68,34 @@ export const navigationGroups = [
   },
   {
     title: 'Other',
+    titleKey: 'navigation:other',
     items: [
       {
         title: 'Settings',
+        titleKey: 'navigation:settings',
         icon: Settings,
         items: [
           {
             title: 'Account',
+            titleKey: 'navigation:account',
             url: '/settings/account',
             icon: BadgeCheck,
           },
           {
             title: 'Profile',
+            titleKey: 'navigation:profile',
             url: '/settings',
             icon: UserCog,
           },
           {
             title: 'Appearance',
+            titleKey: 'navigation:appearance',
             url: '/settings/appearance',
             icon: Palette,
           },
           {
             title: 'Notifications',
+            titleKey: 'navigation:notifications',
             url: '/settings/notifications',
             icon: Bell,
           },
@@ -89,6 +103,7 @@ export const navigationGroups = [
       },
       {
         title: 'Help Center',
+        titleKey: 'navigation:helpCenter',
         url: '/help-center',
         icon: HelpCircle,
       },

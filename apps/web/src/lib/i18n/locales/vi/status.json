@@ -1,0 +1,15 @@
+{
+  "unknown": "Trạng thái không xác định",
+  "meeting": {
+    "DRAFT": "Bản nháp",
+    "SCHEDULED": "Đã lên lịch",
+    "IN_PROGRESS": "Đang diễn ra",
+    "ENDED": "Đã kết thúc",
+    "CANCELLED": "Đã hủy"
+  },
+  "role": {
+    "EMPLOYEE": "Nhân viên",
+    "DEPARTMENT_MANAGER": "Trưởng phòng",
+    "ADMINISTRATOR": "Quản trị viên"
+  }
+}

@@ -5,6 +5,8 @@ import {
   ChevronRightIcon,
 } from 'lucide-react'
 import { DayButton, DayPicker, getDefaultClassNames } from 'react-day-picker'
+import { enUS, vi } from 'react-day-picker/locale'
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { Button, buttonVariants } from '@/components/ui/button'
 
@@ -16,14 +18,43 @@ function Calendar({
   buttonVariant = 'ghost',
   formatters,
   components,
+  labels,
+  locale: localeProp,
   ...props
 }: React.ComponentProps<typeof DayPicker> & {
   buttonVariant?: React.ComponentProps<typeof Button>['variant']
 }) {
+  const { t, i18n } = useUiTranslation()
+  const locale = localeProp ?? (i18n.resolvedLanguage === 'vi' ? vi : enUS)
   const defaultClassNames = getDefaultClassNames()
+  const vietnamese = i18n.resolvedLanguage === 'vi'
 
   return (
     <DayPicker
+      locale={locale}
+      labels={
+        vietnamese
+          ? {
+              labelNav: () => t('calendarNav'),
+              labelNext: () => t('calendarNext'),
+              labelPrevious: () => t('calendarPrevious'),
+              labelMonthDropdown: () => t('calendarMonth'),
+              labelYearDropdown: () => t('calendarYear'),
+              labelWeekNumber: (week) => t('calendarWeek', { week }),
+              labelWeekNumberHeader: () => t('calendarWeekHeader'),
+              labelDayButton: (date, modifiers) => {
+                let label = date.toLocaleDateString('vi-VN', {
+                  dateStyle: 'full',
+                })
+                if (modifiers.today) label = t('calendarToday', { date: label })
+                if (modifiers.selected)
+                  label = t('calendarSelected', { date: label })
+                return label
+              },
+              ...labels,
+            }
+          : labels
+      }
       showOutsideDays={showOutsideDays}
       className={cn(
         'group/calendar bg-background p-3 [--cell-size:--spacing(8)] in-data-[slot=card-content]:bg-transparent in-data-[slot=popover-content]:bg-transparent',
@@ -34,7 +65,7 @@ function Calendar({
       captionLayout={captionLayout}
       formatters={{
         formatMonthDropdown: (date) =>
-          date.toLocaleString('default', { month: 'short' }),
+          date.toLocaleString(locale.code, { month: 'short' }),
         ...formatters,
       }}
       classNames={{
