@@ -14,7 +14,6 @@ class AssistantEvidenceTarget {
     required this.conversationId,
     required this.messageId,
     required this.citation,
-    this.beforeMessageId,
   });
 
   final AuthenticatedSessionScope scope;
@@ -22,9 +21,6 @@ class AssistantEvidenceTarget {
   final String messageId;
   final AssistantCitation citation;
 
-  // A known canonical newer neighbor can locate an old message without
-  // scanning every newer page. Core still validates the anchor and scope.
-  final String? beforeMessageId;
 }
 
 enum AssistantEvidenceIssue {
@@ -119,7 +115,7 @@ class AssistantEvidenceResolver {
         AssistantEvidenceIssue.meetingUnavailable,
       );
     }
-    await _verifyOrigin(target, stillCurrent);
+    final proof = await _verifyCanonical(target, stillCurrent);
     check();
 
     final AssistantEvidenceArtifact artifact;
@@ -135,13 +131,10 @@ class AssistantEvidenceResolver {
           transcript.id,
           transcript.meetingId,
           transcript.contentRevision,
-          const {'READY', 'READY_WITH_WARNINGS'}.contains(transcript.status) &&
-              transcript.finalizedAt != null &&
-              transcript.segments.isNotEmpty,
         );
         artifact = TranscriptEvidence(
           transcript,
-          meetingTitle: access.meetingTitle,
+          meetingTitle: proof.meetingTitle,
         );
       case AssistantSourceType.summary:
         final summary = await results.currentSummary(
@@ -154,13 +147,8 @@ class AssistantEvidenceResolver {
           summary.id,
           summary.meetingId,
           summary.versionNumber,
-          !summary.isStale &&
-              const {
-                'READY',
-                'READY_WITH_WARNINGS',
-              }.contains(summary.qualityStatus),
         );
-        artifact = SummaryEvidence(summary, meetingTitle: access.meetingTitle);
+        artifact = SummaryEvidence(summary, meetingTitle: proof.meetingTitle);
       case AssistantSourceType.decision:
         final decision = await _decision(target, stillCurrent);
         check();
@@ -169,11 +157,10 @@ class AssistantEvidenceResolver {
           decision.id,
           decision.meetingId,
           decision.version,
-          decision.status == 'CONFIRMED' && !decision.stale,
         );
         artifact = DecisionEvidence(
           decision,
-          meetingTitle: access.meetingTitle,
+          meetingTitle: proof.meetingTitle,
         );
       case AssistantSourceType.actionItem:
         final snapshot = await actionItems.detail(
@@ -193,87 +180,65 @@ class AssistantEvidenceResolver {
           item.id,
           item.meetingId,
           item.version,
-          item.isOfficial && item.status != ActionItemStatus.proposed,
         );
-        artifact = ActionItemEvidence(item, meetingTitle: access.meetingTitle);
+        artifact = ActionItemEvidence(item, meetingTitle: proof.meetingTitle);
     }
 
-    // The origin may have been redacted while the artifact was being read.
-    // Re-read the public history before publishing the verified resource.
-    await _verifyOrigin(target, stillCurrent);
+    // Re-resolve the persisted citation after the artifact read. Core owns
+    // eligibility; never render a source that changed during navigation.
+    await _verifyCanonical(target, stillCurrent);
     check();
     return artifact;
   }
 
-  Future<void> _verifyOrigin(
+  Future<AssistantResolvedCitation> _verifyCanonical(
     AssistantEvidenceTarget target,
     bool Function() stillCurrent,
   ) async {
-    var anchor = target.beforeMessageId;
-    final seen = <String>{};
-    for (var index = 0; index < _maxPages; index++) {
-      _requireCurrent(target, stillCurrent);
-      final detail = await assistant.getConversation(
+    _requireCurrent(target, stillCurrent);
+    try {
+      final proof = await assistant.resolveEvidence(
         target.conversationId,
+        target.messageId,
+        target.citation,
         sessionScope: target.scope,
-        expectedMeetingId: target.citation.meetingId,
-        beforeMessageId: anchor,
       );
       _requireCurrent(target, stillCurrent);
-      for (final message in detail.messages) {
-        if (!seen.add(message.id)) {
-          throw const AssistantEvidenceFailure(
-            AssistantEvidenceIssue.syncRequired,
-          );
-        }
-        if (!sameAssistantIdentity(message.id, target.messageId)) continue;
-        if (message.role != AssistantMessageRole.assistant ||
-            message.visibility != AssistantMessageVisibility.visible) {
-          throw const AssistantEvidenceFailure(
-            AssistantEvidenceIssue.unavailable,
-          );
-        }
-        if (!message.citations.any(
-          (value) => _matchesCitation(value, target.citation),
-        )) {
-          throw const AssistantEvidenceFailure(AssistantEvidenceIssue.obsolete);
-        }
-        return;
+      return proof;
+    } on AssistantFailure catch (error) {
+      _requireCurrent(target, stillCurrent);
+      if (error.category == AssistantFailureCategory.sourceStale) {
+        throw const AssistantEvidenceFailure(AssistantEvidenceIssue.obsolete);
       }
-      if (!detail.hasMore) {
-        throw const AssistantEvidenceFailure(
-          AssistantEvidenceIssue.unavailable,
+      if (error.status == 403 || error.status == 404) {
+        // A missing message is not proof of meeting-wide denial.
+        final access = await results.verifyAccess(
+          sessionScope: target.scope,
+          meetingId: target.citation.meetingId,
         );
+        _requireCurrent(target, stillCurrent);
+        if (!access.canRead) {
+          throw const AssistantEvidenceFailure(
+            AssistantEvidenceIssue.meetingUnavailable,
+          );
+        }
+        throw const AssistantEvidenceFailure(AssistantEvidenceIssue.unavailable);
       }
-      if (detail.messages.isEmpty) break;
-      anchor = detail.messages.first.id;
+      rethrow;
     }
-    throw const AssistantEvidenceFailure(AssistantEvidenceIssue.syncRequired);
   }
-
-  bool _matchesCitation(AssistantCitation actual, AssistantCitation expected) =>
-      actual.citationId == expected.citationId &&
-      actual.sourceType == expected.sourceType &&
-      sameAssistantIdentity(actual.sourceId, expected.sourceId) &&
-      sameAssistantIdentity(actual.meetingId, expected.meetingId) &&
-      actual.sourceRevision == expected.sourceRevision &&
-      actual.retrievalChunkId == expected.retrievalChunkId &&
-      actual.claimIds.length == expected.claimIds.length &&
-      actual.claimIds.toSet().containsAll(expected.claimIds);
 
   void _requireSource(
     AssistantCitation citation,
     String id,
     String meetingId,
     int revision,
-    bool eligible,
   ) {
     if (!sameAssistantIdentity(meetingId, citation.meetingId)) {
       throw const AssistantEvidenceFailure(AssistantEvidenceIssue.unavailable);
     }
     if (!sameAssistantIdentity(id, citation.sourceId) ||
-        revision != citation.sourceRevision ||
-        !eligible) {
+        revision != citation.sourceRevision) {
       throw const AssistantEvidenceFailure(AssistantEvidenceIssue.obsolete);
     }
   }

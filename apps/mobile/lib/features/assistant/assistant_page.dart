@@ -358,9 +358,6 @@ class _AssistantPageState extends State<AssistantPage>
       conversationId: selected.id,
       messageId: message.id,
       citation: citation,
-      beforeMessageId: index + 1 < messages.length
-          ? messages[index + 1].id
-          : null,
     );
     final dependencies = widget.dependencies;
     final resolver = AssistantEvidenceResolver(

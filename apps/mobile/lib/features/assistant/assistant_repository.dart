@@ -191,6 +191,32 @@ class AssistantRepository {
     );
   }
 
+  Future<AssistantResolvedCitation> resolveEvidence(
+    String conversationId,
+    String messageId,
+    AssistantCitation citation, {
+    required AuthenticatedSessionScope sessionScope,
+  }) async {
+    _validateUuid(conversationId, 'conversationId');
+    _validateUuid(messageId, 'messageId');
+    return _execute(
+      sessionScope,
+      mutation: false,
+      operation: () async {
+        final response = await api.get(
+          _path(conversationId) + '/messages/' + messageId.toLowerCase() + '/evidence',
+          sessionScope: sessionScope,
+        );
+        return AssistantResolvedCitation.fromResult(
+          response,
+          conversationId: conversationId,
+          messageId: messageId,
+          expected: citation,
+        );
+      },
+    );
+  }
+
   Future<AssistantTurnStatus> getTurnStatusById(
     AssistantConversation conversation,
     String turnId, {

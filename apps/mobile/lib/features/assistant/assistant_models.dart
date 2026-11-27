@@ -652,3 +652,96 @@ class AssistantTurnStatus {
     return AssistantTurnStatus._(turn, leaseStatus == 'EXPIRED');
   }
 }
+
+/// A fresh Core authorization and source-revision proof for a persisted
+/// message citation. This is source-level navigation, not segment provenance.
+class AssistantResolvedCitation {
+  const AssistantResolvedCitation._({
+    required this.citationId,
+    required this.sourceType,
+    required this.sourceId,
+    required this.sourceRevision,
+    required this.meetingTitle,
+    required this.claimIds,
+  });
+
+  final String citationId;
+  final AssistantSourceType sourceType;
+  final String sourceId;
+  final int sourceRevision;
+  final String meetingTitle;
+  final List<String> claimIds;
+
+  factory AssistantResolvedCitation.fromResult(
+    ApiResult response, {
+    required String conversationId,
+    required String messageId,
+    required AssistantCitation expected,
+  }) {
+    final raw = response.objectData();
+    if (response.statusCode != 200 ||
+        !sameAssistantIdentity(_uuid(raw, 'conversationId', response), conversationId) ||
+        !sameAssistantIdentity(_uuid(raw, 'messageId', response), messageId) ||
+        !sameAssistantIdentity(_uuid(raw, 'meetingId', response), expected.meetingId)) {
+      invalidApiData(response: response);
+    }
+    final entries = requireJsonObjectArray(raw['evidence'], response: response);
+    if (entries.isEmpty || entries.length > 64) {
+      invalidApiData(response: response);
+    }
+    final seen = <String>{};
+    AssistantResolvedCitation? selected;
+    for (final entry in entries) {
+      final id = requiredIdentifier(entry, 'citationId', response: response);
+      final type = _requiredEnum(
+        entry,
+        'sourceType',
+        AssistantSourceType.values,
+        response,
+      );
+      final source = _uuid(entry, 'sourceId', response);
+      final revision = requiredInt(entry, 'sourceRevision', response: response);
+      final claims = _references(entry['claimIds'], response);
+      final meetingTitle = requiredIdentifier(
+        entry,
+        'meetingTitle',
+        response: response,
+      );
+      requiredIdentifier(entry, 'label', response: response);
+      final preview = optionalString(entry, 'preview', response: response);
+      final navigation = requiredObject(entry, 'navigation', response: response);
+      final expectedTarget = switch (type) {
+        AssistantSourceType.transcript => 'MEETING_TRANSCRIPT',
+        AssistantSourceType.summary => 'MEETING_SUMMARY',
+        AssistantSourceType.decision => 'MEETING_DECISIONS',
+        AssistantSourceType.actionItem => 'MEETING_ACTION_ITEMS',
+      };
+      if (!seen.add(id) ||
+          claims.isEmpty ||
+          (preview != null && preview.runes.length > 500) ||
+          (type == AssistantSourceType.transcript && preview != null) ||
+          requiredString(navigation, 'target', response: response) != expectedTarget ||
+          requiredString(navigation, 'precision', response: response) != 'SOURCE') {
+        invalidApiData(response: response);
+      }
+      if (id != expected.citationId) continue;
+      if (type != expected.sourceType ||
+          !sameAssistantIdentity(source, expected.sourceId) ||
+          revision != expected.sourceRevision ||
+          claims.length != expected.claimIds.length ||
+          !claims.toSet().containsAll(expected.claimIds)) {
+        invalidApiData(response: response);
+      }
+      selected = AssistantResolvedCitation._(
+        citationId: id,
+        sourceType: type,
+        sourceId: source,
+        sourceRevision: revision,
+        meetingTitle: meetingTitle,
+        claimIds: claims,
+      );
+    }
+    if (selected == null) invalidApiData(response: response);
+    return selected;
+  }
+}

@@ -54,6 +54,33 @@ Map<String, dynamic> _citation() => {
   'claimIds': ['A1'],
 };
 
+Map<String, dynamic> _resolvedEvidence(Map<String, dynamic> citation) => {
+  'conversationId': _conversationId,
+  'messageId': _assistantMessageId,
+  'meetingId': testMeetingId,
+  'evidence': [
+    {
+      'citationId': citation['citationId'],
+      'sourceType': citation['sourceType'],
+      'sourceId': citation['sourceId'],
+      'sourceRevision': citation['sourceRevision'],
+      'label': 'Verified source',
+      'meetingTitle': 'Weekly review',
+      'preview': null,
+      'claimIds': citation['claimIds'],
+      'navigation': {
+        'target': switch (citation['sourceType']) {
+          'TRANSCRIPT' => 'MEETING_TRANSCRIPT',
+          'SUMMARY' => 'MEETING_SUMMARY',
+          'DECISION' => 'MEETING_DECISIONS',
+          _ => 'MEETING_ACTION_ITEMS',
+        },
+        'precision': 'SOURCE',
+      },
+    },
+  ],
+};
+
 Map<String, dynamic> _message({
   String status = 'GROUNDED',
   String visibility = 'VISIBLE',
@@ -828,6 +855,7 @@ void main() {
         var redact = false;
         var deny = false;
         var artifactReads = 0;
+        var evidenceReads = 0;
         final citationJson = _citation()
           ..['sourceType'] = type
           ..['sourceRevision'] = 2;
@@ -850,17 +878,13 @@ void main() {
               headers: {'etag': testMeetingEtag},
             );
           }
-          if (path.endsWith('/conversations/$_conversationId')) {
-            return meetingApiSuccess(
-              _detail(
-                messages: [
-                  if (redact)
-                    _message(visibility: 'SOURCE_UNAVAILABLE')
-                  else
-                    rawMessage,
-                ],
-              ),
-            );
+          if (path.endsWith('/messages/$_assistantMessageId/evidence')) {
+            evidenceReads++;
+            expect(request.method, 'GET');
+            if (redact || revision != 2) {
+              return meetingApiFailure(409, 'ASSISTANT_SOURCE_STALE');
+            }
+            return meetingApiSuccess(_resolvedEvidence(citationJson));
           }
           artifactReads++;
           if (path.endsWith('/transcript')) {
@@ -973,6 +997,7 @@ void main() {
         });
         expect(artifact.meetingTitle, 'Weekly review');
         expect(artifactReads, type == 'DECISION' ? 2 : 1);
+        expect(evidenceReads, 2);
         revision++;
         await expectLater(
           resolver.verify(target, stillCurrent: () => true),
@@ -1363,6 +1388,13 @@ void main() {
       if (path.endsWith('/conversations/$_conversationId')) {
         return meetingApiSuccess(
           _detail(messages: [rawMessage])..['conversation'] = conversation,
+        );
+      }
+      if (path.endsWith('/messages/$_assistantMessageId/evidence')) {
+        return meetingApiSuccess(
+          _resolvedEvidence(_citation()
+            ..['sourceType'] = 'SUMMARY'
+            ..['sourceRevision'] = 2),
         );
       }
       if (path.endsWith('/summary')) {
