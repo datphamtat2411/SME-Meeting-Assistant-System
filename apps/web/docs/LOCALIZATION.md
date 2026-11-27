@@ -76,3 +76,10 @@ Use `REQUIRED_VALIDATION_MESSAGE`, `INVALID_EMAIL_VALIDATION_MESSAGE` and
 validation; markers are translated at render time, including after a language
 switch. Catalog tests compare semantic keys, interpolation parameters and
 the plural categories required by each language.
+
+Feature-specific form validation and persisted presentation errors can use
+`featureValidationMessage` with an owned catalog key; resolve these through
+`localizedValidationMessage` at render time rather than storing a translated
+sentence. `requestErrorFormMessage` preserves actionable public API messages
+or returns a stable localized category marker. Never use human-readable error
+text to decide permissions, retry behavior, or mutation outcomes.

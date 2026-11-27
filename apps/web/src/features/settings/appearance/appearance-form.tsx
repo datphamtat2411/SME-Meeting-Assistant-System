@@ -198,7 +198,7 @@ export function AppearanceForm() {
         {isDirty && (
           <p role='status' className='text-sm text-muted-foreground'>
             {t('settings:appliedAppearance', {
-              theme,
+              theme: t(theme).toLowerCase(),
               font,
             })}
           </p>

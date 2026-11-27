@@ -11,5 +11,10 @@
     "EMPLOYEE": "Employee",
     "DEPARTMENT_MANAGER": "Department Manager",
     "ADMINISTRATOR": "Administrator"
+  },
+  "account": {
+    "ACTIVE": "Active",
+    "INACTIVE": "Inactive",
+    "PENDING_SETUP": "Pending setup"
   }
 }

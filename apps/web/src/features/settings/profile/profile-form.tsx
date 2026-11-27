@@ -5,6 +5,13 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+  requestErrorFormMessage,
+  roleKey,
+} from '@/lib/i18n/presentation'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -46,18 +53,6 @@ function draftOf(snapshot: ProfileSnapshot): ProfileDraft {
   }
 }
 
-const roleLabels = {
-  EMPLOYEE: 'Employee',
-  DEPARTMENT_MANAGER: 'Department manager',
-  ADMINISTRATOR: 'Administrator',
-}
-
-const statusLabels = {
-  ACTIVE: 'Active',
-  INACTIVE: 'Inactive',
-  PENDING_SETUP: 'Pending setup',
-}
-
 export function ProfileForm() {
   const query = useQuery(myProfileQuery())
   if (!query.data) {
@@ -77,6 +72,7 @@ export function ProfileForm() {
 }
 
 function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
+  const { t } = useUiTranslation()
   const qc = useQueryClient()
   const form = useForm<ProfileDraft>({
     resolver: zodResolver(schema),
@@ -113,7 +109,7 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
     } catch (error) {
       if (isSettingsSessionCurrent(generation)) {
         setRecovery('refresh')
-        setError('root', { message: normalizeCoreApiError(error).message })
+        setError('root', { message: requestErrorFormMessage(normalizeCoreApiError(error)) })
       }
       return undefined
     } finally {
@@ -144,7 +140,7 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
       qc.setQueryData(profileQueryKey, updated)
       reset(draftOf(updated))
       setRecovery(null)
-      toast.success('Profile updated')
+      toast.success(t('settings:profileSaved'))
       await qc.invalidateQueries({ queryKey: currentUserQueryKey })
     },
     onError: async (error, { generation }) => {
@@ -163,12 +159,12 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
         setError('root', {
           message:
             failure.status === 412 || failure.status === 428
-              ? 'The profile version needs to be reviewed before saving.'
-              : 'The save outcome could not be confirmed. Review the server value before retrying.',
+              ? featureValidationMessage('settings:profileStale')
+              : featureValidationMessage('settings:profileSaveUncertain'),
         })
         await reviewLatest(generation)
       } else {
-        setError('root', { message: failure.message })
+        setError('root', { message: requestErrorFormMessage(failure) })
       }
     },
   })
@@ -227,8 +223,8 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
               {profile.email}
             </p>
             <p className='text-sm text-muted-foreground'>
-              {roleLabels[profile.globalRole]} ·{' '}
-              {statusLabels[profile.accountStatus]}
+              {t(roleKey(profile.globalRole))} ·{' '}
+              {t(`status:account.${profile.accountStatus}`)}
             </p>
           </div>
         </div>
@@ -237,12 +233,12 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
           name='displayName'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Display name</FormLabel>
+              <FormLabel>{t('settings:displayName')}</FormLabel>
               <FormControl>
                 <Input {...field} maxLength={200} disabled={busy} />
               </FormControl>
               <FormDescription>
-                Your name as shown in meetings and the member directory.
+                {t('settings:displayNameDescription')}
               </FormDescription>
               <FormMessage />
             </FormItem>
@@ -250,15 +246,15 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
         />
         <section className='space-y-4'>
           <h3 className='text-sm font-medium'>
-            Organization-managed information
+            {t('settings:organizationInformation')}
           </h3>
           {[
-            ['profile-email', 'Organization email', profile.email],
-            ['profile-role', 'System role', roleLabels[profile.globalRole]],
+            ['profile-email', t('settings:organizationEmail'), profile.email],
+            ['profile-role', t('settings:systemRole'), t(roleKey(profile.globalRole))],
             [
               'profile-status',
-              'Account status',
-              statusLabels[profile.accountStatus],
+              t('settings:accountStatus'),
+              t(`status:account.${profile.accountStatus}`),
             ],
           ].map(([id, label, value]) => (
             <div key={id} className='space-y-2'>
@@ -267,24 +263,25 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
             </div>
           ))}
           <p className='text-sm text-muted-foreground'>
-            These values are managed by your organization and cannot be edited
-            here.
+            {t('settings:organizationInformationDescription')}
           </p>
         </section>
         {form.formState.errors.root?.message && (
           <p role='alert' className='text-sm text-destructive'>
-            {form.formState.errors.root.message}
+            {localizedValidationMessage(form.formState.errors.root.message, t)}
           </p>
         )}
         {(conflict || recovery) && (
           <section className='space-y-3 rounded-lg border p-4'>
-            <h3 className='font-medium'>Review the latest profile</h3>
+            <h3 className='font-medium'>{t('settings:reviewLatestProfile')}</h3>
             <p className='text-sm'>
-              Latest retrieved name: {profile.displayName}
+              {t('settings:latestName', {
+                name: profile.displayName,
+              })}
             </p>
-            <p className='text-sm'>Your draft: {name}</p>
+            <p className='text-sm'>{t('settings:yourDraft', { name })}</p>
             <p className='text-sm text-muted-foreground'>
-              Refresh and review the saved value before another update.
+              {t('settings:reviewLatestDescription')}
             </p>
             {recovery === 'refresh' ? (
               <Button
@@ -293,7 +290,7 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
                 disabled={busy}
                 onClick={() => void reviewLatest(settingsSessionGeneration())}
               >
-                Refresh latest profile
+                {t('settings:refreshProfile')}
               </Button>
             ) : (
               <Button
@@ -302,7 +299,7 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
                 disabled={busy}
                 onClick={() => acceptLatest(true)}
               >
-                Keep my draft against this version
+                {t('settings:keepProfileDraft')}
               </Button>
             )}
           </section>
@@ -319,7 +316,7 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
               name.trim() === profile.displayName
             }
           >
-            {mutation.isPending ? 'Saving…' : 'Save profile'}
+            {mutation.isPending ? t('settings:saving') : t('settings:saveProfile')}
           </Button>
           <Button
             type='button'
@@ -330,7 +327,7 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
               else reset(draftOf(snapshot))
             }}
           >
-            Discard
+            {t('settings:discard')}
           </Button>
         </div>
       </form>

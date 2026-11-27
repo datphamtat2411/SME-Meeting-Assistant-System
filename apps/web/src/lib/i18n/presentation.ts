@@ -158,6 +158,20 @@ export function requestStatusErrorKey(status: number | undefined) {
   }
 }
 
+export function requestErrorFormMessage(failure: {
+  code?: string
+  status?: number
+  message: string
+  isNetworkError?: boolean
+}) {
+  const key = requestErrorKey(failure) ?? requestStatusErrorKey(failure.status)
+  if (!key) return failure.message
+  return (
+    requestErrorDetail(failure, i18n.t(key, { lng: 'en' })) ??
+    featureValidationMessage(key)
+  )
+}
+
 export function meetingStatusKey(
   status: keyof typeof resources.en.status.meeting
 ) {

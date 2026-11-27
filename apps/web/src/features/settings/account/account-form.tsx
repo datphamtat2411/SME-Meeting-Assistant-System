@@ -9,6 +9,7 @@ import { useUiTranslation } from '@/lib/i18n'
 import {
   featureValidationMessage,
   localizedValidationMessage,
+  requestErrorFormMessage,
 } from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import {
@@ -150,7 +151,7 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
       clearErrors()
     } catch (error) {
       if (isSettingsSessionCurrent(generation)) {
-        setError('root', { message: normalizeCoreApiError(error).message })
+        setError('root', { message: requestErrorFormMessage(normalizeCoreApiError(error)) })
       }
     } finally {
       setRefreshing(false)
@@ -201,7 +202,7 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
       setError('root', {
         message: uncertain
           ? featureValidationMessage('settings:saveUncertain')
-          : failure.message,
+          : requestErrorFormMessage(failure),
       })
     }
   }
