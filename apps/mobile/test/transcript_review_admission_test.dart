@@ -129,33 +129,36 @@ void main() {
         return meetingApiSuccess([_jobJson(admitted)]);
       }
       if (path.endsWith('/transcript')) {
-        return meetingApiSuccess({
-          'id': source.id,
-          'meetingId': source.meetingId,
-          'sourceMediaId': source.sourceMediaId,
-          'processingJobId': source.processingJobId,
-          'versionNumber': source.versionNumber,
-          'languageCode': source.languageCode,
-          'status': source.status,
-          'durationMs': source.durationMs,
-          'finalizedAt': source.finalizedAt!.toIso8601String(),
-          'contentRevision': source.contentRevision,
-          'segments': [
-            for (final segment in source.segments)
-              {
-                'id': segment.id,
-                'ordinal': segment.ordinal,
-                'text': segment.text,
-                'startMs': segment.startMs,
-                'endMs': segment.endMs,
-                'speakerLabel': segment.speakerLabel,
-                'speakerClusterId': segment.speakerClusterId,
-                'qualityStatus': segment.quality,
-                'version': segment.version,
-                'etag': segment.etag,
-              },
-          ],
-        }, headers: {'etag': source.etag!});
+        return meetingApiSuccess(
+          {
+            'id': source.id,
+            'meetingId': source.meetingId,
+            'sourceMediaId': source.sourceMediaId,
+            'processingJobId': source.processingJobId,
+            'versionNumber': source.versionNumber,
+            'languageCode': source.languageCode,
+            'status': source.status,
+            'durationMs': source.durationMs,
+            'finalizedAt': source.finalizedAt!.toIso8601String(),
+            'contentRevision': source.contentRevision,
+            'segments': [
+              for (final segment in source.segments)
+                {
+                  'id': segment.id,
+                  'ordinal': segment.ordinal,
+                  'text': segment.text,
+                  'startMs': segment.startMs,
+                  'endMs': segment.endMs,
+                  'speakerLabel': segment.speakerLabel,
+                  'speakerClusterId': segment.speakerClusterId,
+                  'qualityStatus': segment.quality,
+                  'version': segment.version,
+                  'etag': segment.etag,
+                },
+            ],
+          },
+          headers: {'etag': source.etag!},
+        );
       }
       if (path.endsWith('/transcript/coverage')) {
         return meetingApiSuccess([
@@ -293,7 +296,6 @@ void main() {
       expect(shutdownFailure, isNull);
     }
   });
-
 
   test('correction digest agrees with Web and Core UTF-8 golden fixtures', () {
     expect(

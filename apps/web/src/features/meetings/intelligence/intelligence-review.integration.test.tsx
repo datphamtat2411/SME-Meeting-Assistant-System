@@ -301,7 +301,9 @@ describe('intelligence review integrity', () => {
     await userEvent.click(
       screen.getByRole('button', { name: 'Review proposal' })
     )
-    await expect.poll(() => transcript.mock.calls.length).toBeGreaterThanOrEqual(3)
+    await expect
+      .poll(() => transcript.mock.calls.length)
+      .toBeGreaterThanOrEqual(3)
     expect(coverage).toHaveBeenCalledWith(
       `/meetings/${meetingId}/transcript/coverage`,
       expect.anything()
@@ -356,7 +358,9 @@ describe('intelligence review integrity', () => {
       reviewedContentRevision: 4,
     })
     await expect
-      .element(screen.getByRole('button', { name: 'Create confirmed decision' }))
+      .element(
+        screen.getByRole('button', { name: 'Create confirmed decision' })
+      )
       .toBeDisabled()
     await expect
       .element(screen.getByRole('textbox', { name: 'New decision content' }))
