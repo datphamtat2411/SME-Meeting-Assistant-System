@@ -191,6 +191,63 @@ class AssistantRepository {
     );
   }
 
+  Future<AssistantTurnStatus> getTurnStatusById(
+    AssistantConversation conversation,
+    String turnId, {
+    required AuthenticatedSessionScope sessionScope,
+  }) async {
+    _validateUuid(conversation.id, 'conversationId');
+    _validateUuid(turnId, 'turnId');
+    return _execute(
+      sessionScope,
+      mutation: false,
+      operation: () async {
+        final response = await api.get(
+          _path(conversation.id) + '/turns/' + turnId.toLowerCase(),
+          sessionScope: sessionScope,
+        );
+        final status = AssistantTurnStatus.fromResult(
+          response,
+          meetingId: conversation.meetingId,
+          conversationId: conversation.id,
+        );
+        if (!sameAssistantIdentity(status.turn.turnId, turnId)) {
+          throw response.invalidDataFailure();
+        }
+        return status;
+      },
+    );
+  }
+
+  Future<AssistantTurn> recoverTurn(
+    AssistantConversation conversation,
+    String turnId, {
+    required AuthenticatedSessionScope sessionScope,
+  }) async {
+    _validateUuid(conversation.id, 'conversationId');
+    _validateUuid(turnId, 'turnId');
+    return _execute(
+      sessionScope,
+      mutation: true,
+      operation: () async {
+        final response = await api.post(
+          _path(conversation.id) + '/turns/' + turnId.toLowerCase() + '/recover',
+          const {},
+          timeoutPolicy: submissionTimeoutPolicy,
+          sessionScope: sessionScope,
+        );
+        final turn = AssistantTurn.fromResult(
+          response,
+          meetingId: conversation.meetingId,
+        );
+        if (!sameAssistantIdentity(turn.turnId, turnId)) {
+          throw response.invalidDataFailure();
+        }
+        return turn;
+      },
+    );
+  }
+
   Future<AssistantTurn> submitQuestion(
     AssistantQuestionRequest input, {
     required AuthenticatedSessionScope sessionScope,

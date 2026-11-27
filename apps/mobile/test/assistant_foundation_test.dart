@@ -120,6 +120,10 @@ Map<String, dynamic> _detail({
   'page': page,
   'size': size,
   'hasMore': hasMore,
+  'nextBeforeMessageId': hasMore
+      ? (messages ?? [_message()]).first['id']
+      : null,
+  'pendingTurn': null,
 };
 
 ApiResult _result(dynamic data, {int status = 200}) =>
@@ -440,7 +444,7 @@ void main() {
         final repository = await _repository(
           MeetingTestHttpClient((request) async {
             final path = request.url.path;
-            if (path.endsWith('/turns')) {
+            if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
               expect(request.method, 'GET');
               expect(request.headers['idempotency-key'], 'intent-01:retry');
               expect(request.url.queryParameters, isEmpty);
@@ -1633,7 +1637,7 @@ void main() {
               if (path.endsWith('/conversations')) {
                 return meetingApiSuccess([]);
               }
-              if (path.endsWith('/turns')) {
+              if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
                 return meetingApiSuccess(_turnStatus(leaseStatus: 'EXPIRED'));
               }
               if (request.method == 'POST') {
@@ -1758,7 +1762,8 @@ void main() {
             if (request.url.path.endsWith('/conversations')) {
               return meetingApiSuccess([]);
             }
-            if (request.url.path.endsWith('/turns')) {
+            if (request.url.path.endsWith('/turns') ||
+                request.url.path.endsWith('/turns/$_turnId')) {
               reads++;
               return meetingApiSuccess(
                 reads == 1
@@ -1807,7 +1812,8 @@ void main() {
             if (request.url.path.endsWith('/conversations')) {
               return meetingApiSuccess([]);
             }
-            if (request.url.path.endsWith('/turns')) {
+            if (request.url.path.endsWith('/turns') ||
+                request.url.path.endsWith('/turns/$_turnId')) {
               reads++;
               statusMethods.add(request.method);
               statusKeys.add(request.headers['idempotency-key']);
@@ -1896,7 +1902,7 @@ void main() {
           expect(statusMethods, hasLength(reads));
           expect(statusMethods, everyElement('GET'));
           expect(questionKeys.single, isNotEmpty);
-          expect(statusKeys, everyElement(questionKeys.single));
+          expect(statusKeys, everyElement(isNull));
           controller.setActive(false);
         },
       );
@@ -1948,7 +1954,9 @@ void main() {
             return meetingApiSuccess(_turn());
           }
           if (request.url.queryParameters.containsKey('beforeMessageId')) {
-            return meetingApiSuccess(_detail(messages: older));
+            return meetingApiSuccess(
+              _detail(messages: submitted ? [...older, ...initial.take(2)] : older),
+            );
           }
           return meetingApiSuccess(
             _detail(
@@ -2056,7 +2064,7 @@ void main() {
           if (path.endsWith('/conversations')) {
             return meetingApiSuccess([]);
           }
-          if (path.endsWith('/turns')) {
+          if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
             statusEntered.complete();
             return statusResponse.future;
           }
@@ -2065,6 +2073,11 @@ void main() {
             return meetingApiSuccess(_turn(processing: true), status: 202);
           }
           if (request.url.queryParameters.containsKey('beforeMessageId')) {
+            if (olderEntered.isCompleted) {
+              return meetingApiSuccess(
+                _detail(messages: [...older, ...initial.take(2)]),
+              );
+            }
             olderEntered.complete();
             return olderResponse.future;
           }
@@ -2109,7 +2122,7 @@ void main() {
           if (path.endsWith('/conversations')) {
             return meetingApiSuccess([]);
           }
-          if (path.endsWith('/turns')) {
+          if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
             return meetingApiSuccess(_turnStatus(leaseStatus: 'EXPIRED'));
           }
           if (request.method == 'POST') {
@@ -2149,7 +2162,7 @@ void main() {
             if (path.endsWith('/conversations')) {
               return meetingApiSuccess([]);
             }
-            if (path.endsWith('/turns')) {
+            if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
               if (!statusAvailable) {
                 return meetingApiFailure(503, 'ASSISTANT_UNAVAILABLE');
               }
@@ -2188,9 +2201,49 @@ void main() {
         await controller.abandonPending();
         expect(controller.pending, same(command));
         expect(keys.length, 2);
-        expect(keys.first, keys.last);
+        expect(keys.first, isNotNull);
+        expect(keys.last, isNull);
       },
     );
+
+    test('discovers a remote pending turn and explicitly recovers by ID', () async {
+      var recovered = false;
+      var writes = 0;
+      final repository = await _repository(
+        MeetingTestHttpClient((request) async {
+          final path = request.url.path;
+          if (path.endsWith('/conversations')) return meetingApiSuccess([]);
+          if (path.endsWith('/turns/$_turnId/recover')) {
+            expect(request.method, 'POST');
+            expect(request.headers['idempotency-key'], isNull);
+            writes++;
+            recovered = true;
+            return meetingApiSuccess(_turn());
+          }
+          expect(request.method, 'GET');
+          return meetingApiSuccess(
+            _detail(
+              messages: recovered ? [_userMessage(), _message()] : [_userMessage()],
+            )..['pendingTurn'] = recovered
+                ? null
+                : _turnStatus(leaseStatus: 'EXPIRED'),
+          );
+        }),
+      );
+      final controller = AssistantWorkspaceController(repository);
+      addTearDown(controller.dispose);
+      controller.setActive(true);
+      await controller.open(_typedConversation());
+      expect(controller.pending?.request, isNull);
+      expect(controller.pending?.turn?.turnId, _turnId);
+      expect(controller.canSend, isFalse);
+      expect(controller.canRetryPending, isTrue);
+      expect(writes, 0);
+      await controller.retryPending();
+      expect(writes, 1);
+      expect(controller.pending, isNull);
+      expect(controller.messages.length, 2);
+    });
 
     test('definitively rejected questions can be edited', () async {
       final repository = await _repository(
@@ -2222,7 +2275,8 @@ void main() {
           if (request.url.path.endsWith('/conversations')) {
             return meetingApiSuccess([]);
           }
-          if (request.url.path.endsWith('/turns')) {
+          if (request.url.path.endsWith('/turns') ||
+                request.url.path.endsWith('/turns/$_turnId')) {
             reads++;
             return meetingApiSuccess(_turnStatus(leaseStatus: 'ACTIVE'));
           }
@@ -2311,7 +2365,7 @@ void main() {
     );
 
     test(
-      'turn status is read-only and explicit reclaim keeps the same key',
+      'turn status is read-only and explicit reclaim uses durable identity',
       () async {
         final keys = <String?>[];
         var statusReads = 0;
@@ -2321,18 +2375,21 @@ void main() {
             if (path.endsWith('/conversations')) {
               return meetingApiSuccess([]);
             }
-            if (path.endsWith('/turns')) {
+            if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
               statusReads++;
               expect(request.method, 'GET');
-              expect(request.headers['idempotency-key'], keys.first);
+              expect(path, endsWith('/turns/$_turnId'));
+              expect(request.headers['idempotency-key'], isNull);
               return meetingApiSuccess(_turnStatus(leaseStatus: 'EXPIRED'));
             }
             if (path.endsWith('/messages')) {
               keys.add(request.headers['idempotency-key']);
               expect(decodeRequestBody(request), {'question': 'Câu hỏi'});
-              return keys.length == 1
-                  ? meetingApiSuccess(_turn(processing: true), status: 202)
-                  : meetingApiSuccess(_turn());
+              return meetingApiSuccess(_turn(processing: true), status: 202);
+            }
+            if (path.endsWith('/turns/$_turnId/recover')) {
+              keys.add(request.headers['idempotency-key']);
+              return meetingApiSuccess(_turn());
             }
             return meetingApiSuccess(
               _detail(
@@ -2352,7 +2409,7 @@ void main() {
         await controller.retryPending();
         expect(keys.length, 2);
         expect(keys.first, isNotNull);
-        expect(keys.last, keys.first);
+        expect(keys.last, isNull);
         expect(controller.pending, isNull);
         expect(controller.messages.map((message) => message.id), [
           _userMessageId,

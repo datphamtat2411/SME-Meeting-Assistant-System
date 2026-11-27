@@ -412,7 +412,7 @@ class _AssistantPageState extends State<AssistantPage>
     }
     FocusScope.of(context).unfocus();
     final submission = _controller.submit(question);
-    if (_controller.pending?.request.question == question) {
+    if (_controller.pending?.request?.question == question) {
       _input.clear();
     }
     unawaited(submission);
@@ -957,11 +957,12 @@ class _AssistantPageState extends State<AssistantPage>
             style: Theme.of(context).textTheme.titleSmall,
           ),
           const SizedBox(height: 4),
-          Text(
-            pending.request.question,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
+          if (pending.request case final request?)
+            Text(
+              request.question,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
           if (pending.busy) const LinearProgressIndicator(),
           if (pending.failure != null)
             Text(assistantFailureLabel(pending.failure!)),
@@ -1000,7 +1001,11 @@ class _AssistantPageState extends State<AssistantPage>
                     onPressed: _controller.canRetryPending
                         ? _controller.retryPending
                         : null,
-                    child: const Text('Thử lại cùng câu hỏi'),
+                    child: Text(
+                      pending.turn == null
+                          ? 'Thử lại cùng câu hỏi'
+                          : 'Tiếp tục lượt hỏi đang xử lý',
+                    ),
                   ),
                 if (pending.canEdit)
                   TextButton(

@@ -382,6 +382,8 @@ class AssistantConversationDetail {
     required this.page,
     required this.size,
     required this.hasMore,
+    required this.nextBeforeMessageId,
+    required this.pendingTurn,
   });
 
   final AssistantConversation conversation;
@@ -389,6 +391,8 @@ class AssistantConversationDetail {
   final int page;
   final int size;
   final bool hasMore;
+  final String? nextBeforeMessageId;
+  final AssistantTurnStatus? pendingTurn;
 
   factory AssistantConversationDetail.fromResult(
     ApiResult response, {
@@ -431,12 +435,30 @@ class AssistantConversationDetail {
         invalidApiData(response: response);
       }
     }
+    final anchor = raw['nextBeforeMessageId'] == null
+        ? null
+        : _uuid(raw, 'nextBeforeMessageId', response);
+    if (anchor != (hasMore ? messages.first.id : null)) {
+      invalidApiData(response: response);
+    }
+    final pending = raw['pendingTurn'] == null
+        ? null
+        : AssistantTurnStatus.fromJson(
+            requiredObject(raw, 'pendingTurn', response: response),
+            response: response,
+            conversationId: conversation.id,
+          );
+    if (pending != null && pending.turn.state != AssistantTurnState.processing) {
+      invalidApiData(response: response);
+    }
     return AssistantConversationDetail._(
       conversation: conversation,
       messages: messages,
       page: page,
       size: size,
       hasMore: hasMore,
+      nextBeforeMessageId: anchor,
+      pendingTurn: pending,
     );
   }
 }
@@ -557,8 +579,17 @@ class AssistantTurnStatus {
     ApiResult response, {
     required String meetingId,
     String? conversationId,
+  }) => AssistantTurnStatus.fromJson(
+    response.objectData(),
+    response: response,
+    conversationId: conversationId,
+  );
+
+  factory AssistantTurnStatus.fromJson(
+    Map<String, dynamic> raw, {
+    required ApiResult response,
+    String? conversationId,
   }) {
-    final raw = response.objectData();
     if (response.statusCode != 200) invalidApiData(response: response);
     final returnedConversationId = _uuid(raw, 'conversationId', response);
     if (conversationId != null &&
