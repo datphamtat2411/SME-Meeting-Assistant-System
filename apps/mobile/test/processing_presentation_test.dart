@@ -41,12 +41,15 @@ void main() {
     );
   });
 
-  test('public warning detail is preserved without guessing a warning code', () {
-    expect(
-      processingWarningLabel('Some speech remains unresolved.'),
-      'Cảnh báo: Some speech remains unresolved.',
-    );
-  });
+  test(
+    'public warning detail is preserved without guessing a warning code',
+    () {
+      expect(
+        processingWarningLabel('Some speech remains unresolved.'),
+        'Cảnh báo: Some speech remains unresolved.',
+      );
+    },
+  );
 
   test('known failures retain their specific meaning in Vietnamese', () {
     expect(

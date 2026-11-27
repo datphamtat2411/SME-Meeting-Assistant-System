@@ -1516,10 +1516,18 @@ describe('Members directory', () => {
     )
     await setUiLanguage('vi')
     await expect
-      .element(screen.getByRole('radio', { name: /giá trị bạn muốn lưu.*trưởng phòng/i }))
+      .element(
+        screen.getByRole('radio', {
+          name: /giá trị bạn muốn lưu.*trưởng phòng/i,
+        })
+      )
       .toBeChecked()
     await expect
-      .element(screen.getByRole('radio', { name: /giá trị trên máy chủ.*quản trị viên/i }))
+      .element(
+        screen.getByRole('radio', {
+          name: /giá trị trên máy chủ.*quản trị viên/i,
+        })
+      )
       .toBeVisible()
     expect(patchSpy).toHaveBeenCalledTimes(1)
     await setUiLanguage('en')

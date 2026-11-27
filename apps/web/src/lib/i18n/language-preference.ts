@@ -1,8 +1,7 @@
 export const UI_LANGUAGES = ['en', 'vi'] as const
 export type UiLanguage = (typeof UI_LANGUAGES)[number]
 
-// Switch to Vietnamese in LOC-05, when feature coverage is complete.
-export const DEFAULT_UI_LANGUAGE: UiLanguage = 'en'
+export const DEFAULT_UI_LANGUAGE: UiLanguage = 'vi'
 export const UI_LANGUAGE_STORAGE_KEY = 'sme-ui-language'
 
 export function isUiLanguage(value: unknown): value is UiLanguage {
