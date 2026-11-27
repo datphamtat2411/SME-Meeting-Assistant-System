@@ -2,3 +2,8 @@
 .env
 .env.*
 !.env.example
+
+# Python interpreter and test caches are generated, never source artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/

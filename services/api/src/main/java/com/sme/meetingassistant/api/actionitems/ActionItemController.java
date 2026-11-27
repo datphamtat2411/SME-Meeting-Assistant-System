@@ -94,6 +94,8 @@ public class ActionItemController {
             PageRequest.of(page, size)));
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201",
+            description = "Official action item created or replayed", useReturnTypeSchema = true)
     @PostMapping
     public ResponseEntity<ApiResponse<ActionItemView>> create(@Valid @RequestBody CreateActionItemRequest request,
             @RequestHeader(value="Idempotency-Key",required=false) String idempotencyKey) {

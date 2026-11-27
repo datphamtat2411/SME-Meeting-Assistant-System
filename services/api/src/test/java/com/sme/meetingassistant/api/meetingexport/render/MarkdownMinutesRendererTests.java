@@ -104,6 +104,26 @@ class MarkdownMinutesRendererTests {
     }
 
     @Test
+    void versionTwoUsesOnlyPinnedAssigneeNamesAndKeepsCanonicalIdentity() {
+        MinutesSnapshot base = sample();
+        var assignee = base.officialActionItems().getFirst().assigneeUserId();
+        MinutesSnapshot enriched = new MinutesSnapshot(base.schemaVersion(), base.assembledAt(),
+                base.sourceFingerprint(), base.completeness(), base.meeting(), base.summary(),
+                base.confirmedDecisions(), base.officialActionItems(), base.transcript(), base.warnings(),
+                base.proposalsIncluded(), new MinutesSnapshot.DisplayMetadata(
+                        java.util.Map.of(assignee, "Nguyễn Văn An <script>", UUID.randomUUID(), "Unrelated")));
+        var result = RENDERER.render(enriched, MarkdownMinutesRenderer.VERSION_2);
+        assertThat(result.rendererVersion()).isEqualTo("markdown-v2");
+        assertThat(result.sourceFingerprint()).isEqualTo(base.sourceFingerprint());
+        assertThat(result.text()).contains("Nguyễn Văn An", "&lt;script&gt;")
+                .doesNotContain("<script>", "Unrelated");
+        assertThat(result.utf8()).isEqualTo(RENDERER.render(enriched, MarkdownMinutesRenderer.VERSION_2).utf8());
+        assertThat(RENDERER.render(enriched).utf8()).isEqualTo(RENDERER.render(base).utf8());
+        assertThatThrownBy(() -> RENDERER.render(enriched, "unknown"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void hostileTitleSummaryAndActionDetailsCannotInjectHtmlHeadingsLinksOrImages() {
         String malicious = "# Fake heading\r\n<script>alert('x')</script>\n"
                 + "<img src=x onerror=alert(1)>\n"

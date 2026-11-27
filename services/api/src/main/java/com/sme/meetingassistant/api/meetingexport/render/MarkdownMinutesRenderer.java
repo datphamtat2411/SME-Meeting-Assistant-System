@@ -21,6 +21,7 @@ import org.springframework.stereotype.Service;
 @Service
 public final class MarkdownMinutesRenderer {
     public static final String VERSION = "markdown-v1";
+    public static final String VERSION_2 = "markdown-v2";
     private static final int SUPPORTED_SCHEMA = 1;
     private static final int MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
     private static final Pattern DIGEST = Pattern.compile("[0-9a-f]{64}");
@@ -31,6 +32,13 @@ public final class MarkdownMinutesRenderer {
             "OPEN", "IN_PROGRESS", "DONE", "CANCELLED");
 
     public RenderedMarkdown render(MinutesSnapshot snapshot) {
+        return render(snapshot, VERSION);
+    }
+
+    public RenderedMarkdown render(MinutesSnapshot snapshot, String version) {
+        if (!VERSION.equals(version) && !VERSION_2.equals(version)) {
+            throw new IllegalArgumentException("Unsupported Markdown renderer version");
+        }
         validate(snapshot);
         var out = new StringBuilder(8192);
         out.append("# Biên bản cuộc họp\n\n");
@@ -127,6 +135,10 @@ public final class MarkdownMinutesRenderer {
             field(out, "Mã công việc", action.id());
             field(out, "Trạng thái", action.status());
             field(out, "Loại nguồn", action.sourceType());
+            if (VERSION_2.equals(version) && action.assigneeUserId() != null) {
+                field(out, "Người phụ trách", snapshot.displayMetadata().assigneeDisplayNames()
+                        .get(action.assigneeUserId()));
+            }
             field(out, "Người phụ trách (ID)", action.assigneeUserId());
             field(out, "Hạn (ngày)", action.dueDate());
             field(out, "Phiên bản", action.version());
@@ -170,7 +182,7 @@ public final class MarkdownMinutesRenderer {
         section(out, "Dấu vết dữ liệu và bản xuất");
         field(out, "Snapshot schema version", snapshot.schemaVersion());
         field(out, "Source fingerprint (SHA-256)", snapshot.sourceFingerprint());
-        field(out, "Phiên bản renderer", VERSION);
+        field(out, "Phiên bản renderer", version);
         out.append("\n*Bản Markdown được sinh từ một snapshot; ")
                 .append("không phải nguồn sự thật nghiệp vụ mới.*\n");
 
@@ -178,7 +190,7 @@ public final class MarkdownMinutesRenderer {
         if (utf8.length > MAX_DOCUMENT_BYTES) {
             throw new IllegalArgumentException("Rendered Markdown exceeds 8 MiB");
         }
-        return new RenderedMarkdown(utf8, snapshot.sourceFingerprint(), VERSION);
+        return new RenderedMarkdown(utf8, snapshot.sourceFingerprint(), version);
     }
 
     private static void validate(MinutesSnapshot snapshot) {

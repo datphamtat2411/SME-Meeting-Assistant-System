@@ -20,13 +20,18 @@ public final class ExportSnapshotCodec {
         this.json = json;
     }
 
+    // Intake v1 selects the original renderers; v2 selects name-enriched renderers.
+    // The intake digest pins this decision before the worker can claim a job.
+    public static final int LEGACY_INTAKE_VERSION = 1;
+    public static final int CURRENT_INTAKE_VERSION = 2;
+
     public record Envelope(int schemaVersion, UUID exportId, UUID meetingId,
             UUID requestedByUserId, MinutesSnapshot snapshot) { }
 
     public byte[] encode(ExportRecord record, MinutesSnapshot snapshot) {
         checkSnapshot(snapshot, record.meetingId());
         try {
-            byte[] bytes = json.writeValueAsBytes(new Envelope(1, record.id(),
+            byte[] bytes = json.writeValueAsBytes(new Envelope(CURRENT_INTAKE_VERSION, record.id(),
                     record.meetingId(), record.requestedByUserId(), snapshot));
             if (bytes.length == 0 || bytes.length > MAX_INTAKE_BYTES) {
                 throw new IllegalArgumentException("Export intake exceeds bounded limit");
@@ -45,7 +50,8 @@ public final class ExportSnapshotCodec {
         }
         try {
             Envelope envelope = json.readValue(bytes, Envelope.class);
-            if (envelope == null || envelope.schemaVersion() != 1
+            if (envelope == null || (envelope.schemaVersion() != LEGACY_INTAKE_VERSION
+                        && envelope.schemaVersion() != CURRENT_INTAKE_VERSION)
                     || !Objects.equals(envelope.exportId(), claim.id())
                     || !Objects.equals(envelope.meetingId(), claim.meetingId())
                     || !Objects.equals(envelope.requestedByUserId(), claim.requestedByUserId())

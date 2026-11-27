@@ -44,6 +44,8 @@ public class DecisionController {
             .body(responses.successPage(service.list(meetingId, status, page, size)));
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201",
+            description = "Decision created", useReturnTypeSchema = true)
     @PostMapping
     public ResponseEntity<ApiResponse<DecisionView>> create(@PathVariable UUID meetingId,
             @Valid @RequestBody CreateDecisionRequest request) {

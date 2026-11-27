@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
+import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.security.Principal;
@@ -55,6 +56,7 @@ class MediaOperationAuthorizationIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired DataSource dataSource;
     @Autowired ObjectMapper json;
+    @Autowired ProcessingJobLifecycle lifecycle;
     @MockitoBean ObjectStorage storage;
     @MockitoBean TranscriptionWorkerCapability workerCapability;
 
@@ -212,6 +214,30 @@ class MediaOperationAuthorizationIntegrationTests {
             .andReturn().getResponse().getStatus())).isEqualTo(401);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_jobs WHERE meeting_id = ?",
             Integer.class, meeting)).isZero();
+    }
+
+    @Test
+    void retryAdmissionRejectsActorDeactivatedWhileWaitingForUserLock() throws Exception {
+        var admitted = mvc.perform(post(jobUrl()).principal(as(organizer))
+            .header("Idempotency-Key", "job-before-revoked-retry")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"mediaId\":\"" + media + "\"}"))
+            .andExpect(status().isAccepted()).andReturn();
+        UUID job = UUID.fromString(json.readTree(admitted.getResponse().getContentAsString())
+            .path("data").path("id").asText());
+        var run = lifecycle.startStage(job, "TRANSCRIPTION", "offline-whisper", "base");
+        lifecycle.failStage(run, "TEMPORARY_FAILURE", "Temporary failure.", true);
+
+        assertThat(deactivateDuringAdmission(() -> mvc.perform(post("/api/v1/processing-jobs/" + job + "/retry")
+            .principal(as(organizer)).header("Idempotency-Key", "revoked-retry")
+            .contentType(MediaType.APPLICATION_JSON).content("{\"stageCode\":\"TRANSCRIPTION\"}"))
+            .andReturn().getResponse().getStatus())).isEqualTo(401);
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id = ?",
+            String.class, job)).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_stage_runs WHERE processing_job_id = ? AND stage_code = 'TRANSCRIPTION'",
+            Integer.class, job)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_events WHERE aggregate_id = ? AND event_type = 'PROCESSING_JOB_RETRY_REQUESTED'",
+            Integer.class, job)).isZero();
     }
 
     private int deactivateDuringAdmission(Callable<Integer> request) throws Exception {

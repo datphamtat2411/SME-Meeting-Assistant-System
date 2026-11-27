@@ -31,6 +31,7 @@ import org.springframework.stereotype.Service;
 @Service
 public final class PdfMinutesRenderer {
     public static final String VERSION = "pdf-v1-markdown-v1-dejavu-2.29";
+    public static final String VERSION_2 = "pdf-v2-markdown-v2-dejavu-2.29";
     private static final float W = PDRectangle.A4.getWidth();
     private static final float H = PDRectangle.A4.getHeight();
     private static final float MARGIN = 49;
@@ -67,13 +68,21 @@ public final class PdfMinutesRenderer {
     }
 
     public RenderedPdf render(MinutesSnapshot snapshot) {
+        return render(snapshot, VERSION);
+    }
+
+    public RenderedPdf render(MinutesSnapshot snapshot, String version) {
+        if (!VERSION.equals(version) && !VERSION_2.equals(version)) {
+            throw new IllegalArgumentException("Unsupported PDF renderer version");
+        }
         RenderedMarkdown source = markdownRenderer.render(
-                Objects.requireNonNull(snapshot, "snapshot"));
+                Objects.requireNonNull(snapshot, "snapshot"), VERSION_2.equals(version)
+                        ? MarkdownMinutesRenderer.VERSION_2 : MarkdownMinutesRenderer.VERSION);
         try (PDDocument pdf = new PDDocument()) {
             PDDocumentInformation metadata = new PDDocumentInformation();
             metadata.setTitle("Bien ban cuoc hop - SME Meeting Assistant");
             metadata.setCreator("SME Meeting Assistant");
-            metadata.setProducer("SME Meeting Assistant " + VERSION);
+            metadata.setProducer("SME Meeting Assistant " + version);
             metadata.setSubject("Source fingerprint: " + source.sourceFingerprint());
             pdf.setDocumentInformation(metadata);
             PDType0Font font = PDType0Font.load(
@@ -93,7 +102,7 @@ public final class PdfMinutesRenderer {
                 throw new IllegalArgumentException("PDF exceeds 32 MiB");
             }
             return new RenderedPdf(stream.toByteArray(), source.sourceFingerprint(),
-                    VERSION, pdf.getNumberOfPages());
+                    version, pdf.getNumberOfPages());
         } catch (IOException e) {
             throw new IllegalStateException("Canonical Minutes PDF rendering failed", e);
         }

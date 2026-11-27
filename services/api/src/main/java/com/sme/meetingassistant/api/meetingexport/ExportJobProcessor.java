@@ -125,8 +125,10 @@ public final class ExportJobProcessor {
         storage.putVerified(snapshotKey, snapshotBytes, "application/json", snapshotSha);
         if (!stillOwner.get()) return false;
 
+        boolean enriched = envelope.schemaVersion() == ExportSnapshotCodec.CURRENT_INTAKE_VERSION;
         String version = claim.format() == ExportFormat.PDF
-                ? PdfMinutesRenderer.VERSION : MarkdownMinutesRenderer.VERSION;
+                ? (enriched ? PdfMinutesRenderer.VERSION_2 : PdfMinutesRenderer.VERSION)
+                : (enriched ? MarkdownMinutesRenderer.VERSION_2 : MarkdownMinutesRenderer.VERSION);
         if (!state.pinSnapshot(claim.id(), claim.claimToken(),
                 snapshot.sourceFingerprint(), version)) {
             return false;
@@ -137,12 +139,12 @@ public final class ExportJobProcessor {
         String artifactSha;
         String contentType;
         if (claim.format() == ExportFormat.PDF) {
-            var result = pdf.render(snapshot);
+            var result = pdf.render(snapshot, version);
             artifact = result.bytes();
             artifactSha = result.sha256();
             contentType = result.mediaType();
         } else {
-            var result = markdown.render(snapshot);
+            var result = markdown.render(snapshot, version);
             artifact = result.utf8();
             artifactSha = result.sha256();
             contentType = result.mediaType();
