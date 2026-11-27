@@ -1,3 +1,5 @@
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import { featureValidationMessage, localizedValidationMessage, requestErrorFormMessage } from '@/lib/i18n/presentation'
 import { useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -52,6 +54,7 @@ export function ActionForm({
   canManageActionItems?: boolean
   onProtectionChange?: (protection: ActionDraftProtection) => void
 }) {
+  const { t } = useUiTranslation()
   const qc = useQueryClient()
   const [title, setTitle] = useState(item?.title ?? '')
   const [details, setDetails] = useState(item?.details ?? '')
@@ -164,7 +167,7 @@ export function ActionForm({
       submission: Submission
     ): Promise<ActionMutationResult> => {
       if (!submission.owns())
-        throw new Error('The Action Item operation is no longer authorized.')
+        throw new Error(featureValidationMessage('action-items:operationUnauthorized'))
       if (submission.reviewed) {
         const reviewed = submission.reviewed
         const patch = buildActionPatch(reviewed.item, submission.pending)
@@ -173,7 +176,7 @@ export function ActionForm({
           (!reviewed.item.capabilities.canAssign || !canAssignCurrent)
         ) {
           throw new Error(
-            'Action Item assignment is no longer authorized for this review.'
+            featureValidationMessage('action-items:assignUnauthorizedReview')
           )
         }
         return patchAction(
@@ -184,7 +187,7 @@ export function ActionForm({
         )
       }
       if (!submission.creation)
-        throw new Error('Creation intent is unavailable.')
+        throw new Error(featureValidationMessage('action-items:noIntent'))
       return createAction(submission.creation.payload, submission.creation.key)
     },
     onSuccess: (result, submission) => {
@@ -192,7 +195,7 @@ export function ActionForm({
       if (!submission.owns()) return
       intent.current = null
       setUnresolvedCreate(null)
-      toast.success(item ? 'Action Item saved' : 'Official Action Item created')
+      toast.success(item ? i18n.t('action-items:saved') : i18n.t('action-items:created'))
       invalidateMeetingArtifacts(qc, result.item.meetingId, {
         actions: true,
         intelligence: 'none',
@@ -220,7 +223,7 @@ export function ActionForm({
           pending,
           latest: null,
           latestResult: null,
-          message: 'Loading the current Action Item…',
+          message: featureValidationMessage('action-items:loadingCurrent'),
         })
         try {
           const latest = await actionDetail(reviewed.id, reviewed.meetingId)
@@ -231,7 +234,7 @@ export function ActionForm({
             latest: latest.item,
             latestResult: latest,
             message: uncertain
-              ? 'The previous save could not be verified. Review the current state before saving again.'
+              ? featureValidationMessage('action-items:saveUnverified')
               : undefined,
           })
         } catch (error) {
@@ -242,9 +245,7 @@ export function ActionForm({
             latest: null,
             latestResult: null,
             message:
-              error instanceof Error
-                ? error.message
-                : 'Current state is unavailable.',
+              requestErrorFormMessage(normalizeCoreApiError(error)),
           })
         } finally {
           if (submission.owns()) {
@@ -262,16 +263,16 @@ export function ActionForm({
           intelligence: 'none',
         })
         setUnresolvedCreate(submission.creation.payload)
-        toast.error('Creation outcome is uncertain', {
+        toast.error(i18n.t('action-items:creationUncertain'), {
           description:
-            'Retry this unchanged intent to recover the same Action Item.',
+            i18n.t('action-items:retryIntent'),
         })
         return
       }
       if (submission.creation) intent.current = null
       toast.error(
-        item ? 'Unable to save Action Item' : 'Unable to create Action Item',
-        { description: error instanceof Error ? error.message : undefined }
+        item ? i18n.t('action-items:saveFailed') : i18n.t('action-items:createFailed'),
+        { description: localizedValidationMessage(requestErrorFormMessage(normalizeCoreApiError(error))) }
       )
     },
   })
@@ -377,15 +378,15 @@ export function ActionForm({
   function close(next: boolean) {
     if (!next && (submitting.current || mutation.isPending)) return
     if (!next && unresolvedCreate) {
-      toast.warning('Unresolved creation kept open', {
-        description: 'Recover this request or explicitly abandon it.',
+      toast.warning(i18n.t('action-items:keptOpen'), {
+        description: i18n.t('action-items:recoverOrAbandon'),
       })
       return
     }
     if (
       !next &&
       dirty &&
-      !window.confirm('Discard your unsaved Action Item changes?')
+      !window.confirm(t('action-items:discard'))
     )
       return
     if (!next) operation.current += 1
@@ -397,14 +398,13 @@ export function ActionForm({
       <Dialog open={open} onOpenChange={close}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Action Item review expired</DialogTitle>
+            <DialogTitle>{t('action-items:expired')}</DialogTitle>
             <DialogDescription>
-              Access or editing authority changed. Close this review and reopen
-              the Action Item to verify the current state.
+              {t('action-items:expiredHint')}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button onClick={() => close(false)}>Close review</Button>
+            <Button onClick={() => close(false)}>{t('action-items:closeReview')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -417,23 +417,23 @@ export function ActionForm({
         <DialogHeader>
           <DialogTitle>
             {item
-              ? 'Review Action Item changes'
-              : 'Create official Action Item'}
+              ? t('action-items:reviewChanges')
+              : t('action-items:createTitle')}
           </DialogTitle>
           <DialogDescription>
             {item
-              ? 'This form uses one authoritative detail snapshot. Save applies only the fields you changed.'
-              : 'A successful save establishes an official organizational follow-up obligation.'}
+              ? t('action-items:editHint')
+              : t('action-items:createHint')}
           </DialogDescription>
         </DialogHeader>
         {item && detail.isPending && (
           <p className='text-sm text-muted-foreground'>
-            Loading authoritative snapshot…
+            {t('action-items:loadingSnapshot')}
           </p>
         )}
         {item && detail.isError && (
           <p role='alert' className='text-sm text-destructive'>
-            Unable to load the Action Item snapshot. Retry from the collection.
+            {t('action-items:snapshotFailed')}
           </p>
         )}
         {conflict && (
@@ -442,36 +442,31 @@ export function ActionForm({
             className='space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200'
           >
             <p className='font-medium'>
-              {conflict.message ??
-                'This Action Item changed while you were editing.'}
+              {conflict.message ? localizedValidationMessage(conflict.message, t) : t('action-items:changedWhileEditing')}
             </p>
             <p>
-              Reviewed: {conflict.reviewed.title} · version{' '}
-              {conflict.reviewed.version}
+              {t('action-items:reviewedVersion', { title: conflict.reviewed.title, version: conflict.reviewed.version })}
             </p>
             {conflict.latest ? (
               <>
                 <p>
-                  Current: {conflict.latest.title} · version{' '}
-                  {conflict.latest.version}
+                  {t('action-items:currentVersion', { title: conflict.latest.title, version: conflict.latest.version })}
                 </p>
                 <div className='space-y-1 text-xs'>
-                  <p>Server details: {conflict.latest.details ?? 'None'}</p>
+                  <p>{t('action-items:serverDetails', { details: conflict.latest.details ?? t('action-items:none') })}</p>
                   <p>
-                    Server assignee:{' '}
-                    {conflict.latest.assignee?.displayName ?? 'Unassigned'}
+                    {t('action-items:serverAssignee', { name: conflict.latest.assignee?.displayName ?? t('action-items:unassigned') })}
                   </p>
                   <p>
-                    Server due date:{' '}
+                    {t('action-items:serverDue')}{' '}
                     <RegionalCivilDate
                       value={conflict.latest.dueDate}
-                      fallback='None'
+                      fallback={t('action-items:none')}
                     />
                   </p>
-                  <p>Server status: {conflict.latest.status}</p>
+                  <p>{t('action-items:serverStatus', { status: t(`action-items:status_${conflict.latest.status}`) })}</p>
                   <p>
-                    Only the fields you originally changed will be retained.
-                    Review any overlapping changes before saving again.
+                    {t('action-items:rebaseHint')}
                   </p>
                 </div>
                 <Button
@@ -499,7 +494,7 @@ export function ActionForm({
                         undefined &&
                       !latest.capabilities.canAssign
                     ) {
-                      toast.error('Assignment is no longer authorized.')
+                      toast.error(i18n.t('action-items:assignUnauthorized'))
                       return
                     }
                     setSnapshot({
@@ -516,39 +511,38 @@ export function ActionForm({
                     operation.current += 1
                   }}
                 >
-                  Review current state and keep my changes
+                  {t('action-items:reviewKeep')}
                 </Button>
               </>
             ) : (
-              <p>{conflict.message ?? 'Current state is unavailable.'}</p>
+              <p>{conflict.message ? localizedValidationMessage(conflict.message, t) : t('action-items:stateUnavailable')}</p>
             )}
             <p className='text-xs'>
-              Pending changes remain in the form and will not be replayed
-              automatically.
+              {t('action-items:pendingHint')}
             </p>
           </div>
         )}
         <form onSubmit={submit} className='space-y-4'>
           <div className='space-y-2'>
-            <Label>Originating meeting</Label>
+            <Label>{t('action-items:originMeeting')}</Label>
             {isFixedMeeting ? (
               <div className='rounded-lg border p-3 text-sm'>
-                <span>{meetingLabel || 'Authorized meeting'} · </span>
+                <span>{meetingLabel || t('action-items:authorizedMeeting')} · </span>
                 {(!item || displayItem?.capabilities.canAccessMeeting) && (
                   <Link
                     to='/meetings/$meetingId'
                     params={{ meetingId: meetingId ?? meeting }}
                     className='font-medium underline'
                   >
-                    Open meeting
+                    {t('action-items:openMeeting')}
                   </Link>
                 )}
               </div>
             ) : (
               <>
                 <Input
-                  aria-label='Find authorized Action Item meeting'
-                  placeholder='Search visible titles or meeting IDs'
+                  aria-label={t('action-items:findMeeting')}
+                  placeholder={t('action-items:searchMeetings')}
                   value={meetingSearch}
                   disabled={mutation.isPending || Boolean(unresolvedCreate)}
                   onChange={(event) => {
@@ -562,14 +556,13 @@ export function ActionForm({
                   </Badge>
                 ) : (
                   <p className='text-xs text-muted-foreground'>
-                    Only management-authorized meetings are listed. Restricted
-                    titles are hidden; use the meeting ID or browse the list.
+                    {t('action-items:meetingLookupHint')}
                   </p>
                 )}
                 <div className='max-h-36 space-y-1 overflow-y-auto rounded-lg border p-1'>
                   {targets.isFetching && (
                     <p className='px-2 py-3 text-xs text-muted-foreground'>
-                      Searching authorized meetings…
+                      {t('action-items:searchingMeetings')}
                     </p>
                   )}
                   {targets.data?.items.map((target) => (
@@ -597,7 +590,7 @@ export function ActionForm({
                       role='alert'
                       className='px-2 py-3 text-xs text-destructive'
                     >
-                      Unable to load authorized meetings.
+                      {t('action-items:meetingLookupFailed')}
                     </p>
                   )}
                 </div>
@@ -614,7 +607,7 @@ export function ActionForm({
                         setMeetingPage((page) => Math.max(0, page - 1))
                       }
                     >
-                      Previous
+                      {t('action-items:previous')}
                     </Button>
                     <Button
                       type='button'
@@ -625,7 +618,7 @@ export function ActionForm({
                       }
                       onClick={() => setMeetingPage((page) => page + 1)}
                     >
-                      Next
+                      {t('action-items:next')}
                     </Button>
                   </div>
                 )}
@@ -633,7 +626,7 @@ export function ActionForm({
             )}
           </div>
           <div className='space-y-1'>
-            <Label htmlFor='action-title'>Title</Label>
+            <Label htmlFor='action-title'>{t('action-items:itemTitle')}</Label>
             <Input
               id='action-title'
               required
@@ -649,7 +642,7 @@ export function ActionForm({
             />
           </div>
           <div className='space-y-1'>
-            <Label htmlFor='action-details'>Details</Label>
+            <Label htmlFor='action-details'>{t('action-items:details')}</Label>
             <Textarea
               id='action-details'
               maxLength={10000}
@@ -664,7 +657,7 @@ export function ActionForm({
             />
           </div>
           <div className='space-y-2'>
-            <Label htmlFor='action-assignee'>Primary responsibility</Label>
+            <Label htmlFor='action-assignee'>{t('action-items:primaryResponsibility')}</Label>
             <div className='flex items-center gap-2'>
               <Search className='size-4 text-muted-foreground' />
               <Input
@@ -677,7 +670,7 @@ export function ActionForm({
                   Boolean(conflict) ||
                   Boolean(unresolvedCreate)
                 }
-                placeholder='Search active organizational users (2+ characters)'
+                placeholder={t('action-items:searchUsers')}
                 onChange={(event) => {
                   setUserSearch(event.target.value)
                   setUserPage(0)
@@ -688,7 +681,7 @@ export function ActionForm({
               <div className='flex flex-wrap items-center gap-2 text-sm text-primary'>
                 <span>
                   <Check className='me-1 inline size-4' />
-                  {assigneeLabel || 'Primary assignee selected'}
+                  {assigneeLabel || t('action-items:selectedAssignee')}
                 </span>
                 {canClearAssignee && (
                   <Button
@@ -703,21 +696,21 @@ export function ActionForm({
                       setAssigneeLabel('')
                     }}
                   >
-                    Clear proposal assignee
+                    {t('action-items:clearAssignee')}
                   </Button>
                 )}
               </div>
             ) : (
               <p className='text-xs text-muted-foreground'>
                 {item?.status === 'PROPOSED'
-                  ? 'This proposal may remain unassigned until confirmation.'
-                  : 'Choose exactly one active assignee.'}
+                  ? t('action-items:unassignedProposal')
+                  : t('action-items:chooseAssignee')}
               </p>
             )}
             <div className='max-h-36 space-y-1 overflow-y-auto rounded-lg border p-1'>
               {candidates.isFetching && (
                 <p className='px-2 py-3 text-xs text-muted-foreground'>
-                  Searching active users…
+                  {t('action-items:searchingUsers')}
                 </p>
               )}
               {assignmentAllowed &&
@@ -747,7 +740,7 @@ export function ActionForm({
                 ))}
               {candidates.isError && (
                 <p role='alert' className='px-2 py-3 text-xs text-destructive'>
-                  Unable to load eligible assignees.
+                  {t('action-items:assigneeLookupFailed')}
                 </p>
               )}
             </div>
@@ -769,7 +762,7 @@ export function ActionForm({
                     }
                     onClick={() => setUserPage((page) => Math.max(0, page - 1))}
                   >
-                    Previous
+                    {t('action-items:previous')}
                   </Button>
                   <Button
                     type='button'
@@ -784,19 +777,18 @@ export function ActionForm({
                     }
                     onClick={() => setUserPage((page) => page + 1)}
                   >
-                    Next
+                    {t('action-items:next')}
                   </Button>
                 </div>
               )}
             {displayItem?.assignee && !displayItem.assignee.active && (
               <p className='text-sm text-amber-700'>
-                The current assignee is inactive. Authorized reassignment is
-                required.
+                {t('action-items:inactiveAssignee')}
               </p>
             )}
           </div>
           <div className='space-y-1'>
-            <Label htmlFor='action-due'>Due date</Label>
+            <Label htmlFor='action-due'>{t('action-items:dueDate')}</Label>
             <Input
               id='action-due'
               type='date'
@@ -812,10 +804,9 @@ export function ActionForm({
           </div>
           {unresolvedCreate && (
             <div className='rounded-lg border border-amber-300 p-3 text-sm'>
-              <p className='font-medium'>Creation intent unresolved</p>
+              <p className='font-medium'>{t('action-items:unresolved')}</p>
               <p className='mt-1'>
-                Retry keeps the same normalized payload and idempotency key. Do
-                not change this content until the outcome is resolved.
+                {t('action-items:unresolvedHint')}
               </p>
               <Button
                 type='button'
@@ -825,7 +816,7 @@ export function ActionForm({
                 onClick={() => {
                   if (
                     !window.confirm(
-                      'The Action Item may already exist. Abandon local recovery and close this form?'
+                      t('action-items:abandonConfirm')
                     )
                   )
                     return
@@ -838,7 +829,7 @@ export function ActionForm({
                   onOpenChange(false)
                 }}
               >
-                Abandon local recovery
+                {t('action-items:abandon')}
               </Button>
             </div>
           )}
@@ -849,7 +840,7 @@ export function ActionForm({
               onClick={() => close(false)}
               disabled={mutation.isPending}
             >
-              Cancel
+              {t('action-items:cancel')}
             </Button>
             <Button
               disabled={
@@ -862,10 +853,10 @@ export function ActionForm({
               }
             >
               {unresolvedCreate
-                ? 'Retry same creation'
+                ? t('action-items:retryCreate')
                 : item
-                  ? 'Save changed fields'
-                  : 'Create official Action Item'}
+                  ? t('action-items:saveFields')
+                  : t('action-items:createTitle')}
             </Button>
           </DialogFooter>
         </form>
