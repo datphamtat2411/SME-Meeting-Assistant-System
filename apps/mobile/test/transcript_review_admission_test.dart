@@ -135,109 +135,109 @@ void main() {
     );
   });
 
-  test(
-    'acknowledgement is explicit; stale proof is blocked; ambiguous admission replays exact intent',
-    () async {
-      var current = _source();
-      var admitted = false;
-      var loseResponse = true;
-      final acknowledgements = <Map<String, dynamic>>[];
-      final admissions = <Map<String, dynamic>>[];
-      final keys = <String?>[];
-      final client = MeetingTestHttpClient((request) async {
-        final path = request.url.path;
-        if (path.endsWith('/transcript-review/acknowledge')) {
-          final body = decodeRequestBody(request);
-          acknowledgements.add(body);
-          return meetingApiSuccess(_receipt(body));
+  test('acknowledgement is explicit; stale proof is blocked; ambiguous admission replays exact intent', () async {
+    var current = _source();
+    var admitted = false;
+    var loseResponse = true;
+    final acknowledgements = <Map<String, dynamic>>[];
+    final admissions = <Map<String, dynamic>>[];
+    final keys = <String?>[];
+    final client = MeetingTestHttpClient((request) async {
+      final path = request.url.path;
+      if (path.endsWith('/transcript-review/acknowledge')) {
+        final body = decodeRequestBody(request);
+        acknowledgements.add(body);
+        return meetingApiSuccess(_receipt(body));
+      }
+      if (path.endsWith('/meeting-intelligence/admit')) {
+        admissions.add(decodeRequestBody(request));
+        keys.add(request.headers['Idempotency-Key']);
+        admitted = true;
+        if (loseResponse) {
+          loseResponse = false;
+          return meetingApiFailure(503, 'TEMPORARILY_UNAVAILABLE');
         }
-        if (path.endsWith('/meeting-intelligence/admit')) {
-          admissions.add(decodeRequestBody(request));
-          keys.add(request.headers['Idempotency-Key']);
-          admitted = true;
-          if (loseResponse) {
-            loseResponse = false;
-            return meetingApiFailure(503, 'TEMPORARILY_UNAVAILABLE');
-          }
-          return meetingApiSuccess(_jobJson(true), status: 202);
-        }
-        if (path.endsWith('/processing-jobs/$_job')) {
-          return meetingApiSuccess(_jobJson(admitted));
-        }
-        if (path.endsWith('/processing-jobs')) {
-          return meetingApiSuccess([_jobJson(admitted)]);
-        }
-        if (path.endsWith('/media')) {
-          return meetingApiSuccess(<dynamic>[]);
-        }
-        throw StateError('Unexpected request: $path');
-      });
-      final api = createMeetingTestApi(client);
-      await signInMeetingTestApi(api);
-      final scope = api.requireAuthenticatedSessionScope();
-      final manager = ProcessingManager(
-        api: api,
-        mediaRepository: MediaRepository(api: api),
-        processingRepository: ProcessingRepository(api: api),
-        localMedia: LocalMediaRepository.lazyDefault(),
-      );
-      addTearDown(() {
-        manager.dispose();
-        api.dispose();
-      });
-      const handoff = TranscriptReviewHandoff(
-        meetingId: testMeetingId,
-        jobId: _job,
-        sourceMediaId: _media,
-      );
-      final capabilities = MeetingCapabilityPolicy.evaluate(
-        callerId: testUserId,
-        meeting: Meeting.fromJson(meetingTestJson()),
-      );
-      Future<bool> send(
-        TranscriptReviewCommand command,
-        TranscriptReviewProof? proof,
-      ) => manager.reviewTranscript(
-        handoff: handoff,
-        scope: scope,
-        command: command,
-        displayedProof: proof,
-        readCurrentTranscript: () async => current,
-        stillAuthorized: () => true,
-        capabilities: capabilities,
-      );
+        return meetingApiSuccess(_jobJson(true), status: 202);
+      }
+      if (path.endsWith('/processing-jobs/$_job')) {
+        return meetingApiSuccess(_jobJson(admitted));
+      }
+      if (path.endsWith('/processing-jobs')) {
+        return meetingApiSuccess([_jobJson(admitted)]);
+      }
+      if (path.endsWith('/media')) {
+        return meetingApiSuccess(<dynamic>[]);
+      }
+      throw StateError('Unexpected request: $path');
+    });
+    final api = createMeetingTestApi(client);
+    await signInMeetingTestApi(api);
+    final scope = api.requireAuthenticatedSessionScope();
+    final manager = ProcessingManager(
+      api: api,
+      mediaRepository: MediaRepository(api: api),
+      processingRepository: ProcessingRepository(api: api),
+      localMedia: LocalMediaRepository.lazyDefault(),
+    );
+    addTearDown(() {
+      manager.dispose();
+      api.dispose();
+    });
+    const handoff = TranscriptReviewHandoff(
+      meetingId: testMeetingId,
+      jobId: _job,
+      sourceMediaId: _media,
+    );
+    final capabilities = MeetingCapabilityPolicy.evaluate(
+      callerId: testUserId,
+      meeting: Meeting.fromJson(meetingTestJson()),
+    );
+    Future<bool> send(
+      TranscriptReviewCommand command,
+      TranscriptReviewProof? proof,
+    ) => manager.reviewTranscript(
+      handoff: handoff,
+      scope: scope,
+      command: command,
+      displayedProof: proof,
+      readCurrentTranscript: () async => current,
+      stillAuthorized: () => true,
+      capabilities: capabilities,
+    );
 
-      final first = _proof(current);
-      expect(await send(TranscriptReviewCommand.acknowledge, first), isFalse);
-      expect(acknowledgements, [first.toJson()]);
-      expect(admissions, isEmpty);
-      current = _source(revision: 2, text: 'Đã sửa');
-      await expectLater(
-        send(TranscriptReviewCommand.admit, first),
-        throwsA(isA<ApiFailure>()),
-      );
-      expect(admissions, isEmpty);
+    final first = _proof(current);
+    expect(await send(TranscriptReviewCommand.acknowledge, first), isFalse);
+    expect(acknowledgements, [first.toJson()]);
+    expect(admissions, isEmpty);
+    current = _source(revision: 2, text: 'Đã sửa');
+    await expectLater(
+      send(TranscriptReviewCommand.admit, first),
+      throwsA(isA<ApiFailure>()),
+    );
+    expect(admissions, isEmpty);
 
-      final second = _proof(current);
-      expect(await send(TranscriptReviewCommand.acknowledge, second), isFalse);
-      await expectLater(
-        send(TranscriptReviewCommand.admit, second),
-        throwsA(isA<ApiFailure>()),
-      );
-      expect(
-        manager.reviewOperation(_job, scope)?.pending,
-        TranscriptReviewCommand.admit,
-      );
-      current = _source(revision: 3, text: 'Sửa từ Web');
-      expect(await send(TranscriptReviewCommand.admit, null), isTrue);
-      expect(admissions, [
-        {...second.toJson(), 'reviewId': _review},
-        {...second.toJson(), 'reviewId': _review},
-      ]);
-      expect(keys, [second.key(reviewId: _review), second.key(reviewId: _review)]);
-      expect(manager.reviewOperation(_job, scope)?.admitted, isTrue);
-    },
-  );
+    final second = _proof(current);
+    expect(await send(TranscriptReviewCommand.acknowledge, second), isFalse);
+    await expectLater(
+      send(TranscriptReviewCommand.admit, second),
+      throwsA(isA<ApiFailure>()),
+    );
+    expect(
+      manager.reviewOperation(_job, scope)?.pending,
+      TranscriptReviewCommand.admit,
+    );
+    current = _source(revision: 3, text: 'Sửa từ Web');
+    expect(await send(TranscriptReviewCommand.admit, null), isTrue);
+    expect(admissions, [
+      {...second.toJson(), 'reviewId': _review},
+      {...second.toJson(), 'reviewId': _review},
+    ]);
+    expect(keys, [
+      second.key(reviewId: _review),
+      second.key(reviewId: _review),
+    ]);
+    expect(manager.reviewOperation(_job, scope)?.admitted, isTrue);
+  });
 
   test('wrong acknowledgement identity is an uncertain mutation', () async {
     final api = createMeetingTestApi(
