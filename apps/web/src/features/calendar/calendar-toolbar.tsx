@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, RotateCcw, Search } from 'lucide-react'
 import { formatCivilDate } from '@/lib/regional-time'
@@ -23,14 +24,6 @@ import {
   type CalendarView,
 } from './calendar-state'
 
-const statusLabels: Record<MeetingLifecycleStatus, string> = {
-  DRAFT: 'Draft',
-  SCHEDULED: 'Scheduled',
-  IN_PROGRESS: 'In progress',
-  ENDED: 'Ended',
-  CANCELLED: 'Cancelled',
-}
-
 export interface CalendarToolbarProps {
   month: string
   view: CalendarView
@@ -53,6 +46,7 @@ export function CalendarToolbar({
   onViewChange,
   onFiltersChange,
 }: CalendarToolbarProps) {
+  const { t } = useUiTranslation()
   const { locale } = useRegionalPresentation()
   const committedKeyword = filters.q ?? ''
   const [keywordDraft, setKeywordDraft] = useState({
@@ -96,7 +90,7 @@ export function CalendarToolbar({
 
   return (
     <section
-      aria-label='Calendar navigation and filters'
+      aria-label={t('calendar:navigation')}
       className='space-y-4 rounded-lg border bg-card p-4 sm:p-5'
     >
       <div className='flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between'>
@@ -110,24 +104,24 @@ export function CalendarToolbar({
           <div
             className='flex items-center gap-2'
             role='group'
-            aria-label='Month navigation'
+            aria-label={t('calendar:monthNavigation')}
           >
             <Button
               variant='outline'
               size='icon'
               onClick={() => onNavigateMonth(-1)}
-              aria-label='Previous month'
+              aria-label={t('calendar:previousMonth')}
             >
               <ChevronLeft className='size-4' />
             </Button>
             <Button variant='outline' size='sm' onClick={onToday}>
-              Today
+              {t('calendar:today')}
             </Button>
             <Button
               variant='outline'
               size='icon'
               onClick={() => onNavigateMonth(1)}
-              aria-label='Next month'
+              aria-label={t('calendar:nextMonth')}
             >
               <ChevronRight className='size-4' />
             </Button>
@@ -140,18 +134,18 @@ export function CalendarToolbar({
               onViewChange(value)
             }
           }}
-          aria-label='Calendar view'
+          aria-label={t('calendar:view')}
         >
           <TabsList>
-            <TabsTrigger value='month'>Month</TabsTrigger>
-            <TabsTrigger value='agenda'>Agenda</TabsTrigger>
+            <TabsTrigger value='month'>{t('calendar:month')}</TabsTrigger>
+            <TabsTrigger value='agenda'>{t('calendar:agenda')}</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
 
       <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(12rem,1.2fr)_repeat(3,minmax(10rem,1fr))_auto]'>
         <label className='space-y-1.5 text-sm font-medium'>
-          <span>Relationship</span>
+          <span>{t('calendar:relationship')}</span>
           <Select
             value={filters.relationship}
             onValueChange={(value) => {
@@ -165,30 +159,28 @@ export function CalendarToolbar({
             }}
           >
             <SelectTrigger
-              aria-label='Relationship'
+              aria-label={t('calendar:relationship')}
               aria-describedby='calendar-relationship-description'
               className='w-full'
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value='all'>All accessible</SelectItem>
-              <SelectItem value='organizer'>Organized by me</SelectItem>
-              <SelectItem value='participant'>Participating</SelectItem>
+              <SelectItem value='all'>{t('calendar:allAccessible')}</SelectItem>
+              <SelectItem value='organizer'>{t('calendar:organized')}</SelectItem>
+              <SelectItem value='participant'>{t('calendar:participating')}</SelectItem>
             </SelectContent>
           </Select>
           <p
             id='calendar-relationship-description'
             className='text-xs font-normal text-muted-foreground'
           >
-            All accessible shows meetings Core API lets you view. Participating
-            shows participant membership only; meetings you organize are in
-            Organized by me.
+            {t('calendar:relationshipHelp')}
           </p>
         </label>
 
         <label className='space-y-1.5 text-sm font-medium'>
-          <span>Status</span>
+          <span>{t('calendar:statusFilter')}</span>
           <Select
             value={filters.status ?? 'all'}
             onValueChange={(value) => {
@@ -200,14 +192,14 @@ export function CalendarToolbar({
               })
             }}
           >
-            <SelectTrigger aria-label='Status' className='w-full'>
+            <SelectTrigger aria-label={t('calendar:statusFilter')} className='w-full'>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value='all'>All statuses</SelectItem>
+              <SelectItem value='all'>{t('calendar:allStatuses')}</SelectItem>
               {meetingLifecycleStatuses.map((status) => (
                 <SelectItem key={status} value={status}>
-                  {statusLabels[status]}
+                  {t(`calendar:status.${status}`)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -220,14 +212,14 @@ export function CalendarToolbar({
         />
 
         <label className='space-y-1.5 text-sm font-medium'>
-          <span>Keyword</span>
+          <span>{t('calendar:keyword')}</span>
           <span className='relative block'>
             <Search
               aria-hidden='true'
               className='absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground'
             />
             <Input
-              aria-label='Search meetings'
+              aria-label={t('calendar:search')}
               className='pl-9'
               value={keyword}
               onChange={(event) =>
@@ -236,7 +228,7 @@ export function CalendarToolbar({
                   value: event.currentTarget.value,
                 })
               }
-              placeholder='Search meetings'
+              placeholder={t('calendar:search')}
               type='search'
             />
           </span>
@@ -251,7 +243,7 @@ export function CalendarToolbar({
             onClick={resetFilters}
           >
             <RotateCcw className='size-4' />
-            Reset filters
+            {t('calendar:reset')}
           </Button>
         </div>
       </div>

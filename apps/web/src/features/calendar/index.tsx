@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
@@ -22,6 +23,7 @@ import { CalendarToolbar } from './calendar-toolbar'
 import { CalendarAgendaView, CalendarMonthView } from './calendar-views'
 
 export function CalendarPage() {
+  const { t } = useUiTranslation()
   const calendar = useCalendarController()
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [initialScheduleDate, setInitialScheduleDate] = useState<
@@ -45,15 +47,15 @@ export function CalendarPage() {
     status: 'DRAFT' | 'SCHEDULED'
   }) {
     if (status === 'SCHEDULED') {
-      toast.success('Meeting scheduled', {
+      toast.success(t('calendar:scheduled'), {
         description:
-          'Calendar data was refreshed without changing your selected month or filters.',
+          t('calendar:refreshed'),
       })
       return
     }
-    toast.success('Meeting saved as draft', {
+    toast.success(t('calendar:draftSaved'), {
       description:
-        'Your Calendar view is unchanged. A draft without a valid schedule may not appear in the calendar.',
+        t('calendar:draftDescription'),
     })
   }
 
@@ -81,6 +83,7 @@ function CalendarPageContent({
   calendar: CalendarController
   onNewMeeting: (date?: string) => void
 }) {
+  const { t } = useUiTranslation()
   const regional = useRegionalPresentation()
   const [selectedDayKey, setSelectedDayKey] = useState<string>()
   const selectedDayDate = selectedDayKey
@@ -130,34 +133,32 @@ function CalendarPageContent({
       <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
         <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
           <div>
-            <p className='text-sm font-medium text-primary'>Meeting schedule</p>
+            <p className='text-sm font-medium text-primary'>{t('calendar:schedule')}</p>
             <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
-              Calendar
+              {t('calendar:title')}
             </h1>
             <p className='mt-2 max-w-2xl text-muted-foreground'>
-              Review when meetings happen and open any meeting workspace from
-              the schedule.
+              {t('calendar:description')}
             </p>
             <p
               role='note'
-              aria-label='Calendar time zone'
+              aria-label={t('calendar:timeZone')}
               className='mt-2 text-xs text-muted-foreground'
             >
-              Times shown in {timeZone} (UTC{currentOffset} today;
-              daylight-saving offsets follow each meeting date).
+              {t('calendar:zoneNote', { zone: timeZone, offset: currentOffset })}
             </p>
             {regional.status === 'loading' && (
               <p role='status' className='text-sm text-muted-foreground'>
-                Loading regional preferences…
+                {t('calendar:loadingPreferences')}
               </p>
             )}
             {(regional.status === 'unavailable' ||
               regional.timezoneFallback) && (
               <p role='status' className='text-sm text-muted-foreground'>
-                Using fallback timezone {timeZone}.
+                {t('calendar:fallbackZone', { zone: timeZone })}
                 {regional.retry && (
                   <Button type='button' variant='link' onClick={regional.retry}>
-                    Retry preferences
+                    {t('calendar:retryPreferences')}
                   </Button>
                 )}
               </p>
@@ -165,7 +166,7 @@ function CalendarPageContent({
           </div>
           <div className='flex flex-wrap gap-2'>
             <Button asChild variant='outline'>
-              <Link to='/meetings'>Manage meetings</Link>
+              <Link to='/meetings'>{t('calendar:manage')}</Link>
             </Button>
             <Button
               type='button'
@@ -176,7 +177,7 @@ function CalendarPageContent({
               onClick={() => onNewMeeting(selectedDayKey)}
             >
               <Plus aria-hidden='true' />
-              New Meeting
+              {t('calendar:newMeeting')}
             </Button>
           </div>
         </div>
@@ -187,14 +188,7 @@ function CalendarPageContent({
             role='status'
             className='flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground'
           >
-            New meetings will use{' '}
-            {formatCivilDate(selectedDayDate.toString(), regional.locale, {
-              weekday: 'long',
-              month: 'long',
-              day: 'numeric',
-              year: 'numeric',
-            })}{' '}
-            as their start and end dates; no times are prefilled.
+            {t('calendar:selectedDate', { date: formatCivilDate(selectedDayDate.toString(), regional.locale, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }) })}
             <Button
               type='button'
               variant='link'
@@ -202,7 +196,7 @@ function CalendarPageContent({
               className='h-auto p-0'
               onClick={() => setSelectedDayKey(undefined)}
             >
-              Clear date selection
+              {t('calendar:clearDate')}
             </Button>
           </p>
         )}
