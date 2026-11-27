@@ -35,6 +35,16 @@ List<Map<String, dynamic>> objectsOf(dynamic value) {
   return value.map(objectOf).toList(growable: false);
 }
 
+/// Evidence about one protected PATCH attempt, independent of token refreshes.
+/// A started dispatch is not proof that Core API received or committed it.
+class ProtectedMutationAttempt {
+  bool _dispatchStarted = false;
+  bool _authenticationRejected = false;
+
+  bool get dispatchStarted => _dispatchStarted;
+  bool get authenticationRejected => _authenticationRejected;
+}
+
 /// Feature-facing API compatibility facade.
 ///
 /// Authentication state and credentials belong exclusively to
@@ -136,20 +146,24 @@ class ApiClient extends ChangeNotifier {
   Future<void> signIn(String email, String password) =>
       sessionCoordinator.signIn(email, password);
 
-  Future<void> loadIdentity() => sessionCoordinator.loadIdentity();
+  Future<void> loadIdentity({AuthenticatedSessionScope? expectedScope}) =>
+      sessionCoordinator.loadIdentity(expectedScope: expectedScope);
+
+  Future<AuthReconciliationOutcome> reconcileSession() =>
+      sessionCoordinator.reconcileSession();
 
   Future<AuthLogoutOutcome> signOut() => sessionCoordinator.signOut();
 
   /// Requests password recovery without acquiring or changing session state.
-  Future<ApiResult> requestPasswordRecovery(String email) =>
+  Future<void> requestPasswordRecovery(String email) =>
       _authRepository.requestPasswordRecovery(email);
 
   /// Resets a password with a single-use recovery token, without session auth.
-  Future<ApiResult> resetPassword(String token, String password) =>
+  Future<void> resetPassword(String token, String password) =>
       _authRepository.resetPassword(token, password);
 
   /// Completes invitation-based account setup without session authentication.
-  Future<ApiResult> completeAccountSetup(String token, String password) =>
+  Future<void> completeAccountSetup(String token, String password) =>
       _authRepository.completeAccountSetup(token, password);
 
   Future<ApiResult> get(
@@ -192,12 +206,14 @@ class ApiClient extends ChangeNotifier {
     Map<String, dynamic> body, {
     Map<String, String>? headers,
     AuthenticatedSessionScope? sessionScope,
+    ProtectedMutationAttempt? attempt,
   }) => _request(
     'PATCH',
     path,
     body: body,
     headers: headers,
     sessionScope: sessionScope,
+    attempt: attempt,
   );
 
   Future<ApiResult> delete(
@@ -214,16 +230,18 @@ class ApiClient extends ChangeNotifier {
     Map<String, String>? headers,
     CoreApiTimeoutPolicy? timeoutPolicy,
     AuthenticatedSessionScope? sessionScope,
+    ProtectedMutationAttempt? attempt,
   }) async {
     final coordinator = sessionCoordinator;
-    final epoch = sessionScope?.lifecycleEpoch ?? coordinator._lifecycleEpoch;
+    final requestScope = sessionScope ?? coordinator.authenticatedSessionScope;
+    final epoch = requestScope?.lifecycleEpoch ?? coordinator._lifecycleEpoch;
     final credential = coordinator._credentialForDispatch(
       await coordinator._credentialForProtectedRequest(
         expectedEpoch: epoch,
-        expectedScope: sessionScope,
+        expectedScope: requestScope,
       ),
       requireVerifiedSession: true,
-      expectedScope: sessionScope,
+      expectedScope: requestScope,
     );
     final requestEpoch = credential.epoch;
     try {
@@ -236,17 +254,19 @@ class ApiClient extends ChangeNotifier {
         body: body,
         headers: headers,
         timeoutPolicy: timeoutPolicy,
-        expectedScope: sessionScope,
+        expectedScope: requestScope,
+        attempt: attempt,
       );
     } on ApiFailure catch (failure) {
       if (!_coordinatorStillOwnsRequest(
         coordinator,
         credential,
-        sessionScope,
+        requestScope,
       )) {
         throw coordinator._sessionChanged();
       }
       if (!_isAuthentication401(failure)) rethrow;
+      attempt?._authenticationRejected = true;
 
       final current = coordinator._snapshotForEpoch(requestEpoch);
       if (current == null) rethrow;
@@ -263,7 +283,7 @@ class ApiClient extends ChangeNotifier {
         if (!_coordinatorStillOwnsRequest(
           coordinator,
           credential,
-          sessionScope,
+          requestScope,
         )) {
           throw coordinator._sessionChanged();
         }
@@ -273,7 +293,7 @@ class ApiClient extends ChangeNotifier {
       final replayCredential = coordinator._credentialForDispatch(
         recovered,
         requireVerifiedSession: true,
-        expectedScope: sessionScope,
+        expectedScope: requestScope,
       );
       try {
         return await _sendForSession(
@@ -285,7 +305,7 @@ class ApiClient extends ChangeNotifier {
           body: body,
           headers: headers,
           timeoutPolicy: timeoutPolicy,
-          expectedScope: sessionScope,
+          expectedScope: requestScope,
         );
       } on ApiFailure catch (retryFailure) {
         if (_isAuthentication401(retryFailure)) {
@@ -297,7 +317,7 @@ class ApiClient extends ChangeNotifier {
           if (!_coordinatorStillOwnsRequest(
             coordinator,
             credential,
-            sessionScope,
+            requestScope,
           )) {
             throw coordinator._sessionChanged();
           }
@@ -317,6 +337,7 @@ class ApiClient extends ChangeNotifier {
     Map<String, String>? headers,
     CoreApiTimeoutPolicy? timeoutPolicy,
     AuthenticatedSessionScope? expectedScope,
+    ProtectedMutationAttempt? attempt,
   }) async {
     final dispatchCredential = coordinator._credentialForDispatch(
       credential,
@@ -324,6 +345,7 @@ class ApiClient extends ChangeNotifier {
       expectedScope: expectedScope,
     );
     try {
+      attempt?._dispatchStarted = true;
       final response = await _requestExecutor.send(
         method,
         path,

@@ -6,6 +6,8 @@ import sys
 import tempfile
 import time
 import unittest
+
+from tool.validate_account_link_manifest import validate_account_link_manifest
 from pathlib import Path
 
 from tool.run_android_native_verification import (
@@ -138,6 +140,42 @@ class GradleDiagnosticTests(unittest.TestCase):
             )
 
             validate_merged_manifest(root)
+
+
+    def test_account_link_manifest_exact_paths_and_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = (
+                root / "build/app/intermediates/merged_manifests/debug/"
+                "processDebugManifest/AndroidManifest.xml"
+            )
+            path.parent.mkdir(parents=True)
+            header = (
+                '<manifest xmlns:android="http://schemas.android.com/apk/res/android" '
+                'package="vn.sme.meetingassistant.sme_meeting_assistant">'
+                '<application><activity android:name=".MainActivity">'
+                '<meta-data android:name="flutter_deeplinking_enabled" '
+                'android:value="false"/>'
+            )
+            end = "</activity></application></manifest>"
+            path.write_text(header + end)
+            validate_account_link_manifest(root, None)
+            filters = "".join(
+                '<intent-filter android:autoVerify="true">'
+                '<action android:name="android.intent.action.VIEW"/>'
+                '<category android:name="android.intent.category.DEFAULT"/>'
+                '<category android:name="android.intent.category.BROWSABLE"/>'
+                '<data android:scheme="https" android:host="meeting.example.invalid" '
+                f'android:path="{callback}"/></intent-filter>'
+                for callback in ("/account-setup", "/reset-password", "/sign-up", "/otp")
+            )
+            path.write_text(header + filters + end)
+            validate_account_link_manifest(root, "meeting.example.invalid")
+            with self.assertRaises(ValueError):
+                validate_account_link_manifest(root, None)
+            path.write_text(header + filters.replace('android:path="/otp"', 'android:pathPrefix="/"') + end)
+            with self.assertRaises(ValueError):
+                validate_account_link_manifest(root, "meeting.example.invalid")
 
 
 if __name__ == "__main__":

@@ -9,22 +9,36 @@ abstract interface class AppearancePreferences {
 
 class SharedPreferencesAppearancePreferences implements AppearancePreferences {
   final String key;
+  final Future<SharedPreferences> Function() _loadStore;
   Future<SharedPreferences>? _preferences;
 
-  SharedPreferencesAppearancePreferences({this.key = 'theme'});
+  SharedPreferencesAppearancePreferences({
+    this.key = 'theme',
+    Future<SharedPreferences> Function()? loadStore,
+  }) : _loadStore = loadStore ?? SharedPreferences.getInstance;
 
-  Future<SharedPreferences> get _store =>
-      _preferences ??= SharedPreferences.getInstance();
+  Future<SharedPreferences> get _store async {
+    final pending = _preferences ??= Future<SharedPreferences>.sync(_loadStore);
+    try {
+      return await pending;
+    } catch (_) {
+      if (identical(_preferences, pending)) _preferences = null;
+      rethrow;
+    }
+  }
 
   @override
   Future<ThemeMode?> loadThemeMode() async {
-    final value = (await _store).getString(key);
-    return _modeFromName(value);
+    final value = (await _store).get(key);
+    return _modeFromName(value is String ? value : null);
   }
 
   @override
   Future<void> saveThemeMode(ThemeMode mode) async {
-    await (await _store).setString(key, mode.name);
+    final stored = await (await _store).setString(key, mode.name);
+    if (!stored) {
+      throw StateError('Appearance preference was not persisted.');
+    }
   }
 
   static ThemeMode? _modeFromName(String? value) => switch (value) {

@@ -10,6 +10,56 @@ import 'support/http_test_support.dart';
 const _baseUri = 'https://api.example.test/api/v1';
 
 void main() {
+  test('rejects malformed operation success payloads without replay', () async {
+    final scenarios = <({String path, Object? data})>[
+      (path: '/auth/password-recovery', data: null),
+      (path: '/auth/password-recovery', data: <String, dynamic>{}),
+      (path: '/auth/password-reset', data: <String, dynamic>{'message': 7}),
+      (path: '/auth/password-reset', data: <String, dynamic>{'message': ' '}),
+      (path: '/auth/account-setup', data: <String, dynamic>{}),
+    ];
+    for (final scenario in scenarios) {
+      final client = _PublicAuthenticationClient(
+        successDataByPath: <String, dynamic>{scenario.path: scenario.data},
+      );
+      final api = _api(client);
+      addTearDown(api.dispose);
+      await api.initialize();
+      await expectLater(
+        _invokePublicOperation(api, scenario.path),
+        throwsA(
+          isA<ApiFailure>()
+              .having((failure) => failure.invalidResponse, 'invalid', isTrue)
+              .having(
+                (failure) => failure.remoteOutcomeAmbiguous,
+                'ambiguous',
+                isTrue,
+              ),
+        ),
+      );
+      expect(client.pathCalls(scenario.path), 1);
+      expect(client.refreshCalls, 0);
+      expect(api.sessionState.phase, AuthSessionPhase.unauthenticated);
+    }
+  });
+
+  test('preserves opaque capabilities and passwords exactly', () async {
+    final client = _PublicAuthenticationClient();
+    final api = _api(client);
+    addTearDown(api.dispose);
+    await api.initialize();
+    const token = 'opaque-token+/=';
+    const password = '  Mật khẩu mới 🔐  ';
+    await api.resetPassword(token, password);
+    await api.completeAccountSetup(token, password);
+    for (final request in client.publicRequests) {
+      expect(_requestBody(request), <String, dynamic>{
+        'token': token,
+        'password': password,
+      });
+    }
+  });
+
   test('public authentication operations work without a session', () async {
     final storage = InMemoryCredentialStorage();
     final client = _PublicAuthenticationClient();
@@ -224,7 +274,7 @@ ApiClient _api(
   now: now,
 );
 
-Future<ApiResult> _invokePublicOperation(
+Future<void> _invokePublicOperation(
   ApiClient api,
   String path,
 ) => switch (path) {
@@ -252,10 +302,12 @@ class _PublicAuthenticationClient extends http.BaseClient {
   _PublicAuthenticationClient({
     this.failureStatusByPath = const <String, int>{},
     this.failWithSocketException = false,
+    this.successDataByPath = const <String, dynamic>{},
   });
 
   final Map<String, int> failureStatusByPath;
   final bool failWithSocketException;
+  final Map<String, dynamic> successDataByPath;
   final List<http.BaseRequest> requests = <http.BaseRequest>[];
   int refreshCalls = 0;
 
@@ -295,10 +347,13 @@ class _PublicAuthenticationClient extends http.BaseClient {
         if (status != null) {
           return _failureResponse(status);
         }
-        return jsonResponse(
-          200,
-          successEnvelope(<String, dynamic>{'accepted': true}),
-        );
+        final suffix = path.replaceFirst('/api/v1', '');
+        final data = successDataByPath.containsKey(suffix)
+            ? successDataByPath[suffix]
+            : suffix == '/auth/account-setup'
+            ? null
+            : <String, dynamic>{'message': 'Request acknowledged.'};
+        return jsonResponse(200, successEnvelope(data));
     }
     throw StateError('Unexpected request path $path');
   }

@@ -21,26 +21,42 @@ class AuthenticatedSessionScope {
     required this.userId,
     required this.deploymentScope,
     required this.lifecycleEpoch,
+    required this.protectedAccessGeneration,
   });
 
   final String userId;
   final String deploymentScope;
   final int lifecycleEpoch;
+  final int protectedAccessGeneration;
 
   @override
   bool operator ==(Object other) =>
       other is AuthenticatedSessionScope &&
       other.userId == userId &&
       other.deploymentScope == deploymentScope &&
-      other.lifecycleEpoch == lifecycleEpoch;
+      other.lifecycleEpoch == lifecycleEpoch &&
+      other.protectedAccessGeneration == protectedAccessGeneration;
 
   @override
-  int get hashCode => Object.hash(userId, deploymentScope, lifecycleEpoch);
+  int get hashCode => Object.hash(
+    userId,
+    deploymentScope,
+    lifecycleEpoch,
+    protectedAccessGeneration,
+  );
 }
 
 enum AuthLogoutOutcome {
   remoteRevocationConfirmed,
   remoteRevocationUnconfirmed,
+}
+
+enum AuthReconciliationOutcome {
+  noSession,
+  verified,
+  invalidated,
+  denied,
+  unavailable,
 }
 
 enum AuthSessionPhase {
@@ -134,6 +150,11 @@ class AuthSessionCoordinator extends ChangeNotifier {
   int? _lastRefreshErrorGeneration;
   DateTime? _lastRefreshRetryNotBefore;
   int _lifecycleEpoch = 0;
+  int _protectedAccessGeneration = 0;
+  int _identityReloadGeneration = 0;
+  ({int epoch, AuthUuid userId, AuthUuid sessionId})? _reconciliationOwner;
+  Completer<AuthReconciliationOutcome>? _reconciliationWaiter;
+  int? _interactiveSignInEpoch;
   int _accessGeneration = 0;
   Future<void> _tokenStoreTail = Future<void>.value();
   bool _disposed = false;
@@ -146,6 +167,18 @@ class AuthSessionCoordinator extends ChangeNotifier {
   AuthSessionState get state => _state;
   int get lifecycleEpoch => _lifecycleEpoch;
 
+  bool get isInteractiveSignIn =>
+      _interactiveSignInEpoch == _lifecycleEpoch &&
+      (_state.phase == AuthSessionPhase.signingIn ||
+          _state.phase == AuthSessionPhase.verifyingIdentity);
+
+  Duration get retryRemaining {
+    final remaining = _state.retryNotBefore?.difference(_now());
+    return remaining != null && remaining > Duration.zero
+        ? remaining
+        : Duration.zero;
+  }
+
   AuthenticatedSessionScope? get authenticatedSessionScope {
     final identity = _state.identity;
     if (!_state.isAuthenticated || identity == null) return null;
@@ -153,6 +186,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
       userId: identity.userId.value,
       deploymentScope: _tokenStore.scopeDigest,
       lifecycleEpoch: _lifecycleEpoch,
+      protectedAccessGeneration: _protectedAccessGeneration,
     );
   }
 
@@ -164,6 +198,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
 
   bool isCurrentAuthenticatedSession(AuthenticatedSessionScope scope) =>
       _isCurrentEpoch(scope.lifecycleEpoch) &&
+      scope.protectedAccessGeneration == _protectedAccessGeneration &&
       _state.isAuthenticated &&
       _state.identity?.userId.value == scope.userId &&
       _tokenStore.scopeDigest == scope.deploymentScope;
@@ -336,14 +371,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
     }
 
     try {
-      final identity = await _retrieveIdentity(expectedEpoch: epoch);
-      if (!_isCurrentEpoch(epoch)) return;
-      _setState(
-        AuthSessionState._(
-          phase: AuthSessionPhase.authenticated,
-          identity: identity,
-        ),
-      );
+      await _verifyAndPublishIdentity(expectedEpoch: epoch);
     } catch (error) {
       await _handleRestoreFailure(error, AuthEndpoint.identity, epoch);
     }
@@ -465,14 +493,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
     final epoch = _lifecycleEpoch;
     _setState(AuthSessionState._(phase: AuthSessionPhase.verifyingIdentity));
     try {
-      final identity = await _retrieveIdentity(expectedEpoch: epoch);
-      if (!_isCurrentEpoch(epoch)) return;
-      _setState(
-        AuthSessionState._(
-          phase: AuthSessionPhase.authenticated,
-          identity: identity,
-        ),
-      );
+      await _verifyAndPublishIdentity(expectedEpoch: epoch);
     } catch (error) {
       await _handleRestoreFailure(error, AuthEndpoint.identity, epoch);
     }
@@ -513,6 +534,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
     _ensureCanSignIn();
     _ensureRetryWindowOpen();
     final epoch = ++_lifecycleEpoch;
+    _interactiveSignInEpoch = epoch;
     _setState(AuthSessionState._(phase: AuthSessionPhase.signingIn));
     try {
       final tokens = await _repository.login(email, password);
@@ -533,28 +555,152 @@ class AuthSessionCoordinator extends ChangeNotifier {
 
     _setState(AuthSessionState._(phase: AuthSessionPhase.verifyingIdentity));
     try {
-      final identity = await _retrieveIdentity(expectedEpoch: epoch);
-      _requireCurrentEpoch(epoch);
-      _setState(
-        AuthSessionState._(
-          phase: AuthSessionPhase.authenticated,
-          identity: identity,
-        ),
-      );
+      await _verifyAndPublishIdentity(expectedEpoch: epoch);
     } catch (error) {
       await _handleRestoreFailure(error, AuthEndpoint.identity, epoch);
       rethrow;
     }
   }
 
-  Future<void> loadIdentity() async {
-    if (!_state.isAuthenticated) {
+  /// Closes protected access synchronously and verifies the current session.
+  /// A later request supersedes any in-flight identity probe, not credentials.
+  Future<AuthReconciliationOutcome> reconcileSession() {
+    if (_disposed) return Future.value(AuthReconciliationOutcome.invalidated);
+    switch (_state.phase) {
+      case AuthSessionPhase.unauthenticated:
+        return Future.value(AuthReconciliationOutcome.noSession);
+      case AuthSessionPhase.reauthenticationRequired:
+      case AuthSessionPhase.signingOut:
+        return Future.value(AuthReconciliationOutcome.invalidated);
+      case AuthSessionPhase.initializing:
+        _protectedAccessGeneration++;
+        return Future.value(AuthReconciliationOutcome.unavailable);
+      case AuthSessionPhase.recoverableFailure:
+        if (!_state.canRetryIdentityVerification ||
+            retryRemaining > Duration.zero) {
+          return Future.value(AuthReconciliationOutcome.unavailable);
+        }
+        _protectedAccessGeneration++;
+        final waiter = _reconciliationWaiter ??=
+            Completer<AuthReconciliationOutcome>();
+        unawaited(retryIdentityVerification());
+        return waiter.future;
+      case AuthSessionPhase.signingIn:
+      case AuthSessionPhase.verifyingIdentity:
+        _protectedAccessGeneration++;
+        return (_reconciliationWaiter ??=
+                Completer<AuthReconciliationOutcome>())
+            .future;
+      case AuthSessionPhase.authenticated:
+        final epoch = _lifecycleEpoch;
+        final identity = _state.identity!;
+        _reconciliationOwner = (
+          epoch: epoch,
+          userId: identity.userId,
+          sessionId: identity.session.id,
+        );
+        _protectedAccessGeneration++;
+        final waiter = _reconciliationWaiter ??=
+            Completer<AuthReconciliationOutcome>();
+        _setState(
+          AuthSessionState._(phase: AuthSessionPhase.verifyingIdentity),
+        );
+        unawaited(_reconcileVerifiedSession(epoch));
+        return waiter.future;
+    }
+  }
+
+  Future<void> _reconcileVerifiedSession(int epoch) async {
+    try {
+      await _verifyAndPublishIdentity(expectedEpoch: epoch);
+    } catch (error) {
+      await _handleRestoreFailure(error, AuthEndpoint.identity, epoch);
+    }
+  }
+
+  Future<void> _verifyAndPublishIdentity({required int expectedEpoch}) async {
+    while (true) {
+      _requireCurrentEpoch(expectedEpoch);
+      final generation = _protectedAccessGeneration;
+      final refresh = _refreshFuture;
+      if (refresh != null && _refreshEpoch == expectedEpoch) {
+        await _waitForRefreshInvalidation(refresh, expectedEpoch);
+      }
+      final identity = await _retrieveIdentity(expectedEpoch: expectedEpoch);
+      _requireCurrentEpoch(expectedEpoch);
+      if (generation != _protectedAccessGeneration) continue;
+      final owner = _reconciliationOwner;
+      if (owner != null &&
+          owner.epoch == expectedEpoch &&
+          (identity.userId != owner.userId ||
+              identity.session.id != owner.sessionId)) {
+        await _invalidateIdentityMismatch(expectedEpoch);
+        return;
+      }
+      _setState(
+        AuthSessionState._(
+          phase: AuthSessionPhase.authenticated,
+          identity: identity,
+        ),
+      );
+      return;
+    }
+  }
+
+  Future<void> _invalidateIdentityMismatch(int epoch) =>
+      _requireReauthentication(
+        _classifier.unsafeStoredCredential(
+          'SESSION_IDENTITY_MISMATCH',
+          'Không thể xác minh phiên hiện tại. Vui lòng đăng nhập lại.',
+        ),
+        expectedEpoch: epoch,
+      );
+
+  Future<void> loadIdentity({AuthenticatedSessionScope? expectedScope}) async {
+    if (expectedScope == null && !_state.isAuthenticated) {
       throw StateError('Identity reload requires a verified session.');
     }
-
-    final epoch = _lifecycleEpoch;
-    final identity = await _retrieveIdentity(expectedEpoch: epoch);
-    _requireCurrentEpoch(epoch);
+    final scope = expectedScope ?? requireAuthenticatedSessionScope();
+    requireCurrentAuthenticatedSession(scope);
+    final sessionId = _state.identity!.session.id.value;
+    final generation = ++_identityReloadGeneration;
+    final epoch = scope.lifecycleEpoch;
+    final AuthIdentity identity;
+    try {
+      identity = await _retrieveIdentity(
+        expectedEpoch: epoch,
+        expectedScope: scope,
+      );
+    } on ApiFailure catch (failure) {
+      if (isCurrentAuthenticatedSession(scope) &&
+          generation == _identityReloadGeneration) {
+        final category = _classifier.classify(failure, AuthEndpoint.identity);
+        if (category == AuthFailureCategory.authorizationDenied ||
+            category == AuthFailureCategory.sessionInvalidated) {
+          await _handleRestoreFailure(failure, AuthEndpoint.identity, epoch);
+        }
+      }
+      rethrow;
+    }
+    requireCurrentAuthenticatedSession(scope);
+    if (generation != _identityReloadGeneration) {
+      throw const ApiFailure(
+        0,
+        'AUTH_IDENTITY_RELOAD_SUPERSEDED',
+        'Một lần đồng bộ danh tính mới hơn đã được bắt đầu.',
+      );
+    }
+    if (identity.userId.value != scope.userId ||
+        identity.session.id.value != sessionId ||
+        !identity.isEligibleMobileIdentity) {
+      final failure = AuthSessionFailure._(
+        category: AuthFailureCategory.sessionInvalidated,
+        code: 'AUTH_IDENTITY_MISMATCH',
+        message: 'Danh tính không khớp với phiên đăng nhập hiện tại.',
+      );
+      await _requireReauthentication(failure, expectedEpoch: epoch);
+      throw AuthSessionException(failure);
+    }
     _setState(
       AuthSessionState._(
         phase: AuthSessionPhase.authenticated,
@@ -563,19 +709,29 @@ class AuthSessionCoordinator extends ChangeNotifier {
     );
   }
 
-  Future<AuthIdentity> _retrieveIdentity({required int expectedEpoch}) async {
+  Future<AuthIdentity> _retrieveIdentity({
+    required int expectedEpoch,
+    AuthenticatedSessionScope? expectedScope,
+  }) async {
+    void requireCurrent() {
+      _requireCurrentEpoch(expectedEpoch);
+      if (expectedScope != null) _requireScope(expectedScope);
+    }
+
+    requireCurrent();
     final credential = _credentialForDispatch(
       await _credentialForIdentity(expectedEpoch: expectedEpoch),
-      requireVerifiedSession: false,
+      requireVerifiedSession: expectedScope != null,
+      expectedScope: expectedScope,
     );
     try {
       final identity = await _repository.currentIdentity(
         credential.accessToken,
       );
-      _requireCurrentEpoch(expectedEpoch);
+      requireCurrent();
       return identity;
     } on ApiFailure catch (failure) {
-      if (!_isCurrentEpoch(expectedEpoch)) throw _sessionChanged();
+      requireCurrent();
       final classification = _classifier.classify(
         failure,
         AuthEndpoint.identity,
@@ -593,18 +749,20 @@ class AuthSessionCoordinator extends ChangeNotifier {
               expectedEpoch: expectedEpoch,
               usedGeneration: credential.generation,
             );
+      requireCurrent();
       final retryCredential = _credentialForDispatch(
         retryCandidate,
-        requireVerifiedSession: false,
+        requireVerifiedSession: expectedScope != null,
+        expectedScope: expectedScope,
       );
       try {
         final identity = await _repository.currentIdentity(
           retryCredential.accessToken,
         );
-        _requireCurrentEpoch(expectedEpoch);
+        requireCurrent();
         return identity;
       } on ApiFailure catch (retryFailure) {
-        if (!_isCurrentEpoch(expectedEpoch)) throw _sessionChanged();
+        requireCurrent();
         if (_classifier.classify(retryFailure, AuthEndpoint.identity) ==
             AuthFailureCategory.sessionInvalidated) {
           await _handleProtectedFailure(
@@ -646,7 +804,9 @@ class AuthSessionCoordinator extends ChangeNotifier {
   }
 
   Future<AuthLogoutOutcome> signOut() async {
-    if (!_state.isAuthenticated) {
+    if (!_state.isAuthenticated &&
+        !(_reconciliationOwner?.epoch == _lifecycleEpoch &&
+            _accessToken != null)) {
       throw StateError('Sign-out requires an authenticated session.');
     }
     final accessToken = _accessToken;
@@ -1319,12 +1479,39 @@ class AuthSessionCoordinator extends ChangeNotifier {
 
   void _setState(AuthSessionState next) {
     if (_disposed) return;
+    if (next.phase != AuthSessionPhase.signingIn &&
+        next.phase != AuthSessionPhase.verifyingIdentity) {
+      _interactiveSignInEpoch = null;
+    }
     _state = next;
+    if (_reconciliationOwner?.epoch != _lifecycleEpoch ||
+        next.isAuthenticated) {
+      _reconciliationOwner = null;
+    }
+    final outcome = switch (next.phase) {
+      AuthSessionPhase.authenticated => AuthReconciliationOutcome.verified,
+      AuthSessionPhase.unauthenticated => AuthReconciliationOutcome.noSession,
+      AuthSessionPhase.reauthenticationRequired =>
+        next.failure?.category == AuthFailureCategory.authorizationDenied
+            ? AuthReconciliationOutcome.denied
+            : AuthReconciliationOutcome.invalidated,
+      AuthSessionPhase.recoverableFailure =>
+        AuthReconciliationOutcome.unavailable,
+      _ => null,
+    };
+    if (outcome != null) _completeReconciliation(outcome);
     notifyListeners();
+  }
+
+  void _completeReconciliation(AuthReconciliationOutcome outcome) {
+    final waiter = _reconciliationWaiter;
+    _reconciliationWaiter = null;
+    waiter?.complete(outcome);
   }
 
   @override
   void dispose() {
+    _completeReconciliation(AuthReconciliationOutcome.invalidated);
     _disposed = true;
     ++_lifecycleEpoch;
     _clearMemoryCredentials();

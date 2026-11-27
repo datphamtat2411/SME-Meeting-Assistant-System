@@ -31,8 +31,96 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(controller.mode, ThemeMode.system);
+    expect(
+      controller.persistenceStatus,
+      AppearancePersistenceStatus.restoreFailed,
+    );
     controller.dispose();
   });
+
+  test('retrying a failed restore reads rather than overwriting', () async {
+    final preferences = RecoveringRestore();
+    final controller = AppearanceController(preferences: preferences);
+    controller.initialize();
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      controller.persistenceStatus,
+      AppearancePersistenceStatus.restoreFailed,
+    );
+    await controller.retryPersistence();
+    expect(controller.mode, ThemeMode.dark);
+    expect(preferences.saves, 0);
+    controller.dispose();
+  });
+
+  test('serializes writes and persists the latest selection', () async {
+    final preferences = ControlledWrites();
+    final controller = AppearanceController(preferences: preferences);
+    final first = controller.setMode(ThemeMode.dark);
+    await Future<void>.delayed(Duration.zero);
+    final second = controller.setMode(ThemeMode.light);
+    final last = controller.setMode(ThemeMode.system);
+    expect(controller.mode, ThemeMode.system);
+    expect(preferences.modes, [ThemeMode.dark]);
+    preferences.writes.first.complete();
+    await Future<void>.delayed(Duration.zero);
+    expect(preferences.modes, [ThemeMode.dark, ThemeMode.system]);
+    preferences.writes.last.complete();
+    await Future.wait([first, second, last]);
+    expect(controller.persistenceStatus, AppearancePersistenceStatus.saved);
+    controller.dispose();
+  });
+
+  test('outdated write failure does not replace newer status', () async {
+    final preferences = ControlledWrites();
+    final controller = AppearanceController(preferences: preferences);
+    final first = controller.setMode(ThemeMode.dark);
+    await Future<void>.delayed(Duration.zero);
+    final latest = controller.setMode(ThemeMode.light);
+    preferences.writes.first.completeError(StateError('old write failed'));
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.mode, ThemeMode.light);
+    expect(controller.persistenceStatus, AppearancePersistenceStatus.saving);
+    expect(preferences.modes, [ThemeMode.dark, ThemeMode.light]);
+    preferences.writes.last.complete();
+    await Future.wait([first, latest]);
+    expect(controller.persistenceStatus, AppearancePersistenceStatus.saved);
+    controller.dispose();
+  });
+
+  test('failed write retains active appearance and permits retry', () async {
+    final preferences = ControlledWrites();
+    final controller = AppearanceController(preferences: preferences);
+    final first = controller.setMode(ThemeMode.dark);
+    await Future<void>.delayed(Duration.zero);
+    preferences.writes.first.completeError(StateError('storage failed'));
+    await first;
+    expect(controller.mode, ThemeMode.dark);
+    expect(controller.persistenceStatus, AppearancePersistenceStatus.failed);
+    final retry = controller.retryPersistence();
+    await Future<void>.delayed(Duration.zero);
+    preferences.writes.last.complete();
+    await retry;
+    expect(preferences.modes, [ThemeMode.dark, ThemeMode.dark]);
+    expect(controller.persistenceStatus, AppearancePersistenceStatus.saved);
+    controller.dispose();
+  });
+}
+
+class ControlledWrites implements AppearancePreferences {
+  final modes = <ThemeMode>[];
+  final writes = <Completer<void>>[];
+
+  @override
+  Future<ThemeMode?> loadThemeMode() async => null;
+
+  @override
+  Future<void> saveThemeMode(ThemeMode mode) {
+    modes.add(mode);
+    final write = Completer<void>();
+    writes.add(write);
+    return write.future;
+  }
 }
 
 class DelayedAppearancePreferences implements AppearancePreferences {
@@ -57,4 +145,20 @@ class FailingAppearancePreferences implements AppearancePreferences {
 
   @override
   Future<void> saveThemeMode(ThemeMode mode) async {}
+}
+
+class RecoveringRestore implements AppearancePreferences {
+  int reads = 0;
+  int saves = 0;
+
+  @override
+  Future<ThemeMode?> loadThemeMode() async {
+    if (++reads == 1) throw StateError('storage unavailable');
+    return ThemeMode.dark;
+  }
+
+  @override
+  Future<void> saveThemeMode(ThemeMode mode) async {
+    saves++;
+  }
 }

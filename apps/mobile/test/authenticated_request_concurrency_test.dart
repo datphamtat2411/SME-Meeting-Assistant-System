@@ -158,6 +158,42 @@ void main() {
   );
 
   test(
+    'reconciliation shares pending rotation and fences its previous request',
+    () async {
+      var now = _start;
+      final client = _ControlledAuthClient();
+      final storage = InMemoryCredentialStorage();
+      final api = _api(client, storage: storage, now: () => now);
+      addTearDown(api.dispose);
+      await _signIn(api);
+      now = now.add(const Duration(seconds: 40));
+
+      final oldRequest = expectLater(
+        api.get('/protected'),
+        throwsA(isA<AuthSessionException>()),
+      );
+      await client.refreshStarted.future;
+      final reconciliation = api.reconcileSession();
+      expect(api.sessionState.isAuthenticated, isFalse);
+      expect(client.refreshCalls, 1);
+      client.completeRefresh();
+
+      await oldRequest;
+      expect(await reconciliation, AuthReconciliationOutcome.verified);
+      expect(client.refreshCalls, 1);
+      expect(client.pathCalls('/protected'), 0);
+      expect(client.pathCalls('/auth/me'), 2);
+      expect(
+        (await TokenStore(storage: storage, baseUri: _apiBaseUri).read()).state,
+        TokenStoreCredentialState.committed,
+      );
+      await api.get('/protected');
+      expect(client.pathCalls('/protected'), 1);
+      expect(client.refreshCalls, 1);
+    },
+  );
+
+  test(
     'session termination fences a pending refresh before durable deletion',
     () async {
       var now = _start;
