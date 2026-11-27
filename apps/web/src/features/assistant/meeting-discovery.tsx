@@ -1,5 +1,5 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { Link } from '@tanstack/react-router'
+import { useUiTranslation } from '@/lib/i18n'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -91,7 +91,11 @@ export function MeetingSearchCard({
               >
                 <div className='flex flex-wrap items-center justify-between gap-2'>
                   <strong>{meeting.title}</strong>
-                  <Badge variant='outline'>{t(`assistant:meetingStatus_${meeting.status}`, { defaultValue: meeting.status })}</Badge>
+                  <Badge variant='outline'>
+                    {t(`assistant:meetingStatus_${meeting.status}`, {
+                      defaultValue: meeting.status,
+                    })}
+                  </Badge>
                 </div>
                 <p className='mt-1 line-clamp-2 text-sm text-muted-foreground'>
                   {meeting.description || t('assistant:noDescription')}
@@ -122,7 +126,12 @@ export function MeetingSearchCard({
         {!invalidRange && meetingsQuery.isSuccess && (
           <div className='flex items-center justify-between text-sm text-muted-foreground'>
             <span>
-              {t('assistant:resultCount', { count: meetingsQuery.data.pagination.totalElements.toLocaleString(locale) })}
+              {t('assistant:resultCount', {
+                count:
+                  meetingsQuery.data.pagination.totalElements.toLocaleString(
+                    locale
+                  ),
+              })}
             </span>
             <div className='flex items-center gap-2'>
               <Button

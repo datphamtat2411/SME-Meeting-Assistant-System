@@ -1,6 +1,6 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useState, useSyncExternalStore } from 'react'
 import { ArrowLeft, Bot } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
@@ -133,7 +133,8 @@ function AssistantWorkspace({ selection, onSelectionChange }: SelectionProps) {
                     variant='ghost'
                     onClick={() => setMobileBackFor(selection.conversationId)}
                   >
-                    <ArrowLeft className='size-4' /> {t('assistant:conversations')}
+                    <ArrowLeft className='size-4' />{' '}
+                    {t('assistant:conversations')}
                   </Button>
                 </div>
               )}
@@ -146,7 +147,9 @@ function AssistantWorkspace({ selection, onSelectionChange }: SelectionProps) {
               ) : (
                 <div className='flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center'>
                   <Bot className='size-12 text-muted-foreground' />
-                  <h2 className='text-xl font-semibold'>{t('assistant:askMeeting')}</h2>
+                  <h2 className='text-xl font-semibold'>
+                    {t('assistant:askMeeting')}
+                  </h2>
                   <p className='max-w-md text-sm text-muted-foreground'>
                     {t('assistant:openOrCreate')}
                   </p>

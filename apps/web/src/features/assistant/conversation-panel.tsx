@@ -1,5 +1,3 @@
-import { localizedValidationMessage } from '@/lib/i18n/presentation'
-import { useUiTranslation } from '@/lib/i18n'
 import {
   useCallback,
   useRef,
@@ -10,6 +8,8 @@ import {
 import { Link } from '@tanstack/react-router'
 import { LoaderCircle, RefreshCw } from 'lucide-react'
 import type { CoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
+import { localizedValidationMessage } from '@/lib/i18n/presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -117,7 +117,8 @@ export function ConversationPanel({
             {selectedConversation.title || t('assistant:untitled')}
           </h3>
           <p className='text-sm text-muted-foreground'>
-            {selectedMeetingTitle || t('assistant:authorizedMeeting')} · {t('assistant:oneMeeting')}
+            {selectedMeetingTitle || t('assistant:authorizedMeeting')} ·{' '}
+            {t('assistant:oneMeeting')}
           </p>
         </div>
         {selectedMeetingTitle && (
@@ -294,7 +295,9 @@ export function ConversationPanel({
           {(questionValidationError ||
             questionCount > ASSISTANT_QUESTION_LIMIT) && (
             <span role='alert' className='text-sm text-destructive'>
-              {questionValidationError ? localizedValidationMessage(questionValidationError, t) : t('assistant:questionLimit')}
+              {questionValidationError
+                ? localizedValidationMessage(questionValidationError, t)
+                : t('assistant:questionLimit')}
             </span>
           )}
           <Button

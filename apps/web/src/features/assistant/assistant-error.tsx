@@ -1,6 +1,6 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { RefreshCw, ShieldAlert } from 'lucide-react'
 import { type CoreApiError, normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 
@@ -37,13 +37,16 @@ export function AssistantError({
   )
 }
 
-function assistantErrorTitle(error: CoreApiError, t: (key: string) => string): string {
+function assistantErrorTitle(
+  error: CoreApiError,
+  t: (key: string) => string
+): string {
   if (error.status === 401) return t('assistant:authTitle')
   if (error.status === 403) return t('assistant:deniedTitle')
-  if (error.code === 'ASSISTANT_MESSAGE_NOT_FOUND') return t('assistant:answerUnavailable')
+  if (error.code === 'ASSISTANT_MESSAGE_NOT_FOUND')
+    return t('assistant:answerUnavailable')
   if (error.status === 404) return t('assistant:conversationUnavailable')
-  if (error.code === 'ASSISTANT_SOURCE_STALE')
-    return t('assistant:staleTitle')
+  if (error.code === 'ASSISTANT_SOURCE_STALE') return t('assistant:staleTitle')
   if (error.code === 'ASSISTANT_TURN_IN_PROGRESS')
     return t('assistant:turnInProgress')
   if (error.code === 'ASSISTANT_IDEMPOTENCY_CONFLICT')
@@ -51,8 +54,7 @@ function assistantErrorTitle(error: CoreApiError, t: (key: string) => string): s
   if (error.code === 'ASSISTANT_CONVERSATION_INACTIVE')
     return t('assistant:inactiveTitle')
   if (error.code === 'ASSISTANT_TURN_FAILED') return t('assistant:failedTitle')
-  if (error.status === 409)
-    return t('assistant:conflictTitle')
+  if (error.status === 409) return t('assistant:conflictTitle')
   if (error.status === 429) return t('assistant:limitedTitle')
   if (error.status === 503) return t('assistant:unavailableTitle')
   if (error.kind === 'malformed') return t('assistant:malformedTitle')
@@ -62,7 +64,10 @@ function assistantErrorTitle(error: CoreApiError, t: (key: string) => string): s
   return t('assistant:failedRequestTitle')
 }
 
-function assistantErrorMessage(error: CoreApiError, t: (key: string) => string): string {
+function assistantErrorMessage(
+  error: CoreApiError,
+  t: (key: string) => string
+): string {
   if (error.status === 401) return t('assistant:authMessage')
   if (error.status === 403) {
     return t('assistant:deniedMessage')

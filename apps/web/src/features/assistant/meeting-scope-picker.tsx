@@ -77,7 +77,11 @@ export function MeetingScopePicker({
       ) : null}
       {meetingsQuery.isSuccess && (
         <div className='flex items-center justify-between gap-2 text-xs text-muted-foreground'>
-          <span>{t('assistant:meetingCount', { count: meetingsQuery.data.pagination.totalElements })}</span>
+          <span>
+            {t('assistant:meetingCount', {
+              count: meetingsQuery.data.pagination.totalElements,
+            })}
+          </span>
           <div className='flex items-center gap-1'>
             <Button
               type='button'

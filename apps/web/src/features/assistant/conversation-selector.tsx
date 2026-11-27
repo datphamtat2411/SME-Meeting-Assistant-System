@@ -1,7 +1,7 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useState } from 'react'
 import { LoaderCircle, Plus } from 'lucide-react'
 import type { CoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -186,11 +186,7 @@ export function ConversationSelector({
                 ? t('assistant:noMatchingConversations')
                 : t('assistant:noConversations')
             }
-            description={
-              search
-                ? undefined
-                : t('assistant:startHint')
-            }
+            description={search ? undefined : t('assistant:startHint')}
           />
         ) : (
           matches.map((item) => (
@@ -203,9 +199,12 @@ export function ConversationSelector({
               aria-current={
                 selectedConversationId === item.id ? 'true' : undefined
               }
-              aria-label={
-                t(selectedConversationId === item.id ? 'assistant:opened' : 'assistant:openConversation', { title: item.title || t('assistant:untitled') })
-              }
+              aria-label={t(
+                selectedConversationId === item.id
+                  ? 'assistant:opened'
+                  : 'assistant:openConversation',
+                { title: item.title || t('assistant:untitled') }
+              )}
               onClick={() => onConversationOpen(item)}
               className='h-auto w-full flex-col items-start gap-1 p-3 text-start'
             >

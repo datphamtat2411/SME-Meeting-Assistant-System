@@ -1,7 +1,7 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -149,11 +149,14 @@ export function EvidenceInspector({
                   [{index + 1}] {entry.label}
                 </h3>
                 <p className='text-xs text-muted-foreground'>
-                  {entry.meetingTitle} · {t('assistant:revision', { revision: entry.sourceRevision })}
+                  {entry.meetingTitle} ·{' '}
+                  {t('assistant:revision', { revision: entry.sourceRevision })}
                 </p>
                 {entry.claimIds.length > 0 && (
                   <p className='text-xs text-muted-foreground'>
-                    {entry.claimIds.length === 1 ? t('assistant:relatedClaim') : t('assistant:relatedClaims')}{' '}
+                    {entry.claimIds.length === 1
+                      ? t('assistant:relatedClaim')
+                      : t('assistant:relatedClaims')}{' '}
                     {message.claims
                       .flatMap((claim, claimIndex) =>
                         entry.claimIds.includes(claim.claimId)

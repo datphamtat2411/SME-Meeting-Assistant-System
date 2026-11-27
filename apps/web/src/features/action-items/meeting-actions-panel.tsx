@@ -1,7 +1,7 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useState } from 'react'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { ExternalLink, ListChecks, Plus } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -84,7 +84,8 @@ export function MeetingActionsPanel({
         <CardHeader className='flex flex-row flex-wrap items-center justify-between gap-3 border-b'>
           <div>
             <CardTitle className='flex items-center gap-2'>
-              <ListChecks className='size-5' /> {t('action-items:meetingPanel_heading')}
+              <ListChecks className='size-5' />{' '}
+              {t('action-items:meetingPanel_heading')}
             </CardTitle>
             <CardDescription>
               {t('action-items:meetingPanel_description')}
@@ -98,7 +99,8 @@ export function MeetingActionsPanel({
                 setOpen(true)
               }}
             >
-              <Plus className='size-4' /> {t('action-items:meetingPanel_addOfficial')}
+              <Plus className='size-4' />{' '}
+              {t('action-items:meetingPanel_addOfficial')}
             </Button>
           )}
         </CardHeader>
@@ -122,9 +124,15 @@ export function MeetingActionsPanel({
             onValueChange={(value) => setView(value as typeof view)}
           >
             <TabsList className='mb-4'>
-              <TabsTrigger value='proposals'>{t('action-items:meetingPanel_proposalReview')}</TabsTrigger>
-              <TabsTrigger value='official'>{t('action-items:meetingPanel_officialFollowup')}</TabsTrigger>
-              <TabsTrigger value='history'>{t('action-items:meetingPanel_historical')}</TabsTrigger>
+              <TabsTrigger value='proposals'>
+                {t('action-items:meetingPanel_proposalReview')}
+              </TabsTrigger>
+              <TabsTrigger value='official'>
+                {t('action-items:meetingPanel_officialFollowup')}
+              </TabsTrigger>
+              <TabsTrigger value='history'>
+                {t('action-items:meetingPanel_historical')}
+              </TabsTrigger>
             </TabsList>
             <TabsContent value='proposals' className='mt-0'>
               <ProposalCollection
@@ -211,23 +219,35 @@ function ProposalCollection({
             <div>
               <h3 className='font-semibold'>{item.title}</h3>
               <p className='mt-1 text-sm text-muted-foreground'>
-                {item.details ?? t('action-items:meetingPanel_noProposedDetails')}
+                {item.details ??
+                  t('action-items:meetingPanel_noProposedDetails')}
               </p>
             </div>
-            <Badge variant='outline'>{t('action-items:meetingPanel_aiProposal')}</Badge>
+            <Badge variant='outline'>
+              {t('action-items:meetingPanel_aiProposal')}
+            </Badge>
           </div>
           <div className='flex flex-wrap gap-3 text-xs text-muted-foreground'>
             <span>
               {t('action-items:meetingPanel_suggestedDue')}{' '}
-              <RegionalCivilDate value={item.dueDate} fallback={t('action-items:meetingPanel_none')} />
+              <RegionalCivilDate
+                value={item.dueDate}
+                fallback={t('action-items:meetingPanel_none')}
+              />
             </span>
             <span>
               {item.assignee?.displayName
-                ? t('action-items:meetingPanel_suggestedResponsibility', { name: item.assignee.displayName })
+                ? t('action-items:meetingPanel_suggestedResponsibility', {
+                    name: item.assignee.displayName,
+                  })
                 : t('action-items:meetingPanel_unassignedProposal')}
             </span>
             {canReadMeetingContent && item.capabilities.canAccessEvidence && (
-              <span>{t('action-items:meetingPanel_evidenceCount', { count: item.evidence.references.length })}</span>
+              <span>
+                {t('action-items:meetingPanel_evidenceCount', {
+                  count: item.evidence.references.length,
+                })}
+              </span>
             )}
           </div>
           {canReadMeetingContent && item.evidence.limitation && (
@@ -254,7 +274,9 @@ function ProposalCollection({
                         )
                       }
                     >
-                      {t('action-items:meetingPanel_evidenceNumber', { number: index + 1 })}{' '}
+                      {t('action-items:meetingPanel_evidenceNumber', {
+                        number: index + 1,
+                      })}{' '}
                       {reference.preview ? `· ${reference.preview}` : ''}{' '}
                       <ExternalLink className='size-3' />
                     </Button>
@@ -263,7 +285,9 @@ function ProposalCollection({
                       key={reference.segmentId}
                       className='text-xs text-muted-foreground'
                     >
-                      {t('action-items:meetingPanel_evidenceNumber', { number: index + 1 })}
+                      {t('action-items:meetingPanel_evidenceNumber', {
+                        number: index + 1,
+                      })}
                     </span>
                   )
                 )}
@@ -404,7 +428,9 @@ function HistoryGroup({
             >
               <span>{item.title}</span>
               <Badge variant={item.isOfficial ? 'secondary' : 'outline'}>
-                {t(`action-items:meetingPanel_status_${item.status}`, { defaultValue: item.status })}
+                {t(`action-items:meetingPanel_status_${item.status}`, {
+                  defaultValue: item.status,
+                })}
               </Badge>
             </div>
           ))}
@@ -460,17 +486,31 @@ function ActionListState({
                     : 'outline'
               }
             >
-              {t(`action-items:meetingPanel_status_${item.status}`, { defaultValue: item.status })}
+              {t(`action-items:meetingPanel_status_${item.status}`, {
+                defaultValue: item.status,
+              })}
             </Badge>
           </div>
           <div className='mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground'>
             <span>
-              {t('action-items:meetingPanel_responsible', { name: item.assignee?.displayName ?? t('action-items:meetingPanel_unassigned') })}
+              {t('action-items:meetingPanel_responsible', {
+                name:
+                  item.assignee?.displayName ??
+                  t('action-items:meetingPanel_unassigned'),
+              })}
             </span>
             <span>
-              {t('action-items:meetingPanel_due')} <RegionalCivilDate value={item.dueDate} fallback={t('action-items:meetingPanel_none')} />
+              {t('action-items:meetingPanel_due')}{' '}
+              <RegionalCivilDate
+                value={item.dueDate}
+                fallback={t('action-items:meetingPanel_none')}
+              />
             </span>
-            {item.overdue && <Badge variant='destructive'>{t('action-items:meetingPanel_overdue')}</Badge>}
+            {item.overdue && (
+              <Badge variant='destructive'>
+                {t('action-items:meetingPanel_overdue')}
+              </Badge>
+            )}
           </div>
           <div className='mt-3 flex flex-wrap gap-2'>
             <ActionCommands item={item} />
@@ -504,7 +544,10 @@ function CollectionPager({
   return (
     <div className='flex items-center justify-between text-sm text-muted-foreground'>
       <span>
-        {t('action-items:meetingPanel_collectionPage', { label: pageLabel, page: page.page + 1 })}
+        {t('action-items:meetingPanel_collectionPage', {
+          label: pageLabel,
+          page: page.page + 1,
+        })}
       </span>
       <div className='flex gap-2'>
         <Button
