@@ -151,7 +151,9 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
       clearErrors()
     } catch (error) {
       if (isSettingsSessionCurrent(generation)) {
-        setError('root', { message: requestErrorFormMessage(normalizeCoreApiError(error)) })
+        setError('root', {
+          message: requestErrorFormMessage(normalizeCoreApiError(error)),
+        })
       }
     } finally {
       setRefreshing(false)
@@ -172,7 +174,9 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
     }
     if (dirtyFields.locale && data.locale !== preferences.locale) {
       if (data.locale !== null && !isLocaleTag(data.locale)) {
-        setError('locale', { message: featureValidationMessage('settings:invalidLocale') })
+        setError('locale', {
+          message: featureValidationMessage('settings:invalidLocale'),
+        })
         return
       }
       patch.locale = data.locale
@@ -312,7 +316,9 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
         )}
         <div className='flex flex-wrap gap-2'>
           <Button type='submit' disabled={!changed || busy || reconcile}>
-            {mutation.isPending ? t('settings:saving') : t('settings:savePreferences')}
+            {mutation.isPending
+              ? t('settings:saving')
+              : t('settings:savePreferences')}
           </Button>
           <Button
             type='button'

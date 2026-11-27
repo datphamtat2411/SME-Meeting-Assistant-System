@@ -109,7 +109,9 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
     } catch (error) {
       if (isSettingsSessionCurrent(generation)) {
         setRecovery('refresh')
-        setError('root', { message: requestErrorFormMessage(normalizeCoreApiError(error)) })
+        setError('root', {
+          message: requestErrorFormMessage(normalizeCoreApiError(error)),
+        })
       }
       return undefined
     } finally {
@@ -250,7 +252,11 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
           </h3>
           {[
             ['profile-email', t('settings:organizationEmail'), profile.email],
-            ['profile-role', t('settings:systemRole'), t(roleKey(profile.globalRole))],
+            [
+              'profile-role',
+              t('settings:systemRole'),
+              t(roleKey(profile.globalRole)),
+            ],
             [
               'profile-status',
               t('settings:accountStatus'),
@@ -316,7 +322,9 @@ function ProfileEditor({ snapshot }: { snapshot: ProfileSnapshot }) {
               name.trim() === profile.displayName
             }
           >
-            {mutation.isPending ? t('settings:saving') : t('settings:saveProfile')}
+            {mutation.isPending
+              ? t('settings:saving')
+              : t('settings:saveProfile')}
           </Button>
           <Button
             type='button'

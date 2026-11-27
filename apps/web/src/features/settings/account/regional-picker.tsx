@@ -93,7 +93,9 @@ export function RegionalPicker({
             className='w-full justify-between font-normal'
           >
             <span className='truncate'>
-              {value === null ? t('settings:useBrowserDefault') : formatLabel(value)}
+              {value === null
+                ? t('settings:useBrowserDefault')
+                : formatLabel(value)}
             </span>
             <ChevronsUpDown
               aria-hidden='true'

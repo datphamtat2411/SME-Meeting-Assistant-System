@@ -1,5 +1,5 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { Pencil, RefreshCw, Search } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { getDisplayNameInitials } from '@/lib/utils'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -89,7 +89,9 @@ function MemberOrganizationalUnit({
   const { t } = useUiTranslation()
   const reference = resolveOrganizationUnitReference(id, lookup)
   if (reference.state === 'unassigned') {
-    return <span className='text-muted-foreground'>{t('members:unassigned')}</span>
+    return (
+      <span className='text-muted-foreground'>{t('members:unassigned')}</span>
+    )
   }
   if (reference.state === 'resolved') {
     return (
@@ -284,9 +286,7 @@ export function MemberDirectoryPresentation({
             role='alert'
             className='m-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm'
           >
-            <span>
-              {t('members:unitNamesFailed')}
-            </span>
+            <span>{t('members:unitNamesFailed')}</span>
             <Button
               size='sm'
               variant='outline'
@@ -330,12 +330,16 @@ export function MemberDirectoryPresentation({
             <Table className='min-w-[920px]'>
               <TableHeader>
                 <TableRow>
-                  <TableHead className='w-[25%]'>{t('members:member')}</TableHead>
+                  <TableHead className='w-[25%]'>
+                    {t('members:member')}
+                  </TableHead>
                   <TableHead>{t('members:email')}</TableHead>
                   <TableHead>{t('members:unit')}</TableHead>
                   <TableHead>{t('members:globalRole')}</TableHead>
                   <TableHead>{t('members:accountStatusLabel')}</TableHead>
-                  <TableHead className='text-end'>{t('members:actions')}</TableHead>
+                  <TableHead className='text-end'>
+                    {t('members:actions')}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -383,7 +387,9 @@ export function MemberDirectoryPresentation({
                         <Button
                           variant='ghost'
                           size='sm'
-                          aria-label={t('members:editMember', { name: member.displayName })}
+                          aria-label={t('members:editMember', {
+                            name: member.displayName,
+                          })}
                           disabled={!identityVerified}
                           onClick={() => onEdit(member)}
                         >
@@ -446,14 +452,22 @@ export function MemberDirectoryPresentation({
         {memberDirectory.data && (
           <div className='flex flex-col gap-3 border-t px-4 py-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between'>
             <span>
-              {t('members:totalMembers', { count: memberDirectory.data.pagination.totalElements })}
+              {t('members:totalMembers', {
+                count: memberDirectory.data.pagination.totalElements,
+              })}
               {memberDirectory.isPlaceholderData && (
                 <span role='status'>{t('members:updatingResults')}</span>
               )}
             </span>
             <div className='flex items-center justify-between gap-3 sm:justify-end'>
               <span>
-                {t('page', { current: memberDirectory.data.pagination.page + 1, total: Math.max(memberDirectory.data.pagination.totalPages, 1) })}
+                {t('page', {
+                  current: memberDirectory.data.pagination.page + 1,
+                  total: Math.max(
+                    memberDirectory.data.pagination.totalPages,
+                    1
+                  ),
+                })}
               </span>
               <div className='flex gap-2'>
                 <Button

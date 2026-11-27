@@ -47,8 +47,7 @@ const fields = [
   {
     name: 'meetingEmailEnabled',
     label: 'settings:meetingEmails',
-    description:
-      'settings:meetingEmailsDescription',
+    description: 'settings:meetingEmailsDescription',
   },
   {
     name: 'actionItemEmailEnabled',
@@ -145,7 +144,9 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
       clearErrors()
     } catch (error) {
       if (isSettingsSessionCurrent(generation)) {
-        setError('root', { message: requestErrorFormMessage(normalizeCoreApiError(error)) })
+        setError('root', {
+          message: requestErrorFormMessage(normalizeCoreApiError(error)),
+        })
       }
     } finally {
       setRefreshing(false)
@@ -225,9 +226,13 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
           {t('settings:optionalEmailsDescription')}
         </p>
         <section className='space-y-3 border-t pt-6'>
-          <h3 className='font-medium'>{t('settings:requiredCommunications')}</h3>
+          <h3 className='font-medium'>
+            {t('settings:requiredCommunications')}
+          </h3>
           <div className='space-y-1 rounded-lg border bg-muted/30 p-4'>
-            <p className='text-sm font-medium'>{t('settings:securityEmails')}</p>
+            <p className='text-sm font-medium'>
+              {t('settings:securityEmails')}
+            </p>
             <p className='text-sm text-muted-foreground'>
               {t('settings:securityEmailsDescription')}
             </p>
@@ -250,7 +255,9 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
         )}
         <div className='flex flex-wrap gap-2'>
           <Button type='submit' disabled={!changed || busy || reconcile}>
-            {mutation.isPending ? t('settings:saving') : t('settings:saveNotifications')}
+            {mutation.isPending
+              ? t('settings:saving')
+              : t('settings:saveNotifications')}
           </Button>
           <Button
             type='button'

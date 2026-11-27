@@ -1,5 +1,5 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { MapPin, Pencil, Search, Users } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -131,9 +131,7 @@ export function RoomDirectoryPresentation({
         <div>
           <CardTitle>{t('rooms:directory')}</CardTitle>
           <CardDescription className='mt-1'>
-            {canManage
-              ? t('rooms:adminDirectory')
-              : t('rooms:userDirectory')}
+            {canManage ? t('rooms:adminDirectory') : t('rooms:userDirectory')}
           </CardDescription>
         </div>
         <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
@@ -170,9 +168,13 @@ export function RoomDirectoryPresentation({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value='all'>{t('rooms:allStatuses')}</SelectItem>
+                    <SelectItem value='all'>
+                      {t('rooms:allStatuses')}
+                    </SelectItem>
                     <SelectItem value='ACTIVE'>{t('rooms:active')}</SelectItem>
-                    <SelectItem value='INACTIVE'>{t('rooms:inactive')}</SelectItem>
+                    <SelectItem value='INACTIVE'>
+                      {t('rooms:inactive')}
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -192,10 +194,14 @@ export function RoomDirectoryPresentation({
                   <SelectContent>
                     {roomSortFields.flatMap((field) => [
                       <SelectItem key={`${field},asc`} value={`${field},asc`}>
-                        {t('rooms:ascending', { field: t(roomSortLabels[field]) })}
+                        {t('rooms:ascending', {
+                          field: t(roomSortLabels[field]),
+                        })}
                       </SelectItem>,
                       <SelectItem key={`${field},desc`} value={`${field},desc`}>
-                        {t('rooms:descending', { field: t(roomSortLabels[field]) })}
+                        {t('rooms:descending', {
+                          field: t(roomSortLabels[field]),
+                        })}
                       </SelectItem>,
                     ])}
                   </SelectContent>
@@ -268,7 +274,9 @@ export function RoomDirectoryPresentation({
                   <TableHead>{t('rooms:status')}</TableHead>
                   <TableHead>{t('rooms:notes')}</TableHead>
                   {canManage && (
-                    <TableHead className='text-end'>{t('rooms:actions')}</TableHead>
+                    <TableHead className='text-end'>
+                      {t('rooms:actions')}
+                    </TableHead>
                   )}
                 </TableRow>
               </TableHeader>
@@ -301,7 +309,9 @@ export function RoomDirectoryPresentation({
                               <Button
                                 variant='ghost'
                                 size='sm'
-                                aria-label={t('rooms:editRoom', { name: room.name })}
+                                aria-label={t('rooms:editRoom', {
+                                  name: room.name,
+                                })}
                                 disabled={!identityVerified || operationsBusy}
                                 onClick={() => onEdit(room)}
                               >
@@ -311,7 +321,9 @@ export function RoomDirectoryPresentation({
                               <Button
                                 variant='ghost'
                                 size='sm'
-                                aria-label={t('rooms:deactivateRoom', { name: room.name })}
+                                aria-label={t('rooms:deactivateRoom', {
+                                  name: room.name,
+                                })}
                                 disabled={!identityVerified || operationsBusy}
                                 onClick={() => onDeactivate(room)}
                               >
@@ -332,14 +344,19 @@ export function RoomDirectoryPresentation({
         {directory.data && (
           <div className='flex flex-col gap-3 border-t px-4 py-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between'>
             <span>
-              {t('rooms:totalRooms', { count: directory.data.pagination.totalElements })}
+              {t('rooms:totalRooms', {
+                count: directory.data.pagination.totalElements,
+              })}
               {directory.isPlaceholderData && (
                 <span role='status'>{t('rooms:updatingResults')}</span>
               )}
             </span>
             <div className='flex items-center justify-between gap-3 sm:justify-end'>
               <span>
-                {t('page', { current: directory.data.pagination.page + 1, total: Math.max(directory.data.pagination.totalPages, 1) })}
+                {t('page', {
+                  current: directory.data.pagination.page + 1,
+                  total: Math.max(directory.data.pagination.totalPages, 1),
+                })}
               </span>
               <div className='flex gap-2'>
                 <Button

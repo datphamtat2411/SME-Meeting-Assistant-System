@@ -1,5 +1,5 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { ShieldAlert, UserRound } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
@@ -52,7 +52,9 @@ export function MembersPage({
       <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
         <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
           <div>
-            <p className='text-sm font-medium text-primary'>{t('members:administration')}</p>
+            <p className='text-sm font-medium text-primary'>
+              {t('members:administration')}
+            </p>
             <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
               {t('members:title')}
             </h1>
@@ -109,9 +111,7 @@ export function MembersPage({
             className='flex items-start gap-3 rounded-lg border p-5 text-muted-foreground'
           >
             <ShieldAlert className='mt-0.5 size-5 shrink-0' />
-            <p>
-              {t('members:scopeRequired')}
-            </p>
+            <p>{t('members:scopeRequired')}</p>
           </div>
         ) : directory.access.type === 'empty-scope' ? (
           <CardlessEmptyScope />

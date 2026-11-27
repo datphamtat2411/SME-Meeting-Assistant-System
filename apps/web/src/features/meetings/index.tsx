@@ -207,7 +207,7 @@ export function MeetingsPage() {
                 {isRefreshing && (
                   <span role='status' className='flex items-center gap-1.5'>
                     <RefreshCw className='size-3.5 animate-spin' />
-                     {t('meetings:refreshing')}
+                    {t('meetings:refreshing')}
                   </span>
                 )}
                 {meetingsQuery.data && (
@@ -298,7 +298,9 @@ function MeetingsTable({
     return (
       <EmptyState
         title={
-          hasActiveFilters ? t('meetings:noMeetings') : t('meetings:noAccessibleMeetings')
+          hasActiveFilters
+            ? t('meetings:noMeetings')
+            : t('meetings:noAccessibleMeetings')
         }
         description={
           hasActiveFilters
@@ -465,7 +467,10 @@ function MeetingsPagination({
           value={String(pageSize)}
           onValueChange={(value) => onPageSizeChange(Number(value))}
         >
-          <SelectTrigger className='h-8 w-20' aria-label={t('meetings:meetingsPerPage')}>
+          <SelectTrigger
+            className='h-8 w-20'
+            aria-label={t('meetings:meetingsPerPage')}
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent side='top'>
@@ -591,9 +596,7 @@ function MeetingListError({
   return (
     <Alert variant='destructive' className='m-4'>
       <AlertTitle>
-        {accessDenied
-          ? t('meetings:accessDenied')
-          : t('meetings:loadFailed')}
+        {accessDenied ? t('meetings:accessDenied') : t('meetings:loadFailed')}
       </AlertTitle>
       <AlertDescription>
         <p>
@@ -666,7 +669,10 @@ function formatParticipantPreview(display: MeetingDisplay) {
 
   const names = display.participantPreview
     .slice(0, 2)
-    .map((participant) => participant.displayName || i18n.t('meetings:unknownParticipant'))
+    .map(
+      (participant) =>
+        participant.displayName || i18n.t('meetings:unknownParticipant')
+    )
   const remaining = Math.max(display.participantCount - names.length, 0)
 
   return remaining
@@ -679,7 +685,10 @@ function formatParticipantPreview(display: MeetingDisplay) {
 
 function getRoomDisplay(meeting: MeetingListItem, display: MeetingDisplay) {
   if (!meeting.roomId) {
-    return { name: i18n.t('meetings:roomUnassigned'), location: i18n.t('meetings:noRoomLocation') }
+    return {
+      name: i18n.t('meetings:roomUnassigned'),
+      location: i18n.t('meetings:noRoomLocation'),
+    }
   }
 
   return {
