@@ -1,6 +1,14 @@
 # Cross-platform integration — Wave 01 decision baseline
 
-Status: Wave 01 foundation and Wave 02 implementation are assembled; all eight CI workflows passed at the Wave 02 baseline eb91b85. Review follow-up regression tests require fresh CI verification. Live acceptance remains pending; see WAVE-02-RESULTS.md. The integrated tree originates from a
+Status: Wave 01 foundation is assembled; Wave 02 (INT-03/04/05)
+implementation and review-follow-up automated verification are complete.
+All eight CI workflows passed at the exact verified baseline
+`1715c7c471a4c6c19b7dca4884bc4ac0fdf1f17d` (2026-11-27).
+Wave 03 (INT-06/07) may proceed from this baseline. Live cross-client and
+visual acceptance, and coordinated compatibility-route retirement, remain
+pending. See [WAVE-02-RESULTS.md](WAVE-02-RESULTS.md) for the original
+implementation baseline, corrective fixture commit, run links and exact
+verification scope. CI results must not be attributed to later commits. The integrated tree originates from a
 non-squashed two-parent merge on `pre-integration-develop`. The user authorized
 execution on `pre-integration-develop`, based on develop, Web first then
 Mobile. The source heads are pinned in BASELINE-INVENTORY.md. Do not alter
