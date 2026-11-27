@@ -3,6 +3,7 @@ import enAuth from './locales/en/auth.json'
 import enCalendar from './locales/en/calendar.json'
 import enCommon from './locales/en/common.json'
 import enDashboard from './locales/en/dashboard.json'
+import enDecisions from './locales/en/decisions.json'
 import enErrors from './locales/en/errors.json'
 import enExport from './locales/en/export.json'
 import enHelpCenter from './locales/en/help-center.json'
@@ -24,6 +25,7 @@ import viAuth from './locales/vi/auth.json'
 import viCalendar from './locales/vi/calendar.json'
 import viCommon from './locales/vi/common.json'
 import viDashboard from './locales/vi/dashboard.json'
+import viDecisions from './locales/vi/decisions.json'
 import viErrors from './locales/vi/errors.json'
 import viExport from './locales/vi/export.json'
 import viHelpCenter from './locales/vi/help-center.json'
@@ -48,6 +50,7 @@ export const resources = {
     calendar: enCalendar,
     common: enCommon,
     dashboard: enDashboard,
+    decisions: enDecisions,
     errors: enErrors,
     export: enExport,
     'help-center': enHelpCenter,
@@ -71,6 +74,7 @@ export const resources = {
     calendar: viCalendar,
     common: viCommon,
     dashboard: viDashboard,
+    decisions: viDecisions,
     errors: viErrors,
     export: viExport,
     'help-center': viHelpCenter,
