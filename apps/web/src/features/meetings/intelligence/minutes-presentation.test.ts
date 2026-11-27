@@ -28,7 +28,9 @@ describe('Minutes presentation', () => {
     const translate = (key: string, options?: { value: string }) =>
       i18n.t(key, { ...options, lng: 'vi' })
     expect(minutesStatusLabel('NEEDS_REVIEW', translate)).toBe('Cần xem xét')
-    expect(minutesWarning('TRANSCRIPT_FAILED', translate)).toBe('Xử lý bản ghi lời thoại thất bại.')
+    expect(minutesWarning('TRANSCRIPT_FAILED', translate)).toBe(
+      'Xử lý bản ghi lời thoại thất bại.'
+    )
     expect(minutesWarning('FUTURE_WARNING', translate)).toBe('FUTURE_WARNING')
   })
 })

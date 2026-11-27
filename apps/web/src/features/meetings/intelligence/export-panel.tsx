@@ -254,8 +254,7 @@ function FormatExportCard({
           failure.status === 404
         ) {
           toast.error(i18n.t('export:downloadUnavailable'), {
-            description:
-              i18n.t('export:accessUnconfirmed'),
+            description: i18n.t('export:accessUnconfirmed'),
           })
           void reconcileProtectedScope(
             queryClient,
@@ -264,8 +263,7 @@ function FormatExportCard({
           )
         } else {
           toast.error(i18n.t('export:downloadUnavailable'), {
-            description:
-              i18n.t('export:secureDownloadFailed'),
+            description: i18n.t('export:secureDownloadFailed'),
           })
         }
       }
@@ -313,11 +311,11 @@ function FormatExportCard({
     >
       <div className='flex flex-wrap items-start justify-between gap-2'>
         <div>
-          <h3 className='font-medium'>{t('export:document', { format: label })}</h3>
+          <h3 className='font-medium'>
+            {t('export:document', { format: label })}
+          </h3>
           <p className='text-xs text-muted-foreground'>
-            {format === 'PDF'
-              ? t('export:sharing')
-              : t('export:editing')}
+            {format === 'PDF' ? t('export:sharing') : t('export:editing')}
           </p>
         </div>
         {status && (
@@ -336,15 +334,11 @@ function FormatExportCard({
         </p>
       )}
       {!busy && recovering && !operation?.recoveryUnavailable && (
-        <p className='text-sm text-muted-foreground'>
-          {t('export:uncertain')}
-        </p>
+        <p className='text-sm text-muted-foreground'>{t('export:uncertain')}</p>
       )}
       {operation?.recoveryUnavailable && (
         <div className='space-y-2 rounded-md border p-3 text-sm'>
-          <p>
-            {t('export:receiptUnavailable')}
-          </p>
+          <p>{t('export:receiptUnavailable')}</p>
           <Button
             type='button'
             variant='outline'
@@ -358,7 +352,9 @@ function FormatExportCard({
       )}
       {failure && (
         <div className='space-y-2'>
-          <p className='text-sm font-medium'>{t('export:formatFailed', { format })}</p>
+          <p className='text-sm font-medium'>
+            {t('export:formatFailed', { format })}
+          </p>
           <RequestError error={failure.error} />
         </div>
       )}
@@ -393,9 +389,7 @@ function FormatExportCard({
         )}
       {status?.status === 'FAILED' && (
         <p className='text-sm text-muted-foreground'>
-          {terminal
-            ? t('export:terminalFailure')
-            : t('export:mayRetry')}
+          {terminal ? t('export:terminalFailure') : t('export:mayRetry')}
         </p>
       )}
       {!freshnessNeedsVerification &&

@@ -8,10 +8,10 @@ import {
 import type { QueryClient } from '@tanstack/react-query'
 import { i18n } from '@/lib/i18n'
 import { featureValidationMessage } from '@/lib/i18n/presentation'
-import { mediaErrorMessage } from './media-error-presentation'
 import type { MeetingAuthorizationContextValue } from '../meeting-authorization-context'
 import * as mediaApi from './media-api'
 import type { MediaUploadPhase, MeetingMedia } from './media-api'
+import { mediaErrorMessage } from './media-error-presentation'
 import type { MediaDraftState } from './meeting-session-types'
 import type {
   RecordingArtifactHandle,

@@ -1157,9 +1157,7 @@ function WorkspaceResultsOverview({
     <Card>
       <CardHeader className='border-b'>
         <CardTitle>{t('workspace:availableResults')}</CardTitle>
-        <CardDescription>
-          {t('workspace:independentResults')}
-        </CardDescription>
+        <CardDescription>{t('workspace:independentResults')}</CardDescription>
       </CardHeader>
       <CardContent className='divide-y pt-2'>
         <WorkspaceResultRow
@@ -1186,9 +1184,11 @@ function WorkspaceResultsOverview({
                   ? t('workspace:noConfirmedRecording')
                   : mediaData
                       .filter((item) => item.status !== 'AVAILABLE')
-                      .map((item) => `${item.originalFilename}: ${t(`media:mediaStatus_${item.status}`)}`)
-                      .join(' · ') ||
-                    t('workspace:finalizedMediaAvailable')
+                      .map(
+                        (item) =>
+                          `${item.originalFilename}: ${t(`media:mediaStatus_${item.status}`)}`
+                      )
+                      .join(' · ') || t('workspace:finalizedMediaAvailable')
           }
           kind={
             mediaIsPending
@@ -1253,8 +1253,7 @@ function WorkspaceResultsOverview({
                         observedJob.errorSummary ?? undefined,
                       ]
                         .filter(Boolean)
-                        .join(' · ') ||
-                      t('workspace:currentJobStatus')
+                        .join(' · ') || t('workspace:currentJobStatus')
                     : t('workspace:processingNotRequested')
           }
           kind={
@@ -1268,7 +1267,10 @@ function WorkspaceResultsOverview({
           }
           action={
             jobsIsError
-              ? { label: t('workspace:retry'), onClick: () => void jobs?.refetch() }
+              ? {
+                  label: t('workspace:retry'),
+                  onClick: () => void jobs?.refetch(),
+                }
               : observedJob?.status === 'WAITING_FOR_REVIEW'
                 ? {
                     label: t('workspace:reviewTranscript'),
@@ -1310,7 +1312,8 @@ function WorkspaceResultsOverview({
                     ? t('workspace:transcriptProcessing')
                     : t('workspace:unresolvedCounts', {
                         segments: minutes.data.transcript.unresolvedSegments,
-                        regions: minutes.data.transcript.unresolvedCoverageRegions,
+                        regions:
+                          minutes.data.transcript.unresolvedCoverageRegions,
                       })
           }
           kind={
@@ -1322,7 +1325,10 @@ function WorkspaceResultsOverview({
           }
           action={
             minutes.isError
-              ? { label: t('workspace:retry'), onClick: () => void minutes.refetch() }
+              ? {
+                  label: t('workspace:retry'),
+                  onClick: () => void minutes.refetch(),
+                }
               : minutes.isSuccess &&
                   transcriptAvailability !== 'NOT_AVAILABLE' &&
                   transcriptAvailability !== 'PROCESSING' &&
@@ -1345,11 +1351,15 @@ function WorkspaceResultsOverview({
                 ? t('workspace:unableToVerify')
                 : hasDerivedResults
                   ? hasSummaryArtifact
-                    ? t(`workspace:summary_${canonicalResultAvailability(minutes.data.summary.availability)}`)
+                    ? t(
+                        `workspace:summary_${canonicalResultAvailability(minutes.data.summary.availability)}`
+                      )
                     : t('workspace:otherConfirmedResults')
                   : summaryAvailability === 'NOT_AVAILABLE'
                     ? t('workspace:noSummary')
-                    : t(`workspace:summary_${canonicalResultAvailability(minutes.data.summary.availability)}`)
+                    : t(
+                        `workspace:summary_${canonicalResultAvailability(minutes.data.summary.availability)}`
+                      )
           }
           description={
             minutes.isPending
@@ -1480,8 +1490,11 @@ function WorkspaceResultsOverview({
               {meeting.endedAt
                 ? t('workspace:endedAtNoResults', {
                     time:
-                      formatRegionalInstant(meeting.endedAt, timezone, locale) ??
-                      t('workspace:unavailableTime'),
+                      formatRegionalInstant(
+                        meeting.endedAt,
+                        timezone,
+                        locale
+                      ) ?? t('workspace:unavailableTime'),
                   })
                 : t('workspace:endedWithoutTime')}
             </p>
@@ -1706,9 +1719,7 @@ function LifecycleCard({ meeting }: { meeting: MeetingView }) {
           <Clock3 className='size-4 text-primary' />
           {t('workspace:lifecycle')}
         </CardTitle>
-        <CardDescription>
-          {t('workspace:lifecycleHint')}
-        </CardDescription>
+        <CardDescription>{t('workspace:lifecycleHint')}</CardDescription>
       </CardHeader>
       <CardContent className='space-y-4 pt-6'>
         {visibleTimestamps.map(([label, value]) => (
@@ -1833,7 +1844,9 @@ function formatParticipantCount(
   t: ReturnType<typeof useUiTranslation>['t']
 ) {
   const { active, removed } = classifyParticipantMemberships(participants)
-  const activeLabel = t('workspace:activeParticipants', { count: active.length })
+  const activeLabel = t('workspace:activeParticipants', {
+    count: active.length,
+  })
   return removed.length
     ? t('workspace:participantCounts', {
         active: activeLabel,

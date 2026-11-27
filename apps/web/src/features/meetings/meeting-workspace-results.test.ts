@@ -26,7 +26,9 @@ describe('meeting workspace result availability', () => {
 
   it('keeps review and unknown states distinct in Vietnamese', () => {
     const translate = (key: string) => i18n.t(key, { lng: 'vi' })
-    expect(resultAvailabilityLabel('NEEDS_REVIEW', translate)).toBe('Cần thao tác')
+    expect(resultAvailabilityLabel('NEEDS_REVIEW', translate)).toBe(
+      'Cần thao tác'
+    )
     expect(resultAvailabilityLabel('FUTURE_STATE', translate)).toBe(
       'Trạng thái không xác định'
     )

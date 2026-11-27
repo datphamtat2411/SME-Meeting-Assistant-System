@@ -7,10 +7,10 @@ import {
   type RefObject,
 } from 'react'
 import { featureValidationMessage } from '@/lib/i18n/presentation'
-import { mediaErrorMessage } from './media-error-presentation'
 import type { MeetingAuthorizationContextValue } from '../meeting-authorization-context'
 import * as mediaApi from './media-api'
 import type { MeetingMedia } from './media-api'
+import { mediaErrorMessage } from './media-error-presentation'
 import type { PlaybackState, PlaybackStatus } from './meeting-session-types'
 import type { RecordingArtifactHandle } from './use-recording-owner'
 

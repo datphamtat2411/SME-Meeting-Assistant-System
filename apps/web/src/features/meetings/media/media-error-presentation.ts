@@ -14,11 +14,7 @@ type MediaPresentationValues = Record<string, string | number>
 export class MediaPresentationError extends Error {
   readonly presentationMessage: string
 
-  constructor(
-    message: string,
-    key: string,
-    values?: MediaPresentationValues
-  ) {
+  constructor(message: string, key: string, values?: MediaPresentationValues) {
     super(message)
     this.name = 'MediaPresentationError'
     this.presentationMessage = featureValidationMessage(key, values)

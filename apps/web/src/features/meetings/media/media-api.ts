@@ -536,7 +536,11 @@ async function finalizeMediaUpload(
   }
   throw new MediaUploadError(
     'Core has not confirmed this media as available after finalization.',
-    { outcome: 'uncertain', mediaId, presentationKey: 'media:finalizationUnconfirmed' }
+    {
+      outcome: 'uncertain',
+      mediaId,
+      presentationKey: 'media:finalizationUnconfirmed',
+    }
   )
 }
 
@@ -551,7 +555,12 @@ async function readMediaForUploadRecovery(
     if (isUncertainCoreError(error)) {
       throw new MediaUploadError(
         'The media recovery status could not be confirmed. Check the same media intent before trying another upload.',
-        { outcome: 'uncertain', mediaId, cause: error, presentationKey: 'media:recoveryUnconfirmed' }
+        {
+          outcome: 'uncertain',
+          mediaId,
+          cause: error,
+          presentationKey: 'media:recoveryUnconfirmed',
+        }
       )
     }
     throw error
@@ -628,7 +637,11 @@ export async function uploadMeetingFile(
     if (isUncertainCoreError(error)) {
       throw new MediaUploadError(
         'The upload intent outcome is uncertain. Retry this same operation explicitly or choose a new file.',
-        { outcome: 'uncertain', cause: error, presentationKey: 'media:intentUncertain' }
+        {
+          outcome: 'uncertain',
+          cause: error,
+          presentationKey: 'media:intentUncertain',
+        }
       )
     }
     throw error
@@ -640,7 +653,11 @@ export async function uploadMeetingFile(
   if (options.recovery && intent.mediaId !== options.recovery.mediaId) {
     throw new MediaUploadError(
       'Core returned a different media identity for the unresolved submission.',
-      { outcome: 'uncertain', mediaId: options.recovery.mediaId, presentationKey: 'media:identityMismatch' }
+      {
+        outcome: 'uncertain',
+        mediaId: options.recovery.mediaId,
+        presentationKey: 'media:identityMismatch',
+      }
     )
   }
   options.onMediaIdentity?.(intent.mediaId)
@@ -665,7 +682,12 @@ export async function uploadMeetingFile(
       if (isUncertainCoreError(error)) {
         throw new MediaUploadError(
           'The available media replay could not be confirmed by read-back.',
-          { outcome: 'uncertain', mediaId: intent.mediaId, cause: error, presentationKey: 'media:replayUnconfirmed' }
+          {
+            outcome: 'uncertain',
+            mediaId: intent.mediaId,
+            cause: error,
+            presentationKey: 'media:replayUnconfirmed',
+          }
         )
       }
       throw error
@@ -673,7 +695,11 @@ export async function uploadMeetingFile(
     if (media.status !== 'AVAILABLE') {
       throw new MediaUploadError(
         'Core reported an available replay but did not confirm available media.',
-        { outcome: 'uncertain', mediaId: intent.mediaId, presentationKey: 'media:replayNotAvailable' }
+        {
+          outcome: 'uncertain',
+          mediaId: intent.mediaId,
+          presentationKey: 'media:replayNotAvailable',
+        }
       )
     }
     options.onPhase?.('available')
@@ -732,7 +758,12 @@ export async function uploadMeetingFile(
       if (error instanceof CoreApiError && error.status === 409) {
         throw new MediaUploadError(
           'The existing media intent is still pending. Its transfer outcome has not been confirmed; do not create a new upload yet.',
-          { outcome: 'uncertain', mediaId: intent.mediaId, cause: error, presentationKey: 'media:intentPending' }
+          {
+            outcome: 'uncertain',
+            mediaId: intent.mediaId,
+            cause: error,
+            presentationKey: 'media:intentPending',
+          }
         )
       }
       throw error
@@ -829,7 +860,11 @@ export async function reconcileMeetingMedia(
   }
   throw new MediaUploadError(
     'Core has not confirmed this media as available. Do not upload the same operation again yet.',
-    { outcome: 'uncertain', mediaId, presentationKey: 'media:mediaNotConfirmed' }
+    {
+      outcome: 'uncertain',
+      mediaId,
+      presentationKey: 'media:mediaNotConfirmed',
+    }
   )
 }
 
