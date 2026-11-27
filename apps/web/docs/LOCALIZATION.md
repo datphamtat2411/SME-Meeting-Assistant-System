@@ -65,12 +65,14 @@ Shared date-only controls format the selected civil day with the resolved
 regional locale without converting it to a different timezone. Calendar
 control labels follow UI language. Shared errors map canonical API and
 transport codes. For unrecognized or absent codes, a localized HTTP category
-can accompany the existing safe server message without replacing it. Existing
-permission, not-found, stale and network presentation remains unchanged.
-Generic validation and conflict codes may retain a distinct public business
-message in the request error detail. Authentication, authorization, concealed
-resources and internal errors do not expose additional raw detail. Keep
-feature-specific validation and recovery guidance at the owning feature.
+can accompany a distinct public client-error message without replacing it.
+Generic validation and conflict codes may retain actionable public business
+detail. Authentication, authorization, concealed resources, stale requests,
+network failures, and all HTTP 5xx responses (including gateway failures)
+do not expose raw diagnostic detail. Shared request, form and toast
+presentation must preserve this boundary. Public client-error messages depend
+on the Core API safe-response contract; do not infer safety from message text.
+Keep feature-specific validation and recovery guidance at the owning feature.
 Use `REQUIRED_VALIDATION_MESSAGE`, `INVALID_EMAIL_VALIDATION_MESSAGE` and
 `lengthValidationMessage` from the presentation module for shared form
 validation; markers are translated at render time, including after a language

@@ -56,16 +56,12 @@ describe('RequestError presentation', () => {
       })
       const screen = await render(<RequestError error={error} />)
       await expect.element(screen.getByText(i18n.t(key))).toBeVisible()
-      await expect
-        .element(screen.getByText(diagnostic))
-        .not.toBeInTheDocument()
+      await expect.element(screen.getByText(diagnostic)).not.toBeInTheDocument()
       await act(async () => {
         await setUiLanguage('vi')
       })
       await expect.element(screen.getByText(i18n.t(key))).toBeVisible()
-      await expect
-        .element(screen.getByText(diagnostic))
-        .not.toBeInTheDocument()
+      await expect.element(screen.getByText(diagnostic)).not.toBeInTheDocument()
     }
   )
 
