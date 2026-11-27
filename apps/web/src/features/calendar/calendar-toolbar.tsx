@@ -1,6 +1,6 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, RotateCcw, Search } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { formatCivilDate } from '@/lib/regional-time'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
@@ -167,8 +167,12 @@ export function CalendarToolbar({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value='all'>{t('calendar:allAccessible')}</SelectItem>
-              <SelectItem value='organizer'>{t('calendar:organized')}</SelectItem>
-              <SelectItem value='participant'>{t('calendar:participating')}</SelectItem>
+              <SelectItem value='organizer'>
+                {t('calendar:organized')}
+              </SelectItem>
+              <SelectItem value='participant'>
+                {t('calendar:participating')}
+              </SelectItem>
             </SelectContent>
           </Select>
           <p
@@ -192,7 +196,10 @@ export function CalendarToolbar({
               })
             }}
           >
-            <SelectTrigger aria-label={t('calendar:statusFilter')} className='w-full'>
+            <SelectTrigger
+              aria-label={t('calendar:statusFilter')}
+              className='w-full'
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

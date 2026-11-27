@@ -32,9 +32,7 @@ export function PasswordReset() {
           <CardTitle className='text-lg tracking-tight'>
             {t('auth:resetTitle')}
           </CardTitle>
-          <CardDescription>
-            {t('auth:resetDescription')}
-          </CardDescription>
+          <CardDescription>{t('auth:resetDescription')}</CardDescription>
         </CardHeader>
         <CardContent>
           <PasswordResetWorkflow />
@@ -76,9 +74,7 @@ function PasswordResetWorkflow() {
   if (!capability) {
     return (
       <Alert variant='destructive'>
-        <AlertDescription>
-          {t('auth:invalidResetLink')}
-        </AlertDescription>
+        <AlertDescription>{t('auth:invalidResetLink')}</AlertDescription>
       </Alert>
     )
   }
@@ -124,9 +120,7 @@ function ResetResult({ confirmed }: { confirmed: boolean }) {
         </div>
       ) : (
         <Alert variant='destructive' tabIndex={-1} ref={focusResult}>
-          <AlertDescription>
-            {t('auth:resetUncertainResult')}
-          </AlertDescription>
+          <AlertDescription>{t('auth:resetUncertainResult')}</AlertDescription>
         </Alert>
       )}
       {session === 'checking' ? (

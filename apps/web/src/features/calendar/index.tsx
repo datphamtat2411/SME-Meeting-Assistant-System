@@ -1,8 +1,8 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
 import { toast } from 'sonner'
+import { useUiTranslation } from '@/lib/i18n'
 import {
   formatCivilDate,
   instantCivilFields,
@@ -48,14 +48,12 @@ export function CalendarPage() {
   }) {
     if (status === 'SCHEDULED') {
       toast.success(t('calendar:scheduled'), {
-        description:
-          t('calendar:refreshed'),
+        description: t('calendar:refreshed'),
       })
       return
     }
     toast.success(t('calendar:draftSaved'), {
-      description:
-        t('calendar:draftDescription'),
+      description: t('calendar:draftDescription'),
     })
   }
 
@@ -133,7 +131,9 @@ function CalendarPageContent({
       <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
         <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
           <div>
-            <p className='text-sm font-medium text-primary'>{t('calendar:schedule')}</p>
+            <p className='text-sm font-medium text-primary'>
+              {t('calendar:schedule')}
+            </p>
             <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
               {t('calendar:title')}
             </h1>
@@ -145,7 +145,10 @@ function CalendarPageContent({
               aria-label={t('calendar:timeZone')}
               className='mt-2 text-xs text-muted-foreground'
             >
-              {t('calendar:zoneNote', { zone: timeZone, offset: currentOffset })}
+              {t('calendar:zoneNote', {
+                zone: timeZone,
+                offset: currentOffset,
+              })}
             </p>
             {regional.status === 'loading' && (
               <p role='status' className='text-sm text-muted-foreground'>
@@ -188,7 +191,18 @@ function CalendarPageContent({
             role='status'
             className='flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground'
           >
-            {t('calendar:selectedDate', { date: formatCivilDate(selectedDayDate.toString(), regional.locale, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }) })}
+            {t('calendar:selectedDate', {
+              date: formatCivilDate(
+                selectedDayDate.toString(),
+                regional.locale,
+                {
+                  weekday: 'long',
+                  month: 'long',
+                  day: 'numeric',
+                  year: 'numeric',
+                }
+              ),
+            })}
             <Button
               type='button'
               variant='link'

@@ -113,7 +113,9 @@ export function ForgotPasswordForm({
         />
         {submission.failure && !submission.failure.field && (
           <Alert variant='destructive'>
-            <AlertDescription>{t(submission.failure.messageKey)}</AlertDescription>
+            <AlertDescription>
+              {t(submission.failure.messageKey)}
+            </AlertDescription>
           </Alert>
         )}
         <Button

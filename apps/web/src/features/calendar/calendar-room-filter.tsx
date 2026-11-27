@@ -1,7 +1,7 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useDeferredValue, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Check, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import {
   Command,
@@ -190,7 +190,10 @@ export function CalendarRoomFilter({
                     <ChevronLeft aria-hidden='true' />
                   </Button>
                   <span className='text-xs text-muted-foreground'>
-                    {t('page', { current: currentPage, total: pagination.totalPages })}
+                    {t('page', {
+                      current: currentPage,
+                      total: pagination.totalPages,
+                    })}
                   </span>
                   <Button
                     type='button'
@@ -212,9 +215,7 @@ export function CalendarRoomFilter({
           role='alert'
           className='flex flex-col gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs font-normal'
         >
-          <span>
-            {t('calendar:unresolvedRoomHelp')}
-          </span>
+          <span>{t('calendar:unresolvedRoomHelp')}</span>
           <Button
             type='button'
             variant='outline'

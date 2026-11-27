@@ -31,9 +31,7 @@ export function SignIn() {
             <CardTitle className='text-lg tracking-tight'>
               {t('auth:signIn')}
             </CardTitle>
-            <CardDescription>
-              {t('auth:signInDescription')}
-            </CardDescription>
+            <CardDescription>{t('auth:signInDescription')}</CardDescription>
           </CardHeader>
           <CardContent>
             <UserAuthForm redirectTo={redirect} />

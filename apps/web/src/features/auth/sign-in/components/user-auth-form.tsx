@@ -30,7 +30,9 @@ const formSchema = z.object({
         iss.input === '' ? 'auth:emailRequired' : 'auth:invalidEmail'
       ),
   }),
-  password: z.string().min(1, featureValidationMessage('auth:passwordRequired')),
+  password: z
+    .string()
+    .min(1, featureValidationMessage('auth:passwordRequired')),
 })
 
 interface UserAuthFormProps extends React.HTMLAttributes<HTMLFormElement> {

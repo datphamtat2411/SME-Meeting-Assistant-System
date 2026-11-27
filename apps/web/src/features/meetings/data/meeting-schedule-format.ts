@@ -10,7 +10,8 @@ export function formatMeetingSchedule(
   timeZone = presentationTimeZone,
   locale = 'en-US'
 ) {
-  if (!scheduledStartAt || !scheduledEndAt) return i18n.t('meetings:unscheduled')
+  if (!scheduledStartAt || !scheduledEndAt)
+    return i18n.t('meetings:unscheduled')
 
   const startsAt = new Date(scheduledStartAt)
   const endsAt = new Date(scheduledEndAt)

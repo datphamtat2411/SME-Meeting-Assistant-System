@@ -301,7 +301,10 @@ export function MeetingFilters({
           value={search.sort ?? defaultMeetingSort}
           onValueChange={(value) => onSortChange(value as MeetingSort)}
         >
-          <SelectTrigger className='mt-auto w-full' aria-label={t('meetings:sortMeetings')}>
+          <SelectTrigger
+            className='mt-auto w-full'
+            aria-label={t('meetings:sortMeetings')}
+          >
             <SelectValue placeholder={t('meetings:sortMeetings')} />
           </SelectTrigger>
           <SelectContent>
@@ -339,12 +342,12 @@ export function MeetingFilters({
       )}
       {(partialFrom || partialTo) && (
         <div role='status' className='space-y-1 rounded-md border p-3 text-sm'>
-          <p>
-            {t('meetings:partialDateFilter')}
-          </p>
+          <p>{t('meetings:partialDateFilter')}</p>
           {partialFrom && search.from && (
             <div>
-              {t('meetings:fromBoundary', { date: formatBoundary(search.from) })}{' '}
+              {t('meetings:fromBoundary', {
+                date: formatBoundary(search.from),
+              })}{' '}
               <Button
                 type='button'
                 variant='link'
@@ -460,11 +463,15 @@ function MeetingFilterLookup({
           <CommandList>
             {isLoading ? (
               <div role='status' className='px-3 py-6 text-center text-sm'>
-                {t('meetings:loadingLookupOptions', { label: label.toLowerCase() })}
+                {t('meetings:loadingLookupOptions', {
+                  label: label.toLowerCase(),
+                })}
               </div>
             ) : isError ? (
               <div className='grid gap-2 px-3 py-6 text-center text-sm'>
-                <span>{t('meetings:lookupFailed', { label: label.toLowerCase() })}</span>
+                <span>
+                  {t('meetings:lookupFailed', { label: label.toLowerCase() })}
+                </span>
                 <Button
                   type='button'
                   variant='outline'
@@ -534,7 +541,9 @@ function MeetingFilterLookup({
                   type='button'
                   variant='ghost'
                   size='sm'
-                  aria-label={t('meetings:previousLookup', { label: label.toLowerCase() })}
+                  aria-label={t('meetings:previousLookup', {
+                    label: label.toLowerCase(),
+                  })}
                   onClick={() => onPageChange(page - 1)}
                   disabled={!pagination.hasPrevious}
                 >
@@ -547,7 +556,9 @@ function MeetingFilterLookup({
                   type='button'
                   variant='ghost'
                   size='sm'
-                  aria-label={t('meetings:nextLookup', { label: label.toLowerCase() })}
+                  aria-label={t('meetings:nextLookup', {
+                    label: label.toLowerCase(),
+                  })}
                   onClick={() => onPageChange(page + 1)}
                   disabled={!pagination.hasNext}
                 >

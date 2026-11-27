@@ -148,7 +148,13 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
     const retainedResults =
       state.loadedCount === undefined
         ? ''
-        : ' ' + t(state.incomplete ? 'calendar:retainedIncomplete' : 'calendar:retained', { count: state.loadedCount })
+        : ' ' +
+          t(
+            state.incomplete
+              ? 'calendar:retainedIncomplete'
+              : 'calendar:retained',
+            { count: state.loadedCount }
+          )
     return (
       <div
         role='alert'
@@ -192,8 +198,11 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
         className='rounded-lg border border-destructive/30 bg-destructive/5 p-4'
       >
         <p className='text-sm'>
-          {message} {t('calendar:additionalRetained', { count: state.loadedCount })}
-          {state.totalCount === undefined ? '' : t('calendar:ofTotal', { total: state.totalCount })}
+          {message}{' '}
+          {t('calendar:additionalRetained', { count: state.loadedCount })}
+          {state.totalCount === undefined
+            ? ''
+            : t('calendar:ofTotal', { total: state.totalCount })}
           {state.complete ? '.' : t('calendar:incompleteSuffix')}
         </p>
         {state.onRetry && (
@@ -217,12 +226,13 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
         className='rounded-lg border border-amber-500/30 bg-amber-500/5 p-4'
       >
         <p className='text-sm'>
-          {t('calendar:paginationMismatch', { total: state.totalCount ?? t('calendar:unknownTotal'), loaded: state.loadedCount })}
+          {t('calendar:paginationMismatch', {
+            total: state.totalCount ?? t('calendar:unknownTotal'),
+            loaded: state.loadedCount,
+          })}
         </p>
         {Boolean(state.refreshError) && (
-          <p className='mt-2 text-sm'>
-            {t('calendar:refreshAlsoFailed')}
-          </p>
+          <p className='mt-2 text-sm'>{t('calendar:refreshAlsoFailed')}</p>
         )}
         {state.onRetry && (
           <Button
@@ -269,7 +279,13 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
         className='rounded-lg border border-destructive/30 bg-destructive/5 p-4'
       >
         <p className='text-sm'>
-          {t('calendar:pageError', { count: state.loadedCount, total: state.totalCount === undefined ? '' : t('calendar:ofTotal', { total: state.totalCount }) })}
+          {t('calendar:pageError', {
+            count: state.loadedCount,
+            total:
+              state.totalCount === undefined
+                ? ''
+                : t('calendar:ofTotal', { total: state.totalCount }),
+          })}
         </p>
         {state.onRetry && (
           <Button
@@ -287,7 +303,9 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
 
   if (!state.complete) {
     const total =
-      state.totalCount === undefined ? '' : t('calendar:ofTotalMeetings', { total: state.totalCount })
+      state.totalCount === undefined
+        ? ''
+        : t('calendar:ofTotalMeetings', { total: state.totalCount })
     return (
       <div
         role='status'
@@ -365,7 +383,10 @@ function roomLabel(meeting: MeetingListItem) {
 }
 
 function organizerLabel(meeting: MeetingListItem) {
-  return meeting.display.organizerName?.trim() || i18n.t('calendar:organizerUnavailable')
+  return (
+    meeting.display.organizerName?.trim() ||
+    i18n.t('calendar:organizerUnavailable')
+  )
 }
 
 function participantLabel(meeting: MeetingListItem) {
@@ -388,7 +409,11 @@ function segmentOccupancyLabel(
   if (segment.continuesFromPreviousDay) {
     const end = instantCivilFields(segment.segmentEndAt, timezone)
     const isMidnight = end?.time === '00:00' && end.date !== segment.dayKey
-    return i18n.t('calendar:until', { time: isMidnight ? i18n.t('calendar:midnight') : timeLabel(segment.segmentEndAt) })
+    return i18n.t('calendar:until', {
+      time: isMidnight
+        ? i18n.t('calendar:midnight')
+        : timeLabel(segment.segmentEndAt),
+    })
   }
   if (segment.continuesIntoNextDay) {
     return i18n.t('calendar:from', { time: timeLabel(segment.segmentStartAt) })
@@ -439,7 +464,14 @@ export function CalendarMeetingEntry({
         to='/meetings/$meetingId'
         params={{ meetingId: meeting.id }}
         onClick={() => onMeetingSelect?.(meeting)}
-        aria-label={t('calendar:openCompact', { title: meeting.title, status: i18n.language === 'vi' ? t(`calendar:status.${meeting.status}`) : meeting.status.replace(/_/g, ' '), description: accessibleDescription })}
+        aria-label={t('calendar:openCompact', {
+          title: meeting.title,
+          status:
+            i18n.language === 'vi'
+              ? t(`calendar:status.${meeting.status}`)
+              : meeting.status.replace(/_/g, ' '),
+          description: accessibleDescription,
+        })}
         className='block min-w-0 rounded-md border bg-card px-1.5 py-1 text-left text-xs leading-tight transition-colors hover:border-primary/50 hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring sm:px-2'
       >
         <span className='flex min-w-0 items-center gap-1.5'>
@@ -451,7 +483,8 @@ export function CalendarMeetingEntry({
         <span className='mt-0.5 flex items-center justify-between gap-1 text-[10px] text-muted-foreground'>
           <span className='truncate'>
             {meeting.status === 'DRAFT'
-              ? !meeting.display.roomName?.trim() && !meeting.display.roomLocation?.trim()
+              ? !meeting.display.roomName?.trim() &&
+                !meeting.display.roomLocation?.trim()
                 ? t('calendar:tentative')
                 : t('calendar:requestedRoom', { room: roomLabel(meeting) })
               : roomLabel(meeting)}
@@ -466,7 +499,9 @@ export function CalendarMeetingEntry({
             {segment.continuesFromPreviousDay && (
               <span>{t('calendar:previousDayArrow')}</span>
             )}
-            {segment.continuesIntoNextDay && <span>{t('calendar:nextDayArrow')}</span>}
+            {segment.continuesIntoNextDay && (
+              <span>{t('calendar:nextDayArrow')}</span>
+            )}
           </span>
         )}
       </Link>
@@ -479,7 +514,10 @@ export function CalendarMeetingEntry({
         to='/meetings/$meetingId'
         params={{ meetingId: meeting.id }}
         onClick={() => onMeetingSelect?.(meeting)}
-        aria-label={t('calendar:openAgenda', { title: meeting.title, description: description ? `. ${description}` : '' })}
+        aria-label={t('calendar:openAgenda', {
+          title: meeting.title,
+          description: description ? `. ${description}` : '',
+        })}
         className='group block rounded-xl border bg-card p-4 transition-colors hover:border-primary/50 hover:bg-accent/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:p-5'
       >
         <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
@@ -527,7 +565,9 @@ export function CalendarMeetingEntry({
                 <Users aria-hidden='true' className='size-4 shrink-0' />
                 {participantLabel(meeting)}
               </span>
-              <span>{t('calendar:organizer', { name: organizerLabel(meeting) })}</span>
+              <span>
+                {t('calendar:organizer', { name: organizerLabel(meeting) })}
+              </span>
             </div>
             {isMultiDay && (
               <p className='text-sm text-muted-foreground'>
@@ -535,9 +575,7 @@ export function CalendarMeetingEntry({
               </p>
             )}
             {meeting.status === 'DRAFT' && (
-              <p className='sr-only'>
-                {t('calendar:draftHelp')}
-              </p>
+              <p className='sr-only'>{t('calendar:draftHelp')}</p>
             )}
           </div>
           <span className='shrink-0 self-end text-xs text-muted-foreground sm:self-start'>
@@ -702,8 +740,9 @@ export function CalendarMonthView({
                       const visibleSegments = daySegments.slice(0, 3)
                       const overflowSegments = daySegments.slice(3)
                       const overflowId = `calendar-overflow-${cell.dayKey}`
-                      const meetingCount =
-                        t('calendar:meetingCount', { count: daySegments.length })
+                      const meetingCount = t('calendar:meetingCount', {
+                        count: daySegments.length,
+                      })
 
                       return (
                         <td
@@ -736,7 +775,12 @@ export function CalendarMonthView({
                             <>
                               <span className='mt-1 block truncate text-[10px] text-muted-foreground sm:hidden'>
                                 {daySegments.length
-                                  ? t('calendar:mobileCount', { count: daySegments.length > 99 ? '99+' : String(daySegments.length) })
+                                  ? t('calendar:mobileCount', {
+                                      count:
+                                        daySegments.length > 99
+                                          ? '99+'
+                                          : String(daySegments.length),
+                                    })
                                   : ''}
                               </span>
                               <div className='mt-1 hidden space-y-1 sm:block'>
@@ -772,14 +816,19 @@ export function CalendarMonthView({
                                   size='sm'
                                   aria-expanded={expanded}
                                   aria-controls={`${overflowId} calendar-selected-day`}
-                                  aria-label={t('calendar:showMore', { count: overflowSegments.length, date: dateLabel })}
+                                  aria-label={t('calendar:showMore', {
+                                    count: overflowSegments.length,
+                                    date: dateLabel,
+                                  })}
                                   className='mt-1 h-6 w-full justify-start px-1 text-[10px] text-primary'
                                   onClick={() => {
                                     selectDay(cell.dayKey)
                                     toggleExpanded(cell.dayKey)
                                   }}
                                 >
-                                  {t('calendar:more', { count: overflowSegments.length })}
+                                  {t('calendar:more', {
+                                    count: overflowSegments.length,
+                                  })}
                                 </Button>
                               )}
                             </>
@@ -882,7 +931,9 @@ export function CalendarAgendaView({
                     <Button
                       variant='ghost'
                       size='sm'
-                      aria-label={t('calendar:selectDate', { date: formatCivilDate(dayKey, locale, fullDateOptions) })}
+                      aria-label={t('calendar:selectDate', {
+                        date: formatCivilDate(dayKey, locale, fullDateOptions),
+                      })}
                       onClick={() => onDaySelect(dayKey)}
                     >
                       {t('calendar:selectDay')}

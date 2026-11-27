@@ -25,9 +25,7 @@ export function AccountSetup() {
           <CardTitle className='text-lg tracking-tight'>
             {t('auth:setupTitle')}
           </CardTitle>
-          <CardDescription>
-            {t('auth:setupDescription')}
-          </CardDescription>
+          <CardDescription>{t('auth:setupDescription')}</CardDescription>
         </CardHeader>
         <CardContent>
           <AccountSetupWorkflow />
@@ -68,9 +66,7 @@ function AccountSetupWorkflow() {
     return (
       <div className='grid gap-4'>
         <Alert variant='destructive'>
-          <AlertDescription>
-            {t('auth:invalidSetupLink')}
-          </AlertDescription>
+          <AlertDescription>{t('auth:invalidSetupLink')}</AlertDescription>
         </Alert>
         <Button asChild variant='outline'>
           <Link to='/sign-in'>{t('auth:backToSignIn')}</Link>
