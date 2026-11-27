@@ -216,5 +216,6 @@
   "recovery_eligible_reactivate": "The server currently verifies this account as inactive. The previous reactivation outcome remains unconfirmed; review this current version before deciding whether to confirm another request.",
   "recovery_ineligible_ACTIVE": "The latest account state is active. This lifecycle operation is no longer eligible for the current account or member state; the previous outcome remains unconfirmed.",
   "recovery_ineligible_INACTIVE": "The latest account state is inactive. This lifecycle operation is no longer eligible for the current account or member state; the previous outcome remains unconfirmed.",
-  "recovery_ineligible_PENDING_SETUP": "The latest account state is pending secure setup. This lifecycle operation is no longer eligible for the current account or member state; the previous outcome remains unconfirmed."
+  "recovery_ineligible_PENDING_SETUP": "The latest account state is pending secure setup. This lifecycle operation is no longer eligible for the current account or member state; the previous outcome remains unconfirmed.",
+  "recovery_incompatibleScope": "The latest account is not a Department Manager. Discard the incompatible manager-scope intent, or review a separate role promotion before restoring manager authority."
 }

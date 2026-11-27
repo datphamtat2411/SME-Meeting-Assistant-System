@@ -1,5 +1,5 @@
 import { i18n, useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage, requestErrorFormMessage } from '@/lib/i18n/presentation'
+import { featureValidationMessage, localizedValidationMessage, operationErrorFormMessage, UiPresentationError } from '@/lib/i18n/presentation'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -106,7 +106,7 @@ export function ActionCommands({
         !variables.owns() ||
         !eligible(variables.review.item, variables.review.command)
       )
-        throw new Error(featureValidationMessage('action-items:commandIneligible'))
+        throw new UiPresentationError('action-items:commandIneligible')
       const snapshot = variables.review
       return actionCommand(
         snapshot.item.id,
@@ -123,7 +123,7 @@ export function ActionCommands({
       operation.current += 1
       invalidateMeetingArtifacts(qc, result.item.meetingId, {
         actions: true,
-        intelligence: t('action-items:noneLower'),
+        intelligence: 'none',
       })
     },
     onError: async (error, variables) => {
@@ -182,7 +182,7 @@ export function ActionCommands({
         return
       }
       toast.error(i18n.t('action-items:commandRejected'), {
-        description: localizedValidationMessage(requestErrorFormMessage(normalizeCoreApiError(error))),
+        description: localizedValidationMessage(operationErrorFormMessage(error)),
       })
     },
   })
@@ -207,7 +207,7 @@ export function ActionCommands({
         !snapshot.item.capabilities[capabilityFor[command]] ||
         !allowed[snapshot.item.status].includes(command)
       ) {
-        throw new Error(featureValidationMessage('action-items:commandUnauthorized'))
+        throw new UiPresentationError('action-items:commandUnauthorized')
       }
       authoritativeItem.current = snapshot.item
       setReview({
@@ -220,7 +220,7 @@ export function ActionCommands({
     } catch (error) {
       if (!owns()) return
       toast.error(i18n.t('action-items:reviewFailed'), {
-        description: localizedValidationMessage(requestErrorFormMessage(normalizeCoreApiError(error))),
+        description: localizedValidationMessage(operationErrorFormMessage(error)),
       })
     } finally {
       setPendingReview((pending) => (pending?.owns === owns ? null : pending))

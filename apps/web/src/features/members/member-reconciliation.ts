@@ -1,3 +1,4 @@
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import { z } from 'zod'
 import type { Member, MemberPatchPayload, MemberSnapshot } from './member-api'
 import { memberRoles, type MemberRole } from './member-directory-state'
@@ -361,7 +362,7 @@ export function resolveMemberEditReconciliation(
       return {
         status: 'invalid',
         message:
-          'The latest account is not a Department Manager. Discard the incompatible manager-scope intent, or review a separate role promotion before restoring manager authority.',
+          featureValidationMessage('members:recovery_incompatibleScope'),
       }
     }
     values.managerScopeUnitIds = []

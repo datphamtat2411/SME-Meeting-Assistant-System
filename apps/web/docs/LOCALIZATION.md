@@ -83,3 +83,12 @@ Feature-specific form validation and persisted presentation errors can use
 sentence. `requestErrorFormMessage` preserves actionable public API messages
 or returns a stable localized category marker. Never use human-readable error
 text to decide permissions, retry behavior, or mutation outcomes.
+
+LOC-02 also extends stable presentation messages with feature-owned keys and
+optional interpolation values. Retained form/recovery messages are resolved at
+render time; server response classifications, ETags and idempotency keys remain
+canonical. Local UI-only exceptions can use `UiPresentationError` so feedback
+retains its translation key without being mistaken for a transport failure.
+Raw public conflict and validation details remain available when distinct from
+the localized category. Authentication and authorization failures retain their
+safe presentation; request/field errors are not translated as arbitrary prose.

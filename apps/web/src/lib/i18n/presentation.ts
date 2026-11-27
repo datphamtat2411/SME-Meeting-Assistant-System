@@ -1,3 +1,4 @@
+import { normalizeCoreApiError } from '@/lib/core-api'
 import { i18n } from './index'
 import { type resources } from './resources'
 
@@ -207,6 +208,21 @@ export function featureValidationMessage(
   return values
     ? `validation.params:${JSON.stringify([key, values])}`
     : `validation.key:${key}`
+}
+
+// Local errors carry an owned presentation marker; transport errors still use
+// the same normalized response and recovery classification as before.
+export class UiPresentationError extends Error {
+  constructor(key: string, values?: PresentationValues) {
+    super(featureValidationMessage(key, values))
+    this.name = 'UiPresentationError'
+  }
+}
+
+export function operationErrorFormMessage(error: unknown) {
+  return error instanceof UiPresentationError
+    ? error.message
+    : requestErrorFormMessage(normalizeCoreApiError(error))
 }
 
 export function localizedValidationMessage(

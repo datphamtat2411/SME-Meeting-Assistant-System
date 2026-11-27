@@ -135,5 +135,6 @@
   "serverDetails": "Server details: {{details}}",
   "serverAssignee": "Server assignee: {{name}}",
   "serverDue": "Server due date:",
-  "serverStatus": "Server status: {{status}}"
+  "serverStatus": "Server status: {{status}}",
+  "noChanges": "No Action Item changes to save."
 }

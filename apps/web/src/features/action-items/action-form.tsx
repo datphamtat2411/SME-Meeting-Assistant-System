@@ -1,5 +1,5 @@
 import { i18n, useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage, requestErrorFormMessage } from '@/lib/i18n/presentation'
+import { featureValidationMessage, localizedValidationMessage, operationErrorFormMessage, UiPresentationError } from '@/lib/i18n/presentation'
 import { useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -167,7 +167,7 @@ export function ActionForm({
       submission: Submission
     ): Promise<ActionMutationResult> => {
       if (!submission.owns())
-        throw new Error(featureValidationMessage('action-items:operationUnauthorized'))
+        throw new UiPresentationError('action-items:operationUnauthorized')
       if (submission.reviewed) {
         const reviewed = submission.reviewed
         const patch = buildActionPatch(reviewed.item, submission.pending)
@@ -187,7 +187,7 @@ export function ActionForm({
         )
       }
       if (!submission.creation)
-        throw new Error(featureValidationMessage('action-items:noIntent'))
+        throw new UiPresentationError('action-items:noIntent')
       return createAction(submission.creation.payload, submission.creation.key)
     },
     onSuccess: (result, submission) => {
@@ -245,7 +245,7 @@ export function ActionForm({
             latest: null,
             latestResult: null,
             message:
-              requestErrorFormMessage(normalizeCoreApiError(error)),
+              operationErrorFormMessage(error),
           })
         } finally {
           if (submission.owns()) {
@@ -272,7 +272,7 @@ export function ActionForm({
       if (submission.creation) intent.current = null
       toast.error(
         item ? i18n.t('action-items:saveFailed') : i18n.t('action-items:createFailed'),
-        { description: localizedValidationMessage(requestErrorFormMessage(normalizeCoreApiError(error))) }
+        { description: localizedValidationMessage(operationErrorFormMessage(error)) }
       )
     },
   })

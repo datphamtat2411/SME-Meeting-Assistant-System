@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { queryOptions } from '@tanstack/react-query'
 import { CoreApiError, coreApi, normalizeCoreApiError } from '@/lib/core-api'
+import { UiPresentationError } from '@/lib/i18n/presentation'
 import {
   paginationParams,
   validatedPageInfo,
@@ -398,7 +399,7 @@ export async function patchAction(
   expectedMeetingId?: string
 ): Promise<ActionMutationResult> {
   if (!Object.keys(patch).length) {
-    throw new Error('No Action Item changes to save.')
+    throw new UiPresentationError('action-items:noChanges')
   }
   const response = await coreApi.patchWithMetaAndEtag<unknown>(
     '/action-items/' + encodeURIComponent(id),
