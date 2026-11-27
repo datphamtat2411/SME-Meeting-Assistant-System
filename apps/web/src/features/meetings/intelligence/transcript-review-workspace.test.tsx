@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { setUiLanguage } from '@/lib/i18n'
 import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { TranscriptReviewWorkspace } from './transcript-review-workspace'
@@ -276,6 +277,61 @@ describe('TranscriptReviewWorkspace', () => {
       2000,
       expect.any(String)
     )
+  })
+
+  it('switches language without losing a correction draft or issuing a write', async () => {
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url.endsWith('/transcript')) return initialTranscript
+      if (url.endsWith('/transcript/coverage')) return coverage
+      if (url.endsWith('/speaker-clusters')) return speakers
+      throw new Error(`Unexpected GET ${url}`)
+    })
+    const read = vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: initialTranscript,
+      meta: {},
+      etag: '"t-transcript-8"',
+    })
+    const patch = vi.spyOn(coreApi, 'patch')
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <TranscriptReviewWorkspace
+          meetingId={meetingId}
+          canReadMeetingContent
+          canCorrectTranscript
+          canMapSpeakers
+          canReadMedia
+        />
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByText('Nội dung thứ nhất'))
+      .toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Correct' }).first()
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Corrected text' }),
+      'Bản nháp giữ nguyên'
+    )
+    const readCount = read.mock.calls.length
+    try {
+      await act(async () => {
+        await setUiLanguage('vi')
+      })
+      await expect
+        .element(screen.getByRole('textbox', { name: 'Nội dung đã chỉnh sửa' }))
+        .toHaveValue('Bản nháp giữ nguyên')
+      await expect
+        .element(screen.getByRole('button', { name: 'Lưu chỉnh sửa' }))
+        .toBeVisible()
+      expect(patch).not.toHaveBeenCalled()
+      expect(read).toHaveBeenCalledTimes(readCount)
+    } finally {
+      await act(async () => {
+        await setUiLanguage('en')
+      })
+    }
   })
 
   it('preserves a correction draft after a 412 and shows the current canonical version', async () => {

@@ -40,6 +40,13 @@ transport, authentication, permissions, or lifecycle behavior.
 | Employee | Nhân viên |
 | Department Manager | Trưởng phòng |
 | Administrator | Quản trị viên |
+| Meeting Intelligence | Kết quả AI |
+| Recording | Ghi âm |
+| Speaker mapping | Gán người nói |
+| Source coverage | Độ bao phủ nguồn |
+| Evidence | Bằng chứng |
+| AI proposal | Đề xuất AI |
+| Review | Rà soát |
 
 Use natural Vietnamese, not literal word-for-word translations. AI, Chat,
 Email, audio, video, file, timeline, link, PDF, Markdown, online/offline, and
@@ -94,3 +101,11 @@ retains its translation key without being mistaken for a transport failure.
 Raw public conflict and validation details remain available when distinct from
 the localized category. Authentication and authorization failures retain their
 safe presentation; request/field errors are not translated as arbitrary prose.
+
+LOC-03 localizes workspace and media controls, transcript correction and
+review, speaker mapping, evidence, AI proposals and confirmed records,
+minutes/export controls and the Assistant conversation UI. The language
+switch is presentation-only: do not translate canonical transcript text,
+user-supplied questions, generated content, source identifiers, versions,
+review fingerprints, request keys, or exported document bytes. Keep recovery
+messages actionable without replaying operations or exposing diagnostics.
