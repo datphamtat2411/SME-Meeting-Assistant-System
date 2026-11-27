@@ -207,7 +207,12 @@ void main() {
         () => processingTab.evaluate().isNotEmpty,
         reason: 'meeting to load',
       );
-      await tester.ensureVisible(processingTab);
+      await Scrollable.ensureVisible(
+        tester.element(processingTab),
+        alignment: 0.5,
+      );
+      await tester.pump();
+      expect(processingTab.hitTestable(), findsOneWidget);
       await tester.tap(processingTab);
       final handoff = find.text('Mở duyệt bản ghi');
       await pumpUntil(
@@ -215,7 +220,12 @@ void main() {
         () => handoff.evaluate().isNotEmpty,
         reason: 'waiting job to offer review',
       );
-      await tester.ensureVisible(handoff);
+      await Scrollable.ensureVisible(
+        tester.element(handoff),
+        alignment: 0.5,
+      );
+      await tester.pump();
+      expect(handoff.hitTestable(), findsOneWidget);
       await tester.tap(handoff);
       final acknowledge = find.widgetWithText(
         OutlinedButton,
@@ -234,7 +244,12 @@ void main() {
       );
       expect(tester.widget<FilledButton>(admit).onPressed, isNull);
       expect(calls, isEmpty);
-      await tester.ensureVisible(acknowledge);
+      await Scrollable.ensureVisible(
+        tester.element(acknowledge),
+        alignment: 0.5,
+      );
+      await tester.pump();
+      expect(acknowledge.hitTestable(), findsOneWidget);
       await tester.tap(acknowledge);
       await pumpUntil(
         tester,
@@ -246,14 +261,24 @@ void main() {
       expect(calls, ['acknowledge']);
       // Leave the review and reopen the same handoff. The receipt is owned
       // by the application manager, not the discarded Results widget.
-      await tester.ensureVisible(processingTab);
+      await Scrollable.ensureVisible(
+        tester.element(processingTab),
+        alignment: 0.5,
+      );
+      await tester.pump();
+      expect(processingTab.hitTestable(), findsOneWidget);
       await tester.tap(processingTab);
       await pumpUntil(
         tester,
         () => handoff.evaluate().isNotEmpty,
         reason: 'waiting job after leaving review',
       );
-      await tester.ensureVisible(handoff);
+      await Scrollable.ensureVisible(
+        tester.element(handoff),
+        alignment: 0.5,
+      );
+      await tester.pump();
+      expect(handoff.hitTestable(), findsOneWidget);
       await tester.tap(handoff);
       await pumpUntil(
         tester,
@@ -263,7 +288,12 @@ void main() {
         reason: 'restored receipt',
       );
       expect(calls, ['acknowledge']);
-      await tester.ensureVisible(admit);
+      await Scrollable.ensureVisible(
+        tester.element(admit),
+        alignment: 0.5,
+      );
+      await tester.pump();
+      expect(admit.hitTestable(), findsOneWidget);
       await tester.tap(admit);
       await pumpUntil(
         tester,
