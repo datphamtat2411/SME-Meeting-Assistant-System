@@ -1,3 +1,4 @@
+import { featureValidationMessage, operationErrorFormMessage } from '@/lib/i18n/presentation'
 import {
   createContext,
   useCallback,
@@ -382,8 +383,8 @@ export function TranscriptReviewGateProvider({
         sessionRef.current.processing.releaseReviewCommand(operation)
       }
       operation.message = uncertain
-        ? 'The request may have committed before authorization changed.'
-        : 'Authorization changed before the request was sent.'
+        ? featureValidationMessage('transcript:reviewGate_committedBeforeAuth')
+        : featureValidationMessage('transcript:reviewGate_authBeforeSend')
       if (operation.kind === 'acknowledgement') publishAcknowledgement()
       else publishAdmission()
     },
@@ -446,7 +447,7 @@ export function TranscriptReviewGateProvider({
 
       if (observationKeyRef.current !== null) {
         invalidateProof(
-          'The transcript evidence changed. A fresh acknowledgement is required.'
+          featureValidationMessage('transcript:reviewGate_changedEvidence')
         )
       }
       observationKeyRef.current = digestInputKey
@@ -481,7 +482,7 @@ export function TranscriptReviewGateProvider({
           evidenceRef.current = null
           setEvidence(null)
           setDigestStatus('error')
-          setDigestError(normalizeCoreApiError(error).message)
+          setDigestError(operationErrorFormMessage(error))
         })
     },
     [invalidateProof]
@@ -494,7 +495,7 @@ export function TranscriptReviewGateProvider({
       receiptRef.current !== null
     ) {
       invalidateProof(
-        'The canonical transcript evidence is no longer available. Review must be re-established.'
+        featureValidationMessage('transcript:reviewGate_evidenceUnavailable')
       )
     }
     observationKeyRef.current = null
@@ -607,7 +608,7 @@ export function TranscriptReviewGateProvider({
         setProofInvalidationMessage(
           proofIsCurrent
             ? null
-            : 'This acknowledgement belongs to a historical transcript revision.'
+            : featureValidationMessage('transcript:reviewGate_historicalReceipt')
         )
         publishAcknowledgement()
         sessionRef.current.processing.releaseReviewCommand(operation)
@@ -622,7 +623,7 @@ export function TranscriptReviewGateProvider({
             ? 'uncertain'
             : 'rejected'
         const normalized = normalizeCoreApiError(error)
-        operation.message = normalized.message
+        operation.message = operationErrorFormMessage(error)
         if (operation.status !== 'uncertain') {
           sessionRef.current.processing.releaseReviewCommand(operation)
         }
@@ -683,7 +684,7 @@ export function TranscriptReviewGateProvider({
             ? 'uncertain'
             : 'rejected'
         const normalized = normalizeCoreApiError(error)
-        operation.message = normalized.message
+        operation.message = operationErrorFormMessage(error)
         if (operation.status !== 'uncertain') {
           sessionRef.current.processing.releaseReviewCommand(operation)
         }
@@ -926,14 +927,14 @@ export function TranscriptReviewGateProvider({
         ) ?? null)
       : null
   const eligibilityMessage = !authorizedNow
-    ? 'The current actor cannot manage transcript review.'
+    ? featureValidationMessage('transcript:reviewGate_actorUnauthorized')
     : mutationBlocked
-      ? 'Finish or discard unresolved transcript review work.'
+      ? featureValidationMessage('transcript:reviewGate_resolveReview')
       : !evidence || !evidenceVerified
-        ? 'Current transcript evidence is not verified.'
+        ? featureValidationMessage('transcript:reviewGate_evidenceUnverified')
         : (reviewJobEligibility(evidence, meetingId, observedSnapshot) ??
           (session.processing.unresolvedOperations.length > 0
-            ? 'Resolve the outstanding processing operation first.'
+            ? featureValidationMessage('transcript:reviewGate_resolveProcessing')
             : null))
   const value = useMemo<TranscriptReviewGateValue>(
     () => ({
@@ -1015,9 +1016,9 @@ function reviewJobEligibility(
   } | null
 ): string | null {
   if (proof.meetingId !== meetingId) {
-    return 'The transcript belongs to another meeting.'
+    return featureValidationMessage('transcript:reviewGate_wrongMeeting')
   }
-  if (!snapshot) return 'Current job and source evidence are not verified.'
+  if (!snapshot) return featureValidationMessage('transcript:reviewGate_jobSourceUnverified')
   const job = snapshot.jobs.find((item) => item.id === proof.processingJobId)
   if (
     !job ||
@@ -1026,7 +1027,7 @@ function reviewJobEligibility(
     job.jobType !== 'OFFLINE_MEETING_PROCESSING' ||
     job.status !== 'WAITING_FOR_REVIEW'
   ) {
-    return 'The exact processing job is not waiting for transcript review.'
+    return featureValidationMessage('transcript:reviewGate_notWaiting')
   }
   if (
     !snapshot.media.some(
@@ -1036,7 +1037,7 @@ function reviewJobEligibility(
         item.status === 'AVAILABLE'
     )
   ) {
-    return 'The reviewed source media is not available.'
+    return featureValidationMessage('transcript:reviewGate_sourceUnavailable')
   }
   return null
 }
@@ -1134,7 +1135,7 @@ export function TranscriptReviewGateBoundary({
         transcriptReviewEvidenceInputFingerprint(base) !==
           evidence.inputFingerprint
       ) {
-        return 'The current transcript must be verified again.'
+        return featureValidationMessage('transcript:reviewGate_verifyCurrent')
       }
       if (
         !settled(
@@ -1148,7 +1149,7 @@ export function TranscriptReviewGateBoundary({
           )
         )
       ) {
-        return 'Coverage and speaker evidence must finish verification.'
+        return featureValidationMessage('transcript:reviewGate_verifyCoverage')
       }
       return null
     },

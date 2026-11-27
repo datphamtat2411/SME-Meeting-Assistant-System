@@ -1,3 +1,5 @@
+import { useUiTranslation } from '@/lib/i18n'
+import { localizedValidationMessage } from '@/lib/i18n/presentation'
 import { useState } from 'react'
 import { AlertTriangle, CheckCircle2, ShieldCheck } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -20,6 +22,7 @@ export function TranscriptReviewAdmissionPanel({
 }: {
   onNavigateToIntelligence?: () => void
 }) {
+  const { t } = useUiTranslation()
   const gate = useTranscriptReviewGate()
   const [acknowledgementIntent, setAcknowledgementIntent] = useState<{
     fingerprint: string | null
@@ -97,11 +100,10 @@ export function TranscriptReviewAdmissionPanel({
       <CardHeader className='border-b'>
         <CardTitle className='flex items-center gap-2'>
           <ShieldCheck className='size-5' />
-          Transcript review gate
+          {t('transcript:reviewGate_heading')}
         </CardTitle>
         <CardDescription>
-          Meeting Intelligence can be admitted only from this finalized,
-          source-bound transcript revision.
+          {t('transcript:reviewGate_description')}
         </CardDescription>
       </CardHeader>
       <CardContent className='space-y-4 pt-5'>
@@ -111,50 +113,44 @@ export function TranscriptReviewAdmissionPanel({
             className='flex gap-2 rounded-lg border border-amber-300/70 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-200'
           >
             <AlertTriangle className='mt-0.5 size-4 shrink-0' />
-            <span>{gate.proofInvalidationMessage}</span>
+            <span>{localizedValidationMessage(gate.proofInvalidationMessage, t)}</span>
           </div>
         )}
 
         {gate.digestStatus === 'computing' && (
           <p role='status' className='text-sm text-muted-foreground'>
-            Computing the canonical transcript evidence digest…
+            {t('transcript:reviewGate_computingDigest')}
           </p>
         )}
         {gate.digestStatus === 'error' && (
           <p role='alert' className='text-sm text-destructive'>
-            {gate.digestError ?? 'Transcript evidence could not be verified.'}
+            {gate.digestError ? localizedValidationMessage(gate.digestError, t) : t('transcript:reviewGate_digestUnverified')}
           </p>
         )}
         {!gate.isAuthorized && (
           <p role='status' className='text-sm text-muted-foreground'>
-            The current meeting authorization does not permit review
-            acknowledgement or Meeting Intelligence admission.
+            {t('transcript:reviewGate_unauthorized')}
           </p>
         )}
         {gate.mutationBlocked && (
           <p role='status' className='text-sm text-muted-foreground'>
-            Finish or discard the active transcript correction or speaker
-            mapping before changing the review gate.
+            {t('transcript:reviewGate_mutationBlocked')}
           </p>
         )}
 
         <TranscriptReviewWorkflowStatus />
         {gate.eligibilityMessage && !admissionConfirmed && (
           <p role='status' className='text-sm text-muted-foreground'>
-            {gate.eligibilityMessage}
+            {localizedValidationMessage(gate.eligibilityMessage, t)}
           </p>
         )}
         {recovering && (
           <div role='status' className='space-y-2 rounded-lg border p-3'>
             <p className='text-sm'>
-              A prior request has an uncertain outcome. Recover the original
-              intent before starting another operation, even if the evidence
-              changed.
+              {t('transcript:reviewGate_uncertain')}
             </p>
             <p className='text-sm text-muted-foreground'>
-              {gate.admission.status === 'uncertain'
-                ? gate.admission.message
-                : gate.acknowledgement.message}
+              {localizedValidationMessage((gate.admission.status === 'uncertain' ? gate.admission.message : gate.acknowledgement.message) ?? '', t)}
             </p>
             <Button
               type='button'
@@ -167,32 +163,30 @@ export function TranscriptReviewAdmissionPanel({
               }
             >
               {gate.admission.status === 'uncertain'
-                ? 'Recover admission'
-                : 'Recover acknowledgement'}
+                ? t('transcript:reviewGate_recoverAdmission')
+                : t('transcript:reviewGate_recoverAcknowledgement')}
             </Button>
           </div>
         )}
         {gate.receipt && !gate.receiptIsCurrent && (
           <p className='text-sm text-muted-foreground'>
-            Core confirmed an acknowledgement for revision{' '}
-            {gate.receipt.contentRevision}. Verify the evidence against the
-            current revision before using this receipt.
+            {t('transcript:reviewGate_receiptRevision', { revision: gate.receipt.contentRevision })}
           </p>
         )}
         {gate.admission.status === 'confirmed' && !admissionConfirmed && (
           <p className='text-sm text-muted-foreground'>
-            A previous Meeting Intelligence admission was confirmed by Core.
+            {t('transcript:reviewGate_previousAdmission')}
           </p>
         )}
         {gate.evidence && (
           <div className='flex flex-wrap gap-2 text-xs'>
             <Badge variant='outline'>
-              Transcript revision {gate.evidence.contentRevision}
+              {t('transcript:reviewGate_revision', { revision: gate.evidence.contentRevision })}
             </Badge>
             <Badge variant='outline'>
-              Source {gate.evidence.sourceMediaId.slice(0, 8)}
+              {t('transcript:reviewGate_source', { source: gate.evidence.sourceMediaId.slice(0, 8) })}
             </Badge>
-            <Badge variant='outline'>{gate.evidence.transcriptStatus}</Badge>
+            <Badge variant='outline'>{t(`transcript:reviewGate_status_${gate.evidence.transcriptStatus}`, { defaultValue: gate.evidence.transcriptStatus })}</Badge>
           </div>
         )}
 
@@ -200,11 +194,10 @@ export function TranscriptReviewAdmissionPanel({
           <div className='rounded-lg border bg-muted/10 p-3 text-sm'>
             <p className='flex items-center gap-2 font-medium'>
               <CheckCircle2 className='size-4 text-emerald-600' />
-              Core acknowledgement confirmed
+              {t('transcript:reviewGate_acknowledgementConfirmed')}
             </p>
             <p className='mt-1 text-muted-foreground'>
-              Attributed to {gate.receipt.acknowledgedByUserId} at{' '}
-              {gate.receipt.acknowledgedAt}.
+              {t('transcript:reviewGate_attributed', { user: gate.receipt.acknowledgedByUserId, time: gate.receipt.acknowledgedAt })}
             </p>
           </div>
         )}
@@ -230,9 +223,7 @@ export function TranscriptReviewAdmissionPanel({
                 }
               />
               <span>
-                I reviewed the complete transcript and its source coverage. I
-                understand this acknowledgement is for the exact revision shown
-                above.
+                {t('transcript:reviewGate_acknowledgementStatement')}
               </span>
             </label>
             <div className='flex flex-wrap items-center gap-2'>
@@ -248,13 +239,13 @@ export function TranscriptReviewAdmissionPanel({
                 }
               >
                 {gate.acknowledgement.status === 'pending'
-                  ? 'Acknowledging…'
-                  : 'Acknowledge transcript review'}
+                  ? t('transcript:reviewGate_acknowledging')
+                  : t('transcript:reviewGate_acknowledge')}
               </Button>
               {gate.acknowledgement.status === 'rejected' &&
                 gate.acknowledgement.message && (
                   <span role='alert' className='text-sm text-destructive'>
-                    {gate.acknowledgement.message}
+                    {localizedValidationMessage(gate.acknowledgement.message, t)}
                   </span>
                 )}
             </div>
@@ -264,8 +255,7 @@ export function TranscriptReviewAdmissionPanel({
         {!recovering && acknowledgementConfirmed && !admissionConfirmed && (
           <div className='space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-3'>
             <p className='text-sm'>
-              The review receipt is current. Admission is a separate, idempotent
-              Core operation.
+              {t('transcript:reviewGate_receiptCurrent')}
             </p>
             <div className='flex flex-wrap items-center gap-2'>
               <Button
@@ -279,13 +269,13 @@ export function TranscriptReviewAdmissionPanel({
                 }
               >
                 {gate.admission.status === 'pending'
-                  ? 'Admitting…'
-                  : 'Admit Meeting Intelligence'}
+                  ? t('transcript:reviewGate_admitting')
+                  : t('transcript:reviewGate_admit')}
               </Button>
               {gate.admission.status === 'rejected' &&
                 gate.admission.message && (
                   <span role='alert' className='text-sm text-destructive'>
-                    {gate.admission.message}
+                    {localizedValidationMessage(gate.admission.message, t)}
                   </span>
                 )}
             </div>
@@ -296,7 +286,7 @@ export function TranscriptReviewAdmissionPanel({
           <div className='flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-300/70 bg-emerald-50 p-3 text-sm text-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-200'>
             <span className='flex items-center gap-2'>
               <CheckCircle2 className='size-4' />
-              Meeting Intelligence admission confirmed by Core.
+              {t('transcript:reviewGate_admissionConfirmed')}
             </span>
             {onNavigateToIntelligence && (
               <Button
@@ -304,7 +294,7 @@ export function TranscriptReviewAdmissionPanel({
                 variant='outline'
                 onClick={onNavigateToIntelligence}
               >
-                Open Intelligence
+                {t('transcript:reviewGate_openIntelligence')}
               </Button>
             )}
           </div>
@@ -319,6 +309,7 @@ export function TranscriptReviewWorkflowStatus({
 }: {
   onReview?: () => void
 }) {
+  const { t } = useUiTranslation()
   const gate = useOptionalTranscriptReviewGate()
   if (!gate?.isAuthorized) return null
   const job = gate.observedJob
@@ -329,9 +320,9 @@ export function TranscriptReviewWorkflowStatus({
       {job && (
         <>
           <p className='font-medium'>
-            Transcript processing: {presentProcessingStatus(job.status).label}
+            {t('transcript:reviewGate_processing', { status: presentProcessingStatus(job.status).label })}
           </p>
-          {job.currentStage && <p>Current stage: {job.currentStage}</p>}
+          {job.currentStage && <p>{t('transcript:reviewGate_stage', { stage: job.currentStage })}</p>}
           {job.warningSummary && (
             <p className='text-muted-foreground'>{job.warningSummary}</p>
           )}
@@ -342,13 +333,12 @@ export function TranscriptReviewWorkflowStatus({
       )}
       {gate.hasUnresolvedOperation && (
         <p>
-          A transcript review request is unresolved. Job progression alone does
-          not confirm that request.
+          {t('transcript:reviewGate_requestUnresolved')}
         </p>
       )}
       {onReview && (
         <Button type='button' variant='outline' onClick={onReview}>
-          Open transcript review
+          {t('transcript:reviewGate_openReview')}
         </Button>
       )}
     </div>
