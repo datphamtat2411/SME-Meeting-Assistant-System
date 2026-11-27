@@ -338,9 +338,10 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
         // A denied replay does not establish the outcome of the original
         // request. Keep its immutable proof until a permitted reconciliation.
         if (!_processingOutcomeAmbiguous(failure) &&
-            failure.status != 403 &&
-            failure.status != 404 &&
-            failure.status != 429) {
+            !(recovering &&
+                (failure.status == 403 ||
+                    failure.status == 404 ||
+                    failure.status == 429))) {
           _reviewOperations.remove(key);
         }
       }

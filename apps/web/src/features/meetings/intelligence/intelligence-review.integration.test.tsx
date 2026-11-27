@@ -51,6 +51,33 @@ const proposal = {
   etag: '"reviewed-decision"',
 }
 
+const reviewedTranscript = {
+  id: transcriptId,
+  meetingId,
+  sourceMediaId: currentId,
+  processingJobId: candidateId,
+  versionNumber: 1,
+  languageCode: 'vi',
+  status: 'READY',
+  durationMs: 1000,
+  finalizedAt: proposal.createdAt,
+  contentRevision: 4,
+  segments: [
+    {
+      id: segmentId,
+      ordinal: 0,
+      startMs: 0,
+      endMs: 1000,
+      text: 'Reviewed evidence',
+      qualityStatus: 'ACCEPTED',
+      speakerClusterId: null,
+      speakerLabel: null,
+      version: 1,
+      etag: '"opaque-segment"',
+    },
+  ],
+}
+
 function page(items: unknown[]) {
   return {
     data: items,
@@ -243,6 +270,97 @@ describe('intelligence review integrity', () => {
       undefined,
       { headers: { 'If-Match': '"reviewed-decision"' } }
     )
+  })
+
+  it('blocks confirmation when source-bound coverage is unsafe', async () => {
+    const queryClient = client()
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(page([proposal]))
+    const transcript = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValue({
+        data: reviewedTranscript,
+        meta: {},
+        etag: '"reviewed-source"',
+      })
+    const coverage = vi.spyOn(coreApi, 'get').mockResolvedValue([
+      {
+        id: currentId,
+        startMs: 200,
+        endMs: 300,
+        coverageStatus: 'SUSPICIOUS',
+        recovered: false,
+        retryCount: 0,
+      },
+    ])
+    const post = vi.spyOn(coreApi, 'post')
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <DecisionsPanel meetingId={meetingId} canManageDecisions />
+      </QueryClientProvider>
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Review proposal' })
+    )
+    await expect.poll(() => transcript.mock.calls.length).toBeGreaterThanOrEqual(3)
+    expect(coverage).toHaveBeenCalledWith(
+      `/meetings/${meetingId}/transcript/coverage`,
+      expect.anything()
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Confirm decision' }))
+      .toBeDisabled()
+    await expect
+      .element(screen.getByRole('button', { name: 'Reject proposal' }))
+      .toBeEnabled()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('sends the reviewed source tuple and keeps a stale manual draft', async () => {
+    const queryClient = client()
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(page([]))
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: reviewedTranscript,
+      meta: {},
+      etag: '"reviewed-source"',
+    })
+    const post = vi.spyOn(coreApi, 'post').mockRejectedValue(
+      new CoreApiError({
+        message: 'Transcript changed',
+        status: 412,
+        kind: 'http',
+      })
+    )
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <DecisionsPanel meetingId={meetingId} canManageDecisions />
+      </QueryClientProvider>
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Add confirmed decision' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'New decision content' }),
+      'New official decision'
+    )
+    await userEvent.click(
+      screen.getByRole('checkbox', { name: /Reviewed evidence/ })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create confirmed decision' })
+    )
+    await expect.poll(() => post.mock.calls.length).toBe(1)
+    expect(post).toHaveBeenCalledWith(`/meetings/${meetingId}/decisions`, {
+      content: 'New official decision',
+      evidenceSegmentIds: [segmentId],
+      reviewedTranscriptId: transcriptId,
+      reviewedContentRevision: 4,
+    })
+    await expect
+      .element(screen.getByRole('button', { name: 'Create confirmed decision' }))
+      .toBeDisabled()
+    await expect
+      .element(screen.getByRole('textbox', { name: 'New decision content' }))
+      .toHaveValue('New official decision')
   })
 
   it('blocks repeated manual creation after a transport failure until explicit reconciliation', async () => {

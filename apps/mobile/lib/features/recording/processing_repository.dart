@@ -148,7 +148,11 @@ class ProcessingRepository {
       sessionScope,
     );
     try {
-      return TranscriptReviewReceipt.fromResult(response, proof);
+      final receipt = TranscriptReviewReceipt.fromResult(response, proof);
+      if (!_uuidPattern.hasMatch(receipt.reviewId)) {
+        throw response.invalidDataFailure();
+      }
+      return receipt;
     } on ApiFailure catch (failure) {
       throw _invalidReviewResponse(failure);
     }

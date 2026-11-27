@@ -52,6 +52,8 @@ class TranscriptReviewProof {
     this.correctionDigest,
     this.etag,
     this.status,
+    this.versionNumber,
+    this.finalizedAt,
   );
 
   factory TranscriptReviewProof.fromTranscript(
@@ -82,6 +84,8 @@ class TranscriptReviewProof {
       transcriptCorrectionDigest(transcript.segments),
       transcript.etag!,
       transcript.status,
+      transcript.versionNumber,
+      transcript.finalizedAt!,
     );
   }
 
@@ -93,6 +97,8 @@ class TranscriptReviewProof {
   final String correctionDigest;
   final String etag;
   final String status;
+  final int versionNumber;
+  final DateTime finalizedAt;
 
   bool matches(Transcript transcript) =>
       transcript.meetingId == meetingId &&
@@ -102,7 +108,8 @@ class TranscriptReviewProof {
       transcript.contentRevision == contentRevision &&
       transcript.etag == etag &&
       transcript.status == status &&
-      transcript.finalizedAt != null;
+      transcript.versionNumber == versionNumber &&
+      transcript.finalizedAt == finalizedAt;
 
   bool matchesJob(ProcessingJobRecord job) =>
       job.id == jobId &&

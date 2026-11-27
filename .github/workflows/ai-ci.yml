@@ -9,6 +9,10 @@ on:
       - 'api/**'
       - 'integration/**'
     paths:
+      # Integration evidence must be verified on the same SHA.
+      - 'apps/web/**'
+      - 'apps/mobile/**'
+      - 'docs/integration/**'
       - 'services/ai/**'
       - 'services/api/**'
       - 'contracts/CORE_API_AI_TRANSCRIPTION_WORKER_V1.md'

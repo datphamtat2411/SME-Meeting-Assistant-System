@@ -294,6 +294,10 @@ class ResultsWorkspaceController extends ChangeNotifier
 
   bool get canReviewProcessingTranscript =>
       capabilities.canMutate &&
+      MeetingCapabilityPolicy.evaluate(
+        callerId: sessionScope.userId,
+        meeting: meeting,
+      ).allows(MeetingOperation.admitProcessing) &&
       !_mutations.hasTranscriptDrafts &&
       !_mutations.busy(ResultsMutationGroup.transcript) &&
       _dialogs.isEmpty &&
