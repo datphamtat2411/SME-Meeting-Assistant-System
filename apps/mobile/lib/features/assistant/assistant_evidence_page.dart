@@ -5,6 +5,8 @@ import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/date_labels.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 import 'package:sme_meeting_assistant/features/results/results_models.dart';
+import 'package:sme_meeting_assistant/features/results/result_status_presentation.dart';
+import 'package:sme_meeting_assistant/features/action_items/action_item_presentation.dart';
 
 import 'assistant_evidence_resolver.dart';
 import 'assistant_repository.dart';
@@ -215,7 +217,7 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
         SectionHeading(
           title,
           subtitle:
-              'Revision ${widget.target.citation.sourceRevision} · Chỉ đọc',
+              'Lần chỉnh sửa ${widget.target.citation.sourceRevision} · Chỉ đọc',
         ),
         if (_artifact?.meetingTitle case final String meetingTitle)
           Text(meetingTitle),
@@ -250,7 +252,11 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
               ),
               const SizedBox(height: 8),
               SelectableText(segment.text),
-              if (segment.quality != 'ACCEPTED') StatePill(segment.quality),
+              if (segment.quality != 'ACCEPTED')
+                StatePill(
+                  segment.quality,
+                  label: transcriptQualityLabel(segment.quality),
+                ),
             ],
           ),
         );
@@ -271,7 +277,10 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              StatePill(decision.status),
+              StatePill(
+                decision.status,
+                label: decisionStatusLabel(decision.status),
+              ),
               const SizedBox(height: 8),
               SelectableText(decision.content),
             ],
@@ -287,7 +296,7 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              StatePill(item.status.apiValue),
+              StatePill(item.status.apiValue, label: actionItemStateLabel(item)),
               SectionHeading(item.title),
               if (item.details != null) SelectableText(item.details!),
               if (item.assignee != null)

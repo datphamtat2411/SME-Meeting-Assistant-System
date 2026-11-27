@@ -8,6 +8,7 @@ import '../../core/widgets.dart';
 import '../recording/media_contracts.dart';
 import '../recording/processing_presentation.dart';
 import 'results_models.dart';
+import 'result_status_presentation.dart';
 import 'results_workspace_controller.dart';
 import 'results_presentation.dart';
 import 'summary_history_controller.dart';
@@ -157,7 +158,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
           source.segments.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Cần transcript hoàn chỉnh trước khi tạo tóm tắt.'),
+            content: Text('Cần bản ghi hoàn chỉnh trước khi tạo tóm tắt.'),
           ),
         );
         return;
@@ -227,7 +228,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                 SelectableText(current.content),
                 const Divider(height: 28),
                 Text(
-                  'Bản lịch sử · ${version.sourceType}',
+                  'Bản lịch sử · ${resultSourceLabel(version.sourceType)}',
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
                 SelectableText(version.content),
@@ -284,7 +285,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
             ),
           if (job?.errorSummary != null)
             Text(
-              processingFailureLabel(job!.errorCode, job.errorSummary),
+              processingFailureLabel(job!.errorCode, job!.errorSummary),
               style: const TextStyle(color: Palette.red),
             ),
           if (job?.status.isSuccessful == true)
@@ -328,19 +329,6 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
       ),
     );
   }
-
-  String _sourceLabel(String source) => switch (source) {
-    'AI' || 'AI_GENERATED' => 'AI tạo',
-    'HUMAN_EDIT' => 'Con người chỉnh sửa',
-    _ => source,
-  };
-
-  String _qualityLabel(String quality) => switch (quality) {
-    'CONFIRMED' => 'Đã xác nhận',
-    'READY' => 'Sẵn sàng',
-    'WARNING' || 'READY_WITH_WARNINGS' => 'Có cảnh báo',
-    _ => quality,
-  };
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -393,24 +381,24 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                         ),
                       ),
                       Text(
-                        _sourceLabel(current.sourceType),
+                        resultSourceLabel(current.sourceType),
                         style: const TextStyle(color: Palette.muted),
                       ),
                       if (current.isStale)
                         const StatePill(
                           'COMPLETED_WITH_WARNINGS',
-                          label: 'Nguồn đã cập nhật',
+                          label: 'Nguồn đã thay đổi',
                         ),
                     ],
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    'Chất lượng: ${_qualityLabel(current.qualityStatus)}',
+                    'Chất lượng: ${summaryQualityLabel(current.qualityStatus)}',
                     style: const TextStyle(color: Palette.muted),
                   ),
                   if (current.transcriptId != null)
                     Text(
-                      'Nguồn transcript: ${current.transcriptId} · revision ${current.contentRevision ?? '—'}',
+                      'Nguồn bản ghi: ${current.transcriptId} · lần chỉnh sửa ${current.contentRevision ?? '—'}',
                       style: const TextStyle(
                         fontSize: 11,
                         color: Palette.muted,
@@ -476,7 +464,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                   contentPadding: EdgeInsets.zero,
                   title: Text('Phiên bản ${version.versionNumber}'),
                   subtitle: Text(
-                    '${_sourceLabel(version.sourceType)} · ${_qualityLabel(version.qualityStatus)}'
+                    '${resultSourceLabel(version.sourceType)} · ${summaryQualityLabel(version.qualityStatus)}'
                     '${version.isStale ? ' · Nguồn đã cũ' : ''}'
                     '${current?.id == version.id ? ' · Đang chọn' : ''}',
                   ),

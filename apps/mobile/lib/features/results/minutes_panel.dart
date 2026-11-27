@@ -6,6 +6,7 @@ import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/widgets.dart';
 import 'results_models.dart';
+import 'result_status_presentation.dart';
 import 'results_presentation.dart';
 import 'results_workspace_controller.dart';
 import 'transcript_evidence_navigation.dart';
@@ -38,13 +39,6 @@ class MinutesPanel extends StatelessWidget {
     'DECISION_SOURCE_STALE' => 'Nguồn của quyết định đã thay đổi.',
     'DECISION_EVIDENCE_WARNING' => 'Bằng chứng quyết định cần đối chiếu.',
     _ => 'Cảnh báo từ máy chủ: $code',
-  };
-
-  String _source(String? source) => switch (source) {
-    'AI' || 'AI_EXTRACTED' || 'AI_GENERATED' => 'Do AI tạo',
-    'HUMAN_EDIT' => 'Đã chỉnh sửa bởi người dùng',
-    'MANUAL' => 'Do người dùng tạo',
-    _ => source ?? 'Không có thông tin nguồn',
   };
 
   Widget _card(List<Widget> children) => ContentCard(
@@ -169,11 +163,14 @@ class MinutesPanel extends StatelessWidget {
                     if (summary.versionNumber != null)
                       _label('Phiên bản', summary.versionNumber),
                     if (summary.sourceType != null)
-                      Text(_source(summary.sourceType)),
+                      Text(resultSourceLabel(summary.sourceType)),
                     if (summary.qualityStatus != null)
-                      StatePill(summary.qualityStatus!),
+                      StatePill(
+                         summary.qualityStatus!,
+                         label: summaryQualityLabel(summary.qualityStatus!),
+                       ),
                     if (summary.contentRevision != null)
-                      _label('Revision nguồn', summary.contentRevision),
+                      _label('Lần chỉnh sửa nguồn', summary.contentRevision),
                     if (summary.isStale)
                       const Text('Nguồn tóm tắt đã thay đổi.'),
                     if (summary.content != null)
@@ -198,9 +195,12 @@ class MinutesPanel extends StatelessWidget {
                 itemBuilder: (context, index) {
                   final decision = decisions[index];
                   return _card([
-                    StatePill(decision.status),
+                    StatePill(
+                       decision.status,
+                       label: decisionStatusLabel(decision.status),
+                     ),
                     SelectableText(decision.content),
-                    Text(_source(decision.sourceType)),
+                    Text(resultSourceLabel(decision.sourceType)),
                     _label(
                       'Xác nhận bởi',
                       workspace.meetingIdentityLabel(
@@ -243,7 +243,7 @@ class MinutesPanel extends StatelessWidget {
               sliver: SliverList.list(
                 children: [
                   SectionHeading(
-                    'Đầu việc chính thức',
+                    'Công việc chính thức',
                     subtitle: '${actions.length} công việc',
                   ),
                   if (actions.isEmpty)
@@ -263,8 +263,8 @@ class MinutesPanel extends StatelessWidget {
                       style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
                     if (action.details != null) SelectableText(action.details!),
-                    StatePill(action.status),
-                    Text(_source(action.sourceType)),
+                    StatePill(action.status, label: actionStates[action.status]),
+                    Text(resultSourceLabel(action.sourceType)),
                     _label(
                       'Người phụ trách',
                       action.assigneeUserId == null
@@ -300,13 +300,16 @@ class MinutesPanel extends StatelessWidget {
               padding: const EdgeInsets.all(18),
               sliver: SliverList.list(
                 children: [
-                  const SectionHeading('Tình trạng transcript'),
+                  const SectionHeading('Trạng thái bản ghi lời thoại'),
                   _card([
                     Text(_availability(transcript.availability)),
                     if (transcript.status != null)
-                      StatePill(transcript.status!),
+                      StatePill(
+                         transcript.status!,
+                         label: transcriptStatusLabel(transcript.status!),
+                       ),
                     _label('Phiên bản', transcript.versionNumber),
-                    _label('Revision', transcript.contentRevision),
+                    _label('Lần chỉnh sửa', transcript.contentRevision),
                     _label('Ngôn ngữ', transcript.languageCode),
                     if (transcript.durationMs != null)
                       _label(
