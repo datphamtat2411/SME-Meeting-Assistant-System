@@ -35,6 +35,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -51,6 +53,7 @@ class ActionItemConcurrentCommandsIntegrationTests {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired ActionItemProposalSink sink;
+    @Autowired PlatformTransactionManager transactionManager;
 
     private UUID organizer;
     private UUID meeting;
@@ -426,9 +429,13 @@ class ActionItemConcurrentCommandsIntegrationTests {
             "Chờ người tổ chức xác nhận",LocalDate.parse("2026-11-08"),List.of(segment)));
         Batch batch=new Batch(meeting,job,stage,snapshot,transcript,3,false,
             ActionItemBatchFingerprint.sha256(json,candidates),candidates);
-        assertThat(sink.acceptProposed(batch).newProposals()).isEqualTo(1);
-        return jdbc.queryForObject("SELECT id FROM action_items WHERE proposal_batch_id=("
-            + "SELECT id FROM action_item_batch_receipts WHERE stage_run_id=?)",UUID.class,stage);
+        // The production sink requires its caller's transaction. Commit the
+        // proposal before the independent HTTP transactions race to confirm it.
+        return new TransactionTemplate(transactionManager).execute(tx -> {
+            assertThat(sink.acceptProposed(batch).newProposals()).isEqualTo(1);
+            return jdbc.queryForObject("SELECT id FROM action_items WHERE proposal_batch_id=("
+                + "SELECT id FROM action_item_batch_receipts WHERE stage_run_id=?)",UUID.class,stage);
+        });
     }
 
     private Callable<MvcResult> commandCall(UUID id,String tag,String command,
