@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Check, ChevronsUpDown } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -35,6 +36,7 @@ export function RegionalPicker({
   validateCustom,
   disabled,
 }: RegionalPickerProps) {
+  const { t } = useUiTranslation()
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const normalized = search.trim().toLowerCase()
@@ -60,7 +62,9 @@ export function RegionalPicker({
     !!custom &&
     !choices.some((option) => option.value === custom) &&
     validateCustom(custom)
-  const showDefault = 'use browser default'.includes(normalized)
+  const showDefault = t('settings:useBrowserDefault')
+    .toLowerCase()
+    .includes(normalized)
 
   function select(next: string | null) {
     onChange(next)
@@ -89,7 +93,7 @@ export function RegionalPicker({
             className='w-full justify-between font-normal'
           >
             <span className='truncate'>
-              {value === null ? 'Use browser default' : formatLabel(value)}
+              {value === null ? t('settings:useBrowserDefault') : formatLabel(value)}
             </span>
             <ChevronsUpDown
               aria-hidden='true'
@@ -99,19 +103,23 @@ export function RegionalPicker({
         </FormControl>
       </PopoverTrigger>
       <PopoverContent
-        aria-label={label + ' options'}
+        aria-label={t('settings:pickerOptions', { label })}
         align='start'
         className='w-(--radix-popover-trigger-width) p-0'
       >
         <Command shouldFilter={false}>
           <CommandInput
-            aria-label={'Search ' + label.toLowerCase()}
-            placeholder={'Search ' + label.toLowerCase() + '…'}
+            aria-label={t('settings:pickerSearch', {
+              label: label.toLowerCase(),
+            })}
+            placeholder={t('settings:pickerSearchPlaceholder', {
+              label: label.toLowerCase(),
+            })}
             value={search}
             onValueChange={setSearch}
           />
           <CommandList>
-            <CommandEmpty>No matching options.</CommandEmpty>
+            <CommandEmpty>{t('settings:noMatchingOptions')}</CommandEmpty>
             {showDefault && (
               <CommandItem
                 value='browser-default'
@@ -121,7 +129,7 @@ export function RegionalPicker({
                   aria-hidden='true'
                   className={cn('size-4', value !== null && 'opacity-0')}
                 />
-                Use browser default
+                {t('settings:useBrowserDefault')}
               </CommandItem>
             )}
             {filtered.map((option) => (
@@ -145,7 +153,7 @@ export function RegionalPicker({
                 value={'custom-' + custom}
                 onSelect={() => select(custom)}
               >
-                Use {custom}
+                {t('settings:useCustom', { value: custom })}
               </CommandItem>
             )}
           </CommandList>

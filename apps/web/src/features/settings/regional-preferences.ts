@@ -193,9 +193,9 @@ export const localeOptions = [
   'zh-TW',
 ]
 
-export function localeLabel(value: string): string {
+export function localeLabel(value: string, language = 'en'): string {
   try {
-    const label = new Intl.DisplayNames(['en'], { type: 'language' }).of(value)
+    const label = new Intl.DisplayNames([language], { type: 'language' }).of(value)
     return label ? label + ' (' + value + ')' : value
   } catch {
     return value

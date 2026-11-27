@@ -1,5 +1,6 @@
 import type { JSX } from 'react'
 import { useLocation, useNavigate, Link } from '@tanstack/react-router'
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { buttonVariants } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -20,6 +21,7 @@ type SidebarNavProps = React.HTMLAttributes<HTMLElement> & {
 }
 
 export function SidebarNav({ className, items, ...props }: SidebarNavProps) {
+  const { t } = useUiTranslation()
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const val = pathname ?? '/settings'
@@ -34,9 +36,9 @@ export function SidebarNav({ className, items, ...props }: SidebarNavProps) {
         <Select value={val} onValueChange={handleSelect}>
           <SelectTrigger
             className='h-12 sm:w-48'
-            aria-label='Select settings section'
+            aria-label={t('settings:selectSection')}
           >
-            <SelectValue placeholder='Select settings section' />
+            <SelectValue placeholder={t('settings:selectSection')} />
           </SelectTrigger>
           <SelectContent>
             {items.map((item) => (

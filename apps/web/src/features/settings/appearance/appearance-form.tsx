@@ -5,6 +5,7 @@ import { ChevronDownIcon } from '@radix-ui/react-icons'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { fonts } from '@/config/fonts'
 import { IconThemeSystem } from '@/assets/custom/icon-theme-system'
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { useFont } from '@/context/font-provider'
 import { useTheme } from '@/context/theme-provider'
@@ -28,6 +29,7 @@ const appearanceFormSchema = z.object({
 type AppearanceFormValues = z.infer<typeof appearanceFormSchema>
 
 export function AppearanceForm() {
+  const { t } = useUiTranslation()
   const { font, setFont } = useFont()
   const { theme, setTheme } = useTheme()
 
@@ -72,7 +74,7 @@ export function AppearanceForm() {
           name='font'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Font</FormLabel>
+              <FormLabel>{t('settings:font')}</FormLabel>
               <div className='relative w-max'>
                 <FormControl>
                   <select
@@ -93,7 +95,7 @@ export function AppearanceForm() {
                 <ChevronDownIcon className='absolute inset-e-3 top-2.5 h-4 w-4 opacity-50' />
               </div>
               <FormDescription className='font-manrope'>
-                Set the font used throughout the application.
+                {t('settings:fontDescription')}
               </FormDescription>
               <FormMessage />
             </FormItem>
@@ -104,15 +106,15 @@ export function AppearanceForm() {
           name='theme'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Theme</FormLabel>
+              <FormLabel>{t('settings:appearanceTheme')}</FormLabel>
               <FormDescription>
-                Select the application theme. System follows your device.
+                {t('settings:appearanceThemeDescription')}
               </FormDescription>
               <FormMessage />
               <RadioGroup
                 onValueChange={field.onChange}
                 value={field.value}
-                aria-label='Theme'
+                aria-label={t('settings:appearanceTheme')}
                 className='grid max-w-2xl grid-cols-1 gap-4 pt-2 sm:grid-cols-3'
               >
                 <FormItem>
@@ -137,7 +139,7 @@ export function AppearanceForm() {
                       </div>
                     </div>
                     <span className='block w-full p-2 text-center font-normal'>
-                      Light
+                      {t('light')}
                     </span>
                   </FormLabel>
                 </FormItem>
@@ -163,7 +165,7 @@ export function AppearanceForm() {
                       </div>
                     </div>
                     <span className='block w-full p-2 text-center font-normal'>
-                      Dark
+                      {t('dark')}
                     </span>
                   </FormLabel>
                 </FormItem>
@@ -181,7 +183,7 @@ export function AppearanceForm() {
                       </div>
                     </div>
                     <span className='block w-full p-2 text-center font-normal'>
-                      System
+                      {t('system')}
                     </span>
                   </FormLabel>
                 </FormItem>
@@ -191,17 +193,19 @@ export function AppearanceForm() {
         />
 
         <p className='text-sm text-muted-foreground'>
-          Appearance preferences are stored in this browser.
+          {t('settings:appearanceStorage')}
         </p>
         {isDirty && (
           <p role='status' className='text-sm text-muted-foreground'>
-            Applied appearance: {theme} theme, {font} font. Only your edited
-            selections will be applied.
+            {t('settings:appliedAppearance', {
+              theme,
+              font,
+            })}
           </p>
         )}
         <div className='flex flex-wrap gap-2'>
           <Button type='submit' disabled={!isDirty}>
-            Update preferences
+            {t('settings:updatePreferences')}
           </Button>
           <Button
             type='button'
@@ -209,7 +213,7 @@ export function AppearanceForm() {
             disabled={!isDirty}
             onClick={() => reset({ theme, font })}
           >
-            Discard
+            {t('settings:discard')}
           </Button>
         </div>
       </form>
