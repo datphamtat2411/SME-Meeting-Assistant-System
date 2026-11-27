@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { useEffect, useRef } from 'react'
 import { skipToken, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -64,28 +65,27 @@ function MeetingList({
   windowFormat: FormatInstant
   recent?: boolean
 }) {
+  const { t } = useUiTranslation()
   return (
     <Card>
       <CardHeader>
         <div className='flex flex-wrap items-center justify-between gap-2'>
           <CardTitle>{title}</CardTitle>
           <Button asChild size='sm' variant='link'>
-            <Link to='/meetings'>View all meetings</Link>
+            <Link to='/meetings'>{t('dashboard:viewMeetings')}</Link>
           </Button>
         </div>
         <p className='text-xs text-muted-foreground'>
-          {windowFormat(window.fromInclusive)} to{' '}
-          {windowFormat(window.toExclusive)} (exclusive) · Up to {window.limit}{' '}
-          meetings
+          {t('dashboard:window', { from: windowFormat(window.fromInclusive), to: windowFormat(window.toExclusive), limit: window.limit })}
         </p>
       </CardHeader>
       <CardContent className='space-y-2'>
         {meetings.length === 0 ? (
           <RequestEmpty
             title={
-              recent ? 'No recently ended meetings' : 'No upcoming meetings'
+              recent ? t('dashboard:noRecent') : t('dashboard:noUpcoming')
             }
-            description='No meetings in this reporting window.'
+            description={t('dashboard:emptyWindow')}
           />
         ) : (
           meetings.map((meeting) => (
@@ -98,11 +98,11 @@ function MeetingList({
               <div className='flex flex-wrap items-start justify-between gap-2'>
                 <strong className='min-w-0 break-words'>{meeting.title}</strong>
                 <Badge variant='outline'>
-                  {recent ? 'Ended' : 'Scheduled'}
+                  {recent ? t('dashboard:ended') : t('dashboard:scheduled')}
                 </Badge>
               </div>
               <p className='mt-1 text-xs text-muted-foreground'>
-                {recent ? 'Ended: ' : 'Starts: '}
+                {recent ? t('dashboard:endedPrefix') : t('dashboard:startsPrefix')}
                 {format(recent ? meeting.endedAt : meeting.scheduledStartAt)}
               </p>
             </Link>
@@ -114,6 +114,7 @@ function MeetingList({
 }
 
 function MyActionItems({ identity }: { identity: AuthContext }) {
+  const { t } = useUiTranslation()
   const actorId = identity.userId
   const owner = { actorId, scope: getSessionContextKey(identity) }
   const filter = {
@@ -154,23 +155,23 @@ function MyActionItems({ identity }: { identity: AuthContext }) {
       <CardHeader>
         <div className='flex flex-wrap items-center justify-between gap-2'>
           <CardTitle className='flex items-center gap-2'>
-            <ListChecks className='size-5' /> My action items
+            <ListChecks className='size-5' /> {t('dashboard:myActions')}
           </CardTitle>
           <Button asChild size='sm' variant='link'>
-            <Link to='/action-items'>View all</Link>
+            <Link to='/action-items'>{t('dashboard:viewAll')}</Link>
           </Button>
         </div>
         <p className='text-sm text-muted-foreground'>
-          Up to five pending official assignments, ordered by due date.
+          {t('dashboard:assignmentHint')}
         </p>
       </CardHeader>
       <CardContent className='space-y-3'>
         {error ? (
           <RequestError error={error} retry={retry} />
         ) : open.isPending || inProgress.isPending ? (
-          <RequestLoading label='Loading your assignments…' />
+          <RequestLoading label={t('dashboard:loadingAssignments')} />
         ) : items.length === 0 ? (
-          <RequestEmpty title='No pending assigned work' />
+          <RequestEmpty title={t('dashboard:noAssignments')} />
         ) : (
           items.map((item) => (
             <article key={item.id} className='space-y-1 rounded-lg border p-3'>
@@ -178,24 +179,24 @@ function MyActionItems({ identity }: { identity: AuthContext }) {
                 <p className='min-w-0 font-medium break-words'>{item.title}</p>
                 <Badge variant={item.overdue ? 'destructive' : 'secondary'}>
                   {item.overdue
-                    ? 'Overdue'
+                    ? t('dashboard:overdue')
                     : item.status === 'OPEN'
-                      ? 'Open'
-                      : 'In progress'}
+                      ? t('dashboard:open')
+                      : t('dashboard:inProgress')}
                 </Badge>
               </div>
               {item.overdue && (
                 <p className='text-xs text-muted-foreground'>
-                  {item.status === 'OPEN' ? 'Open' : 'In progress'}
+                  {item.status === 'OPEN' ? t('dashboard:open') : t('dashboard:inProgress')}
                 </p>
               )}
               <p className='text-xs text-muted-foreground'>
                 {item.dueDate ? (
                   <>
-                    Due <RegionalCivilDate value={item.dueDate} />
+                    {t('dashboard:due')} <RegionalCivilDate value={item.dueDate} />
                   </>
                 ) : (
-                  'No due date'
+                  t('dashboard:noDueDate')
                 )}
               </p>
               {item.capabilities.canAccessMeeting &&
@@ -220,7 +221,7 @@ function MyActionItems({ identity }: { identity: AuthContext }) {
           !open.isPending &&
           !inProgress.isPending && (
             <p role='status' className='text-xs text-muted-foreground'>
-              Refreshing assigned work…
+              {t('dashboard:refreshAssignments')}
             </p>
           )}
       </CardContent>
@@ -229,6 +230,7 @@ function MyActionItems({ identity }: { identity: AuthContext }) {
 }
 
 export function PersonalDashboard({ identity }: { identity: AuthContext }) {
+  const { t } = useUiTranslation()
   const scope = getSessionContextKey(identity)
   const personal = useQuery(personalDashboardQuery(scope))
   const preferences = useQuery({
@@ -318,18 +320,18 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
             {formatPresentationDate(new Date(), zone, locale)}
           </p>
           <h1 className='mt-1 text-xs font-medium text-muted-foreground'>
-            Dashboard
+            {t('dashboard:title')}
           </h1>
           <h2 className='mt-1 text-3xl font-bold break-words'>
-            Welcome back, {identity.displayName}
+            {t('dashboard:welcome', { name: identity.displayName })}
           </h2>
           <p className='mt-1 text-muted-foreground'>
-            Your personal overview of meetings and follow-up work.
+            {t('dashboard:personalHint')}
           </p>
         </div>
         <Button asChild>
           <Link to='/meetings'>
-            <CalendarDays className='size-4' /> Browse meetings
+            <CalendarDays className='size-4' /> {t('dashboard:browse')}
           </Link>
         </Button>
       </div>
@@ -345,31 +347,31 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
           <>
             <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
               <Metric
-                label='Scheduled meetings'
+                label={t('dashboard:scheduledMeetings')}
                 value={data.meetingCountsByState.SCHEDULED ?? 0}
                 icon={CalendarDays}
-                description='Within your authorized meeting scope'
+                description={t('dashboard:authorizedScope')}
               />
               <Metric
-                label='Pending action items'
+                label={t('dashboard:pendingActions')}
                 value={
                   data.assignedActionItems.open +
                   data.assignedActionItems.inProgress
                 }
                 icon={ListChecks}
-                description='Open and in progress'
+                description={t('dashboard:openAndProgress')}
               />
               <Metric
-                label='Overdue action items'
+                label={t('dashboard:overdueActions')}
                 value={data.assignedActionItems.overdue}
                 icon={TriangleAlert}
-                description='Pending work requiring attention'
+                description={t('dashboard:needAttention')}
               />
               <Metric
-                label='Completed action items'
+                label={t('dashboard:completedActions')}
                 value={data.assignedActionItems.done}
                 icon={CheckCircle2}
-                description='Your completed official work'
+                description={t('dashboard:completedHint')}
               />
             </div>
             <div className='grid gap-4 xl:grid-cols-5'>
@@ -379,7 +381,7 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
                     <span className='flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary'>
                       <CalendarDays className='size-5' aria-hidden='true' />
                     </span>
-                    Next meeting
+                    {t('dashboard:nextMeeting')}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className='space-y-4'>
@@ -395,21 +397,20 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
                   ) : scheduleChanged ? (
                     <div className='space-y-3 rounded-lg border p-4 text-sm'>
                       <p>
-                        The meeting schedule has changed. Refresh your dashboard
-                        to see the next meeting.
+                        {t('dashboard:scheduleChanged')}
                       </p>
                       <Button
                         size='sm'
                         variant='outline'
                         onClick={() => void personal.refetch()}
                       >
-                        Refresh dashboard
+                        {t('dashboard:refresh')}
                       </Button>
                     </div>
                   ) : next ? (
                     <>
                       <div className='space-y-2'>
-                        <Badge variant='secondary'>Scheduled</Badge>
+                        <Badge variant='secondary'>{t('dashboard:scheduled')}</Badge>
                         <h2 className='text-xl font-semibold break-words'>
                           {next.title}
                         </h2>
@@ -429,31 +430,28 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
                           <p className='flex items-center gap-2'>
                             <MapPin className='size-4 shrink-0 text-muted-foreground' />
                             {!meeting.roomId
-                              ? 'No room assigned'
+                              ? t('dashboard:noRoom')
                               : room.isSuccess
                                 ? room.data.room.name
                                 : room.isPending
-                                  ? 'Loading room…'
-                                  : 'Room details unavailable'}
+                                  ? t('dashboard:loadingRoom')
+                                  : t('dashboard:roomUnavailable')}
                           </p>
                         )}
                         {activeParticipants && (
                           <p className='flex items-center gap-2'>
                             <Users className='size-4 shrink-0 text-muted-foreground' />
-                            {new Intl.NumberFormat(locale).format(
-                              activeParticipants.length
-                            )}{' '}
-                            active participants
+                            {t('dashboard:participants', { number: new Intl.NumberFormat(locale).format(activeParticipants.length) })}
                           </p>
                         )}
                         {organizer?.displayName && (
-                          <p>Organizer: {organizer.displayName}</p>
+                          <p>{t('dashboard:organizer', { name: organizer.displayName })}</p>
                         )}
                         {detail.isError ||
                         participants.isError ||
                         room.isError ? (
                           <p className='text-xs text-muted-foreground'>
-                            Some additional meeting details are unavailable.
+                            {t('dashboard:detailsUnavailable')}
                           </p>
                         ) : detail.isFetching ||
                           (meeting && participants.isFetching) ? (
@@ -461,7 +459,7 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
                             role='status'
                             className='text-xs text-muted-foreground'
                           >
-                            Loading additional meeting details…
+                            {t('dashboard:loadingDetails')}
                           </p>
                         ) : null}
                       </div>
@@ -470,14 +468,14 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
                           to='/meetings/$meetingId'
                           params={{ meetingId: next.id }}
                         >
-                          Open meeting workspace
+                          {t('dashboard:openWorkspace')}
                         </Link>
                       </Button>
                     </>
                   ) : (
                     <RequestEmpty
-                      title='No upcoming meeting'
-                      description='There is no scheduled meeting in the current upcoming window.'
+                      title={t('dashboard:noNext')}
+                      description={t('dashboard:noNextHint')}
                     />
                   )}
                 </CardContent>
@@ -488,7 +486,7 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
             </div>
             <div className='grid gap-4 xl:grid-cols-2'>
               <MeetingList
-                title='Upcoming meetings'
+                title={t('dashboard:upcoming')}
                 meetings={
                   accessChanged || scheduleChanged
                     ? upcoming.filter((item) => item.id !== next?.id)
@@ -499,7 +497,7 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
                 windowFormat={businessFormat}
               />
               <MeetingList
-                title='Recently ended'
+                title={t('dashboard:recent')}
                 meetings={orderedRecent(data)}
                 window={data.recentWindow}
                 format={format}
@@ -508,10 +506,9 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
               />
             </div>
             <p className='text-xs text-muted-foreground'>
-              As of {businessFormat(data.asOf)} · Reporting timezone:{' '}
-              {data.timezone}
-              {zone !== data.timezone ? ' · Meeting times: ' + zone : ''}
-              {personal.isFetching ? ' · Refreshing…' : ''}
+              {t('dashboard:asOf', { date: businessFormat(data.asOf), zone: data.timezone })}
+              {zone !== data.timezone ? t('dashboard:meetingZone', { zone }) : ''}
+              {personal.isFetching ? t('dashboard:refreshing') : ''}
             </p>
           </>
         )
