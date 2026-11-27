@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 
 export function validNewPassword(value: string): boolean {
   const length = Array.from(value).length
@@ -8,12 +9,14 @@ export function validNewPassword(value: string): boolean {
 export const credentialSchema = z
   .object({
     password: z.string().refine(validNewPassword, {
-      message: 'Use 15–128 Unicode characters.',
+      message: featureValidationMessage('auth:passwordLength'),
     }),
-    confirmPassword: z.string().min(1, 'Please confirm your password.'),
+    confirmPassword: z
+      .string()
+      .min(1, featureValidationMessage('auth:confirmationRequired')),
   })
   .refine((data) => data.password === data.confirmPassword, {
-    message: "Passwords don't match.",
+    message: featureValidationMessage('auth:passwordMismatch'),
     path: ['confirmPassword'],
   })
 

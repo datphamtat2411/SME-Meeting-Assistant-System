@@ -56,7 +56,7 @@ export function useAccountFlowSubmission(operation: AccountFlowOperation) {
           failure: {
             ...previous.failure,
             retryAt: undefined,
-            message: 'You can try again now.',
+            messageKey: 'auth:retryNow',
           },
         }
         current.current = next

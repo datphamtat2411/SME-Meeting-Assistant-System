@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { CoreApiError } from '@/lib/core-api'
+import { i18n } from '@/lib/i18n'
 import {
   classifyAccountFlowFailure,
   parseRetryAfter,
@@ -16,8 +17,11 @@ describe('account flow failures', () => {
       'setup'
     )
     expect(failure.kind).toBe('rejected')
-    expect(failure.message).not.toContain('internal secret')
-    expect(failure.message).toMatch(/link|password/i)
+    expect(i18n.t(failure.messageKey, { lng: 'en' })).not.toContain(
+      'internal secret'
+    )
+    expect(i18n.t(failure.messageKey, { lng: 'en' })).toMatch(/link|password/i)
+    expect(i18n.t(failure.messageKey, { lng: 'vi' })).toContain('mật khẩu')
   })
 
   it.each(['network', 'malformed', 'server'] as const)(
@@ -28,7 +32,7 @@ describe('account flow failures', () => {
         'setup'
       )
       expect(failure.kind).toBe('uncertain')
-      expect(failure.message).toMatch(/may already/i)
+      expect(i18n.t(failure.messageKey, { lng: 'en' })).toMatch(/may already/i)
     }
   )
 

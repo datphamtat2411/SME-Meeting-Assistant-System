@@ -1,6 +1,8 @@
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Loader2, ShieldCheck } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -29,6 +31,7 @@ export function PasswordEstablishmentForm({
   onCompleted,
   onUncertain,
 }: PasswordEstablishmentFormProps) {
+  const { t } = useUiTranslation()
   const submission = useAccountFlowSubmission(kind)
   const form = useForm<CredentialFields>({
     resolver: zodResolver(credentialSchema),
@@ -44,7 +47,10 @@ export function PasswordEstablishmentForm({
       form.reset()
       if (result.kind === 'uncertain') onUncertain?.()
     } else if (result?.field === 'password') {
-      form.setError('password', { type: 'server', message: result.message })
+      form.setError('password', {
+        type: 'server',
+        message: featureValidationMessage(result.messageKey),
+      })
     }
   }
 
@@ -58,7 +64,7 @@ export function PasswordEstablishmentForm({
       >
         {submission.failure && !submission.failure.field && (
           <Alert variant='destructive'>
-            <AlertDescription>{submission.failure.message}</AlertDescription>
+            <AlertDescription>{t(submission.failure.messageKey)}</AlertDescription>
           </Alert>
         )}
         <FormField
@@ -66,18 +72,17 @@ export function PasswordEstablishmentForm({
           name='password'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>New password</FormLabel>
+              <FormLabel>{t('auth:newPassword')}</FormLabel>
               <FormControl>
                 <PasswordInput
                   autoComplete='new-password'
-                  placeholder='Choose a private password'
+                  placeholder={t('auth:choosePassword')}
                   disabled={submission.blocked}
                   {...field}
                 />
               </FormControl>
               <FormDescription className='text-xs'>
-                Use 15–128 Unicode characters. Spaces are allowed. Avoid common
-                or compromised passwords.
+                {t('auth:passwordPolicy')}
               </FormDescription>
               <FormMessage role='alert' />
             </FormItem>
@@ -88,11 +93,11 @@ export function PasswordEstablishmentForm({
           name='confirmPassword'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Confirm password</FormLabel>
+              <FormLabel>{t('auth:confirmPassword')}</FormLabel>
               <FormControl>
                 <PasswordInput
                   autoComplete='new-password'
-                  placeholder='Enter it again'
+                  placeholder={t('auth:repeatPassword')}
                   disabled={submission.blocked}
                   {...field}
                 />
@@ -108,10 +113,10 @@ export function PasswordEstablishmentForm({
             <ShieldCheck />
           )}
           {submission.pending
-            ? 'Submitting…'
+            ? t('auth:submitting')
             : kind === 'setup'
-              ? 'Activate account'
-              : 'Reset password'}
+              ? t('auth:activateAccount')
+              : t('auth:resetPassword')}
         </Button>
       </form>
     </Form>
