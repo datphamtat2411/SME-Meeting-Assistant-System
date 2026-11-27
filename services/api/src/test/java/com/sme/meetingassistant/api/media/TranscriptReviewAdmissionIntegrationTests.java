@@ -243,7 +243,7 @@ class TranscriptReviewAdmissionIntegrationTests {
             .at("/data/reviewId").asText();
 
         mvc.perform(patch("/api/v1/meetings/" + meeting + "/transcript/segments/" + segment)
-                .principal(as(organizer)).header("If-Match", "\"s-" + segment + "-0\"")
+                .principal(as(organizer)).header("If-Match", transcript.path("segments").get(0).path("etag").asText())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"text\":\"Bản ghi đã được operator xác minh.\"}"))
             .andExpect(status().isOk());
@@ -263,12 +263,70 @@ class TranscriptReviewAdmissionIntegrationTests {
     }
 
     @Test
+    void correctedProofCanBeAcknowledgedAndAdmittedByAnotherClientRequest() throws Exception {
+        JsonNode before = currentTranscript();
+        UUID transcriptId = UUID.fromString(before.path("id").asText());
+        String oldBody = reviewBody(transcriptId, before.path("contentRevision").asLong(),
+            TranscriptCorrectionDigest.sha256(published));
+        var first = mvc.perform(post(jobPath("/transcript-review/acknowledge"))
+                .principal(as(organizer)).header("Idempotency-Key", "client-one-old-proof")
+                .contentType(MediaType.APPLICATION_JSON).content(oldBody))
+            .andExpect(status().isOk()).andReturn();
+        String oldReview = json.readTree(first.getResponse().getContentAsString()).at("/data/reviewId").asText();
+        String correctedText = "Nội dung\ncuộc họp đã xác minh.";
+        mvc.perform(patch("/api/v1/meetings/" + meeting + "/transcript/segments/" + segment)
+                .principal(as(organizer)).header("If-Match", before.path("segments").get(0).path("etag").asText())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(java.util.Map.of("text", correctedText))))
+            .andExpect(status().isOk());
+        JsonNode after = currentTranscript();
+        assertThat(after.path("contentRevision").asLong()).isGreaterThan(before.path("contentRevision").asLong());
+        String newDigest = TranscriptCorrectionDigest.sha256(List.of(
+            new TranscriptCorrectionDigest.SegmentDigest(0, 100, 1500, correctedText)));
+        String newBody = reviewBody(transcriptId, after.path("contentRevision").asLong(), newDigest);
+        var second = mvc.perform(post(jobPath("/transcript-review/acknowledge"))
+                .principal(as(organizer)).header("Idempotency-Key", "client-two-new-proof")
+                .contentType(MediaType.APPLICATION_JSON).content(newBody))
+            .andExpect(status().isOk()).andReturn();
+        String newReview = json.readTree(second.getResponse().getContentAsString()).at("/data/reviewId").asText();
+        assertThat(newReview).isNotEqualTo(oldReview);
+        mvc.perform(post(jobPath("/meeting-intelligence/admit"))
+                .principal(as(organizer)).header("Idempotency-Key", "client-one-stale-receipt")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(oldBody.substring(0, oldBody.length() - 1) + ",\"reviewId\":\"" + oldReview + "\"}"))
+            .andExpect(status().isConflict());
+        mvc.perform(post(jobPath("/meeting-intelligence/admit"))
+                .principal(as(organizer)).header("Idempotency-Key", "client-two-admit")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(newBody.substring(0, newBody.length() - 1) + ",\"reviewId\":\"" + newReview + "\"}"))
+            .andExpect(status().isAccepted());
+        assertThat(jdbc.queryForList("""
+            SELECT id FROM processing_job_transcript_reviews
+            WHERE processing_job_id=? AND admitted_at IS NOT NULL
+            """, UUID.class, job)).containsExactly(UUID.fromString(newReview));
+    }
+
+    @Test
+    void correctionDigestMatchesClientGoldenFixtures() {
+        assertThat(TranscriptCorrectionDigest.sha256(List.of()))
+            .isEqualTo("da5f8cd6ead91181a26a8c323f078baf716dea5c8c0f7c9b4341b9b172b34545");
+        assertThat(TranscriptCorrectionDigest.sha256(List.of(
+            new TranscriptCorrectionDigest.SegmentDigest(2, 2000, 3000, "Nội dung\ncuộc họp"),
+            new TranscriptCorrectionDigest.SegmentDigest(1, 0, 1500, "Xin chào"))))
+            .isEqualTo("b31710a4f182b4314b8c5b180ff84423b77a8a4034070d8dd6887da5dac45901");
+        assertThat(TranscriptCorrectionDigest.sha256(List.of(
+            new TranscriptCorrectionDigest.SegmentDigest(0, 0, 1, "é"),
+            new TranscriptCorrectionDigest.SegmentDigest(1, 1, 2, "😊"))))
+            .isEqualTo("667e307590a35367ba147201a22d71ffd049be5e4b56501fab4332a99798f957");
+    }
+
+    @Test
     void acknowledgementRechecksAccountAfterWaitingOnAdmissionLock() throws Exception {
         assertRevokedReviewCannotCommit(false);
     }
 
     @Test
-    void admissionReplayRechecksAccountAfterWaitingOnAdmissionLock() throws Exception {
+    void admissionRechecksAccountAfterWaitingOnAdmissionLock() throws Exception {
         assertRevokedReviewCannotCommit(true);
     }
 
