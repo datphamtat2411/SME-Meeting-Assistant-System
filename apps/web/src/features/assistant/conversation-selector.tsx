@@ -125,8 +125,8 @@ export function ConversationSelector({
             {createError != null && <AssistantError error={createError} />}
             {uncertainCreation && (
               <p role='status' className='text-sm text-muted-foreground'>
-                The creation outcome is unresolved. Review the refreshed
-                conversation list before creating another.
+                The creation outcome is unresolved. Submit the same meeting and
+                title to retry safely, or review the conversation list.
               </p>
             )}
             <DialogFooter>
@@ -153,8 +153,8 @@ export function ConversationSelector({
       </div>
       {uncertainCreation && (
         <p role='status' className='text-xs text-muted-foreground'>
-          A creation request is unresolved. Review this list before starting
-          another.
+          A creation request is unresolved. Retry with the same meeting and
+          title to recover it safely.
         </p>
       )}
       <Input
