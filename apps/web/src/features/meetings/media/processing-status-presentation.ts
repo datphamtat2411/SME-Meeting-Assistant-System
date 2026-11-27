@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n'
+
 export type ProcessingStatusPresentation = {
   label: string
   kind:
@@ -16,25 +18,26 @@ export type ProcessingStatusPresentation = {
  * a successful result.
  */
 export function presentProcessingStatus(
-  status: string
+  status: string,
+  t: (key: string) => string = (key) => i18n.t(key)
 ): ProcessingStatusPresentation {
   switch (status) {
     case 'PENDING':
     case 'QUEUED':
-      return { label: 'Pending', kind: 'pending' }
+      return { label: t('processing:pending'), kind: 'pending' }
     case 'RUNNING':
-      return { label: 'Processing', kind: 'processing' }
+      return { label: t('processing:running'), kind: 'processing' }
     case 'WAITING_FOR_REVIEW':
-      return { label: 'Action required', kind: 'action' }
+      return { label: t('processing:actionRequired'), kind: 'action' }
     case 'COMPLETED':
-      return { label: 'Success', kind: 'success' }
+      return { label: t('processing:success'), kind: 'success' }
     case 'COMPLETED_WITH_WARNINGS':
-      return { label: 'Warning', kind: 'warning' }
+      return { label: t('processing:warning'), kind: 'warning' }
     case 'FAILED':
-      return { label: 'Failure', kind: 'failure' }
+      return { label: t('processing:failure'), kind: 'failure' }
     case 'CANCELLED':
-      return { label: 'Cancelled', kind: 'neutral' }
+      return { label: t('processing:cancelled'), kind: 'neutral' }
     default:
-      return { label: 'Unknown status', kind: 'neutral' }
+      return { label: t('processing:unknown'), kind: 'neutral' }
   }
 }

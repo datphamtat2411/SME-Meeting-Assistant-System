@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -1107,6 +1108,7 @@ function WorkspaceResultsOverview({
     view?: IntelligenceView
   ) => void
 }) {
+  const { t } = useUiTranslation()
   const session = useOptionalMeetingSession()
   const media = session?.media
   const jobs = session?.processing.jobs
@@ -1122,7 +1124,7 @@ function WorkspaceResultsOverview({
   const observedJob = session?.processing.selectedJob
   const hasAmbiguousAttempts = Boolean(jobsData.length > 1 && !observedJob)
   const processingState = observedJob
-    ? presentProcessingStatus(observedJob.status)
+    ? presentProcessingStatus(observedJob.status, t)
     : undefined
   const transcriptAvailability = minutes.isSuccess
     ? canonicalResultAvailability(minutes.data.transcript.availability)
