@@ -417,8 +417,9 @@ export function useIngestionOwner({
             operation.status = 'uncertain'
             operation.execution = null
             publishSubmissionOperations()
-            const message =
-              featureValidationMessage('media:submissionCancelledUncertain')
+            const message = featureValidationMessage(
+              'media:submissionCancelledUncertain'
+            )
             if (draft === 'recording') {
               setRecordingSubmissionPresentation({
                 uploadStatus: 'uncertain',
@@ -503,9 +504,7 @@ export function useIngestionOwner({
       if (!operation || operation.status !== 'uncertain') return
       const acknowledged =
         typeof window.confirm !== 'function' ||
-        window.confirm(
-          i18n.t('media:confirmIndependentSubmission')
-        )
+        window.confirm(i18n.t('media:confirmIndependentSubmission'))
       if (!acknowledged) return
       operation.execution?.controller.abort()
       operation.execution = null

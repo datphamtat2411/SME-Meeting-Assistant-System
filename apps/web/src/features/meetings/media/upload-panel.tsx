@@ -119,9 +119,7 @@ function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
           <FileAudio className='size-5' />
           {t('media:importTitle')}
         </CardTitle>
-        <p className='text-sm text-muted-foreground'>
-          {t('media:importDesc')}
-        </p>
+        <p className='text-sm text-muted-foreground'>{t('media:importDesc')}</p>
       </CardHeader>
       <CardContent className='space-y-4'>
         {canSubmitMedia && (

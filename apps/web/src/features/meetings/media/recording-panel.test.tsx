@@ -162,9 +162,7 @@ describe('RecordingPanel', () => {
       await act(async () => {
         await setUiLanguage('vi')
       })
-      await expect
-        .element(screen.getByText('Đang ghi âm…'))
-        .toBeInTheDocument()
+      await expect.element(screen.getByText('Đang ghi âm…')).toBeInTheDocument()
       expect(getUserMedia).toHaveBeenCalledOnce()
       expect(recorder.instances).toHaveLength(1)
       expect(track.stop).not.toHaveBeenCalled()

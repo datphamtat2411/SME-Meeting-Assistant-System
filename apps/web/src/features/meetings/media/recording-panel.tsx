@@ -279,13 +279,10 @@ function RecordingPanelContent({
           <div className='space-y-3 rounded-lg border bg-muted/10 p-4'>
             <div className='flex flex-wrap items-center justify-between gap-2'>
               <div>
-                <p className='font-medium'>
-                  {t('media:captureReady')}
-                </p>
+                <p className='font-medium'>{t('media:captureReady')}</p>
                 <p className='text-sm text-muted-foreground'>
                   {formatDuration(recording.artifact.durationMs)} ·{' '}
-                  {(recording.artifact.file.size / 1048576).toFixed(1)} MB
-                  {' '}
+                  {(recording.artifact.file.size / 1048576).toFixed(1)} MB{' '}
                   {t('media:capturedDeclaration')}
                 </p>
               </div>

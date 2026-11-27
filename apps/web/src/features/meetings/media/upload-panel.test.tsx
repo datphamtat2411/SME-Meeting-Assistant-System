@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { act, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
-import { setUiLanguage } from '@/lib/i18n'
 import { coreApi } from '@/lib/core-api'
+import { setUiLanguage } from '@/lib/i18n'
 import { MediaUploadError } from './media-api'
 import { UploadPanel } from './upload-panel'
 
@@ -153,9 +153,7 @@ describe('UploadPanel', () => {
       await act(async () => {
         await setUiLanguage('vi')
       })
-      await expect
-        .element(screen.getByText('meeting.wav'))
-        .toBeInTheDocument()
+      await expect.element(screen.getByText('meeting.wav')).toBeInTheDocument()
       await expect
         .element(screen.getByRole('button', { name: 'Tải lên và hoàn tất' }))
         .toBeEnabled()
