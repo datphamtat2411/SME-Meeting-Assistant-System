@@ -550,7 +550,7 @@ describe('MeetingWorkspacePage', () => {
     toastSuccess.mockReset()
   })
 
-  it('localizes the workspace header without changing meeting data', async () => {
+  it('localizes the workspace header and navigation without changing meeting data', async () => {
     const { screen, queryClient } = await renderEditableWorkspace()
     try {
       await expect
@@ -567,6 +567,15 @@ describe('MeetingWorkspacePage', () => {
         .toBeInTheDocument()
       await expect
         .element(screen.getByRole('heading', { name: editableMeeting.title }))
+        .toBeInTheDocument()
+      await expect
+        .element(screen.getByRole('tab', { name: 'Tổng quan' }))
+        .toHaveAttribute('data-state', 'active')
+      await expect
+        .element(screen.getByRole('tab', { name: 'Bản ghi lời thoại' }))
+        .toBeInTheDocument()
+      await expect
+        .element(screen.getByRole('heading', { name: 'Thông tin cuộc họp' }))
         .toBeInTheDocument()
       expect(queryClient.getQueryData(detailKey)).toEqual(cachedDetail)
     } finally {

@@ -177,6 +177,7 @@ function MeetingWorkspacePageContent({
     contentRevision?: number
   ) => void
 }) {
+  const { t } = useUiTranslation()
   const sharedAuthorization = useOptionalMeetingAuthorization()
   const verification = useCurrentUserVerification()
   const identity = verification.identity
@@ -191,7 +192,7 @@ function MeetingWorkspacePageContent({
           <Button asChild variant='ghost' className='-ms-3 w-fit'>
             <Link to='/meetings'>
               <ArrowLeft />
-              Back to Meetings
+              {t('workspace:live_backToMeetings')}
             </Link>
           </Button>
           {sharedAuthorization.detailQuery.isError ? (
@@ -242,7 +243,7 @@ function MeetingWorkspacePageContent({
         <Button asChild variant='ghost' className='-ms-3 w-fit'>
           <Link to='/meetings'>
             <ArrowLeft />
-            Back to Meetings
+            {t('workspace:live_backToMeetings')}
           </Link>
         </Button>
 
@@ -656,22 +657,25 @@ function SessionVerificationState({
   status: string
   onRetry: () => void
 }) {
+  const { t } = useUiTranslation()
   const denied = status === 'confirmed-authorization-denial'
   return (
     <Card>
       <CardContent className='flex flex-col items-center justify-center px-6 py-16 text-center'>
         <AlertCircle className='size-10 text-destructive' />
         <h1 className='mt-4 text-xl font-semibold'>
-          {denied ? 'Session access denied' : 'Unable to verify your session'}
+          {denied
+            ? t('workspace:sessionDenied')
+            : t('workspace:sessionUnverified')}
         </h1>
         <p className='mt-2 max-w-lg text-sm text-muted-foreground'>
           {denied
-            ? 'Protected meeting information is hidden because the current session was denied.'
-            : 'Protected meeting information stays hidden until your current session can be verified.'}
+            ? t('workspace:sessionDeniedHint')
+            : t('workspace:sessionUnverifiedHint')}
         </p>
         <Button className='mt-6' onClick={onRetry}>
           <RefreshCw />
-          Retry verification
+          {t('workspace:live_retryVerification')}
         </Button>
       </CardContent>
     </Card>
@@ -726,6 +730,7 @@ function MeetingWorkspace({
     confirmed: boolean
   ) => void
 }) {
+  const { t } = useUiTranslation()
   const [editOpen, setEditOpen] = useState(false)
   const notifiedEditCommits = useRef(new Set<string>())
   const session = useOptionalMeetingSession()
@@ -771,19 +776,19 @@ function MeetingWorkspace({
     if (notifiedEditCommits.current.has(key)) return
     notifiedEditCommits.current.add(key)
     if (commit.outcome === 'scheduled') {
-      toast.success('Meeting scheduled', {
-        description: 'The meeting was successfully scheduled.',
+      toast.success(t('workspace:editScheduled'), {
+        description: t('workspace:editScheduledHint'),
       })
       return
     }
     if (commit.outcome === 'rescheduled') {
-      toast.success('Meeting rescheduled', {
-        description: 'The meeting schedule was updated.',
+      toast.success(t('workspace:editRescheduled'), {
+        description: t('workspace:editRescheduledHint'),
       })
       return
     }
-    toast.success('Meeting changes saved', {
-      description: 'The meeting changes were saved.',
+    toast.success(t('workspace:editSaved'), {
+      description: t('workspace:editSavedHint'),
     })
   }
 
@@ -824,7 +829,7 @@ function MeetingWorkspace({
               className='flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm'
             >
               <span className='font-medium text-destructive'>
-                Recording in progress in this meeting
+                {t('workspace:recordingInThisMeeting')}
               </span>
               <div className='flex flex-wrap gap-2'>
                 <Button
@@ -833,7 +838,7 @@ function MeetingWorkspace({
                   variant='outline'
                   onClick={() => navigateToSection('recording')}
                 >
-                  Open recording controls
+                  {t('workspace:openRecordingControls')}
                 </Button>
                 <Button
                   type='button'
@@ -841,7 +846,7 @@ function MeetingWorkspace({
                   variant='destructive'
                   onClick={session.stopRecording}
                 >
-                  Stop recording
+                  {t('workspace:stopRecording')}
                 </Button>
               </div>
             </div>
@@ -852,10 +857,10 @@ function MeetingWorkspace({
             className='rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground'
           >
             {participants.isPending
-              ? 'Access to meeting content remains blocked while active membership is checked.'
+              ? t('workspace:membershipPending')
               : participants.isError
-                ? 'Access to meeting content remains blocked because membership verification failed.'
-                : 'Access to meeting content remains blocked because active membership was not confirmed.'}
+                ? t('workspace:membershipFailed')
+                : t('workspace:membershipDenied')}
           </div>
         )}
         <Tabs
@@ -865,11 +870,11 @@ function MeetingWorkspace({
           }
         >
           <TabsList
-            aria-label='Meeting workspace sections'
+            aria-label={t('workspace:sections')}
             className='flex h-auto w-full flex-wrap justify-start gap-1 rounded-none border-b bg-transparent p-0'
           >
             <WorkspaceTab value='overview' icon={<LayoutDashboard />} allowed>
-              Overview
+              {t('workspace:overview')}
             </WorkspaceTab>
             <WorkspaceTab
               value='recording'
@@ -879,7 +884,7 @@ function MeetingWorkspace({
                 capabilities
               )}
             >
-              Recording
+              {t('workspace:recording')}
             </WorkspaceTab>
             <WorkspaceTab
               value='transcript'
@@ -889,7 +894,7 @@ function MeetingWorkspace({
                 capabilities
               )}
             >
-              Transcript
+              {t('workspace:transcript')}
             </WorkspaceTab>
             <WorkspaceTab
               value='intelligence'
@@ -899,7 +904,7 @@ function MeetingWorkspace({
                 capabilities
               )}
             >
-              Intelligence
+              {t('workspace:intelligence')}
             </WorkspaceTab>
             <WorkspaceTab
               value='action-items'
@@ -909,7 +914,7 @@ function MeetingWorkspace({
                 capabilities
               )}
             >
-              Action Items
+              {t('workspace:actionItems')}
             </WorkspaceTab>
           </TabsList>
           <TabsContent
@@ -982,14 +987,15 @@ function WorkspaceAuthorizationState({
 }: {
   resolution: ReturnType<typeof resolveMeetingWorkspaceAuthorization>
 }) {
+  const { t } = useUiTranslation()
   return (
     <div
       role='status'
       className='rounded-lg border border-dashed px-4 py-6 text-sm text-muted-foreground'
     >
       {resolution === 'denied'
-        ? 'This meeting section is not available to the current session.'
-        : 'Verifying meeting membership before protected content can be opened…'}
+        ? t('workspace:sectionDenied')
+        : t('workspace:sectionVerifying')}
     </div>
   )
 }
@@ -1041,6 +1047,7 @@ function OperationalOverview({
     view?: IntelligenceView
   ) => void
 }) {
+  const { t } = useUiTranslation()
   return (
     <div className='grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.8fr)]'>
       <div className='space-y-6'>
@@ -1048,13 +1055,12 @@ function OperationalOverview({
           <CardHeader className='border-b'>
             <CardTitle className='flex items-center gap-2'>
               <FileText className='size-4 text-primary' />
-              Meeting context
+              {t('workspace:meetingContext')}
             </CardTitle>
           </CardHeader>
           <CardContent className='space-y-5 pt-6'>
             <p className='text-base leading-7 text-muted-foreground'>
-              {meeting.description?.trim() ||
-                'No meeting description was provided.'}
+              {meeting.description?.trim() || t('workspace:noDescription')}
             </p>
           </CardContent>
         </Card>
@@ -1068,10 +1074,9 @@ function OperationalOverview({
         ) : (
           <Card>
             <CardHeader>
-              <CardTitle>Meeting results</CardTitle>
+              <CardTitle>{t('workspace:meetingResults')}</CardTitle>
               <CardDescription>
-                Media, processing and derived results are shown after current
-                meeting membership is confirmed.
+                {t('workspace:membershipResultsHint')}
               </CardDescription>
             </CardHeader>
           </Card>
@@ -1148,37 +1153,39 @@ function WorkspaceResultsOverview({
   return (
     <Card>
       <CardHeader className='border-b'>
-        <CardTitle>Available results</CardTitle>
+        <CardTitle>{t('workspace:availableResults')}</CardTitle>
         <CardDescription>
-          Meeting lifecycle, source media, processing and derived results are
-          tracked independently.
+          {t('workspace:independentResults')}
         </CardDescription>
       </CardHeader>
       <CardContent className='divide-y pt-2'>
         <WorkspaceResultRow
           icon={<Mic />}
-          title='Source media'
+          title={t('workspace:sourceMedia')}
           state={
             mediaIsPending
-              ? 'Checking availability'
+              ? t('workspace:checkingAvailability')
               : mediaIsError
-                ? 'Unable to verify'
+                ? t('workspace:unableToVerify')
                 : mediaData.length === 0
-                  ? 'No source media'
-                  : `${availableMedia.length} available · ${mediaData.length} total`
+                  ? t('workspace:noSourceMedia')
+                  : t('workspace:mediaCount', {
+                      available: availableMedia.length,
+                      total: mediaData.length,
+                    })
           }
           description={
             mediaIsPending
-              ? 'Checking Core for finalized meeting recordings.'
+              ? t('workspace:checkingMedia')
               : mediaIsError
-                ? 'The media list could not be verified. This is separate from the meeting lifecycle.'
+                ? t('workspace:mediaVerificationFailed')
                 : mediaData.length === 0
-                  ? 'No source recording has been confirmed by Core.'
+                  ? t('workspace:noConfirmedRecording')
                   : mediaData
                       .filter((item) => item.status !== 'AVAILABLE')
                       .map((item) => `${item.originalFilename}: ${item.status}`)
                       .join(' · ') ||
-                    'Finalized source files are available to review.'
+                    t('workspace:finalizedMediaAvailable')
           }
           kind={
             mediaIsPending
@@ -1195,12 +1202,12 @@ function WorkspaceResultsOverview({
             mediaData.length === 0 &&
             capabilities.canSubmitMedia
               ? {
-                  label: 'Add a recording',
+                  label: t('workspace:addRecording'),
                   onClick: () => onSectionChange?.('recording'),
                 }
               : mediaIsError
                 ? {
-                    label: 'Retry',
+                    label: t('workspace:retry'),
                     onClick: () => void media?.refetch(),
                   }
                 : undefined
@@ -1208,28 +1215,28 @@ function WorkspaceResultsOverview({
         />
         <WorkspaceResultRow
           icon={<Clock3 />}
-          title='Processing'
+          title={t('workspace:processing')}
           state={
             jobsIsPending
-              ? 'Checking status'
+              ? t('workspace:checkingStatus')
               : jobsIsError
-                ? 'Unable to verify'
+                ? t('workspace:unableToVerify')
                 : hasAmbiguousAttempts
-                  ? 'Select an attempt'
+                  ? t('workspace:selectAttempt')
                   : observedJob
-                    ? (processingState?.label ?? 'Unknown status')
-                    : 'Not started'
+                    ? (processingState?.label ?? t('workspace:unknownStatus'))
+                    : t('workspace:notStarted')
           }
           description={
             jobsIsPending
-              ? 'Checking the current Core processing job list.'
+              ? t('workspace:checkingJobs')
               : jobsIsError
-                ? 'Processing status could not be verified.'
+                ? t('workspace:processingVerificationFailed')
                 : hasAmbiguousAttempts
-                  ? 'Several processing attempts are recorded. Open Recording to select the attempt that should remain in view.'
+                  ? t('workspace:ambiguousAttempts')
                   : observedJob
                     ? [
-                        `Observed attempt: ${processingState?.label ?? 'Unknown status'}`,
+                        `Observed attempt: ${processingState?.label ?? t('workspace:unknownStatus')}`,
                         observedJob.currentStage
                           ? `Current stage: ${observedJob.currentStage}`
                           : undefined,
@@ -1238,8 +1245,8 @@ function WorkspaceResultsOverview({
                       ]
                         .filter(Boolean)
                         .join(' · ') ||
-                      'Status reported by the current processing job.'
-                    : 'An ended meeting does not imply that processing has been requested.'
+                      t('workspace:currentJobStatus')
+                    : t('workspace:processingNotRequested')
           }
           kind={
             jobsIsPending
@@ -1252,17 +1259,17 @@ function WorkspaceResultsOverview({
           }
           action={
             jobsIsError
-              ? { label: 'Retry', onClick: () => void jobs?.refetch() }
+              ? { label: t('workspace:retry'), onClick: () => void jobs?.refetch() }
               : observedJob?.status === 'WAITING_FOR_REVIEW'
                 ? {
-                    label: 'Review transcript',
+                    label: t('workspace:reviewTranscript'),
                     onClick: () => onSectionChange?.('transcript'),
                   }
                 : observedJob ||
                     hasAmbiguousAttempts ||
                     (availableMedia.length && capabilities.canAdmitProcessing)
                   ? {
-                      label: 'Review processing',
+                      label: t('workspace:reviewProcessing'),
                       onClick: () => onSectionChange?.('recording'),
                     }
                   : undefined
@@ -1270,28 +1277,31 @@ function WorkspaceResultsOverview({
         />
         <WorkspaceResultRow
           icon={<MessageSquare />}
-          title='Transcript'
+          title={t('workspace:transcript')}
           state={
             minutes.isPending
-              ? 'Checking availability'
+              ? t('workspace:checkingAvailability')
               : minutes.isError
-                ? 'Unable to verify'
+                ? t('workspace:unableToVerify')
                 : transcriptAvailability === 'NOT_AVAILABLE'
-                  ? 'Transcript not available'
+                  ? t('workspace:transcriptUnavailable')
                   : resultAvailabilityLabel(
                       minutes.data.transcript.availability
                     )
           }
           description={
             minutes.isPending
-              ? 'Checking the latest meeting results.'
+              ? t('workspace:checkingResults')
               : minutes.isError
-                ? 'Transcript availability could not be verified.'
+                ? t('workspace:transcriptVerificationFailed')
                 : transcriptAvailability === 'NOT_AVAILABLE'
-                  ? 'No transcript artifact is available yet.'
+                  ? t('workspace:noTranscriptArtifact')
                   : transcriptAvailability === 'PROCESSING'
-                    ? 'Core is still processing the transcript.'
-                    : `${minutes.data.transcript.unresolvedSegments} unresolved segments · ${minutes.data.transcript.unresolvedCoverageRegions} unresolved speech regions.`
+                    ? t('workspace:transcriptProcessing')
+                    : t('workspace:unresolvedCounts', {
+                        segments: minutes.data.transcript.unresolvedSegments,
+                        regions: minutes.data.transcript.unresolvedCoverageRegions,
+                      })
           }
           kind={
             minutes.isPending
@@ -1302,14 +1312,14 @@ function WorkspaceResultsOverview({
           }
           action={
             minutes.isError
-              ? { label: 'Retry', onClick: () => void minutes.refetch() }
+              ? { label: t('workspace:retry'), onClick: () => void minutes.refetch() }
               : minutes.isSuccess &&
                   transcriptAvailability !== 'NOT_AVAILABLE' &&
                   transcriptAvailability !== 'PROCESSING' &&
                   transcriptAvailability !== 'UNKNOWN' &&
                   transcriptAvailability !== 'FAILED'
                 ? {
-                    label: 'Review transcript',
+                    label: t('workspace:reviewTranscript'),
                     onClick: () => onSectionChange?.('transcript'),
                   }
                 : undefined
@@ -1317,26 +1327,29 @@ function WorkspaceResultsOverview({
         />
         <WorkspaceResultRow
           icon={<Sparkles />}
-          title='Intelligence'
+          title={t('workspace:intelligence')}
           state={
             minutes.isPending
-              ? 'Checking availability'
+              ? t('workspace:checkingAvailability')
               : minutes.isError
-                ? 'Unable to verify'
+                ? t('workspace:unableToVerify')
                 : hasDerivedResults
                   ? hasSummaryArtifact
                     ? `Summary ${resultAvailabilityLabel(minutes.data.summary.availability).toLocaleLowerCase()}`
-                    : 'Other confirmed results available'
+                    : t('workspace:otherConfirmedResults')
                   : summaryAvailability === 'NOT_AVAILABLE'
-                    ? 'No summary available'
+                    ? t('workspace:noSummary')
                     : `Summary ${resultAvailabilityLabel(minutes.data.summary.availability).toLocaleLowerCase()}`
           }
           description={
             minutes.isPending
-              ? 'Checking confirmed results from Core.'
+              ? t('workspace:checkingConfirmedResults')
               : minutes.isError
-                ? 'Summary and result availability could not be verified.'
-                : `${minutes.data.confirmedDecisions.length} confirmed decisions · ${minutes.data.officialActionItems.length} official action items.`
+                ? t('workspace:summaryVerificationFailed')
+                : t('workspace:confirmedCounts', {
+                    decisions: minutes.data.confirmedDecisions.length,
+                    actions: minutes.data.officialActionItems.length,
+                  })
           }
           kind={
             minutes.isPending
@@ -1354,7 +1367,7 @@ function WorkspaceResultsOverview({
             (hasConfirmedResults ||
               (hasSummaryArtifact && hasReviewableSummary))
               ? {
-                  label: 'Review intelligence',
+                  label: t('workspace:reviewIntelligence'),
                   onClick: () =>
                     onSectionChange?.(
                       'intelligence',
@@ -1368,7 +1381,7 @@ function WorkspaceResultsOverview({
                 }
               : minutes.isError
                 ? {
-                    label: 'Retry',
+                    label: t('workspace:retry'),
                     onClick: () => void minutes.refetch(),
                   }
                 : undefined
@@ -1376,18 +1389,18 @@ function WorkspaceResultsOverview({
         />
         <WorkspaceResultRow
           icon={<FileText />}
-          title='Canonical minutes'
+          title={t('workspace:canonicalMinutes')}
           state={
             minutes.isPending
-              ? 'Checking availability'
+              ? t('workspace:checkingAvailability')
               : minutes.isError
-                ? 'Unable to verify'
+                ? t('workspace:unableToVerify')
                 : minutes.data.completeness.replace(/_/g, ' ')
           }
           description={
             minutes.isSuccess
-              ? 'Review the authoritative document and its export eligibility.'
-              : 'Canonical document availability must be verified by Core.'
+              ? t('workspace:reviewCanonicalDocument')
+              : t('workspace:documentVerification')
           }
           kind={
             minutes.isPending
@@ -1401,7 +1414,7 @@ function WorkspaceResultsOverview({
           action={
             minutes.isSuccess
               ? {
-                  label: 'Open minutes',
+                  label: t('workspace:openMinutes'),
                   onClick: () =>
                     onSectionChange?.('intelligence', false, 'minutes'),
                 }
@@ -1410,22 +1423,24 @@ function WorkspaceResultsOverview({
         />
         <WorkspaceResultRow
           icon={<ListChecks />}
-          title='Action items'
+          title={t('workspace:actionSection')}
           state={
             minutes.isPending
-              ? 'Checking availability'
+              ? t('workspace:checkingAvailability')
               : minutes.isError
-                ? 'Unable to verify'
-                : `${minutes.data.officialActionItems.length} official`
+                ? t('workspace:unableToVerify')
+                : t('workspace:officialCount', {
+                    count: minutes.data.officialActionItems.length,
+                  })
           }
           description={
             minutes.isPending
-              ? 'Checking official action items.'
+              ? t('workspace:checkingOfficialActions')
               : minutes.isError
-                ? 'Action item availability could not be verified.'
+                ? t('workspace:actionsVerificationFailed')
                 : minutes.data.officialActionItems.length
-                  ? 'Official assignments are separate from unconfirmed AI proposals.'
-                  : 'No official action items are recorded in the current results.'
+                  ? t('workspace:officialActionsSeparate')
+                  : t('workspace:noOfficialActions')
           }
           kind={
             minutes.isPending
@@ -1441,7 +1456,7 @@ function WorkspaceResultsOverview({
             capabilities.canReadActionItems &&
             minutes.data.officialActionItems.length > 0
               ? {
-                  label: 'Review action items',
+                  label: t('workspace:reviewActions'),
                   onClick: () => onSectionChange?.('action-items'),
                 }
               : undefined
@@ -1603,21 +1618,22 @@ function ParticipantsCard({
     confirmed: boolean
   ) => void
 }) {
+  const { t } = useUiTranslation()
   return (
     <Card>
       <CardHeader className='border-b'>
         <CardTitle className='flex items-center gap-2'>
           <Users className='size-4 text-primary' />
-          Participants
+          {t('workspace:participants')}
         </CardTitle>
         <CardDescription>
           {!canReadMeetingContent
-            ? 'Participant details are hidden until active membership is verified.'
+            ? t('workspace:participantsHidden')
             : state.isPending
-              ? 'Loading participant memberships.'
+              ? t('workspace:loadingMemberships')
               : state.isError
-                ? 'Participant memberships are unavailable.'
-                : formatParticipantCount(state.data ?? [])}
+                ? t('workspace:membershipsUnavailable')
+                : formatParticipantCount(state.data ?? [], t)}
         </CardDescription>
       </CardHeader>
       <CardContent className='pt-5'>
@@ -1625,22 +1641,22 @@ function ParticipantsCard({
           <div className='space-y-3'>
             <p className='text-sm text-muted-foreground'>
               {state.isPending
-                ? 'Confirming active meeting membership. The participant list remains hidden.'
+                ? t('workspace:confirmingMembership')
                 : state.isError
-                  ? 'Membership could not be verified, so the participant list remains hidden.'
-                  : 'Active meeting membership is required to view participant details.'}
+                  ? t('workspace:membershipUnverified')
+                  : t('workspace:activeMembershipRequired')}
             </p>
             {state.isPending || state.isError ? (
               <Button variant='outline' size='sm' onClick={state.onRetry}>
                 <RefreshCw />
-                Retry membership check
+                {t('workspace:retryMembership')}
               </Button>
             ) : null}
           </div>
         ) : state.isPending ? (
           <div
             role='status'
-            aria-label='Loading participants'
+            aria-label={t('workspace:loadingParticipants')}
             className='space-y-4'
           >
             <Skeleton className='h-12 w-full' />
@@ -1648,8 +1664,8 @@ function ParticipantsCard({
           </div>
         ) : state.isError ? (
           <LookupFailure
-            label='The participant request failed, so no participant list is shown.'
-            buttonLabel='Retry participants'
+            label={t('workspace:participantRequestFailed')}
+            buttonLabel={t('workspace:retryParticipants')}
             onRetry={state.onRetry}
           />
         ) : (
@@ -1667,12 +1683,13 @@ function ParticipantsCard({
 }
 
 function LifecycleCard({ meeting }: { meeting: MeetingView }) {
+  const { t } = useUiTranslation()
   const timestamps: Array<[string, string | null]> = [
-    ['Created', meeting.createdAt],
-    ['Updated', meeting.updatedAt],
-    ['Started', meeting.startedAt],
-    ['Ended', meeting.endedAt],
-    ['Cancelled', meeting.cancelledAt],
+    ['workspace:created', meeting.createdAt],
+    ['workspace:updated', meeting.updatedAt],
+    ['workspace:started', meeting.startedAt],
+    ['workspace:ended', meeting.endedAt],
+    ['workspace:cancelled', meeting.cancelledAt],
   ] as const
   const visibleTimestamps = timestamps.filter(
     (timestamp): timestamp is [string, string] => Boolean(timestamp[1])
@@ -1683,23 +1700,23 @@ function LifecycleCard({ meeting }: { meeting: MeetingView }) {
       <CardHeader className='border-b'>
         <CardTitle className='flex items-center gap-2'>
           <Clock3 className='size-4 text-primary' />
-          Lifecycle
+          {t('workspace:lifecycle')}
         </CardTitle>
         <CardDescription>
-          Timestamps reflect the meeting lifecycle recorded by Core API.
+          {t('workspace:lifecycleHint')}
         </CardDescription>
       </CardHeader>
       <CardContent className='space-y-4 pt-6'>
         {visibleTimestamps.map(([label, value]) => (
           <InfoRow
             key={label}
-            label={label}
+            label={t(label)}
             value={<RegionalTimestamp value={value} />}
           />
         ))}
         {meeting.cancellationReason && (
           <InfoRow
-            label='Cancellation reason'
+            label={t('workspace:live_cancellationReason')}
             value={meeting.cancellationReason}
           />
         )}
@@ -1735,23 +1752,24 @@ function MeetingDetailError({
   error: unknown
   onRetry: () => Promise<unknown>
 }) {
+  const { t } = useUiTranslation()
   const apiError = normalizeCoreApiError(error)
   const isNotFound = apiError.status === 404
   const isForbidden = apiError.status === 403
   const title = isNotFound
-    ? 'Meeting not found or unavailable'
+    ? t('workspace:live_notFound')
     : isForbidden
-      ? 'Access denied'
-      : 'Unable to load meeting details'
+      ? t('workspace:live_accessDenied')
+      : t('workspace:live_detailLoadFailed')
   const description = isNotFound
-    ? 'This meeting was not found or is unavailable to your session.'
+    ? t('workspace:live_notFoundDescription')
     : isForbidden
-      ? 'Your session does not have access to this meeting.'
+      ? t('workspace:live_deniedDescription')
       : apiError.isNetworkError
-        ? 'The Core API could not be reached. Check the connection and try again.'
+        ? t('workspace:live_networkDescription')
         : apiError.isServerError
-          ? 'The Core API failed while loading this meeting. Try again.'
-          : 'The meeting details could not be verified. Try again.'
+          ? t('workspace:detailServerFailure')
+          : t('workspace:live_verifyFailed')
 
   return (
     <Card>
@@ -1767,7 +1785,7 @@ function MeetingDetailError({
         </p>
         <Button className='mt-6' onClick={() => void onRetry()}>
           <RefreshCw />
-          Retry
+          {t('workspace:retry')}
         </Button>
       </CardContent>
     </Card>
@@ -1775,10 +1793,11 @@ function MeetingDetailError({
 }
 
 function MeetingWorkspaceSkeleton() {
+  const { t } = useUiTranslation()
   return (
     <div
       role='status'
-      aria-label='Loading meeting details'
+      aria-label={t('workspace:loadingDetails')}
       className='space-y-6'
     >
       <section className='space-y-5'>
@@ -1805,11 +1824,19 @@ function MeetingWorkspaceSkeleton() {
   )
 }
 
-function formatParticipantCount(participants: ParticipantView[]) {
+function formatParticipantCount(
+  participants: ParticipantView[],
+  t: ReturnType<typeof useUiTranslation>['t']
+) {
   const { active, removed } = classifyParticipantMemberships(participants)
-  const activeLabel = `${active.length} active participant${active.length === 1 ? '' : 's'}`
+  const activeLabel = t('workspace:activeParticipants', { count: active.length })
   return removed.length
-    ? `${activeLabel}; ${removed.length} historical membership${removed.length === 1 ? '' : 's'}`
+    ? t('workspace:participantCounts', {
+        active: activeLabel,
+        historical: t('workspace:historicalMemberships', {
+          count: removed.length,
+        }),
+      })
     : activeLabel
 }
 
