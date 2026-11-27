@@ -507,9 +507,7 @@ describe('integrated generated Web runtime', () => {
     const getReferrerPolicy = () =>
       document.querySelector<HTMLMetaElement>("meta[name='referrer']")?.content
 
-    await expect
-      .poll(getReferrerPolicy)
-      .toBe('strict-origin-when-cross-origin')
+    await expect.poll(getReferrerPolicy).toBe('strict-origin-when-cross-origin')
 
     await router.navigate({ to: '/account-setup' })
     await expect.poll(getReferrerPolicy).toBe('no-referrer')
