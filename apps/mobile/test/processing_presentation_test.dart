@@ -10,7 +10,7 @@ void main() {
         'Chờ xử lý',
         'Chờ xử lý',
         'Đang xử lý',
-        'Cần xem xét',
+        'Cần rà soát',
         'Hoàn thành',
         'Hoàn thành có cảnh báo',
         'Xử lý thất bại',
@@ -38,6 +38,13 @@ void main() {
     expect(
       processingStageLabel('FUTURE_STAGE'),
       contains('chưa được nhận diện'),
+    );
+  });
+
+  test('public warning detail is preserved without guessing a warning code', () {
+    expect(
+      processingWarningLabel('Some speech remains unresolved.'),
+      'Cảnh báo: Some speech remains unresolved.',
     );
   });
 

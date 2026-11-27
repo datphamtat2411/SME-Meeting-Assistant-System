@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { i18n, useUiTranslation } from '@/lib/i18n'
-import { localizedValidationMessage } from '@/lib/i18n/presentation'
+import { localizedValidationMessage, roleKey } from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import type {
   MemberEditorSession,
@@ -23,9 +23,21 @@ function fieldLabel(field: MemberEditableField): string {
 }
 
 function displayEditableValue(
+  field: MemberEditableField,
   value: unknown,
   units: readonly OrganizationalUnit[]
 ): string {
+  if (
+    field === 'globalRole' &&
+    (value === 'EMPLOYEE' ||
+      value === 'DEPARTMENT_MANAGER' ||
+      value === 'ADMINISTRATOR')
+  ) {
+    return i18n.t(roleKey(value))
+  }
+  if (field === 'primaryOrgUnitId' && typeof value === 'string') {
+    return units.find((unit) => unit.id === value)?.name ?? value
+  }
   if (Array.isArray(value)) {
     return value.length > 0
       ? value
@@ -137,7 +149,7 @@ function MemberConflictResolution({
                   {t('members:serverValue')}
                 </span>
                 <span className='block break-words'>
-                  {displayEditableValue(comparison.latest, units)}
+                  {displayEditableValue(field, comparison.latest, units)}
                 </span>
               </span>
             </label>
@@ -155,7 +167,7 @@ function MemberConflictResolution({
                   {t('members:intendedValue')}
                 </span>
                 <span className='block break-words'>
-                  {displayEditableValue(comparison.intended, units)}
+                  {displayEditableValue(field, comparison.intended, units)}
                 </span>
               </span>
             </label>

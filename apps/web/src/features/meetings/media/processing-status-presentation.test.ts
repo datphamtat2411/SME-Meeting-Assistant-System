@@ -28,7 +28,7 @@ describe('processing status presentation', () => {
     ['PENDING', 'Chờ xử lý', 'pending'],
     ['QUEUED', 'Chờ xử lý', 'pending'],
     ['RUNNING', 'Đang xử lý', 'processing'],
-    ['WAITING_FOR_REVIEW', 'Cần xem xét', 'action'],
+    ['WAITING_FOR_REVIEW', 'Cần rà soát', 'action'],
     ['COMPLETED', 'Hoàn thành', 'success'],
     ['COMPLETED_WITH_WARNINGS', 'Hoàn thành có cảnh báo', 'warning'],
     ['FAILED', 'Xử lý thất bại', 'failure'],

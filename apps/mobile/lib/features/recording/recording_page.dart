@@ -535,7 +535,7 @@ class _RecordingPageState extends State<RecordingPage> {
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
-                'Tác vụ có cảnh báo. Hãy kiểm tra kết quả.',
+                processingWarningLabel(job.warningSummary!),
                 style: const TextStyle(color: Palette.amber),
               ),
             ),

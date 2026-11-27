@@ -3,7 +3,7 @@ import 'media_contracts.dart';
 String processingJobStatusLabel(ProcessingJobStatus status) => switch (status) {
   ProcessingJobStatus.pending || ProcessingJobStatus.queued => 'Chờ xử lý',
   ProcessingJobStatus.running => 'Đang xử lý',
-  ProcessingJobStatus.waitingForReview => 'Cần xem xét',
+  ProcessingJobStatus.waitingForReview => 'Cần rà soát',
   ProcessingJobStatus.completed => 'Hoàn thành',
   ProcessingJobStatus.completedWithWarnings => 'Hoàn thành có cảnh báo',
   ProcessingJobStatus.failed => 'Xử lý thất bại',
@@ -59,3 +59,7 @@ String processingFailureLabel(String? code, String? summary) => switch (code) {
     'Không thể chuyển tác vụ sang hệ thống xử lý.',
   _ => summary ?? 'Giai đoạn xử lý thất bại.',
 };
+
+/// Core provides public warning prose without a dedicated warning code.
+/// Preserve the detail rather than inferring a code from its wording.
+String processingWarningLabel(String summary) => 'Cảnh báo: $summary';

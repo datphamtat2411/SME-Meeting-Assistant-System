@@ -283,7 +283,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
             ),
           if (job?.warningSummary != null)
             Text(
-              job!.warningSummary!,
+              processingWarningLabel(job!.warningSummary!),
               style: const TextStyle(color: Palette.amber),
             ),
           if (job?.errorSummary != null)

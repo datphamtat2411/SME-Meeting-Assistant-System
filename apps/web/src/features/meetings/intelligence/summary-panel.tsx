@@ -504,7 +504,11 @@ function SummaryPanelContent({
               })}
             </p>
             {regenerationJob.warningSummary && (
-              <p>{regenerationJob.warningSummary}</p>
+              <p>
+                {t('processing:warningDetail', {
+                  detail: regenerationJob.warningSummary,
+                })}
+              </p>
             )}
             {regenerationJob.errorSummary && (
               <p>{regenerationJob.errorSummary}</p>

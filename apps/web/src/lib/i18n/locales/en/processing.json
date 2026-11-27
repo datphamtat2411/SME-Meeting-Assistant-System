@@ -61,6 +61,7 @@
   "actionRequired": "Action required",
   "success": "Success",
   "warning": "Warning",
+  "warningDetail": "Warning: {{detail}}",
   "failure": "Failure",
   "cancelled": "Cancelled",
   "unknown": "Unknown status",

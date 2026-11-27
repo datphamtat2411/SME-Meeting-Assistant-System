@@ -417,7 +417,9 @@ function ProcessingPanelContent({
                   </p>
                 )}
                 {job.warningSummary && (
-                  <p className='text-xs text-amber-600'>{job.warningSummary}</p>
+                  <p className='text-xs text-amber-600'>
+                    {t('processing:warningDetail', { detail: job.warningSummary })}
+                  </p>
                 )}
                 {job.errorCode && (
                   <p className='text-xs text-destructive'>
