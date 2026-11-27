@@ -114,6 +114,21 @@ jobs:
       - name: Run Web browser tests
         run: pnpm test
 
+      - name: Build production bundle for startup smoke
+        run: pnpm run build
+
+      - name: Verify production localization startup
+        run: pnpm run test:localization:startup
+
+      - name: Upload localization screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-localization-screenshots
+          path: apps/web/test-results/localization/
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload browser test report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7

@@ -40,6 +40,36 @@ Future<String?> _readRefreshCredential(CredentialStorage storage) async =>
     ).read()).refreshToken;
 
 void main() {
+  testWidgets('Vietnamese login remains usable with large text', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 568);
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final harness = _Harness.create(_authClient(), InMemoryCredentialStorage());
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'login ready',
+    );
+    final submit = find.widgetWithText(FilledButton, 'Đăng nhập');
+    await tester.ensureVisible(submit);
+    await tester.pumpAndSettle();
+    expect(submit.hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    final recovery = find.text('Quên mật khẩu?');
+    await tester.ensureVisible(recovery);
+    await tester.tap(recovery);
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(FilledButton, 'Gửi yêu cầu'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('reset completion from recovery acknowledgement reaches login', (
     tester,
   ) async {

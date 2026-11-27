@@ -23,6 +23,18 @@ The final release gate is a successful Web CI and Mobile CI run on the
 implementation commit being accepted. GitHub Actions logs and artifacts are
 the authoritative evidence; do not infer a passing run from this document.
 
+## Production startup and targeted layout checks
+
+`pnpm run build` followed by `pnpm run test:localization:startup` runs
+Chromium against the production bundle, independently of the English Vitest
+setup. The gate checks fresh browser state, EN/VI persistence across reloads,
+invalid preferences, HTML language metadata, sign-in controls and retained
+input at 360, 768 and 1440 pixel widths. The Core API is an anonymous fixture;
+external fonts are blocked for deterministic fallback coverage. CI uploads
+representative screenshots for review. Mobile widget coverage includes the
+Vietnamese login at 320 logical pixels and 2.0 text scale, and actual Flutter
+schedule date/time dialogs with cancellation preserving the draft.
+
 ## Manual verification boundary
 
 The automated suites exercise representative application flows and localized
