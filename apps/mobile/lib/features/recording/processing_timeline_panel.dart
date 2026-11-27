@@ -18,12 +18,14 @@ class ProcessingTimelinePanel extends StatefulWidget {
     required this.processingManager,
     this.canRetry = true,
     this.capabilities,
+    this.onReviewRequested,
   });
   final ApiClient api;
   final String meetingId;
   final ProcessingManager processingManager;
   final bool canRetry;
   final MeetingCapabilities? capabilities;
+  final ValueChanged<TranscriptReviewHandoff>? onReviewRequested;
   @override
   State<ProcessingTimelinePanel> createState() =>
       _ProcessingTimelinePanelState();
@@ -248,6 +250,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
           ),
           if (jobs.isEmpty) const MessagePanel(title: 'Chưa có tác vụ xử lý'),
           ...jobs.map((item) {
+            final handoff = widget.processingManager.reviewHandoff(item);
             return ContentCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -305,6 +308,11 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                         item.errorSummary!,
                         style: const TextStyle(color: Palette.red),
                       ),
+                    ),
+                  if (handoff != null && widget.onReviewRequested != null)
+                    OutlinedButton(
+                      onPressed: () => widget.onReviewRequested!(handoff),
+                      child: const Text('Mở duyệt bản ghi'),
                     ),
                   if (item.retryable)
                     Align(

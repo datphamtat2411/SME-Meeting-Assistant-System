@@ -181,6 +181,13 @@ describe('canonical Minutes adapter', () => {
     expect(parseMinutes(partial).warnings).toEqual(['TRANSCRIPT_PROCESSING'])
   })
 
+  it('preserves the non-official proposal marker for presentation guards', () => {
+    expect(
+      parseMinutes({ ...validMinutes(), proposalsIncluded: true })
+        .proposalsIncluded
+    ).toBe(true)
+  })
+
   it('rejects malformed fingerprints and unconfirmed work', () => {
     expect(() =>
       parseMinutes({

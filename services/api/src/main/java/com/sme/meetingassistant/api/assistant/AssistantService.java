@@ -286,6 +286,7 @@ public final class AssistantService {
             // Only committed dialogue with CURRENT evidence may enter the LLM context.
             List<Map<String,Object>> context=safeContext(conversation.meetingId(),admitted.turn());
             String payload=request(conversation,user,admitted.turn(),question,context);
+            access.requireReadable(conversation.meetingId(),user);
             String raw=gateway.getObject().answer(payload);
             access.requireReadable(conversation.meetingId(),user);
             reply=answers.validate(raw,admitted.turn().id(),conversation.id(),
@@ -376,8 +377,10 @@ public final class AssistantService {
                 return new Admission(prior,false);
             }
             admission.lockAskLocalScopes(user,conversation.meetingId());
+            access.requireReadable(conversation.meetingId(),user);
             admission.ensureScopedActiveCapacity(user,conversation.meetingId());
             admission.lockAskGlobalScope();
+            access.requireReadable(conversation.meetingId(),user);
             admission.ensureGlobalActiveCapacity();
             var reclaimed=store.reclaim(prior);
             admission.leaseReclaimed();
@@ -391,9 +394,11 @@ public final class AssistantService {
             admission.leaseExpired();
         }
         admission.lockAskLocalScopes(user,conversation.meetingId());
+        access.requireReadable(conversation.meetingId(),user);
         admission.ensureAskQuota(user);
         admission.ensureScopedActiveCapacity(user,conversation.meetingId());
         admission.lockAskGlobalScope();
+        access.requireReadable(conversation.meetingId(),user);
         admission.ensureGlobalActiveCapacity();
         var inserted=store.insertTurn(conversationId,key,fingerprint,question,
             version(conversation.meetingId(),user));

@@ -130,6 +130,7 @@ Future<ActionItemCreationMeeting?> pickActionItemCreationMeeting(
 Future<ActionItemAssignee?> pickActionItemAssignee(
   BuildContext context,
   ActionItemRepository repository, {
+  String? meetingId,
   List<ActionItemAssignee> Function()? readKnown,
   Listenable? knownChanges,
   bool allowKnownInactive = false,
@@ -142,15 +143,19 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
   openPicker,
 }) {
   final scope = repository.captureSession();
+  if (!forFilter && meetingId == null) {
+    throw ArgumentError('Assignment requires a selected meeting.');
+  }
   final self = repository.selfCandidate(scope);
   final pinned = <ActionItemPickerOption<ActionItemAssignee>>[
-    ActionItemPickerOption(
-      value: self,
-      id: self.id,
-      label:
-          '${forFilter ? 'Tôi' : 'Giao cho tôi'} · '
-          '${self.displayName ?? actionItemAssigneeReferenceLabel(self.id)}',
-    ),
+    if (forFilter)
+      ActionItemPickerOption(
+        value: self,
+        id: self.id,
+        label:
+            'Tôi · '
+            '${self.displayName ?? actionItemAssigneeReferenceLabel(self.id)}',
+      ),
   ];
   final picker = ActionItemPicker<ActionItemAssignee>(
     api: repository.api,
@@ -158,10 +163,14 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
     hostIsCurrent: hostIsCurrent,
     title: forFilter ? 'Lọc theo người phụ trách' : 'Chọn người phụ trách',
     minimumSearchLength: 2,
+    allowBlankSearch: !forFilter,
     pinned: pinned,
-    pinnedChanges: knownChanges,
+    pinnedChanges: forFilter ? knownChanges : null,
     readPinned: () => [
-      for (final item in readKnown?.call() ?? const <ActionItemAssignee>[])
+      for (final item
+          in forFilter
+              ? readKnown?.call() ?? const <ActionItemAssignee>[]
+              : const <ActionItemAssignee>[])
         if (!sameActionItemIdentity(item.id, self.id) &&
             (allowKnownInactive ||
                 item.accountStatus == ActionItemAccountStatus.active))
@@ -171,21 +180,36 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
             label: actionItemAssigneeLabel(item),
           ),
     ],
-    load: (search, page) async => mapActionItemPickerPage(
-      await repository.assignmentCandidates(
-        MeetingCandidateQuery(search: search, page: page),
-        sessionScope: scope,
-      ),
-      (candidate) => ActionItemAssignee(
-        id: candidate.id,
-        displayName: candidate.displayName,
-        accountStatus: ActionItemAccountStatus.active,
-      ),
-    ),
+    load: (search, page) async {
+      if (!forFilter) {
+        return repository.assignmentCandidates(
+          ActionItemAssignmentQuery(
+            meetingId: meetingId!,
+            search: search.isEmpty ? null : search,
+            candidateId: search.isEmpty ? scope.userId : null,
+            page: page,
+          ),
+          sessionScope: scope,
+        );
+      }
+      return mapActionItemPickerPage(
+        await repository.filterCandidates(
+          MeetingCandidateQuery(search: search, page: page),
+          sessionScope: scope,
+        ),
+        (candidate) => ActionItemAssignee(
+          id: candidate.id,
+          displayName: candidate.displayName,
+          accountStatus: ActionItemAccountStatus.active,
+        ),
+      );
+    },
     describe: (assignee) => ActionItemPickerOption(
       value: assignee,
       id: assignee.id,
-      label: actionItemAssigneeLabel(assignee),
+      label: !forFilter && sameActionItemIdentity(assignee.id, scope.userId)
+          ? 'Giao cho tôi · ${actionItemAssigneeLabel(assignee)}'
+          : actionItemAssigneeLabel(assignee),
     ),
   );
   return (openPicker ?? openActionItemPicker<ActionItemAssignee>)(

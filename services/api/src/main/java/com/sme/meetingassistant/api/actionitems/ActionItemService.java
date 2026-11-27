@@ -85,6 +85,9 @@ public class ActionItemService {
 
         if (idempotencyKey != null) {
             UUID prior = idempotency.claimOrReplay(actorId, idempotencyKey, request);
+            // The claim can wait for another transaction. Reauthorize after that wait.
+            meetingAccess.requireManageActionItems(request.meetingId(), actorId);
+            requireActiveAssignee(request.assigneeUserId());
             if (prior != null) {
                 ActionItemView item = byId(prior);
                 if (!request.meetingId().equals(item.meetingId()) ||
@@ -208,6 +211,12 @@ public class ActionItemService {
 
     @Transactional(readOnly = true)
     public Page<ActionItemView.CreationMeeting> creationMeetings(UUID actorId, String q, Pageable pageable) {
+        return manageableMeetings(actorId, q, pageable);
+    }
+
+    // Both compatibility projections use this single authorized read model.
+    // Hidden metadata must not influence filtering, counts or ordering.
+    private Page<ActionItemView.CreationMeeting> manageableMeetings(UUID actorId, String q, Pageable pageable) {
         meetingAccess.requireCurrentActiveActor(actorId);
         StringBuilder where = new StringBuilder(" FROM meetings meeting " + MEETING_RIGHTS
             + " WHERE rights.manageable");
@@ -281,23 +290,18 @@ public class ActionItemService {
         ActionItemView.Capabilities capabilities = new ActionItemView.Capabilities(
             editable,
             editable,
-            ActionItemLifecycle.isAllowed(Command.CONFIRM, visible.status())
-                && ActionItemLifecycle.canExecute(Command.CONFIRM, manageable, officialAssignee)
-                && (!ActionItemLifecycle.requiresActiveAssignee(Command.CONFIRM) || activeAssignee),
-            ActionItemLifecycle.isAllowed(Command.REJECT, visible.status())
-                && ActionItemLifecycle.canExecute(Command.REJECT, manageable, officialAssignee),
-            ActionItemLifecycle.isAllowed(Command.START, visible.status())
-                && ActionItemLifecycle.canExecute(Command.START, manageable, officialAssignee)
-                && (!ActionItemLifecycle.requiresActiveAssignee(Command.START) || activeAssignee),
-            ActionItemLifecycle.isAllowed(Command.COMPLETE, visible.status())
-                && ActionItemLifecycle.canExecute(Command.COMPLETE, manageable, officialAssignee)
-                && (!ActionItemLifecycle.requiresActiveAssignee(Command.COMPLETE) || activeAssignee),
-            ActionItemLifecycle.isAllowed(Command.CANCEL, visible.status())
-                && ActionItemLifecycle.canExecute(Command.CANCEL, manageable, officialAssignee)
-                && (!ActionItemLifecycle.requiresActiveAssignee(Command.CANCEL) || activeAssignee),
-            ActionItemLifecycle.isAllowed(Command.REOPEN, visible.status())
-                && ActionItemLifecycle.canExecute(Command.REOPEN, manageable, officialAssignee)
-                && (!ActionItemLifecycle.requiresActiveAssignee(Command.REOPEN) || activeAssignee),
+            ActionItemLifecycle.isEligible(Command.CONFIRM, visible.status(),
+                manageable, officialAssignee, activeAssignee),
+            ActionItemLifecycle.isEligible(Command.REJECT, visible.status(),
+                manageable, officialAssignee, activeAssignee),
+            ActionItemLifecycle.isEligible(Command.START, visible.status(),
+                manageable, officialAssignee, activeAssignee),
+            ActionItemLifecycle.isEligible(Command.COMPLETE, visible.status(),
+                manageable, officialAssignee, activeAssignee),
+            ActionItemLifecycle.isEligible(Command.CANCEL, visible.status(),
+                manageable, officialAssignee, activeAssignee),
+            ActionItemLifecycle.isEligible(Command.REOPEN, visible.status(),
+                manageable, officialAssignee, activeAssignee),
             contentVisible,
             contentVisible && "AI_EXTRACTED".equals(visible.sourceType()));
         ActionItemView.MeetingDisplay meeting = contentVisible
@@ -388,7 +392,8 @@ public class ActionItemService {
 
     private ActionItemView transition(UUID id, UUID actor, String tag, Command command) {
         meetingAccess.requireCurrentActiveActor(actor);
-        ActionItemView old = byId(id);
+        // Re-read the canonical row after any competing writer has finished.
+        ActionItemView old = byIdForUpdate(id);
         boolean manager = meetingAccess.canManageActionItems(old.meetingId(), actor);
         boolean assignee = actor.equals(old.assigneeUserId()) && isOfficial(old);
         if (!ActionItemLifecycle.canExecute(command, manager, assignee)) {
@@ -518,39 +523,6 @@ public class ActionItemService {
         }
     }
 
-    private ActionItemView project(ActionItemView item, UUID actorId,
-            boolean meetingContent, ActionItemView.Evidence sourceEvidence) {
-        boolean manager = meetingAccess.canManageActionItems(item.meetingId(), actorId);
-        boolean officialAssignee = item.isOfficial()
-            && actorId.equals(item.assigneeUserId());
-        boolean activeAssignee = item.assignee() != null && item.assignee().active();
-        boolean editable = item.status() != ActionItemStatus.DONE
-            && item.status() != ActionItemStatus.CANCELLED;
-        ActionItemView.Capabilities capabilities = new ActionItemView.Capabilities(
-            manager && editable,
-            manager && editable,
-            manager && item.status() == ActionItemStatus.PROPOSED && activeAssignee,
-            manager && item.status() == ActionItemStatus.PROPOSED,
-            editable && item.status() == ActionItemStatus.OPEN
-                && (manager || officialAssignee),
-            editable && (item.status() == ActionItemStatus.OPEN
-                || item.status() == ActionItemStatus.IN_PROGRESS)
-                && (manager || officialAssignee),
-            editable && (item.status() == ActionItemStatus.OPEN
-                || item.status() == ActionItemStatus.IN_PROGRESS) && manager,
-            item.status() == ActionItemStatus.DONE && (manager || officialAssignee),
-            meetingContent,
-            meetingContent && item.sourceType().equals("AI_EXTRACTED"));
-        ActionItemView.MeetingDisplay meeting = meetingContent
-            ? item.meeting()
-            : new ActionItemView.MeetingDisplay(item.meetingId(), "Restricted meeting", true);
-        ActionItemView.Evidence evidence = meetingContent
-            ? (sourceEvidence == null ? unavailableEvidence(item) : sourceEvidence)
-            : new ActionItemView.Evidence("RESTRICTED", null, null, "RESTRICTED",
-                List.of(), "Meeting-content access is required for transcript evidence.");
-        return item.withProjection(item.isOfficial(), capabilities, item.assignee(), meeting, evidence);
-    }
-
     private static ActionItemView.Evidence unavailableEvidence(ActionItemView item) {
         return new ActionItemView.Evidence(
             item.sourceType().equals("AI_EXTRACTED") ? "UNAVAILABLE" : "NOT_APPLICABLE",
@@ -649,7 +621,7 @@ public class ActionItemService {
         }
     }
 
-    public record ManagementTarget(UUID id, String label) { }
+    public record ManagementTarget(UUID id, String label, boolean restricted) { }
 
     public record ManagementCapability(boolean canCreate) { }
 
@@ -667,77 +639,53 @@ public class ActionItemService {
         if (meetingId != null) {
             return new ManagementCapability(meetingAccess.canManageActionItems(meetingId, actorId));
         }
-        Boolean canCreate = jdbc.queryForObject("""
-            SELECT EXISTS (
-                SELECT 1
-                  FROM meetings meeting
-                 WHERE meeting.organizer_user_id=?
-                    OR EXISTS (
-                        SELECT 1
-                          FROM meeting_action_item_scopes scope
-                          JOIN organizational_units unit
-                            ON unit.id=scope.org_unit_id AND unit.status='ACTIVE'
-                          JOIN manager_scope_units grant_record
-                            ON grant_record.org_unit_id=scope.org_unit_id
-                           AND grant_record.user_id=?
-                          JOIN users manager_actor
-                            ON manager_actor.id=grant_record.user_id
-                           AND manager_actor.account_status='ACTIVE'
-                           AND manager_actor.global_role='DEPARTMENT_MANAGER'
-                         WHERE scope.meeting_id=meeting.id))
-            """, Boolean.class, actorId, actorId);
+        Boolean canCreate = jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM meetings meeting " + MEETING_RIGHTS
+                + " WHERE rights.manageable)", Boolean.class, actorId);
         return new ManagementCapability(Boolean.TRUE.equals(canCreate));
     }
 
     @Transactional(readOnly = true)
     public Page<ManagementTarget> managementTargets(UUID actorId, String query, int page, int size) {
-        meetingAccess.requireCurrentActiveActor(actorId);
         validateLookupPage(page, size);
-        String pattern = lookupPattern(query);
-        String condition = """
-            FROM meetings meeting
-             WHERE (meeting.organizer_user_id=?
-                OR EXISTS (
-                    SELECT 1 FROM meeting_action_item_scopes scope
-                    JOIN organizational_units unit ON unit.id=scope.org_unit_id
-                       AND unit.status='ACTIVE'
-                    JOIN manager_scope_units grant_record
-                      ON grant_record.org_unit_id=scope.org_unit_id
-                    JOIN users manager_actor ON manager_actor.id=grant_record.user_id
-                       AND manager_actor.account_status='ACTIVE'
-                       AND manager_actor.global_role='DEPARTMENT_MANAGER'
-                    WHERE scope.meeting_id=meeting.id AND grant_record.user_id=?))
-               AND lower(meeting.title) LIKE ? ESCAPE '\\'
-            """;
-        Object[] params = { actorId, actorId, pattern };
-        Long total = jdbc.queryForObject("SELECT count(*) " + condition, Long.class, params);
-        List<ManagementTarget> targets = jdbc.query("""
-            SELECT meeting.id, meeting.title
-              """ + condition + """
-             ORDER BY lower(meeting.title), meeting.id
-             LIMIT ? OFFSET ?
-            """, (rs, ignored) -> new ManagementTarget(
-                rs.getObject("id", UUID.class), rs.getString("title")),
-            actorId, actorId, pattern, size, (long) page * size);
-        return new PageImpl<>(targets, PageRequest.of(page, size), total == null ? 0 : total);
+        return manageableMeetings(actorId, query, PageRequest.of(page, size))
+            .map(meeting -> new ManagementTarget(meeting.id(), meeting.canReadMeetingContext()
+                ? meeting.title() : "Restricted meeting (" + meeting.id() + ")",
+                !meeting.canReadMeetingContext()));
     }
 
     @Transactional(readOnly = true)
     public Page<AssigneeCandidate> assigneeCandidates(UUID actorId, UUID meetingId, String query, int page, int size) {
+        return assigneeCandidates(actorId, meetingId, query, null, page, size);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<AssigneeCandidate> assigneeCandidates(UUID actorId, UUID meetingId, String query,
+            UUID candidateId, int page, int size) {
         meetingAccess.requireCurrentActiveActor(actorId);
         meetingAccess.requireManageActionItems(meetingId, actorId);
         validateLookupPage(page, size);
-        String pattern = lookupPattern(query);
+        if ((query == null) == (candidateId == null)) throw invalid();
         String condition = """
             FROM users candidate
              LEFT JOIN organizational_units unit
                ON unit.id=candidate.primary_org_unit_id AND unit.status='ACTIVE'
              WHERE candidate.account_status='ACTIVE'
-               AND (lower(candidate.display_name) LIKE ? ESCAPE '\\'
-                    OR lower(candidate.email_normalized) LIKE ? ESCAPE '\\')
             """;
-        Object[] params = { pattern, pattern };
-        Long total = jdbc.queryForObject("SELECT count(*) " + condition, Long.class, params);
+        List<Object> params = new ArrayList<>();
+        if (candidateId != null) {
+            condition += " AND candidate.id=?";
+            params.add(candidateId);
+        } else {
+            String pattern = lookupPattern(query);
+            condition += " AND (lower(candidate.display_name) LIKE ? ESCAPE '\\'"
+                + " OR lower(candidate.email_normalized) LIKE ? ESCAPE '\\')";
+            params.add(pattern);
+            params.add(pattern);
+        }
+        Long total = jdbc.queryForObject("SELECT count(*) " + condition, Long.class, params.toArray());
+        params.add(size);
+        params.add((long) page * size);
         List<AssigneeCandidate> candidates = jdbc.query("""
             SELECT candidate.id, candidate.display_name, candidate.email, unit.name
               """ + condition + """
@@ -746,7 +694,7 @@ public class ActionItemService {
             """, (rs, ignored) -> new AssigneeCandidate(
                 rs.getObject("id", UUID.class), rs.getString("display_name"),
                 rs.getString("email"), rs.getString("name"), true),
-            pattern, pattern, size, (long) page * size);
+            params.toArray());
         return new PageImpl<>(candidates, PageRequest.of(page, size), total == null ? 0 : total);
     }
 

@@ -108,6 +108,7 @@ public class MediaProcessingService {
         // Lock before inserting the FK-backed idempotency record; otherwise
         // two concurrent requests can deadlock while upgrading user row locks.
         this.repository.lockAdmissionUser(actor);
+        this.meetingAccess.requireLockedProcessingAllowed(meetingId, actor);
         UUID claimedId = claimIdempotency(actor, operation, idempotencyKey, fingerprint, mediaId);
         if (!claimedId.equals(mediaId)) {
             Media prior = media(claimedId);
@@ -352,8 +353,10 @@ public class MediaProcessingService {
         Media media = media(mediaId);
         if (!media.meetingId().equals(meetingId) || !"AVAILABLE".equals(media.status())) throw notFound();
         try {
-            return this.storage.createDownloadCapability(media.objectKey(), cappedTtl(
+            String capability = this.storage.createDownloadCapability(media.objectKey(), cappedTtl(
                 this.properties.getUpload().getDownloadUrlTtl(), Duration.ofMinutes(5)));
+            this.meetingAccess.requireReadable(meetingId, actor);
+            return capability;
         } catch (SdkException storageFailure) {
             throw storageUnavailable();
         }
@@ -389,6 +392,7 @@ public class MediaProcessingService {
             OffsetDateTime.now(), OffsetDateTime.now(), reprocessOfJobId, false).withTranscriptReviewRequired();
         // Every admission takes the same row lock before inserting idempotency.
         this.repository.lockAdmissionUser(actor);
+        this.meetingAccess.requireLockedProcessingAllowed(meetingId, actor);
         UUID claimedId = claimIdempotency(actor, operation, idempotencyKey, fingerprint, job.id());
         if (!claimedId.equals(job.id())) return toResponse(job(claimedId));
         this.workerCapability.requireAvailable();
@@ -465,6 +469,8 @@ public class MediaProcessingService {
         this.repository.lockAdmissionUser(actor);
         this.transcriptEvidence.lockTranscriptReview(jobId);
         target = this.repository.lockJobForOfflineSource(jobId).orElseThrow(MediaProcessingService::notFound);
+        // Initial authorization can become stale while waiting for a row lock.
+        this.meetingAccess.requireLockedProcessingAllowed(target.meetingId(), actor);
 
         UUID proposedReviewId = UUID.randomUUID();
         MediaRepository.IdempotencyClaim claim;
@@ -507,6 +513,8 @@ public class MediaProcessingService {
         this.repository.lockAdmissionUser(actor);
         this.transcriptEvidence.lockTranscriptReview(jobId);
         target = this.repository.lockJobForOfflineSource(jobId).orElseThrow(MediaProcessingService::notFound);
+        // Initial authorization can become stale while waiting for a row lock.
+        this.meetingAccess.requireLockedProcessingAllowed(target.meetingId(), actor);
         MediaRepository.IdempotencyClaim claim;
         try {
             claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,
@@ -562,6 +570,7 @@ public class MediaProcessingService {
         String operation = "PROCESSING_JOB_RETRY:" + jobId;
         String fingerprint = fingerprint(stageCode == null ? "JOB" : "STAGE\n" + stageCode);
         this.repository.lockAdmissionUser(actor);
+        this.meetingAccess.requireLockedProcessingAllowed(target.meetingId(), actor);
         MediaRepository.IdempotencyClaim claim;
         try {
             claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,
@@ -724,7 +733,7 @@ public class MediaProcessingService {
         if (!"PENDING_UPLOAD".equals(media.status())) {
             return new MediaUploadIntentResponse(media.id(), media.status(), null, null, media.contentType());
         }
-        Duration ttl = cappedTtl(this.properties.getUpload().getUploadUrlTtl(), Duration.ofMinutes(30));
+        Duration ttl = cappedTtl(this.properties.getUpload().getUploadUrlTtl(), Duration.ofMinutes(15));
         String url;
         try {
             url = this.storage.createUploadCapability(media.objectKey(), media.contentType(),

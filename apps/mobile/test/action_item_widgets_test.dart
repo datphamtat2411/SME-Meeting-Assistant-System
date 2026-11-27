@@ -12,7 +12,8 @@ import 'package:sme_meeting_assistant/features/action_items/action_item_models.d
 import 'package:sme_meeting_assistant/features/action_items/action_item_picker.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_items_page.dart';
 
-import 'action_item_foundation_test.dart' show itemId, itemJson, repositoryFor;
+import 'action_item_foundation_test.dart'
+    show assignmentCandidateJson, itemId, itemJson, pageMeta, repositoryFor;
 import 'support/meeting_test_support.dart';
 import 'support/widget_test_support.dart';
 
@@ -35,7 +36,7 @@ void main() {
     var restricted = false;
     var deny = false;
     final client = MeetingTestHttpClient((request) async {
-      if (request.url.path.endsWith('/creation-meetings')) {
+      if (request.url.path.endsWith('/management-targets')) {
         return meetingApiSuccess([], meta: _pageMeta(1, 0));
       }
       if (deny) return meetingApiFailure(403, 'AUTHZ_FORBIDDEN');
@@ -163,11 +164,16 @@ void main() {
       if (request.method == 'POST') {
         return meetingApiFailure(500, 'INTERNAL_ERROR');
       }
+      if (request.url.path.endsWith('/assignee-candidates')) {
+        expect(request.url.queryParameters['meetingId'], testMeetingId);
+        expect(request.url.queryParameters['candidateId'], testUserId);
+        return meetingApiSuccess([assignmentCandidateJson()], meta: pageMeta());
+      }
       return meetingApiSuccess([
         {
           'id': testMeetingId,
-          'title': canRead ? 'Eligible meeting' : null,
-          'canReadMeetingContext': canRead,
+          'label': canRead ? 'Eligible meeting' : 'Restricted meeting',
+          'restricted': !canRead,
         },
       ], meta: _pageMeta(20, 1));
     });
@@ -263,11 +269,16 @@ void main() {
   ) async {
     final client = MeetingTestHttpClient((request) async {
       expect(request.method, 'GET');
+      if (request.url.path.endsWith('/assignee-candidates')) {
+        expect(request.url.queryParameters['meetingId'], testMeetingId);
+        expect(request.url.queryParameters['candidateId'], testUserId);
+        return meetingApiSuccess([assignmentCandidateJson()], meta: pageMeta());
+      }
       return meetingApiSuccess([
         {
           'id': testMeetingId,
-          'title': List.filled(8, 'Cuộc họp dài').join(' '),
-          'canReadMeetingContext': true,
+          'label': List.filled(8, 'Cuộc họp dài').join(' '),
+          'restricted': false,
         },
       ], meta: _pageMeta(20, 1));
     });
@@ -297,7 +308,11 @@ void main() {
     final assignee = find.text('Chọn người phụ trách *');
     await tester.ensureVisible(assignee);
     await tester.tap(assignee);
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () => find.textContaining('Giao cho tôi').evaluate().isNotEmpty,
+      reason: 'authorized self assignment',
+    );
     await tester.tap(find.textContaining('Giao cho tôi'));
     await tester.pumpAndSettle();
     final title = find.byType(TextFormField).first;
@@ -336,12 +351,13 @@ void main() {
       if (request.method == 'POST') {
         throw StateError('No creation submission expected.');
       }
+      if (request.url.path.endsWith('/assignee-candidates')) {
+        expect(request.url.queryParameters['meetingId'], testMeetingId);
+        expect(request.url.queryParameters['candidateId'], testUserId);
+        return meetingApiSuccess([assignmentCandidateJson()], meta: pageMeta());
+      }
       return meetingApiSuccess([
-        {
-          'id': testMeetingId,
-          'title': 'Eligible meeting',
-          'canReadMeetingContext': true,
-        },
+        {'id': testMeetingId, 'label': 'Eligible meeting', 'restricted': false},
       ], meta: _pageMeta(20, 1));
     });
     final repository = (await tester.runAsync(() => repositoryFor(client)))!;
@@ -367,7 +383,11 @@ void main() {
     final assignee = find.text('Chọn người phụ trách *');
     await tester.ensureVisible(assignee);
     await tester.tap(assignee);
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () => find.textContaining('Giao cho tôi').evaluate().isNotEmpty,
+      reason: 'authorized self assignment',
+    );
     await tester.tap(find.textContaining('Giao cho tôi'));
     await tester.pumpAndSettle();
     expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
@@ -386,7 +406,7 @@ void main() {
     (tester) async {
       final queries = <Map<String, String>>[];
       final client = MeetingTestHttpClient((request) async {
-        if (request.url.path.endsWith('/creation-meetings')) {
+        if (request.url.path.endsWith('/management-targets')) {
           return meetingApiSuccess([], meta: _pageMeta(1, 0));
         }
         queries.add(request.url.queryParameters);

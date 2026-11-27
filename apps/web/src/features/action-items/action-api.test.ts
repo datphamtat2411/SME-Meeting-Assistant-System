@@ -4,6 +4,8 @@ import {
   buildActionPatch,
   actionDetail,
   createAction,
+  managementTargetsQuery,
+  assigneeCandidatesQuery,
   rebaseActionDraft,
   serializeActionFilter,
   type ActionEditValues,
@@ -67,6 +69,25 @@ const item: ActionItem = {
 }
 
 describe('Action Item adapter contracts', () => {
+  it('allows paged browsing without a protected meeting title', () => {
+    const browse = managementTargetsQuery('', 1)
+    expect(browse.enabled).toBe(true)
+    expect(browse.queryKey[2]).toMatchObject({ q: '', page: '1' })
+    expect(managementTargetsQuery('a').enabled).toBe(false)
+    expect(managementTargetsQuery(item.meetingId).enabled).toBe(true)
+  })
+
+  it('scopes paginated assignment lookup to the selected meeting', () => {
+    const query = assigneeCandidatesQuery('Alex', item.meetingId, 2)
+    expect(query.queryKey[2]).toMatchObject({
+      meetingId: item.meetingId,
+      q: 'Alex',
+      page: '2',
+      size: '20',
+    })
+    expect(assigneeCandidatesQuery('a', item.meetingId).enabled).toBe(false)
+  })
+
   it('rejects a detail response from a different meeting', async () => {
     const foreignMeetingId = '66666666-6666-4666-8666-666666666666'
     vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
@@ -121,6 +142,7 @@ describe('Action Item adapter contracts', () => {
         q: 'launch',
         status: 'OPEN',
         official: true,
+        reviewable: false,
         assignee: 'me',
         overdue: true,
         meetingId: item.meetingId,
@@ -132,6 +154,7 @@ describe('Action Item adapter contracts', () => {
       q: 'launch',
       status: 'OPEN',
       official: 'true',
+      reviewable: 'false',
       assignee: 'me',
       overdue: 'true',
       meetingId: item.meetingId,

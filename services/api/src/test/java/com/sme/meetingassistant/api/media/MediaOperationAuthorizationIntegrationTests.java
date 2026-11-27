@@ -13,9 +13,15 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
+import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.security.Principal;
+import java.sql.Connection;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import javax.sql.DataSource;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,7 +54,9 @@ import tools.jackson.databind.ObjectMapper;
 class MediaOperationAuthorizationIntegrationTests {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
+    @Autowired DataSource dataSource;
     @Autowired ObjectMapper json;
+    @Autowired ProcessingJobLifecycle lifecycle;
     @MockitoBean ObjectStorage storage;
     @MockitoBean TranscriptionWorkerCapability workerCapability;
 
@@ -184,6 +192,121 @@ class MediaOperationAuthorizationIntegrationTests {
         }
         verify(storage, never()).createDownloadCapability(anyString(), any());
         mvc.perform(post(accessUrl()).principal(as(organizer))).andExpect(status().isOk());
+    }
+
+    @Test
+    void uploadAdmissionRejectsActorDeactivatedWhileWaitingForUserLock() throws Exception {
+        assertThat(deactivateDuringAdmission(() -> mvc.perform(post(uploadUrl())
+            .principal(as(organizer)).header("Idempotency-Key", "revoked-upload")
+            .contentType(MediaType.APPLICATION_JSON).content(uploadBody()))
+            .andReturn().getResponse().getStatus())).isEqualTo(401);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM meeting_media WHERE meeting_id = ?",
+            Integer.class, meeting)).isEqualTo(1);
+        verify(storage, never()).createUploadCapability(anyString(), anyString(), anyLong(), any());
+    }
+
+    @Test
+    void processingAdmissionRejectsActorDeactivatedWhileWaitingForUserLock() throws Exception {
+        assertThat(deactivateDuringAdmission(() -> mvc.perform(post(jobUrl())
+            .principal(as(organizer)).header("Idempotency-Key", "revoked-job")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"mediaId\":\"" + media + "\"}"))
+            .andReturn().getResponse().getStatus())).isEqualTo(401);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_jobs WHERE meeting_id = ?",
+            Integer.class, meeting)).isZero();
+    }
+
+    @Test
+    void retryAdmissionRejectsActorDeactivatedWhileWaitingForUserLock() throws Exception {
+        var admitted = mvc.perform(post(jobUrl()).principal(as(organizer))
+            .header("Idempotency-Key", "job-before-revoked-retry")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"mediaId\":\"" + media + "\"}"))
+            .andExpect(status().isAccepted()).andReturn();
+        UUID job = UUID.fromString(json.readTree(admitted.getResponse().getContentAsString())
+            .path("data").path("id").asText());
+        var run = lifecycle.startStage(job, "TRANSCRIPTION", "offline-whisper", "base");
+        lifecycle.failStage(run, "TEMPORARY_FAILURE", "Temporary failure.", true);
+
+        assertThat(deactivateDuringAdmission(() -> mvc.perform(post("/api/v1/processing-jobs/" + job + "/retry")
+            .principal(as(organizer)).header("Idempotency-Key", "revoked-retry")
+            .contentType(MediaType.APPLICATION_JSON).content("{\"stageCode\":\"TRANSCRIPTION\"}"))
+            .andReturn().getResponse().getStatus())).isEqualTo(401);
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id = ?",
+            String.class, job)).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_stage_runs WHERE processing_job_id = ? AND stage_code = 'TRANSCRIPTION'",
+            Integer.class, job)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_events WHERE aggregate_id = ? AND event_type = 'PROCESSING_JOB_RETRY_REQUESTED'",
+            Integer.class, job)).isZero();
+    }
+
+    private int deactivateDuringAdmission(Callable<Integer> request) throws Exception {
+        var executor = Executors.newSingleThreadExecutor();
+        try (Connection holder = dataSource.getConnection()) {
+            holder.setAutoCommit(false);
+            try {
+                int holderPid;
+                try (var statement = holder.createStatement();
+                        var rows = statement.executeQuery("SELECT pg_backend_pid()")) {
+                    rows.next();
+                    holderPid = rows.getInt(1);
+                }
+                try (var statement = holder.prepareStatement(
+                        "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE")) {
+                    statement.setObject(1, organizer);
+                    try (var rows = statement.executeQuery()) {
+                        assertThat(rows.next()).isTrue();
+                    }
+                }
+                var response = executor.submit(request);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                boolean waiting = false;
+                while (System.nanoTime() < deadline) {
+                    waiting = Boolean.TRUE.equals(jdbc.queryForObject("""
+                        SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                            WHERE ? = ANY(pg_blocking_pids(pid))
+                            AND query LIKE '%FOR NO KEY UPDATE%')
+                        """, Boolean.class, holderPid));
+                    if (waiting) break;
+                    Thread.sleep(20);
+                }
+                assertThat(waiting).as("request must wait on the admission lock").isTrue();
+                try (var statement = holder.prepareStatement(
+                        "UPDATE users SET account_status = 'INACTIVE', deactivated_at = CURRENT_TIMESTAMP WHERE id = ?")) {
+                    statement.setObject(1, organizer);
+                    assertThat(statement.executeUpdate()).isEqualTo(1);
+                }
+                holder.commit();
+                return response.get(10, TimeUnit.SECONDS);
+            } finally {
+                holder.rollback();
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void signedDownloadIsNotReturnedAfterMembershipRevokedDuringSigning() throws Exception {
+        when(storage.createDownloadCapability(anyString(), any())).thenAnswer(invocation -> {
+            try (Connection writer = dataSource.getConnection()) {
+                writer.setAutoCommit(true);
+                try (var statement = writer.prepareStatement("""
+                        UPDATE meeting_participants SET removed_at = CURRENT_TIMESTAMP, removed_by_user_id = ?
+                        WHERE meeting_id = ? AND user_id = ? AND removed_at IS NULL
+                        """)) {
+                    statement.setObject(1, organizer);
+                    statement.setObject(2, meeting);
+                    statement.setObject(3, participant);
+                    assertThat(statement.executeUpdate()).isEqualTo(1);
+                }
+            }
+            return "https://storage.example.invalid/revoked";
+        });
+        mvc.perform(post(accessUrl()).principal(as(participant)))
+            .andExpect(status().isNotFound())
+            .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                .doesNotContain("https://storage.example.invalid/revoked"));
     }
 
     @Test

@@ -34,12 +34,29 @@ class AssistantPendingResult {
 
 /// Session-owned intent. The server alone owns canonical messages.
 class AssistantPendingTurn {
-  AssistantPendingTurn(this.request, {DateTime Function()? now})
-    : _now = now ?? DateTime.now;
+  AssistantPendingTurn(
+    AssistantQuestionRequest input, {
+    DateTime Function()? now,
+  }) : request = input,
+       conversation = input.conversation,
+       _now = now ?? DateTime.now;
+
+  AssistantPendingTurn.discovered(
+    this.conversation,
+    AssistantTurnStatus status, {
+    DateTime Function()? now,
+  }) : request = null,
+       _now = now ?? DateTime.now,
+       turn = AssistantPendingResult(status.turn),
+       busy = false,
+       retryAllowed = status.recoveryEligible,
+       uncertain = true;
 
   final DateTime Function() _now;
 
-  final AssistantQuestionRequest request;
+  // A discovered durable turn has no local question or idempotency key.
+  final AssistantConversation conversation;
+  final AssistantQuestionRequest? request;
   AssistantPendingResult? turn;
   AssistantFailure? failure;
   bool busy = true;
@@ -75,6 +92,7 @@ class AssistantPendingTurn {
       !busy &&
       !uncertain &&
       turn == null &&
+      request != null &&
       (failure?.outcome == AssistantMutationOutcome.rejected ||
           failure?.outcome == AssistantMutationOutcome.notDispatched);
 }
@@ -108,6 +126,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
   Timer? _statusTimer;
   Timer? _cooldownTimer;
   int _historyDepth = 0;
+  String? _historyAnchor;
   static const _maxContinuationReads = 4;
   int _listGeneration = 0;
   int _historyGeneration = 0;
@@ -243,7 +262,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       _draftMeetings.remove(id);
     }
     _pending.removeWhere(
-      (_, command) => matches(command.request.conversation.meetingId),
+      (_, command) => matches(command.conversation.meetingId),
     );
     _listGeneration++;
     listLoading = false;
@@ -482,6 +501,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
     if (!current || !_active) return;
     _stopStatusMonitoring();
     if (conversation?.id != selected.id) {
+      _historyAnchor = null;
       _historyDepth = 0;
       _messages.clear();
     }
@@ -497,6 +517,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
     if (!current) return;
     _stopStatusMonitoring();
     _historyDepth = 0;
+    _historyAnchor = null;
     _historyGeneration++;
     conversation = null;
     _messages.clear();
@@ -542,10 +563,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
     }
     pending?.reconciliationDeferred = false;
     final previous = List<AssistantMessage>.of(_messages);
-    final previousHasMore = historyHasMore;
     final desiredDepth = max(_historyDepth, previous.length);
     final generation = ++_historyGeneration;
-    final previousIds = previous.map((message) => message.id).toSet();
     historyLoading = true;
     historyFailure = null;
     if (authoritative) {
@@ -564,12 +583,12 @@ class AssistantWorkspaceController extends ChangeNotifier {
       if (!_ownsHistory(generation, selected.id)) return;
       final fresh = List<AssistantMessage>.of(result.messages);
       final freshIds = fresh.map((message) => message.id).toSet();
+      final headPending = result.pendingTurn;
       final command = _pending[selected.id];
       var reads = 0;
-      bool overlaps() => freshIds.any(previousIds.contains);
       bool needsContinuation() =>
-          (authoritative && fresh.length < desiredDepth) ||
-          (!authoritative && previous.isNotEmpty && !overlaps()) ||
+          fresh.length < desiredDepth ||
+          (previous.isNotEmpty && !freshIds.contains(previous.first.id)) ||
           (command != null &&
               command.terminal &&
               !_containsTurnMessages(command, fresh));
@@ -581,7 +600,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
           selected.id,
           sessionScope: scope,
           expectedMeetingId: selected.meetingId,
-          beforeMessageId: fresh.first.id,
+          beforeMessageId: result.nextBeforeMessageId,
         );
         if (!_ownsHistory(generation, selected.id)) return;
         if (result.messages.any((message) => freshIds.contains(message.id))) {
@@ -592,32 +611,16 @@ class AssistantWorkspaceController extends ChangeNotifier {
         reads++;
       }
       conversation = result.conversation;
-      var retainedOlder = false;
-      if (!authoritative && fresh.isNotEmpty) {
-        final firstOverlap = previous.indexWhere(
-          (message) => freshIds.contains(message.id),
-        );
-        if (firstOverlap > 0 && result.hasMore) {
-          final older = previous.take(firstOverlap);
-          // Only retain a contiguous older prefix. If fresh reads start before
-          // the first overlapping record, retain only records older than that
-          // exact boundary, not arbitrary records from a disconnected window.
-          if (previous[firstOverlap].id == fresh.first.id) {
-            fresh.insertAll(0, older);
-            retainedOlder = true;
-          }
-        }
-      }
-      if (!authoritative &&
-          previous.isNotEmpty &&
-          !overlaps() &&
-          result.hasMore) {
+      // Never retain an unverified cached prefix: a source could have become
+      // stale while the conversation was open on another device.
+      if (result.hasMore && needsContinuation()) {
         historyFailure = StateError('History continuation required.');
       }
       _messages
         ..clear()
         ..addAll(fresh);
-      historyHasMore = retainedOlder ? previousHasMore : result.hasMore;
+      historyHasMore = result.hasMore;
+      _historyAnchor = result.nextBeforeMessageId;
       historyVerified = true;
       _historyDepth = _messages.length;
       if (command != null &&
@@ -625,6 +628,15 @@ class AssistantWorkspaceController extends ChangeNotifier {
           _containsTurnMessages(command, _messages)) {
         _pending.remove(selected.id);
         _stopStatusMonitoring();
+      }
+      // Only the latest window discovers a turn; older pages cannot replace
+      // a locally dispatched or already observed operation.
+      if (headPending != null && _pending[selected.id] == null) {
+        _pending[selected.id] = AssistantPendingTurn.discovered(
+          selected,
+          headPending,
+          now: _now,
+        );
       }
     } catch (error) {
       if (!_ownsHistory(generation, selected.id)) return;
@@ -685,7 +697,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
       return;
     }
     final generation = _historyGeneration;
-    final anchor = _messages.first.id;
+    final anchor = _historyAnchor;
+    if (anchor == null) return;
     historyLoading = true;
     historyFailure = null;
     _publish();
@@ -704,6 +717,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       conversation = result.conversation;
       _messages.insertAll(0, result.messages);
       historyHasMore = result.hasMore;
+      _historyAnchor = result.nextBeforeMessageId;
       _historyDepth = _messages.length;
       final command = pending;
       if (command != null && _containsTurnMessages(command, _messages)) {
@@ -726,11 +740,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
 
   Future<void> submit(String rawQuestion) async {
     final selected = conversation;
-    final question = rawQuestion.trim();
-    if (!canSend ||
-        selected == null ||
-        question.isEmpty ||
-        question.length > 4096) {
+    final question = normalizeAssistantQuestion(rawQuestion);
+    if (!canSend || selected == null || !isValidAssistantQuestion(question)) {
       return;
     }
     final command = AssistantPendingTurn(
@@ -747,7 +758,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
   }
 
   bool _ownsCommand(AssistantPendingTurn command) =>
-      current && identical(_pending[command.request.conversation.id], command);
+      current && identical(_pending[command.conversation.id], command);
 
   Future<void> retryPending() async {
     final command = pending;
@@ -765,10 +776,17 @@ class AssistantWorkspaceController extends ChangeNotifier {
     if (!_ownsCommand(command)) return;
     command.failure = null;
     try {
-      final turn = await repository.submitQuestion(
-        command.request,
-        sessionScope: scope,
-      );
+      final known = command.turn;
+      final turn = known == null
+          ? await repository.submitQuestion(
+              command.request!,
+              sessionScope: scope,
+            )
+          : await repository.recoverTurn(
+              command.conversation,
+              known.turnId,
+              sessionScope: scope,
+            );
       if (!_ownsCommand(command)) return;
       if (command.turn != null && !command.turn!.matches(turn)) {
         command.failure = AssistantFailure.fromApi(
@@ -814,10 +832,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
           error.category == AssistantFailureCategory.sourceStale) {
         _hideSelectedHistory(command);
         if (_accessLost(error) &&
-            (!_active || conversation?.id != command.request.conversation.id)) {
-          await _confirmMeetingAccessLoss(
-            command.request.conversation.meetingId,
-          );
+            (!_active || conversation?.id != command.conversation.id)) {
+          await _confirmMeetingAccessLoss(command.conversation.meetingId);
         }
       }
     } finally {
@@ -829,7 +845,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
     }
     if (_ownsCommand(command) &&
         _active &&
-        conversation?.id == command.request.conversation.id) {
+        conversation?.id == command.conversation.id) {
       if (_accessLost(command.failure) ||
           command.failure?.category == AssistantFailureCategory.sourceStale) {
         await refreshHistory();
@@ -837,7 +853,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         await reconcilePending();
       }
       if (_ownsCommand(command) &&
-          conversation?.id == command.request.conversation.id &&
+          conversation?.id == command.conversation.id &&
           command.canCheck &&
           !command.automaticExhausted) {
         await _checkPending(automatic: true);
@@ -869,10 +885,16 @@ class AssistantWorkspaceController extends ChangeNotifier {
     command.retryAllowed = false;
     _publish();
     try {
-      final status = await repository.getTurnStatus(
-        command.request,
-        sessionScope: scope,
-      );
+      final status = previousTurn == null
+          ? await repository.getTurnStatus(
+              command.request!,
+              sessionScope: scope,
+            )
+          : await repository.getTurnStatusById(
+              command.conversation,
+              previousTurn.turnId,
+              sessionScope: scope,
+            );
       if (!_ownsCommand(command)) return;
       if (previousTurn != null && !previousTurn.matches(status.turn)) {
         command.failure = AssistantFailure.fromApi(
@@ -906,10 +928,8 @@ class AssistantWorkspaceController extends ChangeNotifier {
           error.category == AssistantFailureCategory.sourceStale) {
         _hideSelectedHistory(command);
         if (_accessLost(error) &&
-            (!_active || conversation?.id != command.request.conversation.id)) {
-          await _confirmMeetingAccessLoss(
-            command.request.conversation.meetingId,
-          );
+            (!_active || conversation?.id != command.conversation.id)) {
+          await _confirmMeetingAccessLoss(command.conversation.meetingId);
         }
       }
     } finally {
@@ -921,7 +941,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
     }
     if (_ownsCommand(command) &&
         _active &&
-        conversation?.id == command.request.conversation.id) {
+        conversation?.id == command.conversation.id) {
       final failure = command.failure;
       if (_accessLost(failure) ||
           failure?.category == AssistantFailureCategory.sourceStale ||
@@ -936,7 +956,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
   }
 
   void _hideSelectedHistory(AssistantPendingTurn command) {
-    if (conversation?.id != command.request.conversation.id) return;
+    if (conversation?.id != command.conversation.id) return;
     _historyGeneration++;
     _historyDepth = max(_historyDepth, _messages.length);
     _messages.clear();
@@ -1014,7 +1034,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
       return;
     }
     _stopStatusMonitoring();
-    _pending.remove(command.request.conversation.id);
+    _pending.remove(command.conversation.id);
     _publish();
     await refreshHistory();
   }
@@ -1029,7 +1049,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         historyLoading) {
       return;
     }
-    _pending.remove(command.request.conversation.id);
+    _pending.remove(command.conversation.id);
     historyFailure = StateError('Terminal result not fully reconciled.');
     _publish();
   }
@@ -1040,9 +1060,9 @@ class AssistantWorkspaceController extends ChangeNotifier {
       return null;
     }
     _stopStatusMonitoring();
-    _pending.remove(command.request.conversation.id);
+    _pending.remove(command.conversation.id);
     _publish();
-    return command.request.question;
+    return command.request?.question;
   }
 
   void _sessionChanged() {

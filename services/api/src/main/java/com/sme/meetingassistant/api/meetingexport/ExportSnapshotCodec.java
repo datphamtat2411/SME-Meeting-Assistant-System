@@ -20,13 +20,18 @@ public final class ExportSnapshotCodec {
         this.json = json;
     }
 
+    // Intake v1 selects the original renderers; v2 selects name-enriched renderers.
+    // The intake digest pins this decision before the worker can claim a job.
+    public static final int LEGACY_INTAKE_VERSION = 1;
+    public static final int CURRENT_INTAKE_VERSION = 2;
+
     public record Envelope(int schemaVersion, UUID exportId, UUID meetingId,
             UUID requestedByUserId, MinutesSnapshot snapshot) { }
 
     public byte[] encode(ExportRecord record, MinutesSnapshot snapshot) {
         checkSnapshot(snapshot, record.meetingId());
         try {
-            byte[] bytes = json.writeValueAsBytes(new Envelope(1, record.id(),
+            byte[] bytes = json.writeValueAsBytes(new Envelope(CURRENT_INTAKE_VERSION, record.id(),
                     record.meetingId(), record.requestedByUserId(), snapshot));
             if (bytes.length == 0 || bytes.length > MAX_INTAKE_BYTES) {
                 throw new IllegalArgumentException("Export intake exceeds bounded limit");
@@ -45,7 +50,8 @@ public final class ExportSnapshotCodec {
         }
         try {
             Envelope envelope = json.readValue(bytes, Envelope.class);
-            if (envelope == null || envelope.schemaVersion() != 1
+            if (envelope == null || (envelope.schemaVersion() != LEGACY_INTAKE_VERSION
+                        && envelope.schemaVersion() != CURRENT_INTAKE_VERSION)
                     || !Objects.equals(envelope.exportId(), claim.id())
                     || !Objects.equals(envelope.meetingId(), claim.meetingId())
                     || !Objects.equals(envelope.requestedByUserId(), claim.requestedByUserId())
@@ -59,6 +65,50 @@ public final class ExportSnapshotCodec {
             return envelope;
         } catch (JacksonException ex) {
             throw new IllegalArgumentException("Malformed export source envelope", ex);
+        }
+    }
+
+    /**
+     * Called only after decode has verified the exact frozen intake digest and
+     * canonical source. V2 preserves the JSON field/map order from that intake:
+     * Map.copyOf iteration order can vary across JVMs, but immutable storage keys
+     * must survive worker restarts. V1 retains its original serialization path.
+     */
+    byte[] snapshotBytes(Envelope verified, byte[] frozenIntake) {
+        if (verified.schemaVersion() == LEGACY_INTAKE_VERSION) {
+            return snapshotBytes(verified.snapshot());
+        }
+        if (verified.schemaVersion() != CURRENT_INTAKE_VERSION) {
+            throw new IllegalArgumentException("Unsupported export intake version");
+        }
+        try {
+            var node = json.readTree(frozenIntake).path("snapshot");
+            if (!node.isObject()) throw new IllegalArgumentException("Missing pinned snapshot");
+            byte[] data = json.writeValueAsBytes(node);
+            if (data.length < 1 || data.length > MAX_INTAKE_BYTES) {
+                throw new IllegalArgumentException("Pinned snapshot is too large");
+            }
+            return data;
+        } catch (JacksonException ex) {
+            throw new IllegalArgumentException("Pinned snapshot serialization failed", ex);
+        }
+    }
+
+    /**
+     * Compare complete JSON (including display metadata and timestamps), not
+     * just the canonical fingerprint. Duplicate fields and trailing content
+     * are never accepted as an equivalent historical snapshot.
+     */
+    boolean sameLegacySnapshot(byte[] expected, byte[] observed) {
+        try {
+            var reader = json.readerFor(tools.jackson.databind.JsonNode.class)
+                    .with(tools.jackson.databind.DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
+                    .with(tools.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+            tools.jackson.databind.JsonNode left = reader.readValue(expected);
+            tools.jackson.databind.JsonNode right = reader.readValue(observed);
+            return left != null && left.isObject() && left.equals(right);
+        } catch (JacksonException ex) {
+            return false;
         }
     }
 

@@ -36,6 +36,7 @@ class ActionItemPicker<T> extends StatefulWidget {
     required this.load,
     required this.describe,
     this.minimumSearchLength = 0,
+    this.allowBlankSearch = false,
     this.pinned = const [],
     this.pinnedChanges,
     this.readPinned,
@@ -48,6 +49,7 @@ class ActionItemPicker<T> extends StatefulWidget {
   final ActionItemPickerLoader<T> load;
   final ActionItemPickerOption<T> Function(T value) describe;
   final int minimumSearchLength;
+  final bool allowBlankSearch;
   final List<ActionItemPickerOption<T>> pinned;
   final Listenable? pinnedChanges;
   final List<ActionItemPickerOption<T>> Function()? readPinned;
@@ -76,6 +78,7 @@ class _ActionItemPickerState<T> extends State<ActionItemPicker<T>> {
       (widget.hostIsCurrent?.call() ?? true) &&
       widget.api.isCurrentAuthenticatedSession(widget.scope);
   bool get _searchable =>
+      (widget.allowBlankSearch && _search.text.trim().isEmpty) ||
       _search.text.trim().length >= widget.minimumSearchLength;
 
   @override

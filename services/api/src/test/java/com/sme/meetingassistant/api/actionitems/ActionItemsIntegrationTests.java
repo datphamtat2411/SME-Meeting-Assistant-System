@@ -104,6 +104,37 @@ class ActionItemsIntegrationTests {
             .andExpect(status().isNotFound());
     }
 
+    @Test void exactAssignmentCandidateLookupIsMeetingScopedAndActiveOnly() throws Exception {
+        String route = "/api/v1/action-items/assignee-candidates";
+        MvcResult self = mvc.perform(get(route).principal(principal(organizer))
+                .param("meetingId", meetingId.toString())
+                .param("candidateId", organizer.getId().toString()))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(self).path("data").size()).isEqualTo(1);
+        assertThat(body(self).path("data").get(0).path("id").asText())
+            .isEqualTo(organizer.getId().toString());
+        assertThat(body(self).path("data").get(0).path("active").asBoolean()).isTrue();
+        mvc.perform(get(route).principal(principal(outsider))
+                .param("meetingId", meetingId.toString())
+                .param("candidateId", organizer.getId().toString()))
+            .andExpect(status().isNotFound());
+        mvc.perform(get(route).principal(principal(organizer))
+                .param("meetingId", meetingId.toString()))
+            .andExpect(status().isBadRequest());
+        mvc.perform(get(route).principal(principal(organizer))
+                .param("meetingId", meetingId.toString())
+                .param("candidateId", organizer.getId().toString()).param("q", "Action"))
+            .andExpect(status().isBadRequest());
+        ReflectionTestUtils.setField(assignee, "accountStatus", AccountStatus.INACTIVE);
+        users.saveAndFlush(assignee);
+        MvcResult inactive = mvc.perform(get(route).principal(principal(organizer))
+                .param("meetingId", meetingId.toString())
+                .param("candidateId", assignee.getId().toString()))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(inactive).path("data").size()).isZero();
+        assertThat(body(inactive).path("meta").path("pagination").path("totalElements").asLong()).isZero();
+    }
+
     @Test void schemaUsesCanonicalStatusesAndDoesNotPersistOverdueState() {
         assertThat(jdbc.queryForList("""
             SELECT check_clause FROM information_schema.check_constraints
@@ -697,10 +728,9 @@ class ActionItemsIntegrationTests {
         UUID item=createManual(outsider.getId(),null);
         MvcResult official=mvc.perform(get("/api/v1/action-items/{id}",item)
                 .principal(principal(outsider))).andExpect(status().isOk()).andReturn();
-        // This test is transactional: update the managed JPA entity as well,
-        // so identity-cache reads cannot return an earlier ACTIVE snapshot.
-        ReflectionTestUtils.setField(outsider, "accountStatus", AccountStatus.INACTIVE);
-        users.saveAndFlush(outsider);
+        // Leave the previously loaded UserEntity ACTIVE in the persistence context.
+        // Authorization and assignee eligibility must observe the current DB state.
+        jdbc.update("UPDATE users SET account_status='INACTIVE' WHERE id=?",outsider.getId());
 
         MvcResult inactive = mvc.perform(get("/api/v1/action-items/{id}", item)
                 .principal(principal(organizer))).andExpect(status().isOk()).andReturn();
@@ -710,6 +740,13 @@ class ActionItemsIntegrationTests {
         assertThat(body(inactive).path("data").path("capabilities").path("canCancel").asBoolean()).isTrue();
         assertThat(body(inactive).path("data").path("capabilities").path("canStart").asBoolean()).isFalse();
         assertThat(body(inactive).path("data").path("capabilities").path("canComplete").asBoolean()).isFalse();
+
+        for (String command : List.of("start", "complete")) {
+            mvc.perform(post("/api/v1/action-items/{id}/" + command, item)
+                    .principal(principal(organizer))
+                    .header(HttpHeaders.IF_MATCH, inactive.getResponse().getHeader(HttpHeaders.ETAG)))
+                .andExpect(status().isUnprocessableEntity());
+        }
 
         // A deactivated assignee retains database provenance, not API permissions.
         assertThat(jdbc.queryForObject(
@@ -850,6 +887,85 @@ class ActionItemsIntegrationTests {
         MvcResult revoked = mvc.perform(get("/api/v1/action-items/creation-meetings")
                 .principal(principal(manager))).andExpect(status().isOk()).andReturn();
         assertThat(body(revoked).path("data").size()).isZero();
+    }
+
+    @Test void managementDiscoveryUsesSameRightsAndNeverSearchesOrSortsHiddenTitles() throws Exception {
+        UUID unitId = unit();
+        organizer.assignPrimaryOrgUnit(unitId);
+        users.saveAndFlush(organizer);
+        UserEntity manager = user(GlobalRole.DEPARTMENT_MANAGER, unitId);
+        jdbc.update("INSERT INTO manager_scope_units(user_id,org_unit_id,granted_by_user_id) VALUES (?,?,?)",
+            manager.getId(), unitId, organizer.getId());
+        UUID first = newMeeting(List.of(assignee.getId()));
+        UUID second = newMeeting(List.of(assignee.getId()));
+        jdbc.update("UPDATE meetings SET title=? WHERE id=?", "Secret alpha", first);
+        jdbc.update("UPDATE meetings SET title=? WHERE id=?", "Secret omega", second);
+
+        String web = "/api/v1/action-items/management-targets";
+        String mobile = "/api/v1/action-items/creation-meetings";
+        var order = new java.util.ArrayList<String>();
+        for (int page = 0; page < 2; page++) {
+            MvcResult webPage = mvc.perform(get(web).principal(principal(manager))
+                    .param("size", "1").param("page", String.valueOf(page)))
+                .andExpect(status().isOk()).andReturn();
+            MvcResult mobilePage = mvc.perform(get(mobile).principal(principal(manager))
+                    .param("size", "1").param("page", String.valueOf(page)))
+                .andExpect(status().isOk()).andReturn();
+            JsonNode webPayload = body(webPage);
+            JsonNode webRow = webPayload.path("data").get(0);
+            JsonNode mobileRow = body(mobilePage).path("data").get(0);
+            assertThat(webPayload.path("meta").path("pagination").path("totalElements").asLong()).isEqualTo(2);
+            assertThat(webRow.path("id").asText()).isEqualTo(mobileRow.path("id").asText());
+            assertThat(webRow.path("label").asText())
+                .isEqualTo("Restricted meeting (" + webRow.path("id").asText() + ")");
+            assertThat(webRow.path("restricted").isBoolean()).isTrue();
+            assertThat(webRow.path("restricted").asBoolean()).isTrue();
+            assertThat(mobileRow.path("title").isNull()).isTrue();
+            assertThat(mobileRow.path("canReadMeetingContext").asBoolean()).isFalse();
+            order.add(webRow.path("id").asText());
+        }
+        assertThat(order).containsExactlyInAnyOrder(first.toString(), second.toString());
+
+        // Changing only hidden titles must not change counts, matches or order.
+        jdbc.update("UPDATE meetings SET title=? WHERE id=?", "Secret omega", first);
+        jdbc.update("UPDATE meetings SET title=? WHERE id=?", "Secret alpha", second);
+        for (String path : List.of(web, mobile)) {
+            MvcResult hidden = mvc.perform(get(path).principal(principal(manager)).param("q", "Secret"))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(hidden).path("data").size()).isZero();
+            assertThat(body(hidden).path("meta").path("pagination").path("totalElements").asLong()).isZero();
+            MvcResult all = mvc.perform(get(path).principal(principal(manager)))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(all).path("data").get(0).path("id").asText()).isEqualTo(order.get(0));
+            assertThat(body(all).path("data").get(1).path("id").asText()).isEqualTo(order.get(1));
+            MvcResult byId = mvc.perform(get(path).principal(principal(manager)).param("q", first.toString()))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(byId).path("data").size()).isEqualTo(1);
+            assertThat(body(byId).path("data").get(0).path("id").asText()).isEqualTo(first.toString());
+            MvcResult unauthorized = mvc.perform(get(path).principal(principal(outsider)).param("q", first.toString()))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(unauthorized).path("data").size()).isZero();
+            MvcResult visible = mvc.perform(get(path).principal(principal(organizer)).param("q", "Secret alpha"))
+                .andExpect(status().isOk()).andReturn();
+            JsonNode row = body(visible).path("data").get(0);
+            assertThat(row.path("id").asText()).isEqualTo(second.toString());
+            assertThat(row.path(path.equals(web) ? "label" : "title").asText()).isEqualTo("Secret alpha");
+            if (path.equals(web)) {
+                assertThat(row.path("restricted").isBoolean()).isTrue();
+                assertThat(row.path("restricted").asBoolean()).isFalse();
+            }
+        }
+        jdbc.update("DELETE FROM manager_scope_units WHERE user_id=? AND org_unit_id=?",
+            manager.getId(), unitId);
+        for (String path : List.of(web, mobile)) {
+            MvcResult revoked = mvc.perform(get(path).principal(principal(manager)).param("q", first.toString()))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(revoked).path("data").size()).isZero();
+            assertThat(body(revoked).path("meta").path("pagination").path("totalElements").asLong()).isZero();
+        }
+        MvcResult capability = mvc.perform(get("/api/v1/action-items/management-capability")
+                .principal(principal(manager))).andExpect(status().isOk()).andReturn();
+        assertThat(body(capability).path("data").path("canCreate").asBoolean()).isFalse();
     }
 
     @Test void waveOneRightsStayConsistentAcrossDiscoveryReadsAndMutations() throws Exception {

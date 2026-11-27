@@ -434,8 +434,11 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     @Override
     @Transactional(readOnly = true)
     public void requireReadable(UUID meetingId, UUID actorId) {
-        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
-        requireAccess(meeting, actorId);
+        // Re-read persisted content rights: a transaction may already have cached the
+        // actor or meeting before waiting on an admission or evidence lock.
+        if (!actionItemRights(meetingId, actorId).getContentVisible()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
     }
 
     @Override
@@ -451,6 +454,7 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     public void requireCurrentActiveActor(UUID actorId) {
         UUID currentActor = authorization.requireActiveActor().getId();
         if (!currentActor.equals(actorId)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        if (!users.isActive(actorId)) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     }
 
     @Override
@@ -524,6 +528,18 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     @Transactional(readOnly = true)
     public void requireProcessingAllowed(UUID meetingId, UUID actorId) {
         requireMediaOrganizer(meetingId, actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireLockedProcessingAllowed(UUID meetingId, UUID actorId) {
+        requireCurrentActiveActor(actorId);
+        String status = meetings.findCurrentProcessingStatus(meetingId, actorId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        if ("CANCELLED".equals(status)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Cancelled meetings do not accept new media or processing operations.");
+        }
     }
 
     @Override

@@ -2,6 +2,7 @@ import 'package:sme_meeting_assistant/core/api_client.dart';
 
 import 'media_contracts.dart';
 import 'media_repository.dart';
+import 'transcript_review_contract.dart';
 
 class ProcessingAdmissionRequest {
   ProcessingAdmissionRequest({required this.mediaId, this.reprocessOfJobId}) {
@@ -134,6 +135,84 @@ class ProcessingRepository {
     _requireSession(scope, outcome: MediaMutationOutcome.unknown);
     return job;
   }
+
+  Future<TranscriptReviewReceipt> acknowledgeReview(
+    TranscriptReviewProof proof, {
+    required AuthenticatedSessionScope sessionScope,
+  }) async {
+    final response = await _reviewMutation(
+      proof,
+      'transcript-review/acknowledge',
+      proof.toJson(),
+      proof.key(),
+      sessionScope,
+    );
+    try {
+      final receipt = TranscriptReviewReceipt.fromResult(response, proof);
+      if (!_uuidPattern.hasMatch(receipt.reviewId)) {
+        throw response.invalidDataFailure();
+      }
+      return receipt;
+    } on ApiFailure catch (failure) {
+      throw _invalidReviewResponse(failure);
+    }
+  }
+
+  Future<ProcessingJobRecord> admitReviewedIntelligence(
+    TranscriptReviewProof proof,
+    TranscriptReviewReceipt receipt, {
+    required AuthenticatedSessionScope sessionScope,
+  }) async {
+    _validateId(receipt.reviewId, 'reviewId');
+    final response = await _reviewMutation(
+      proof,
+      'meeting-intelligence/admit',
+      {...proof.toJson(), 'reviewId': receipt.reviewId},
+      proof.key(reviewId: receipt.reviewId),
+      sessionScope,
+    );
+    try {
+      final job = _decode(response);
+      if (!proof.matchesJob(job) || job.isWaitingForReview) {
+        throw response.invalidDataFailure();
+      }
+      return job;
+    } on ApiFailure catch (failure) {
+      throw _invalidReviewResponse(failure);
+    }
+  }
+
+  Future<ApiResult> _reviewMutation(
+    TranscriptReviewProof proof,
+    String operation,
+    Map<String, dynamic> body,
+    String key,
+    AuthenticatedSessionScope scope,
+  ) {
+    _validateId(proof.jobId, 'jobId');
+    _validateId(proof.transcriptId, 'transcriptId');
+    _validateId(proof.meetingId, 'meetingId');
+    _validateId(proof.sourceMediaId, 'sourceMediaId');
+    _validateIdempotencyKey(key);
+    _captureSession(scope);
+    return _mutate(
+      scope,
+      () => api.post(
+        '/processing-jobs/${Uri.encodeComponent(proof.jobId)}/$operation',
+        body,
+        headers: {'Idempotency-Key': key},
+        sessionScope: scope,
+      ),
+    );
+  }
+
+  MediaRepositoryFailure _invalidReviewResponse(ApiFailure failure) =>
+      MediaRepositoryFailure(
+        failure,
+        category: MediaFailureCategory.invalidResponse,
+        mutationOutcome: MediaMutationOutcome.unknown,
+        cause: failure,
+      );
 
   ProcessingJobRecord _decode(ApiResult response, {String? meetingId}) {
     final job = ProcessingJobRecord.fromJson(

@@ -299,12 +299,12 @@ void main() {
       final repository = await repositoryFor(
         MeetingTestHttpClient((request) async {
           final path = request.url.path;
-          if (path.endsWith('/creation-meetings')) {
+          if (path.endsWith('/management-targets')) {
             return meetingApiSuccess([
               {
                 'id': testMeetingId,
-                'title': 'Weekly review',
-                'canReadMeetingContext': true,
+                'label': 'Weekly review',
+                'restricted': false,
               },
             ], meta: pageMeta());
           }

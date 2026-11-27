@@ -109,6 +109,10 @@ class Pi05CrossModuleAcceptanceTests {
         mvc.perform(post("/api/v1/exports/{id}/access-url",export)
                 .principal(as(member))).andExpect(status().isOk());
         assertThat(downloads.calls.get()).isEqualTo(1);
+        mvc.perform(get("/api/v1/meetings/{id}/media",meeting)
+                .principal(as(member))).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/meetings/{id}/processing-jobs",meeting)
+                .principal(as(member))).andExpect(status().isOk());
 
         // A global administrator is not a privileged meeting-content reader.
         mvc.perform(post("/api/v1/exports/{id}/access-url",export)
@@ -126,6 +130,10 @@ class Pi05CrossModuleAcceptanceTests {
         mvc.perform(post("/api/v1/exports/{id}/access-url",export)
                 .principal(as(member))).andExpect(status().isNotFound());
         mvc.perform(get("/api/v1/meetings/{id}/summary",meeting)
+                .principal(as(member))).andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/meetings/{id}/media",meeting)
+                .principal(as(member))).andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/meetings/{id}/processing-jobs",meeting)
                 .principal(as(member))).andExpect(status().isNotFound());
         assertThat(downloads.calls.get()).isEqualTo(1);
 

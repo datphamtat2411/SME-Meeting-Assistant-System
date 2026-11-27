@@ -130,6 +130,21 @@ class MediaProcessingServiceTests {
     }
 
     @Test
+    void uploadCapabilityTtlCannotExceedSecurityMaximum() {
+        this.properties.getUpload().setUploadUrlTtl(java.time.Duration.ofMinutes(30));
+        when(this.repository.claimIdempotency(any(), anyString(), anyString(), anyString(), any(UUID.class)))
+            .thenAnswer(invocation -> invocation.getArgument(4));
+        when(this.storage.createUploadCapability(anyString(), anyString(),
+            org.mockito.ArgumentMatchers.anyLong(), any())).thenReturn("https://storage.test/signed");
+
+        this.service.createUploadIntent(this.meetingId,
+            new CreateMediaUploadRequest(CreateMediaUploadRequest.SourceType.UPLOAD,
+                "recording.wav", "audio/wav", 512L), "ttl-cap");
+        verify(this.storage).createUploadCapability(anyString(), anyString(),
+            org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.eq(java.time.Duration.ofMinutes(15)));
+    }
+
+    @Test
     void uploadPermissionIsCheckedBeforeAnyIdempotencyOrMediaWrite() {
         doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND))
             .when(this.meetingAccess).requireUploadAllowed(this.meetingId, this.actor);

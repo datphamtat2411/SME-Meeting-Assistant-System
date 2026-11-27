@@ -686,13 +686,62 @@ describe('AssistantPage', () => {
     )
 
     await expect.poll(() => post.mock.calls.length).toBe(1)
-    expect(post).toHaveBeenCalledWith('/assistant/conversations', {
-      meetingId,
-      title: 'New conversation',
-    })
+    expect(post).toHaveBeenCalledWith(
+      '/assistant/conversations',
+      { meetingId, title: 'New conversation' },
+      { headers: { 'Idempotency-Key': expect.any(String) } }
+    )
     await expect
       .element(screen.getByText('Conversation is ready for questions.'))
       .toBeVisible()
+  })
+
+  it('retries an unresolved creation with the original key and payload', async () => {
+    setupReads({ detail: createConversationDetail() })
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockRejectedValueOnce(
+        new CoreApiError({ message: 'Network unavailable', kind: 'network' })
+      )
+      .mockResolvedValueOnce(conversation)
+    const screen = await renderPage()
+    await selectMeeting(screen)
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Conversation title' }),
+      '  New conversation  '
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create conversation' })
+    )
+    await expect
+      .element(screen.getByText(/The creation outcome is unresolved/))
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create conversation' })
+    )
+    await expect.poll(() => post.mock.calls.length).toBe(2)
+    expect(post.mock.calls[1]).toEqual(post.mock.calls[0])
+    await expect
+      .element(screen.getByText('Conversation is ready for questions.'))
+      .toBeVisible()
+  })
+
+  it('respects the creation Retry-After without generating another request', async () => {
+    setupReads({ detail: createConversationDetail() })
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockRejectedValueOnce(
+        coreError(429, 'Rate limited', { retryAfter: '30' })
+      )
+    const screen = await renderPage()
+    await selectMeeting(screen)
+    const create = screen.getByRole('button', { name: 'Create conversation' })
+    await userEvent.click(create)
+    await expect
+      .element(screen.getByText('Assistant admission is limited'))
+      .toBeVisible()
+    await expect.element(create).toBeDisabled()
+    expect(post.mock.calls).toHaveLength(1)
   })
 
   it('does not open a conversation created for a meeting after selection changes', async () => {

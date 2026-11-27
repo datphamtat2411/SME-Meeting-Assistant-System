@@ -109,6 +109,29 @@ describe('Decision API contracts', () => {
     expect(post).toHaveBeenCalledTimes(1)
   })
 
+  it('binds creation to the exact reviewed source and rejects missing proof', async () => {
+    const post = vi.spyOn(coreApi, 'post').mockResolvedValue(decision)
+    await expect(
+      createDecision(meetingId, 'New decision', decision.evidenceSegmentIds)
+    ).rejects.toMatchObject({ code: 'REVIEWED_SOURCE_REQUIRED' })
+    expect(post).not.toHaveBeenCalled()
+    await createDecision(
+      meetingId,
+      'New decision',
+      decision.evidenceSegmentIds,
+      {
+        transcriptId: decision.transcriptId!,
+        contentRevision: 5,
+      }
+    )
+    expect(post).toHaveBeenCalledWith(`/meetings/${meetingId}/decisions`, {
+      content: 'New decision',
+      evidenceSegmentIds: decision.evidenceSegmentIds,
+      reviewedTranscriptId: decision.transcriptId,
+      reviewedContentRevision: 5,
+    })
+  })
+
   it('preserves definitive creation rejections', async () => {
     const failure = new CoreApiError({
       kind: 'http',

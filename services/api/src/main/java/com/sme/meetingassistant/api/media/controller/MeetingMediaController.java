@@ -43,6 +43,8 @@ public class MeetingMediaController {
         return this.responses.success(this.service.listMedia(meetingId));
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201",
+            description = "Upload intent created or replayed", useReturnTypeSchema = true)
     @PostMapping("/uploads")
     public ResponseEntity<ApiResponse<MediaUploadIntentResponse>> createUpload(@PathVariable UUID meetingId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,

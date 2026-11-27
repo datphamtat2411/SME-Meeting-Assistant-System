@@ -7,7 +7,8 @@ import 'package:sme_meeting_assistant/features/action_items/action_item_editing.
 import 'package:sme_meeting_assistant/features/action_items/action_item_models.dart';
 import 'package:sme_meeting_assistant/features/action_items/action_item_workflows.dart';
 
-import 'action_item_foundation_test.dart' show itemId, itemJson, repositoryFor;
+import 'action_item_foundation_test.dart'
+    show assignmentCandidateJson, itemId, itemJson, pageMeta, repositoryFor;
 import 'support/meeting_test_support.dart';
 
 void main() {
@@ -275,9 +276,18 @@ void main() {
         if (writes == 2) return meetingApiFailure(403, 'AUTHZ_FORBIDDEN');
         return meetingApiSuccess(itemJson(), headers: {'etag': '"created"'});
       }
+      if (request.url.path.endsWith('/assignee-candidates')) {
+        expect(request.url.queryParameters['meetingId'], testMeetingId);
+        expect(request.url.queryParameters['candidateId'], testUserId);
+        return meetingApiSuccess([assignmentCandidateJson()], meta: pageMeta());
+      }
       return meetingApiSuccess(
         [
-          {'id': testMeetingId, 'title': null, 'canReadMeetingContext': false},
+          {
+            'id': testMeetingId,
+            'label': 'Restricted meeting',
+            'restricted': true,
+          },
         ],
         meta: {
           ...meetingTestMeta,
@@ -475,12 +485,17 @@ void main() {
           writes++;
           return meetingApiFailure(500, 'INTERNAL_ERROR');
         }
+        if (request.url.path.endsWith('/assignee-candidates')) {
+          return meetingApiSuccess([
+            assignmentCandidateJson(),
+          ], meta: pageMeta());
+        }
         return meetingApiSuccess(
           [
             {
               'id': testMeetingId,
-              'title': null,
-              'canReadMeetingContext': false,
+              'label': 'Restricted meeting',
+              'restricted': true,
             },
           ],
           meta: {

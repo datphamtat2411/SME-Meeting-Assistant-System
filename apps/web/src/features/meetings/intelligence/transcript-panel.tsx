@@ -130,6 +130,7 @@ export function TranscriptPanel({
                         <Button
                           size='sm'
                           variant='ghost'
+                          disabled={!segment.etag}
                           onClick={() => {
                             setEditing(segment)
                             setText(segment.text)
@@ -168,7 +169,10 @@ export function TranscriptPanel({
                           onChange={(e) => setReason(e.target.value)}
                         />
                         <div className='flex gap-2'>
-                          <Button size='sm' disabled={mutation.isPending}>
+                          <Button
+                            size='sm'
+                            disabled={mutation.isPending || !editing.etag}
+                          >
                             Save
                           </Button>
                           <Button

@@ -54,6 +54,33 @@ Map<String, dynamic> _citation() => {
   'claimIds': ['A1'],
 };
 
+Map<String, dynamic> _resolvedEvidence(Map<String, dynamic> citation) => {
+  'conversationId': _conversationId,
+  'messageId': _assistantMessageId,
+  'meetingId': testMeetingId,
+  'evidence': [
+    {
+      'citationId': citation['citationId'],
+      'sourceType': citation['sourceType'],
+      'sourceId': citation['sourceId'],
+      'sourceRevision': citation['sourceRevision'],
+      'label': 'Verified source',
+      'meetingTitle': 'Weekly review',
+      'preview': null,
+      'claimIds': citation['claimIds'],
+      'navigation': {
+        'target': switch (citation['sourceType']) {
+          'TRANSCRIPT' => 'MEETING_TRANSCRIPT',
+          'SUMMARY' => 'MEETING_SUMMARY',
+          'DECISION' => 'MEETING_DECISIONS',
+          _ => 'MEETING_ACTION_ITEMS',
+        },
+        'precision': 'SOURCE',
+      },
+    },
+  ],
+};
+
 Map<String, dynamic> _message({
   String status = 'GROUNDED',
   String visibility = 'VISIBLE',
@@ -120,6 +147,10 @@ Map<String, dynamic> _detail({
   'page': page,
   'size': size,
   'hasMore': hasMore,
+  'nextBeforeMessageId': hasMore
+      ? (messages ?? [_message()]).first['id']
+      : null,
+  'pendingTurn': null,
 };
 
 ApiResult _result(dynamic data, {int status = 200}) =>
@@ -320,6 +351,44 @@ void main() {
       );
     });
 
+    test('normalizes questions and counts Unicode like Core', () {
+      expect(normalizeAssistantQuestion('  Câu hỏi  '), 'Câu hỏi');
+      expect(
+        normalizeAssistantQuestion('\u00a0Câu hỏi\u00a0'),
+        '\u00a0Câu hỏi\u00a0',
+      );
+      expect(isBlankAssistantQuestion('\u2003\u3000'), isTrue);
+      expect(isBlankAssistantQuestion('\u00a0'), isFalse);
+      final limit = List.filled(assistantQuestionLimit, '😀').join();
+      expect(assistantQuestionLength(limit), assistantQuestionLimit);
+      expect(isValidAssistantQuestion(' $limit '), isTrue);
+      expect(isValidAssistantQuestion('${limit}a'), isFalse);
+    });
+
+    test('rejects a mismatched canonical evidence proof', () {
+      final raw = _message();
+      final citation = AssistantMessage.fromJson(
+        raw,
+        response: _result(raw),
+        meetingId: testMeetingId,
+      ).citations.single;
+      for (final invalid in [
+        _resolvedEvidence(_citation())..['messageId'] = _userMessageId,
+        _resolvedEvidence(_citation()..['sourceRevision'] = 1),
+        _resolvedEvidence(_citation()..['claimIds'] = ['A2']),
+      ]) {
+        expect(
+          () => AssistantResolvedCitation.fromResult(
+            _result(invalid),
+            conversationId: _conversationId,
+            messageId: _assistantMessageId,
+            expected: citation,
+          ),
+          throwsA(_invalidResponse()),
+        );
+      }
+    });
+
     test('requires HTTP and durable turn state to agree', () {
       final processing = AssistantTurn.fromResult(
         _result(_turn(processing: true), status: 202),
@@ -440,7 +509,7 @@ void main() {
         final repository = await _repository(
           MeetingTestHttpClient((request) async {
             final path = request.url.path;
-            if (path.endsWith('/turns')) {
+            if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
               expect(request.method, 'GET');
               expect(request.headers['idempotency-key'], 'intent-01:retry');
               expect(request.url.queryParameters, isEmpty);
@@ -823,7 +892,9 @@ void main() {
         var revision = 2;
         var redact = false;
         var deny = false;
+        var revokeDuringArtifactRead = false;
         var artifactReads = 0;
+        var evidenceReads = 0;
         final citationJson = _citation()
           ..['sourceType'] = type
           ..['sourceRevision'] = 2;
@@ -846,19 +917,17 @@ void main() {
               headers: {'etag': testMeetingEtag},
             );
           }
-          if (path.endsWith('/conversations/$_conversationId')) {
-            return meetingApiSuccess(
-              _detail(
-                messages: [
-                  if (redact)
-                    _message(visibility: 'SOURCE_UNAVAILABLE')
-                  else
-                    rawMessage,
-                ],
-              ),
-            );
+          if (path.endsWith('/messages/$_assistantMessageId/evidence')) {
+            evidenceReads++;
+            expect(request.method, 'GET');
+            if (deny) return meetingApiFailure(403, 'AUTHZ_FORBIDDEN');
+            if (redact || revision != 2) {
+              return meetingApiFailure(409, 'ASSISTANT_SOURCE_STALE');
+            }
+            return meetingApiSuccess(_resolvedEvidence(citationJson));
           }
           artifactReads++;
+          if (revokeDuringArtifactRead) deny = true;
           if (path.endsWith('/transcript')) {
             return meetingApiSuccess(
               {
@@ -969,6 +1038,7 @@ void main() {
         });
         expect(artifact.meetingTitle, 'Weekly review');
         expect(artifactReads, type == 'DECISION' ? 2 : 1);
+        expect(evidenceReads, 2);
         revision++;
         await expectLater(
           resolver.verify(target, stillCurrent: () => true),
@@ -1001,6 +1071,18 @@ void main() {
           ),
         );
         expect(artifactReads, before);
+        deny = false;
+        revokeDuringArtifactRead = true;
+        await expectLater(
+          resolver.verify(target, stillCurrent: () => true),
+          throwsA(
+            isA<AssistantEvidenceFailure>().having(
+              (error) => error.issue,
+              'issue',
+              AssistantEvidenceIssue.meetingUnavailable,
+            ),
+          ),
+        );
       });
     }
   });
@@ -1361,6 +1443,15 @@ void main() {
           _detail(messages: [rawMessage])..['conversation'] = conversation,
         );
       }
+      if (path.endsWith('/messages/$_assistantMessageId/evidence')) {
+        return meetingApiSuccess(
+          _resolvedEvidence(
+            _citation()
+              ..['sourceType'] = 'SUMMARY'
+              ..['sourceRevision'] = 2,
+          ),
+        );
+      }
       if (path.endsWith('/summary')) {
         artifactReads++;
         return held.future;
@@ -1633,7 +1724,7 @@ void main() {
               if (path.endsWith('/conversations')) {
                 return meetingApiSuccess([]);
               }
-              if (path.endsWith('/turns')) {
+              if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
                 return meetingApiSuccess(_turnStatus(leaseStatus: 'EXPIRED'));
               }
               if (request.method == 'POST') {
@@ -1758,7 +1849,8 @@ void main() {
             if (request.url.path.endsWith('/conversations')) {
               return meetingApiSuccess([]);
             }
-            if (request.url.path.endsWith('/turns')) {
+            if (request.url.path.endsWith('/turns') ||
+                request.url.path.endsWith('/turns/$_turnId')) {
               reads++;
               return meetingApiSuccess(
                 reads == 1
@@ -1807,7 +1899,8 @@ void main() {
             if (request.url.path.endsWith('/conversations')) {
               return meetingApiSuccess([]);
             }
-            if (request.url.path.endsWith('/turns')) {
+            if (request.url.path.endsWith('/turns') ||
+                request.url.path.endsWith('/turns/$_turnId')) {
               reads++;
               statusMethods.add(request.method);
               statusKeys.add(request.headers['idempotency-key']);
@@ -1896,7 +1989,7 @@ void main() {
           expect(statusMethods, hasLength(reads));
           expect(statusMethods, everyElement('GET'));
           expect(questionKeys.single, isNotEmpty);
-          expect(statusKeys, everyElement(questionKeys.single));
+          expect(statusKeys, everyElement(isNull));
           controller.setActive(false);
         },
       );
@@ -1948,7 +2041,11 @@ void main() {
             return meetingApiSuccess(_turn());
           }
           if (request.url.queryParameters.containsKey('beforeMessageId')) {
-            return meetingApiSuccess(_detail(messages: older));
+            return meetingApiSuccess(
+              _detail(
+                messages: submitted ? [...older, ...initial.take(2)] : older,
+              ),
+            );
           }
           return meetingApiSuccess(
             _detail(
@@ -2056,7 +2153,7 @@ void main() {
           if (path.endsWith('/conversations')) {
             return meetingApiSuccess([]);
           }
-          if (path.endsWith('/turns')) {
+          if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
             statusEntered.complete();
             return statusResponse.future;
           }
@@ -2065,6 +2162,11 @@ void main() {
             return meetingApiSuccess(_turn(processing: true), status: 202);
           }
           if (request.url.queryParameters.containsKey('beforeMessageId')) {
+            if (olderEntered.isCompleted) {
+              return meetingApiSuccess(
+                _detail(messages: [...older, ...initial.take(2)]),
+              );
+            }
             olderEntered.complete();
             return olderResponse.future;
           }
@@ -2109,7 +2211,7 @@ void main() {
           if (path.endsWith('/conversations')) {
             return meetingApiSuccess([]);
           }
-          if (path.endsWith('/turns')) {
+          if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
             return meetingApiSuccess(_turnStatus(leaseStatus: 'EXPIRED'));
           }
           if (request.method == 'POST') {
@@ -2149,7 +2251,7 @@ void main() {
             if (path.endsWith('/conversations')) {
               return meetingApiSuccess([]);
             }
-            if (path.endsWith('/turns')) {
+            if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
               if (!statusAvailable) {
                 return meetingApiFailure(503, 'ASSISTANT_UNAVAILABLE');
               }
@@ -2188,7 +2290,53 @@ void main() {
         await controller.abandonPending();
         expect(controller.pending, same(command));
         expect(keys.length, 2);
-        expect(keys.first, keys.last);
+        expect(keys.first, isNotNull);
+        expect(keys.last, isNull);
+      },
+    );
+
+    test(
+      'discovers a remote pending turn and explicitly recovers by ID',
+      () async {
+        var recovered = false;
+        var writes = 0;
+        final repository = await _repository(
+          MeetingTestHttpClient((request) async {
+            final path = request.url.path;
+            if (path.endsWith('/conversations')) return meetingApiSuccess([]);
+            if (path.endsWith('/turns/$_turnId/recover')) {
+              expect(request.method, 'POST');
+              expect(request.headers['idempotency-key'], isNull);
+              writes++;
+              recovered = true;
+              return meetingApiSuccess(_turn());
+            }
+            expect(request.method, 'GET');
+            return meetingApiSuccess(
+              _detail(
+                  messages: recovered
+                      ? [_userMessage(), _message()]
+                      : [_userMessage()],
+                )
+                ..['pendingTurn'] = recovered
+                    ? null
+                    : _turnStatus(leaseStatus: 'EXPIRED'),
+            );
+          }),
+        );
+        final controller = AssistantWorkspaceController(repository);
+        addTearDown(controller.dispose);
+        controller.setActive(true);
+        await controller.open(_typedConversation());
+        expect(controller.pending?.request, isNull);
+        expect(controller.pending?.turn?.turnId, _turnId);
+        expect(controller.canSend, isFalse);
+        expect(controller.canRetryPending, isTrue);
+        expect(writes, 0);
+        await controller.retryPending();
+        expect(writes, 1);
+        expect(controller.pending, isNull);
+        expect(controller.messages.length, 2);
       },
     );
 
@@ -2222,7 +2370,8 @@ void main() {
           if (request.url.path.endsWith('/conversations')) {
             return meetingApiSuccess([]);
           }
-          if (request.url.path.endsWith('/turns')) {
+          if (request.url.path.endsWith('/turns') ||
+              request.url.path.endsWith('/turns/$_turnId')) {
             reads++;
             return meetingApiSuccess(_turnStatus(leaseStatus: 'ACTIVE'));
           }
@@ -2311,7 +2460,7 @@ void main() {
     );
 
     test(
-      'turn status is read-only and explicit reclaim keeps the same key',
+      'turn status is read-only and explicit reclaim uses durable identity',
       () async {
         final keys = <String?>[];
         var statusReads = 0;
@@ -2321,18 +2470,21 @@ void main() {
             if (path.endsWith('/conversations')) {
               return meetingApiSuccess([]);
             }
-            if (path.endsWith('/turns')) {
+            if (path.endsWith('/turns') || path.endsWith('/turns/$_turnId')) {
               statusReads++;
               expect(request.method, 'GET');
-              expect(request.headers['idempotency-key'], keys.first);
+              expect(path, endsWith('/turns/$_turnId'));
+              expect(request.headers['idempotency-key'], isNull);
               return meetingApiSuccess(_turnStatus(leaseStatus: 'EXPIRED'));
             }
             if (path.endsWith('/messages')) {
               keys.add(request.headers['idempotency-key']);
               expect(decodeRequestBody(request), {'question': 'Câu hỏi'});
-              return keys.length == 1
-                  ? meetingApiSuccess(_turn(processing: true), status: 202)
-                  : meetingApiSuccess(_turn());
+              return meetingApiSuccess(_turn(processing: true), status: 202);
+            }
+            if (path.endsWith('/turns/$_turnId/recover')) {
+              keys.add(request.headers['idempotency-key']);
+              return meetingApiSuccess(_turn());
             }
             return meetingApiSuccess(
               _detail(
@@ -2352,7 +2504,7 @@ void main() {
         await controller.retryPending();
         expect(keys.length, 2);
         expect(keys.first, isNotNull);
-        expect(keys.last, keys.first);
+        expect(keys.last, isNull);
         expect(controller.pending, isNull);
         expect(controller.messages.map((message) => message.id), [
           _userMessageId,

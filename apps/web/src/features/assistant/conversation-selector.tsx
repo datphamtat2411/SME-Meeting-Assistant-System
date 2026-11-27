@@ -36,6 +36,7 @@ export function ConversationSelector({
   onConversationTitleChange,
   onCreate,
   createPending,
+  createRetryAt,
   createError,
   uncertainCreation,
   onLoadOlderConversations,
@@ -58,6 +59,7 @@ export function ConversationSelector({
   onConversationTitleChange: (title: string) => void
   onCreate: () => void
   createPending: boolean
+  createRetryAt: number
   createError: unknown
   uncertainCreation: boolean
   onLoadOlderConversations: () => void
@@ -125,8 +127,8 @@ export function ConversationSelector({
             {createError != null && <AssistantError error={createError} />}
             {uncertainCreation && (
               <p role='status' className='text-sm text-muted-foreground'>
-                The creation outcome is unresolved. Review the refreshed
-                conversation list before creating another.
+                The creation outcome is unresolved. Submit the same meeting and
+                title to retry safely, or review the conversation list.
               </p>
             )}
             <DialogFooter>
@@ -140,7 +142,9 @@ export function ConversationSelector({
               <Button
                 type='button'
                 onClick={onCreate}
-                disabled={!selectedMeetingReady || createPending}
+                disabled={
+                  !selectedMeetingReady || createPending || createRetryAt > 0
+                }
               >
                 {createPending && (
                   <LoaderCircle className='size-4 animate-spin' />
@@ -153,8 +157,8 @@ export function ConversationSelector({
       </div>
       {uncertainCreation && (
         <p role='status' className='text-xs text-muted-foreground'>
-          A creation request is unresolved. Review this list before starting
-          another.
+          A creation request is unresolved. Retry with the same meeting and
+          title to recover it safely.
         </p>
       )}
       <Input

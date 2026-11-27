@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.userorganization.repository;
 
 import com.sme.meetingassistant.api.userorganization.entity.UserEntity;
+import com.sme.meetingassistant.api.userorganization.entity.AccountStatus;
 import com.sme.meetingassistant.api.userorganization.service.EmailNormalizer;
 import java.util.List;
 import java.util.Optional;
@@ -51,6 +52,7 @@ public interface UserRepository extends JpaRepository<UserEntity, UUID>, JpaSpec
     @Query("select user from UserEntity user where user.id = :userId")
     Optional<UserEntity> findByIdForSessionAdmission(@Param("userId") UUID userId);
     boolean existsByEmailNormalized(String emailNormalized);
+    boolean existsByIdAndAccountStatus(UUID id, AccountStatus accountStatus);
     List<UserEntity> findByPrimaryOrgUnitId(UUID primaryOrgUnitId);
 
     default Optional<UserEntity> findByLoginEmail(String email) {

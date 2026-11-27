@@ -52,10 +52,13 @@ lock. Expired same-key reclaim follows the local scopes and then the global
 scope without another ASK event. Conversation creation takes only the user
 advisory lock and remains independent of the global ASK lock.
 
-No local advisory lock, authorization lookup, cleanup, quota pruning, or
-remote request is performed while waiting for or holding the global lock.
-The global critical section contains only the bounded final capacity decision
-and the durable admission writes. The transaction-local timeout applies to the
+No local advisory lock, cleanup, quota pruning, or remote request is performed
+while waiting for or holding the global lock. After acquiring it, admission
+rechecks persisted actor and meeting-content rights before the final bounded
+capacity decision and durable admission writes. This avoids admitting an actor
+whose access was revoked during lock acquisition. Monitor global critical-section
+latency and lock timeouts during operational acceptance; do not remove the
+authorization check to optimize contention. The transaction-local timeout applies to the
 conversation row and advisory lock waits; timeout failures are safe HTTP 503,
 not policy 429 responses.
 

@@ -716,6 +716,7 @@ class MeetingMinutes {
     required this.schemaVersion,
     required this.sourceFingerprint,
     required this.proposalsIncluded,
+    this.assigneeDisplayNames = const {},
   });
 
   final String completeness;
@@ -729,6 +730,7 @@ class MeetingMinutes {
   final MinutesTranscript transcript;
   final List<String> warnings;
   final bool proposalsIncluded;
+  final Map<String, String> assigneeDisplayNames;
 
   String get meetingId => meeting.id;
   String? get summaryContent => summary.content;
@@ -791,8 +793,34 @@ class MeetingMinutes {
       ),
       warnings: _strings(raw, 'warnings', response),
       proposalsIncluded: proposalsIncluded,
+      assigneeDisplayNames: _minutesAssigneeNames(raw, response),
     );
   }
+}
+
+// Optional v1 presentation enrichment; never used as an identity or permission.
+Map<String, String> _minutesAssigneeNames(
+  Map<String, dynamic> raw,
+  ApiResult response,
+) {
+  if (!raw.containsKey('displayMetadata')) return const {};
+  final metadata = requiredObject(raw, 'displayMetadata', response: response);
+  final names = requiredObject(
+    metadata,
+    'assigneeDisplayNames',
+    response: response,
+  );
+  final result = <String, String>{};
+  for (final id in names.keys) {
+    if (id.trim().isEmpty) invalidApiData(response: response);
+    result[id] = requiredString(
+      names,
+      id,
+      response: response,
+      nonEmpty: true,
+    ).trim();
+  }
+  return Map.unmodifiable(result);
 }
 
 String _requiredEtag(ApiResult response) {

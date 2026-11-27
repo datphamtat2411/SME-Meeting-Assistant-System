@@ -10,6 +10,7 @@ import {
   retryAssistantAccess,
   revalidateAssistantHistory,
   useAssistantAccessRevision,
+  type AssistantAccessToken,
 } from './assistant-access'
 import {
   ASSISTANT_QUESTION_LIMIT,
@@ -24,7 +25,7 @@ import {
 } from './assistant-api'
 import { uniqueConversations } from './assistant-history'
 import type { AssistantSelection } from './assistant-selection'
-import { useAssistantTurnWorkflow } from './assistant-turn-workflow'
+import { retryAt, useAssistantTurnWorkflow } from './assistant-turn-workflow'
 import { isAssistantMeetingReady } from './use-assistant-meeting-discovery'
 
 export function useAssistantConversation(
@@ -47,6 +48,20 @@ export function useAssistantConversation(
   const [createError, setCreateError] = useState<unknown>()
   const [uncertainCreation, setUncertainCreation] = useState(false)
   const creationRef = useRef(false)
+  const creationDeadline = useRef(0)
+  const [createRetryAt, setCreateRetryAt] = useState(0)
+  useEffect(() => {
+    if (!createRetryAt) return
+    const timer = setTimeout(
+      () => setCreateRetryAt(0),
+      Math.max(0, createRetryAt - Date.now())
+    )
+    return () => clearTimeout(timer)
+  }, [createRetryAt])
+  // Keep unresolved intents scoped to the exact payload and access generation.
+  const creationIntents = useRef(
+    new Map<string, { key: string; access: AssistantAccessToken }>()
+  )
   const selectionRef = useRef(selection)
   const selectionGeneration = useRef(0)
   const [historyRefreshing, setHistoryRefreshing] = useState(false)
@@ -157,18 +172,29 @@ export function useAssistantConversation(
     if (
       !meetingId ||
       creationRef.current ||
+      Date.now() < creationDeadline.current ||
       assistantAccessError(client) ||
       !isAssistantMeetingReady(client, meetingId)
     )
       return
+    const access = captureAssistantCreationAccess(client, meetingId)
+    const title = conversationTitle.trim() || undefined
+    const intentId = JSON.stringify([meetingId, title])
+    for (const [id, intent] of creationIntents.current) {
+      if (intent.access.session !== access.session)
+        creationIntents.current.delete(id)
+    }
+    const existing = creationIntents.current.get(intentId)
     if (
-      uncertainCreation &&
+      !existing &&
+      creationIntents.current.size > 0 &&
       !window.confirm(
-        'Core may already have created a conversation. Create another conversation explicitly?'
+        'A different creation is unresolved. Start a separate conversation explicitly?'
       )
     )
       return
-    const access = captureAssistantCreationAccess(client, meetingId)
+    const key = existing?.key ?? newAssistantIdempotencyKey()
+    creationIntents.current.set(intentId, { key, access })
     const generation = selectionGeneration.current
     creationRef.current = true
     setIsCreating(true)
@@ -177,8 +203,10 @@ export function useAssistantConversation(
     try {
       const conversation = await createAssistantConversation(
         meetingId,
-        conversationTitle || undefined
+        title,
+        key
       )
+      creationIntents.current.delete(intentId)
       if (!isAssistantAccessCurrent(client, access)) return
       void client.invalidateQueries({
         queryKey: ['assistant', 'conversations'],
@@ -193,13 +221,28 @@ export function useAssistantConversation(
     } catch (error) {
       const wasCurrent = isAssistantAccessCurrent(client, access)
       containAssistantAccessFailure(client, access, error)
-      if (!wasCurrent) return
+      if (!wasCurrent) {
+        if (
+          captureAssistantCreationAccess(client, meetingId).session !==
+          access.session
+        )
+          creationIntents.current.delete(intentId)
+        return
+      }
       const failure = normalizeCoreApiError(error)
       const uncertain =
         failure.isNetworkError ||
         failure.isServerError ||
         failure.kind === 'malformed' ||
         failure.recoveryOutcome === 'uncertain'
+      if (failure.status === 429 && failure.retryAfter) {
+        creationDeadline.current = Math.max(
+          creationDeadline.current,
+          retryAt(error)
+        )
+        setCreateRetryAt(creationDeadline.current)
+      }
+      if (!uncertain && !existing) creationIntents.current.delete(intentId)
       if (uncertain) {
         setUncertainCreation(true)
         void client.invalidateQueries({
@@ -209,6 +252,7 @@ export function useAssistantConversation(
       if (generation === selectionGeneration.current) setCreateError(error)
     } finally {
       creationRef.current = false
+      setUncertainCreation(creationIntents.current.size > 0)
       setIsCreating(false)
     }
   }
@@ -287,6 +331,7 @@ export function useAssistantConversation(
       onConversationTitleChange: setConversationTitle,
       onCreate: () => void createConversation(),
       createPending: isCreating,
+      createRetryAt,
       createError,
       uncertainCreation,
       onLoadOlderConversations: () => void conversationsQuery.fetchNextPage(),

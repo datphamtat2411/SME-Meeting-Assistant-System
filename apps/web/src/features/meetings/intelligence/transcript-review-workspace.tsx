@@ -77,6 +77,7 @@ type TranscriptSegment = Transcript['segments'][number]
 type SegmentDraft = {
   transcriptId: string
   baseVersion: number
+  baseEtag: string | undefined
   originalText: string
   text: string
   reason: string
@@ -617,13 +618,15 @@ function TranscriptReviewWorkspaceContent({
         snapshot?.transcript.id !== draft.transcriptId ||
         !observed ||
         observed.version !== draft.baseVersion ||
+        !draft.baseEtag ||
+        observed.etag !== draft.baseEtag ||
         observed.text !== draft.originalText
       ) {
         throw new LocalTranscriptConflictError()
       }
       return correctTranscriptSegment(
         meetingId,
-        { id: segmentId, version: draft.baseVersion },
+        { id: segmentId, etag: draft.baseEtag },
         draft.text,
         draft.reason,
         execution.controller.signal
@@ -754,6 +757,7 @@ function TranscriptReviewWorkspaceContent({
       blocked ||
       !canEditCanonicalTranscript ||
       !transcriptValue ||
+      !segment.etag ||
       (editingSegmentId && editingSegmentId !== segment.id) ||
       mappingDraft
     ) {
@@ -766,6 +770,7 @@ function TranscriptReviewWorkspaceContent({
       [segment.id]: current[segment.id] ?? {
         transcriptId: transcriptValue.id,
         baseVersion: segment.version,
+        baseEtag: segment.etag,
         originalText: segment.text,
         text: segment.text,
         reason: '',
@@ -795,7 +800,8 @@ function TranscriptReviewWorkspaceContent({
     if (
       blocked ||
       correctionNotice?.kind === 'conflict' ||
-      !draft?.text.trim() ||
+      !draft?.baseEtag ||
+      !draft.text.trim() ||
       !canEditCanonicalTranscript
     ) {
       return
@@ -1402,6 +1408,7 @@ function TranscriptReviewWorkspaceContent({
                               disabled={
                                 blocked ||
                                 Boolean(mappingDraft) ||
+                                !segment.etag ||
                                 Boolean(editingSegmentId)
                               }
                               onClick={() => beginCorrection(segment)}
@@ -1476,7 +1483,8 @@ function TranscriptReviewWorkspaceContent({
                               disabled={
                                 blocked ||
                                 correctionNotice?.kind === 'conflict' ||
-                                !(draft?.text.trim() ?? '')
+                                !draft?.baseEtag ||
+                                !draft.text.trim()
                               }
                             >
                               {operation.pending
@@ -1539,6 +1547,7 @@ function TranscriptReviewWorkspaceContent({
                               [segment.id]: {
                                 ...current[segment.id],
                                 baseVersion: segment.version,
+                                baseEtag: segment.etag,
                                 originalText: segment.text,
                               },
                             }))

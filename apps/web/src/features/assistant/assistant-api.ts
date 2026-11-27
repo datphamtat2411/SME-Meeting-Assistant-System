@@ -279,12 +279,17 @@ export function assistantConversationsInfiniteQueryOptions(
 
 export async function createAssistantConversation(
   meetingId: string,
-  title?: string
+  title: string | undefined,
+  idempotencyKey: string
 ): Promise<AssistantConversation> {
+  if (!idempotencyKeyPattern.test(idempotencyKey)) {
+    throw invalidAssistantInput('The Assistant request identity is invalid.')
+  }
   const trimmedTitle = title?.trim()
   const response = await coreApi.post<unknown>(
     conversationsPath,
-    trimmedTitle ? { meetingId, title: trimmedTitle } : { meetingId }
+    trimmedTitle ? { meetingId, title: trimmedTitle } : { meetingId },
+    { headers: { 'Idempotency-Key': idempotencyKey } }
   )
   const conversation = parseAssistantResponse(
     { data: response, meta: {} },

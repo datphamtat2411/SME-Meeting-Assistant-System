@@ -381,7 +381,8 @@ credentials, start processes or perform readiness checks by itself. The
 caller must provide the exact run-specific settings and independently verify
 readiness.
 
-Apply Flyway V1–V59 only to the newly created disposable database, after approval
+Apply the complete Flyway history of the exact candidate (including V67 on the
+integrated baseline) only to the newly created disposable database, after approval
 and verified endpoint/ownership checks. Create a private, run-specific bucket
 and isolated test objects, broker topology and distinct least-privilege accounts
 only in this project. Core's accepted media object key remains deterministic

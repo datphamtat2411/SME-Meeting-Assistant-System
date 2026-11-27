@@ -155,4 +155,74 @@ class CanonicalFlywayUpgradeIntegrationTests {
         }
     }
 
+    @Test
+    void populatedV66UpgradesToV67WithoutChangingHistoryAndFencesCreationIntent() {
+        String schema = "w6_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            Flyway before = Flyway.configure().dataSource(dataSource).schemas(schema)
+                .locations("classpath:db/migration").target(MigrationVersion.fromVersion("66")).load();
+            assertThat(before.migrate().migrationsExecuted).isEqualTo(66);
+            var history = jdbc.queryForList("SELECT version,checksum FROM " + schema
+                + ".flyway_schema_history WHERE success AND version IS NOT NULL ORDER BY installed_rank");
+            assertThat(history).hasSize(66);
+            UUID owner = UUID.randomUUID(), other = UUID.randomUUID(), meeting = UUID.randomUUID();
+            UUID conversation = UUID.randomUUID(), question = UUID.randomUUID();
+            UUID answer = UUID.randomUUID(), turn = UUID.randomUUID();
+            for (UUID user : List.of(owner, other)) {
+                String email = "w6-" + user + "@example.invalid";
+                jdbc.update("INSERT INTO " + schema
+                    + ".users(id,email,email_normalized,display_name,password_hash,global_role,account_status)"
+                    + " VALUES(?,?,?,'Upgrade fixture','test-only','EMPLOYEE','ACTIVE')", user, email, email);
+            }
+            jdbc.update("INSERT INTO " + schema
+                + ".meetings(id,title,organizer_user_id,created_by_user_id,status)"
+                + " VALUES(?,'Upgrade fixture',?,?,'DRAFT')", meeting, owner, owner);
+            jdbc.update("INSERT INTO " + schema
+                + ".assistant_conversations(id,user_id,meeting_id,title) VALUES(?,?,?,'Legacy conversation')",
+                conversation, owner, meeting);
+            jdbc.update("INSERT INTO " + schema
+                + ".assistant_messages(id,conversation_id,role,content) VALUES(?,?,'USER','Legacy question')",
+                question, conversation);
+            jdbc.update("INSERT INTO " + schema
+                + ".assistant_messages(id,conversation_id,role,content,answer_status)"
+                + " VALUES(?,?,'ASSISTANT','Legacy answer','GROUNDED')", answer, conversation);
+            jdbc.update("INSERT INTO " + schema
+                + ".assistant_turns(id,conversation_id,idempotency_key,request_sha256,user_message_id,"
+                + "assistant_message_id,state,scope_version) VALUES(?,?,?,?,?,?,'COMPLETED','v1')",
+                turn, conversation, "legacy-key", "a".repeat(64), question, answer);
+
+            Flyway after = Flyway.configure().dataSource(dataSource).schemas(schema)
+                .locations("classpath:db/migration").load();
+            assertThat(after.migrate().migrationsExecuted).isEqualTo(1);
+            after.validate();
+            assertThat(after.info().current().getVersion().getVersion()).isEqualTo("67");
+            var upgradedHistory = jdbc.queryForList("SELECT version,checksum FROM " + schema
+                + ".flyway_schema_history WHERE success AND version IS NOT NULL ORDER BY installed_rank");
+            assertThat(upgradedHistory).hasSize(67);
+            assertThat(upgradedHistory.subList(0, 66)).isEqualTo(history);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + schema
+                + ".assistant_conversations WHERE id=? AND user_id=? AND meeting_id=?"
+                + " AND creation_key_digest IS NULL AND creation_request_digest IS NULL",
+                Integer.class, conversation, owner, meeting)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT content FROM " + schema
+                + ".assistant_messages WHERE id=?", String.class, answer)).isEqualTo("Legacy answer");
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + schema
+                + ".assistant_turns WHERE id=? AND user_message_id=? AND assistant_message_id=?"
+                + " AND state='COMPLETED'", Integer.class, turn, question, answer)).isEqualTo(1);
+            String insert = "INSERT INTO " + schema
+                + ".assistant_conversations(id,user_id,meeting_id,creation_key_digest,creation_request_digest)"
+                + " VALUES(?,?,?,?,?)";
+            jdbc.update(insert, UUID.randomUUID(), owner, meeting, "b".repeat(64), "c".repeat(64));
+            assertThatThrownBy(() -> jdbc.update(insert, UUID.randomUUID(), owner, meeting,
+                "b".repeat(64), "d".repeat(64)))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            jdbc.update(insert, UUID.randomUUID(), other, meeting, "b".repeat(64), "c".repeat(64));
+            assertThatThrownBy(() -> jdbc.update(insert, UUID.randomUUID(), owner, meeting,
+                "e".repeat(64), null))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+
 }

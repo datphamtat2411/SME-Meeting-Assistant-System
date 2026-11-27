@@ -81,8 +81,9 @@ public record MinutesSnapshot(
 
     /**
      * Permission-scoped presentation enrichment. It is deliberately outside
-     * CanonicalContent so names cannot change membership, export source bytes,
-     * or the canonical source fingerprint.
+     * CanonicalContent so names cannot change membership or the canonical source
+     * fingerprint. Versioned export rendering may use names from the digest-pinned
+     * intake; the legacy renderer deliberately ignores them.
      */
     public record DisplayMetadata(Map<UUID, String> assigneeDisplayNames) {
         public DisplayMetadata {

@@ -26,6 +26,8 @@ final class AssistantController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(responses.success(service.list(page,size)));
     }
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201",
+            description = "Conversation created or exact creation intent replayed", useReturnTypeSchema = true)
     @PostMapping
     ResponseEntity<ApiResponse<ConversationView>> create(
             @RequestHeader(value="Idempotency-Key",required=false) String key,
@@ -65,11 +67,19 @@ final class AssistantController {
             .header("Referrer-Policy","no-referrer")
             .body(responses.error(error.code(),error.getReason(),null));
     }
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+            description = "Terminal completed turn", useReturnTypeSchema = true)
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable turn still processing", useReturnTypeSchema = true)
     @PostMapping("/{conversationId}/messages")
     ResponseEntity<ApiResponse<TurnView>> submit(@PathVariable UUID conversationId,
            @RequestHeader("Idempotency-Key") String key,@Valid @RequestBody Ask input){
         return turnResponse(service.submit(conversationId,key,input));
     }
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+            description = "Terminal completed turn", useReturnTypeSchema = true)
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable turn still processing", useReturnTypeSchema = true)
     @PostMapping("/{conversationId}/turns/{turnId}/recover")
     ResponseEntity<ApiResponse<TurnView>> recover(@PathVariable UUID conversationId,@PathVariable UUID turnId){
         return turnResponse(service.recover(conversationId,turnId));

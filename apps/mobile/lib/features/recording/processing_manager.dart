@@ -4,12 +4,14 @@ import 'dart:math';
 import 'package:flutter/widgets.dart';
 
 import '../../core/api_client.dart';
+import '../../core/meeting_models.dart';
 import '../meetings/meeting_foundation.dart';
 import 'local_media_models.dart';
 import 'local_media_repository.dart';
 import 'media_contracts.dart';
 import 'media_repository.dart';
 import 'processing_repository.dart';
+import 'transcript_review_contract.dart';
 
 typedef ProcessingCapabilityResolver = Future<MeetingCapabilities?> Function(
   String meetingId,
@@ -78,6 +80,24 @@ class TranscriptReviewHandoff {
   final String? sourceMediaId;
 }
 
+enum TranscriptReviewCommand { acknowledge, admit }
+
+/// Session-scoped immutable operation evidence survives navigation and
+/// backgrounding. A receipt is not permission to admit a newer transcript.
+class TranscriptReviewOperation {
+  const TranscriptReviewOperation({
+    required this.proof,
+    this.receipt,
+    this.pending,
+    this.admitted = false,
+  });
+
+  final TranscriptReviewProof proof;
+  final TranscriptReviewReceipt? receipt;
+  final TranscriptReviewCommand? pending;
+  final bool admitted;
+}
+
 class ProcessingObservation {
   ProcessingObservation(this.manager, this.meetingId, this.key);
 
@@ -142,7 +162,192 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _lifecycleObserverRegistered = false;
   Future<void>? _shutdownFuture;
 
-  bool get hasActiveWork => _inFlight.isNotEmpty || _mutationFlights.isNotEmpty;
+  final _reviewOperations =
+      <(AuthenticatedSessionScope, String), TranscriptReviewOperation>{};
+  final _reviewFlights = <(AuthenticatedSessionScope, String), Future<bool>>{};
+
+  bool get hasActiveWork =>
+      _inFlight.isNotEmpty ||
+      _mutationFlights.isNotEmpty ||
+      _reviewFlights.isNotEmpty;
+
+  TranscriptReviewOperation? reviewOperation(
+    String jobId,
+    AuthenticatedSessionScope scope,
+  ) => api.isCurrentAuthenticatedSession(scope)
+      ? _reviewOperations[(scope, jobId)]
+      : null;
+
+  bool reviewBusy(String jobId, AuthenticatedSessionScope scope) =>
+      _reviewFlights.containsKey((scope, jobId));
+
+  /// Returns true only when Core has confirmed admission. Acknowledging
+  /// never dispatches admission. Explicit recovery reuses the exact proof.
+  Future<bool> reviewTranscript({
+    required TranscriptReviewHandoff handoff,
+    required AuthenticatedSessionScope scope,
+    required TranscriptReviewCommand command,
+    required TranscriptReviewProof? displayedProof,
+    required Future<Transcript> Function() readCurrentTranscript,
+    required bool Function() stillAuthorized,
+    required MeetingCapabilities capabilities,
+  }) async {
+    _checkMutation(scope);
+    final key = (scope, handoff.jobId);
+    if (_reviewFlights.containsKey(key)) {
+      throw const ApiFailure(
+        409,
+        'REVIEW_COMMAND_PENDING',
+        'A transcript review command is already in progress.',
+      );
+    }
+    final flight = _executeReview(
+      handoff: handoff,
+      scope: scope,
+      command: command,
+      displayedProof: displayedProof,
+      readCurrentTranscript: readCurrentTranscript,
+      stillAuthorized: stillAuthorized,
+      capabilities: capabilities,
+    );
+    _reviewFlights[key] = flight;
+    if (!_disposed) notifyListeners();
+    try {
+      return await flight;
+    } finally {
+      _reviewFlights.remove(key);
+      if (!_disposed && api.isCurrentAuthenticatedSession(scope)) {
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<bool> _executeReview({
+    required TranscriptReviewHandoff handoff,
+    required AuthenticatedSessionScope scope,
+    required TranscriptReviewCommand command,
+    required TranscriptReviewProof? displayedProof,
+    required Future<Transcript> Function() readCurrentTranscript,
+    required bool Function() stillAuthorized,
+    required MeetingCapabilities capabilities,
+  }) async {
+    final key = (scope, handoff.jobId);
+    final previous = _reviewOperations[key];
+    final recovering = previous?.pending != null;
+    final proof = recovering ? previous!.proof : displayedProof;
+    if (proof == null ||
+        proof.meetingId != handoff.meetingId ||
+        proof.jobId != handoff.jobId ||
+        proof.sourceMediaId != handoff.sourceMediaId ||
+        (recovering && previous!.pending != command)) {
+      throw const ApiFailure(
+        409,
+        'REVIEW_SOURCE_MISMATCH',
+        'Review the selected processing job before continuing.',
+      );
+    }
+    final receipt = previous?.proof.key() == proof.key()
+        ? previous?.receipt
+        : null;
+    if (command == TranscriptReviewCommand.admit &&
+        (receipt == null ||
+            (!recovering && previous!.proof.etag != proof.etag))) {
+      throw const ApiFailure(
+        409,
+        'REVIEW_ACKNOWLEDGEMENT_REQUIRED',
+        'Acknowledge the current transcript revision before admission.',
+      );
+    }
+
+    await _requireCurrentCapability(
+      scope,
+      proof.meetingId,
+      MeetingOperation.admitProcessing,
+      capabilities,
+    );
+    if (!recovering) {
+      final job = await processingRepository.get(
+        proof.jobId,
+        sessionScope: scope,
+      );
+      final current = await readCurrentTranscript();
+      if (!proof.matchesJob(job) ||
+          !job.isWaitingForReview ||
+          !proof.matches(current) ||
+          transcriptCorrectionDigest(current.segments) !=
+              proof.correctionDigest) {
+        throw const ApiFailure(
+          412,
+          'REVIEW_SOURCE_CHANGED',
+          'The transcript or processing job changed. Review it again.',
+        );
+      }
+    }
+    _checkMutation(scope);
+    if (_backgrounded || !stillAuthorized()) {
+      throw const ApiFailure(
+        409,
+        'REVIEW_CONTEXT_CHANGED',
+        'The review context changed before the command was sent.',
+      );
+    }
+    final intent = TranscriptReviewOperation(
+      proof: proof,
+      receipt: receipt,
+      pending: command,
+    );
+    _reviewOperations[key] = intent;
+    if (!_disposed) notifyListeners();
+    try {
+      if (command == TranscriptReviewCommand.acknowledge) {
+        final accepted = await processingRepository.acknowledgeReview(
+          proof,
+          sessionScope: scope,
+        );
+        _checkMutation(scope);
+        _reviewOperations[key] = TranscriptReviewOperation(
+          proof: proof,
+          receipt: accepted,
+          admitted: accepted.admitted,
+        );
+        if (accepted.admitted) {
+          await _refreshConfirmedMutation(proof.meetingId, scope);
+        }
+        return accepted.admitted;
+      }
+      await processingRepository.admitReviewedIntelligence(
+        proof,
+        receipt!,
+        sessionScope: scope,
+      );
+      _checkMutation(scope);
+      _reviewOperations[key] = TranscriptReviewOperation(
+        proof: proof,
+        receipt: receipt,
+        admitted: true,
+      );
+      await _refreshConfirmedMutation(proof.meetingId, scope);
+      return true;
+    } catch (error) {
+      if (!_disposed && api.isCurrentAuthenticatedSession(scope)) {
+        final failure = _processingFailure(
+          error,
+          code: 'REVIEW_COMMAND_FAILED',
+          message: 'The transcript review command could not be confirmed.',
+        );
+        // A denied replay does not establish the outcome of the original
+        // request. Keep its immutable proof until a permitted reconciliation.
+        if (!_processingOutcomeAmbiguous(failure) &&
+            !(recovering &&
+                (failure.status == 403 ||
+                    failure.status == 404 ||
+                    failure.status == 429))) {
+          _reviewOperations.remove(key);
+        }
+      }
+      rethrow;
+    }
+  }
 
   /// Read-only snapshots already observed by this manager; no new polling.
   Iterable<ProcessingMeetingState> get currentStates =>
@@ -761,7 +966,15 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   TranscriptReviewHandoff? reviewHandoff(ProcessingJobRecord job) {
-    if (!job.isWaitingForReview) return null;
+    final scope = api.authenticatedSessionScope;
+    final pending = scope == null
+        ? null
+        : reviewOperation(job.id, scope)?.pending;
+    if (job.jobType != ProcessingJobType.offlineMeetingProcessing ||
+        job.sourceMediaId == null ||
+        (!job.isWaitingForReview && pending == null)) {
+      return null;
+    }
     return TranscriptReviewHandoff(
       meetingId: job.meetingId,
       jobId: job.id,
@@ -850,6 +1063,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       <Future<void>>[
         ..._inFlight.values,
         ..._mutationFlights.values.map((future) => future.then<void>((_) {})),
+        ..._reviewFlights.values.map((future) => future.then<void>((_) {})),
       ].map(
         (future) =>
             future.then<void>((_) {}, onError: (Object _, StackTrace __) {}),
@@ -865,6 +1079,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       final active = <Future<void>>[
         ..._inFlight.values,
         ..._mutationFlights.values.map((value) => value.then<void>((_) {})),
+        ..._reviewFlights.values.map((value) => value.then<void>((_) {})),
       ];
       if (active.isEmpty) return;
       try {
@@ -1099,6 +1314,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
 
   void _sessionChanged() {
     final current = api.authenticatedSessionScope;
+    _reviewOperations.removeWhere((key, _) => key.$1 != current);
     final obsolete = _scopes.entries
         .where(
           (entry) =>
@@ -1143,6 +1359,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       timer.cancel();
     }
     _timers.clear();
+    _reviewOperations.clear();
     _states.clear();
     _scopes.clear();
     _consumers.clear();

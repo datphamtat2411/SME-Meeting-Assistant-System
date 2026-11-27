@@ -38,6 +38,8 @@ public class ProcessingJobController {
         this.regeneration = regeneration;
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable processing operation accepted", useReturnTypeSchema = true)
     @PostMapping("/meetings/{meetingId}/processing-jobs")
     public ResponseEntity<ApiResponse<ProcessingJobResponse>> create(@PathVariable UUID meetingId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
@@ -59,6 +61,8 @@ public class ProcessingJobController {
         return this.responses.success(this.service.getJob(jobId));
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable processing operation accepted", useReturnTypeSchema = true)
     @PostMapping("/processing-jobs/{jobId}/retry")
     public ResponseEntity<ApiResponse<ProcessingJobResponse>> retry(@PathVariable UUID jobId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
@@ -77,6 +81,8 @@ public class ProcessingJobController {
         return this.responses.success(this.service.acknowledgeTranscriptReview(jobId, request, idempotencyKey));
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable processing operation accepted", useReturnTypeSchema = true)
     @PostMapping("/processing-jobs/{jobId}/meeting-intelligence/admit")
     public ResponseEntity<ApiResponse<ProcessingJobResponse>> admitMeetingIntelligence(
             @PathVariable UUID jobId,
@@ -88,6 +94,8 @@ public class ProcessingJobController {
             .body(this.responses.success("Meeting Intelligence admission accepted.", job));
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable processing operation accepted", useReturnTypeSchema = true)
     @PostMapping("/processing-jobs/{jobId}/meeting-intelligence/regenerate")
     public ResponseEntity<ApiResponse<ProcessingJobResponse>> regenerateMeetingIntelligence(
             @PathVariable UUID jobId, @RequestHeader("Idempotency-Key") String idempotencyKey,

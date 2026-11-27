@@ -221,9 +221,9 @@ export function ReviewPanel({
       {confirmationBlocked && (
         <p className='flex gap-2 text-sm text-amber-700'>
           <AlertTriangle className='mt-0.5 size-4 shrink-0' />
-          Confirmation is unavailable because the known evidence is missing,
-          stale, or no longer matches the current transcript. Rejection remains
-          available.
+          Confirmation is unavailable because the evidence is missing, stale,
+          unsafe, or could not be verified against the current transcript.
+          Rejection remains available.
         </p>
       )}
       <div className='flex flex-wrap gap-2'>

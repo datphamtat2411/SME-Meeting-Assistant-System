@@ -319,6 +319,46 @@ void main() {
     expect(minutes.transcriptAvailability, 'NOT_AVAILABLE');
   });
 
+  test('minutes preserve optional canonical assignee display names', () {
+    final legacy = MeetingMinutes.fromResult(
+      ApiResult(minutesFixture(), const {}, null),
+    );
+    expect(legacy.assigneeDisplayNames, isEmpty);
+    final raw = minutesFixture()
+      ..['displayMetadata'] = {
+        'assigneeDisplayNames': {'external-user': '  Nguyễn Văn An  '},
+      };
+    final minutes = MeetingMinutes.fromResult(ApiResult(raw, const {}, null));
+    expect(minutes.assigneeDisplayNames, {'external-user': 'Nguyễn Văn An'});
+    expect(
+      () => minutes.assigneeDisplayNames['external-user'] = 'Changed',
+      throwsUnsupportedError,
+    );
+  });
+
+  test('minutes reject malformed assignee display enrichment', () {
+    for (final metadata in [
+      null,
+      <String, dynamic>{},
+      {'assigneeDisplayNames': []},
+      {
+        'assigneeDisplayNames': {'': 'Name'},
+      },
+      {
+        'assigneeDisplayNames': {'external-user': '  '},
+      },
+      {
+        'assigneeDisplayNames': {'external-user': 42},
+      },
+    ]) {
+      final raw = minutesFixture()..['displayMetadata'] = metadata;
+      expect(
+        () => MeetingMinutes.fromResult(ApiResult(raw, const {}, null)),
+        throwsA(isA<ApiFailure>()),
+      );
+    }
+  });
+
   test('minutes reject incompatible schema and unofficial content', () {
     final incompatible = minutesFixture()..['schemaVersion'] = 2;
     expect(

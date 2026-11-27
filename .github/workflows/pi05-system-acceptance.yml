@@ -6,6 +6,10 @@ on:
       - pre-integration-develop
       - 'api/**'
     paths:
+      # Integration evidence must be verified on the same SHA.
+      - 'apps/web/**'
+      - 'apps/mobile/**'
+      - 'docs/integration/**'
       - 'services/api/**'
       - 'services/ai/**'
       - 'infra/**'

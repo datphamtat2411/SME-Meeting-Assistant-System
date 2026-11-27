@@ -32,7 +32,7 @@ import {
   useIntelligenceOperationScope,
 } from './intelligence-operation-scope'
 import { invalidateMeetingArtifacts } from './query-invalidation'
-import { transcriptReviewQuery } from './transcript-api'
+import { reviewCoverageQuery, transcriptReviewQuery } from './transcript-api'
 
 const pageSize = 20
 type Filter = 'ALL' | DecisionStatus
@@ -174,6 +174,10 @@ function DecisionsPanelContent({
     ...transcriptReviewQuery(meetingId),
     enabled: creating || Boolean(reviewSnapshot || reviewConflict),
   })
+  const coverage = useQuery({
+    ...reviewCoverageQuery(meetingId, transcript.data),
+    enabled: Boolean(reviewSnapshot?.transcriptId) && transcript.isSuccess,
+  })
   const currentTranscript = transcript.data?.transcript
   const transcriptIdentity = currentTranscript
     ? `${currentTranscript.id}:${currentTranscript.contentRevision}`
@@ -189,14 +193,36 @@ function DecisionsPanelContent({
   const confirmationBlocked = Boolean(
     reviewedDecision &&
     (reviewedDecision.isStale ||
-      !reviewedDecision.transcriptId ||
-      transcript.isError ||
-      transcript.isFetching ||
-      reviewedDecision.evidenceSegmentIds.length === 0 ||
-      !reviewEvidenceMatchesCurrent ||
-      !reviewedDecision.evidenceSegmentIds.every((id) =>
-        currentTranscript?.segments.some((segment) => segment.id === id)
-      ))
+      (reviewedDecision.transcriptId
+        ? transcript.isError ||
+          transcript.isFetching ||
+          !currentTranscript ||
+          !['READY', 'READY_WITH_WARNINGS'].includes(
+            currentTranscript.status
+          ) ||
+          !coverage.isSuccess ||
+          coverage.isFetching ||
+          reviewedDecision.evidenceSegmentIds.length === 0 ||
+          reviewedDecision.evidenceSegmentIds.length > 50 ||
+          new Set(reviewedDecision.evidenceSegmentIds).size !==
+            reviewedDecision.evidenceSegmentIds.length ||
+          !reviewEvidenceMatchesCurrent ||
+          !reviewedDecision.evidenceSegmentIds.every((id) => {
+            const segment = currentTranscript.segments.find(
+              (item) => item.id === id
+            )
+            return (
+              segment?.qualityStatus === 'ACCEPTED' &&
+              !coverage.data.some(
+                (region) =>
+                  region.coverageStatus !== 'COVERED' &&
+                  region.startMs < segment.endMs &&
+                  region.endMs > segment.startMs
+              )
+            )
+          })
+        : reviewedDecision.sourceType === 'AI_EXTRACTED' ||
+          reviewedDecision.evidenceSegmentIds.length > 0))
   )
   const sourceSegments = useMemo(
     () => currentTranscript?.segments ?? [],
@@ -410,8 +436,12 @@ function DecisionsPanelContent({
             'Transcript evidence must be reviewed again before creating this decision.'
           )
         }
+        return createDecision(meetingId, content, selectedEvidence, {
+          transcriptId: source.id,
+          contentRevision: source.contentRevision,
+        })
       }
-      return createDecision(meetingId, content, selectedEvidence)
+      return createDecision(meetingId, content)
     },
     onSuccess: (_result, _variables, ownsScope) => {
       if (!ownsScope?.()) return
@@ -429,6 +459,13 @@ function DecisionsPanelContent({
       if (!ownsScope?.()) return
       const normalized = normalizeCoreApiError(error)
       const uncertain = normalized.recoveryOutcome === 'uncertain'
+      if (
+        selectedEvidence.length > 0 &&
+        (normalized.status === 409 || normalized.status === 412)
+      ) {
+        setCreateTranscriptIdentity(null)
+        void transcript.refetch()
+      }
       if (uncertain) {
         const ownsReconciliation = captureCreateReconciliation()
         setCreateUncertain(true)

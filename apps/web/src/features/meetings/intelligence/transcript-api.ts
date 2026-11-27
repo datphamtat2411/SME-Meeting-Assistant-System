@@ -13,6 +13,8 @@ const segmentSchema = z
     speakerClusterId: z.string().uuid().nullable(),
     speakerLabel: z.string().nullable(),
     version: z.number().int().nonnegative(),
+    // Legacy read-only responses may omit a token; never derive it.
+    etag: z.string().min(1).optional(),
   })
   .superRefine((segment, context) => {
     if (segment.endMs < segment.startMs) {
@@ -265,7 +267,7 @@ export function speakerClustersQuery(meetingId: string) {
 }
 export async function correctTranscriptSegment(
   meetingId: string,
-  segment: Pick<Transcript['segments'][number], 'id' | 'version'>,
+  segment: Pick<Transcript['segments'][number], 'id' | 'etag'>,
   text: string,
   reason: string,
   signal?: AbortSignal
@@ -281,9 +283,16 @@ export async function correctTranscriptSegment(
 }
 
 export function transcriptSegmentEtag(
-  segment: Pick<Transcript['segments'][number], 'id' | 'version'>
+  segment: Pick<Transcript['segments'][number], 'id' | 'etag'>
 ): string {
-  return `"s-${segment.id}-${segment.version}"`
+  if (!segment.etag) {
+    throw new CoreApiError({
+      message: 'A segment concurrency token is required before correction.',
+      code: 'PRECONDITION_REQUIRED',
+      kind: 'malformed',
+    })
+  }
+  return segment.etag
 }
 
 export async function mapSpeaker(

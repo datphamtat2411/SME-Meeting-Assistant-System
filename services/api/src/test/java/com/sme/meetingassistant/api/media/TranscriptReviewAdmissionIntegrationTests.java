@@ -16,6 +16,7 @@ import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.Cover
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.SegmentResult;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.TranscriptResult;
 import java.security.Principal;
+import java.sql.Connection;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -242,7 +243,7 @@ class TranscriptReviewAdmissionIntegrationTests {
             .at("/data/reviewId").asText();
 
         mvc.perform(patch("/api/v1/meetings/" + meeting + "/transcript/segments/" + segment)
-                .principal(as(organizer)).header("If-Match", "\"s-" + segment + "-0\"")
+                .principal(as(organizer)).header("If-Match", transcript.path("segments").get(0).path("etag").asText())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"text\":\"Bản ghi đã được operator xác minh.\"}"))
             .andExpect(status().isOk());
@@ -255,6 +256,152 @@ class TranscriptReviewAdmissionIntegrationTests {
             .andExpect(status().isConflict());
         assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",
             String.class, job)).isEqualTo("WAITING_FOR_REVIEW");
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM processing_job_transcript_reviews
+            WHERE processing_job_id=? AND admitted_at IS NOT NULL
+            """, Integer.class, job)).isZero();
+    }
+
+    @Test
+    void correctedProofCanBeAcknowledgedAndAdmittedByAnotherClientRequest() throws Exception {
+        JsonNode before = currentTranscript();
+        UUID transcriptId = UUID.fromString(before.path("id").asText());
+        String oldBody = reviewBody(transcriptId, before.path("contentRevision").asLong(),
+            TranscriptCorrectionDigest.sha256(published));
+        var first = mvc.perform(post(jobPath("/transcript-review/acknowledge"))
+                .principal(as(organizer)).header("Idempotency-Key", "client-one-old-proof")
+                .contentType(MediaType.APPLICATION_JSON).content(oldBody))
+            .andExpect(status().isOk()).andReturn();
+        String oldReview = json.readTree(first.getResponse().getContentAsString()).at("/data/reviewId").asText();
+        String correctedText = "Nội dung\ncuộc họp đã xác minh.";
+        mvc.perform(patch("/api/v1/meetings/" + meeting + "/transcript/segments/" + segment)
+                .principal(as(organizer)).header("If-Match", before.path("segments").get(0).path("etag").asText())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(java.util.Map.of("text", correctedText))))
+            .andExpect(status().isOk());
+        JsonNode after = currentTranscript();
+        assertThat(after.path("contentRevision").asLong()).isGreaterThan(before.path("contentRevision").asLong());
+        String newDigest = TranscriptCorrectionDigest.sha256(List.of(
+            new TranscriptCorrectionDigest.SegmentDigest(0, 100, 1500, correctedText)));
+        String newBody = reviewBody(transcriptId, after.path("contentRevision").asLong(), newDigest);
+        var second = mvc.perform(post(jobPath("/transcript-review/acknowledge"))
+                .principal(as(organizer)).header("Idempotency-Key", "client-two-new-proof")
+                .contentType(MediaType.APPLICATION_JSON).content(newBody))
+            .andExpect(status().isOk()).andReturn();
+        String newReview = json.readTree(second.getResponse().getContentAsString()).at("/data/reviewId").asText();
+        assertThat(newReview).isNotEqualTo(oldReview);
+        mvc.perform(post(jobPath("/meeting-intelligence/admit"))
+                .principal(as(organizer)).header("Idempotency-Key", "client-one-stale-receipt")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(oldBody.substring(0, oldBody.length() - 1) + ",\"reviewId\":\"" + oldReview + "\"}"))
+            .andExpect(status().isConflict());
+        mvc.perform(post(jobPath("/meeting-intelligence/admit"))
+                .principal(as(organizer)).header("Idempotency-Key", "client-two-admit")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(newBody.substring(0, newBody.length() - 1) + ",\"reviewId\":\"" + newReview + "\"}"))
+            .andExpect(status().isAccepted());
+        assertThat(jdbc.queryForList("""
+            SELECT id FROM processing_job_transcript_reviews
+            WHERE processing_job_id=? AND admitted_at IS NOT NULL
+            """, UUID.class, job)).containsExactly(UUID.fromString(newReview));
+    }
+
+    @Test
+    void correctionDigestMatchesClientGoldenFixtures() {
+        assertThat(TranscriptCorrectionDigest.sha256(List.of()))
+            .isEqualTo("da5f8cd6ead91181a26a8c323f078baf716dea5c8c0f7c9b4341b9b172b34545");
+        assertThat(TranscriptCorrectionDigest.sha256(List.of(
+            new TranscriptCorrectionDigest.SegmentDigest(2, 2000, 3000, "Nội dung\ncuộc họp"),
+            new TranscriptCorrectionDigest.SegmentDigest(1, 0, 1500, "Xin chào"))))
+            .isEqualTo("b31710a4f182b4314b8c5b180ff84423b77a8a4034070d8dd6887da5dac45901");
+        assertThat(TranscriptCorrectionDigest.sha256(List.of(
+            new TranscriptCorrectionDigest.SegmentDigest(0, 0, 1, "é"),
+            new TranscriptCorrectionDigest.SegmentDigest(1, 1, 2, "😊"))))
+            .isEqualTo("667e307590a35367ba147201a22d71ffd049be5e4b56501fab4332a99798f957");
+    }
+
+    @Test
+    void acknowledgementRechecksAccountAfterWaitingOnAdmissionLock() throws Exception {
+        assertRevokedReviewCannotCommit(false);
+    }
+
+    @Test
+    void admissionRechecksAccountAfterWaitingOnAdmissionLock() throws Exception {
+        assertRevokedReviewCannotCommit(true);
+    }
+
+    private void assertRevokedReviewCannotCommit(boolean admit) throws Exception {
+        JsonNode transcript = currentTranscript();
+        String body = reviewBody(UUID.fromString(transcript.path("id").asText()),
+            transcript.path("contentRevision").asLong(), TranscriptCorrectionDigest.sha256(published));
+        String path = jobPath("/transcript-review/acknowledge");
+        String key = "blocked-acknowledgement";
+        if (admit) {
+            var acknowledgement = mvc.perform(post(path).principal(as(organizer))
+                    .header("Idempotency-Key", "pre-lock-review")
+                    .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andReturn();
+            String reviewId = json.readTree(acknowledgement.getResponse().getContentAsString())
+                .at("/data/reviewId").asText();
+            body = body.substring(0, body.length() - 1) + ",\"reviewId\":\"" + reviewId + "\"}";
+            path = jobPath("/meeting-intelligence/admit");
+            key = "blocked-admission";
+        }
+        final String requestBody = body;
+        final String requestPath = path;
+        final String requestKey = key;
+        try (var pool = Executors.newSingleThreadExecutor();
+             Connection lock = jdbc.getDataSource().getConnection()) {
+            lock.setAutoCommit(false);
+            try {
+                int blocker;
+                try (var statement = lock.createStatement();
+                     var rows = statement.executeQuery("SELECT pg_backend_pid()")) {
+                    assertThat(rows.next()).isTrue();
+                    blocker = rows.getInt(1);
+                }
+                try (var statement = lock.prepareStatement(
+                        "SELECT id FROM users WHERE id=? FOR NO KEY UPDATE")) {
+                    statement.setObject(1, organizer);
+                    try (var rows = statement.executeQuery()) {
+                        assertThat(rows.next()).isTrue();
+                    }
+                }
+                var request = pool.submit(() -> mvc.perform(post(requestPath)
+                    .principal(as(organizer)).header("Idempotency-Key", requestKey)
+                    .contentType(MediaType.APPLICATION_JSON).content(requestBody))
+                    .andReturn().getResponse().getStatus());
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+                boolean blocked = false;
+                while (System.nanoTime() < deadline) {
+                    if (Boolean.TRUE.equals(jdbc.queryForObject("""
+                        SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                            WHERE ? = ANY(pg_blocking_pids(pid)))
+                        """, Boolean.class, blocker))) {
+                        blocked = true;
+                        break;
+                    }
+                    if (request.isDone()) break;
+                    Thread.sleep(25);
+                }
+                assertThat(blocked).as("HTTP transaction must wait on the admission lock").isTrue();
+                try (var statement = lock.prepareStatement(
+                        "UPDATE users SET account_status='INACTIVE' WHERE id=?")) {
+                    statement.setObject(1, organizer);
+                    statement.executeUpdate();
+                }
+                lock.commit();
+                assertThat(request.get(50, TimeUnit.SECONDS)).isEqualTo(401);
+            } finally {
+                lock.rollback();
+            }
+        }
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",
+            String.class, job)).isEqualTo("WAITING_FOR_REVIEW");
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM processing_job_transcript_reviews
+            WHERE processing_job_id=?
+            """, Integer.class, job)).isEqualTo(admit ? 1 : 0);
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM processing_job_transcript_reviews
             WHERE processing_job_id=? AND admitted_at IS NOT NULL

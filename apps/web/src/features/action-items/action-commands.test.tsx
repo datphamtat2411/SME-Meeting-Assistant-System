@@ -1,4 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  RouterProvider,
+} from '@tanstack/react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
@@ -7,6 +15,11 @@ import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import type { ActionItem } from './action-api'
 import { ActionCommands } from './action-commands'
 import { ActionForm } from './action-form'
+import { ActionItemsPage } from './index'
+
+// The feature tests exercise real Action Items controls and queries, not the
+// unrelated application-shell/sidebar context.
+vi.mock('@/components/layout/header', () => ({ Header: () => null }))
 
 const officialOpenItem: ActionItem = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -320,5 +333,289 @@ describe('Action Item reviewed operation ownership', () => {
     await expect
       .element(screen.getByRole('button', { name: 'Save changed fields' }))
       .not.toBeInTheDocument()
+  })
+})
+
+const otherMeeting = '77777777-7777-4777-8777-777777777777'
+
+function pageResponse<T>(items: T[], page = 0, totalElements = items.length) {
+  const totalPages = Math.ceil(totalElements / 20)
+  return {
+    data: items,
+    meta: {
+      pagination: {
+        page,
+        size: 20,
+        totalElements,
+        totalPages,
+        hasPrevious: page > 0,
+        hasNext: page + 1 < totalPages,
+      },
+    },
+  }
+}
+
+function candidate(index: number, displayName: string) {
+  return {
+    id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, '0')}`,
+    displayName,
+    email: `candidate${index}@example.invalid`,
+    organizationalUnitName: null,
+    active: true,
+  }
+}
+
+const targets = pageResponse([
+  {
+    id: officialOpenItem.meetingId,
+    label: 'Launch planning',
+    restricted: false,
+  },
+  { id: otherMeeting, label: 'Second meeting', restricted: false },
+])
+
+async function renderCreateForm() {
+  return render(
+    <QueryClientProvider client={reviewClient()}>
+      <ActionForm open canManageActionItems onOpenChange={() => {}} />
+    </QueryClientProvider>
+  )
+}
+
+describe('Wave 02 scoped Action Item discovery', () => {
+  beforeEach(() => vi.restoreAllMocks())
+
+  it('selects an assignee from page two and resets pagination on a new search', async () => {
+    const lookup = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (path, config) => {
+        if (path === '/action-items/management-targets') return targets
+        if (path !== '/action-items/assignee-candidates') {
+          throw new Error(`Unexpected lookup: ${path}`)
+        }
+        const { page, q } = config?.params ?? {}
+        if (q === 'Beta') {
+          return pageResponse([candidate(22, 'Beta assignee')])
+        }
+        if (page === '1') {
+          return pageResponse([candidate(21, 'Alex page two')], 1, 21)
+        }
+        return pageResponse(
+          Array.from({ length: 20 }, (_, i) =>
+            candidate(i + 1, `Alex result ${i + 1}`)
+          ),
+          0,
+          21
+        )
+      })
+    const screen = await renderCreateForm()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Launch planning' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Review'
+    )
+    const search = screen.getByRole('textbox', {
+      name: 'Primary responsibility',
+    })
+    await userEvent.fill(search, 'Alex')
+    await expect
+      .element(screen.getByRole('button', { name: /Alex result 1 ·/ }))
+      .toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Next', exact: true }).last()
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: /Alex page two ·/ })
+    )
+    await expect
+      .element(
+        screen.getByRole('button', { name: 'Create official Action Item' })
+      )
+      .toBeEnabled()
+    expect(lookup).toHaveBeenCalledWith(
+      '/action-items/assignee-candidates',
+      expect.objectContaining({
+        params: expect.objectContaining({
+          meetingId: officialOpenItem.meetingId,
+          q: 'Alex',
+          page: '1',
+        }),
+      })
+    )
+    await userEvent.fill(search, 'Beta')
+    await expect
+      .element(screen.getByRole('button', { name: /Beta assignee ·/ }))
+      .toBeInTheDocument()
+    expect(lookup).toHaveBeenCalledWith(
+      '/action-items/assignee-candidates',
+      expect.objectContaining({
+        params: expect.objectContaining({ q: 'Beta', page: '0' }),
+      })
+    )
+  })
+
+  it('does not reuse a delayed candidate response after changing meetings', async () => {
+    const oldReply = pageResponse([candidate(1, 'Old scoped assignee')])
+    let releaseOld!: (value: typeof oldReply) => void
+    const pending = new Promise<typeof oldReply>((resolve) => {
+      releaseOld = resolve
+    })
+    let oldSignal: { aborted: boolean } | undefined
+    const lookup = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (path, config) => {
+        if (path === '/action-items/management-targets') return targets
+        if (path !== '/action-items/assignee-candidates') {
+          throw new Error(`Unexpected lookup: ${path}`)
+        }
+        if (config?.params.meetingId === officialOpenItem.meetingId) {
+          if (config?.params.q === 'Initial') {
+            return pageResponse([candidate(3, 'Initial assignee')])
+          }
+          oldSignal = config?.signal
+          return pending
+        }
+        return pageResponse([candidate(2, 'New scoped assignee')])
+      })
+    const screen = await renderCreateForm()
+    const submit = screen.getByRole('button', {
+      name: 'Create official Action Item',
+    })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Launch planning' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Review'
+    )
+    const search = screen.getByRole('textbox', {
+      name: 'Primary responsibility',
+    })
+    await userEvent.fill(search, 'Initial')
+    await userEvent.click(
+      screen.getByRole('button', { name: /Initial assignee ·/ })
+    )
+    await expect.element(submit).toBeEnabled()
+    await userEvent.fill(search, 'Alex')
+    await expect.poll(() => oldSignal !== undefined).toBe(true)
+    try {
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Second meeting' })
+      )
+      await expect.element(search).toHaveValue('')
+      await expect.element(submit).toBeDisabled()
+      await userEvent.fill(search, 'Alex')
+      await expect
+        .element(screen.getByRole('button', { name: /New scoped assignee ·/ }))
+        .toBeInTheDocument()
+      expect(lookup).toHaveBeenCalledWith(
+        '/action-items/assignee-candidates',
+        expect.objectContaining({
+          params: expect.objectContaining({
+            meetingId: otherMeeting,
+            q: 'Alex',
+            page: '0',
+          }),
+        })
+      )
+      await expect.poll(() => oldSignal?.aborted).toBe(true)
+      releaseOld(oldReply)
+      await pending
+      await expect
+        .element(screen.getByRole('button', { name: /Old scoped assignee ·/ }))
+        .not.toBeInTheDocument()
+      await expect.element(submit).toBeDisabled()
+      await userEvent.click(
+        screen.getByRole('button', { name: /New scoped assignee ·/ })
+      )
+      await expect.element(submit).toBeEnabled()
+    } finally {
+      releaseOld(oldReply)
+    }
+  })
+
+  it('keeps reviewable proposal scope while searching and paging the actual list', async () => {
+    const proposal = (index: number): ActionItem => ({
+      ...officialOpenItem,
+      id: candidate(index, '').id,
+      title: `Review proposal ${index}`,
+      status: 'PROPOSED',
+      sourceType: 'AI',
+      isOfficial: false,
+      meeting: { ...officialOpenItem.meeting, restricted: true },
+      capabilities: {
+        ...officialOpenItem.capabilities,
+        canStart: false,
+        canComplete: false,
+        canAccessMeeting: false,
+        canConfirm: true,
+        canReject: true,
+      },
+    })
+    const lookup = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (path, config) => {
+        if (path === '/action-items/management-capability') {
+          return { data: { canCreate: false }, meta: {} }
+        }
+        if (path !== '/action-items') {
+          throw new Error(`Unexpected lookup: ${path}`)
+        }
+        if (config?.params.reviewable !== 'true') return pageResponse([])
+        if (config?.params.q !== 'release') return pageResponse([proposal(1)])
+        if (config?.params.page === '1') {
+          return pageResponse([proposal(21)], 1, 21)
+        }
+        return pageResponse(
+          Array.from({ length: 20 }, (_, i) => proposal(i + 1)),
+          0,
+          21
+        )
+      })
+    const root = createRootRoute({ component: Outlet })
+    const route = createRoute({
+      getParentRoute: () => root,
+      path: '/',
+      component: ActionItemsPage,
+    })
+    const router = createRouter({
+      routeTree: root.addChildren([route]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+    const screen = await render(
+      <QueryClientProvider client={reviewClient()}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    )
+    await userEvent.click(screen.getByRole('tab', { name: 'Review proposals' }))
+    await expect
+      .element(
+        screen.getByRole('button', { name: 'Review proposal 1', exact: true })
+      )
+      .toBeInTheDocument()
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Search action items' }),
+      'release'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }))
+    await expect
+      .element(screen.getByRole('button', { name: 'Review proposal 21' }))
+      .toBeInTheDocument()
+    for (const page of ['0', '1']) {
+      expect(lookup).toHaveBeenCalledWith(
+        '/action-items',
+        expect.objectContaining({
+          params: expect.objectContaining({
+            official: 'false',
+            status: 'PROPOSED',
+            reviewable: 'true',
+            q: 'release',
+            page,
+          }),
+        })
+      )
+    }
   })
 })

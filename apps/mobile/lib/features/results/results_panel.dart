@@ -6,6 +6,7 @@ import '../../core/app_dependencies.dart';
 import '../../core/widgets.dart';
 import '../action_items/action_item_presentation.dart';
 import '../action_items/action_items_page.dart';
+import '../recording/processing_manager.dart';
 import 'decisions_review_panel.dart';
 import 'minutes_panel.dart';
 import 'results_action_item_routes.dart';
@@ -31,11 +32,15 @@ class ResultsPanel extends StatefulWidget {
     required this.workspace,
     this.dependencies,
     this.initialSection = ResultsSection.summary,
+    this.reviewHandoff,
+    this.onReviewAdmitted,
   });
 
   final ResultsWorkspaceController workspace;
   final AppDependencies? dependencies;
   final ResultsSection initialSection;
+  final TranscriptReviewHandoff? reviewHandoff;
+  final ValueChanged<TranscriptReviewHandoff>? onReviewAdmitted;
 
   @override
   State<ResultsPanel> createState() => _ResultsPanelState();
@@ -171,7 +176,11 @@ class _ResultsPanelState extends State<ResultsPanel> {
     final epoch = current.readEpoch;
     return switch (selected) {
       ResultsSection.summary => SummaryHistoryPanel(workspace: current),
-      ResultsSection.transcript => TranscriptReviewPanel(workspace: current),
+      ResultsSection.transcript => TranscriptReviewPanel(
+        workspace: current,
+        reviewHandoff: widget.reviewHandoff,
+        onReviewAdmitted: widget.onReviewAdmitted,
+      ),
       ResultsSection.decisions => DecisionsReviewPanel(workspace: current),
       ResultsSection.actionItems => _actionItems(current, epoch, dependencies!),
       ResultsSection.speakers => SpeakerMappingPanel(workspace: current),

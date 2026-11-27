@@ -195,7 +195,11 @@ describe('Assistant Core API adapter', () => {
       })
     ).resolves.toEqual(detail)
     await expect(
-      createAssistantConversation(meetingId, '  Project questions  ')
+      createAssistantConversation(
+        meetingId,
+        '  Project questions  ',
+        'creation-key'
+      )
     ).resolves.toEqual(conversation)
 
     expect(get).toHaveBeenNthCalledWith(
@@ -211,10 +215,11 @@ describe('Assistant Core API adapter', () => {
       `/assistant/conversations/${conversationId}`,
       expect.objectContaining({ params: { page: 0, size: 50 }, signal })
     )
-    expect(post).toHaveBeenCalledWith('/assistant/conversations', {
-      meetingId,
-      title: 'Project questions',
-    })
+    expect(post).toHaveBeenCalledWith(
+      '/assistant/conversations',
+      { meetingId, title: 'Project questions' },
+      { headers: { 'Idempotency-Key': 'creation-key' } }
+    )
   })
 
   it('requests zero-based conversation pages and treats empty or partial pages as terminal', async () => {

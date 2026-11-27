@@ -88,12 +88,27 @@ const mutationResponse = (value: unknown) => decisionSchema.parse(value)
 export async function createDecision(
   meetingId: string,
   content: string,
-  evidenceSegmentIds: string[] = []
+  evidenceSegmentIds: string[] = [],
+  reviewedSource?: { transcriptId: string; contentRevision: number }
 ) {
+  if (evidenceSegmentIds.length > 0 && !reviewedSource) {
+    throw new CoreApiError({
+      message: 'Review the transcript evidence before creating a decision.',
+      code: 'REVIEWED_SOURCE_REQUIRED',
+      kind: 'http',
+      status: 412,
+    })
+  }
   try {
     const response = await coreApi.post<unknown>(path(meetingId), {
       content,
       evidenceSegmentIds: [...new Set(evidenceSegmentIds)],
+      ...(evidenceSegmentIds.length > 0 && reviewedSource
+        ? {
+            reviewedTranscriptId: reviewedSource.transcriptId,
+            reviewedContentRevision: reviewedSource.contentRevision,
+          }
+        : {}),
     })
     return mutationResponse(response)
   } catch (error) {

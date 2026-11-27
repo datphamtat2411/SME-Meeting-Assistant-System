@@ -51,7 +51,8 @@ public class TranscriptReviewController {
 
     @PatchMapping("/transcript/segments/{segmentId}")
     public ResponseEntity<ApiResponse<CorrectionView>> correct(@PathVariable UUID meetingId,
-            @PathVariable UUID segmentId, @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+            @PathVariable UUID segmentId, @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current source ETag; missing returns 428, stale returns 412")
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
             @Valid @RequestBody CorrectTranscriptSegmentRequest request) {
         CorrectionView result = this.service.correct(meetingId, segmentId, ifMatch, request);
         return ResponseEntity.ok().eTag(result.etag())
@@ -66,6 +67,7 @@ public class TranscriptReviewController {
     @PatchMapping("/speaker-clusters/{clusterId}")
     public ResponseEntity<ApiResponse<SpeakerView>> mapSpeaker(@PathVariable UUID meetingId,
             @PathVariable UUID clusterId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current source ETag; missing returns 428, stale returns 412")
             @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
             @RequestBody(required = false) MapSpeakerRequest request) {
         SpeakerMapResult mapped = this.service.mapSpeaker(meetingId, clusterId, ifMatch, request);

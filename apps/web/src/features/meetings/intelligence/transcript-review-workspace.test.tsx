@@ -91,6 +91,7 @@ const initialTranscript = {
       speakerClusterId: speakerId,
       speakerLabel: 'Người nói 1',
       version: 1,
+      etag: '"opaque-second-segment"',
     },
     {
       id: firstSegmentId,
@@ -102,6 +103,7 @@ const initialTranscript = {
       speakerClusterId: speakerId,
       speakerLabel: 'Người nói 1',
       version: 3,
+      etag: '"opaque-first-segment"',
     },
   ],
 }
@@ -345,7 +347,7 @@ describe('TranscriptReviewWorkspace', () => {
       `/meetings/${meetingId}/transcript/segments/${firstSegmentId}`,
       { text: 'Bản chỉnh sửa của người dùng', reason: null },
       {
-        headers: { 'If-Match': `"s-${firstSegmentId}-3"` },
+        headers: { 'If-Match': '"opaque-first-segment"' },
         signal: expect.any(AbortSignal),
       }
     )
