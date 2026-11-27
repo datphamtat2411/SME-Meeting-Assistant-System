@@ -6,6 +6,7 @@ import 'package:sme_meeting_assistant/core/app_theme.dart';
 import 'package:sme_meeting_assistant/core/api_response.dart';
 import 'package:sme_meeting_assistant/core/meeting_models.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/core/ui_presentation.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart';
@@ -312,9 +313,7 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
         return MessagePanel(
           icon: Icons.cloud_off_outlined,
           title: 'Không thể tải danh sách thành viên',
-          description: state.failure is ApiFailure
-              ? (state.failure! as ApiFailure).message
-              : 'Đã xảy ra lỗi khi tải thành viên.',
+          description: apiFailureLabel(state.failure),
           onRetry: _controller.initialize,
         );
       }
@@ -362,9 +361,7 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
               MessagePanel(
                 icon: Icons.warning_amber_outlined,
                 title: 'Không thể làm mới đầy đủ dữ liệu',
-                description: state.failure is ApiFailure
-                    ? (state.failure! as ApiFailure).message
-                    : 'Hãy thử tải lại.',
+                description: apiFailureLabel(state.failure),
                 onRetry: _controller.refresh,
               ),
             if (active.isEmpty && historical.isEmpty)

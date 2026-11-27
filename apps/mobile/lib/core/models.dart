@@ -310,10 +310,13 @@ const meetingStates = <String, String>{
 };
 
 const actionStates = <String, String>{
-  'PROPOSED': 'AI đề xuất',
-  'OPEN': 'Cần làm',
+  'PROPOSED': 'Đề xuất',
+  'OPEN': 'Chưa thực hiện',
   'IN_PROGRESS': 'Đang thực hiện',
-  'DONE': 'Hoàn thành',
+  'DONE': 'Đã hoàn thành',
   'CANCELLED': 'Đã hủy',
   'REJECTED': 'Đã từ chối',
 };
+
+String meetingStatusLabel(String status) =>
+    meetingStates[status] ?? 'Trạng thái chưa được nhận diện ($status)';
