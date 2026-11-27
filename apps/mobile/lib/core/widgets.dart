@@ -87,11 +87,16 @@ class StatePill extends StatelessWidget {
       'PENDING',
       'PARTIAL',
       'COMPLETED_WITH_WARNINGS',
+      'SUCCEEDED_WITH_WARNING',
+      'READY_WITH_WARNINGS',
+      'WAITING_FOR_REVIEW',
+      'SUSPICIOUS',
       'NEEDS_REVIEW',
       'DRAFT',
     ].contains(status);
     final bad = [
       'FAILED',
+      'UNRESOLVED_ERROR',
       'CANCELLED',
       'REJECTED',
       'BLOCKED',

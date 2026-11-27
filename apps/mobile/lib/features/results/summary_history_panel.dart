@@ -6,6 +6,7 @@ import '../../core/app_theme.dart';
 import '../../core/command_actions.dart';
 import '../../core/widgets.dart';
 import '../recording/media_contracts.dart';
+import '../recording/processing_presentation.dart';
 import 'results_models.dart';
 import 'results_workspace_controller.dart';
 import 'results_presentation.dart';
@@ -274,7 +275,8 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
-          if (job != null) StatePill(job.status.wireValue),
+          if (job != null)
+            StatePill(job.status.wireValue, label: processingJobStatusLabel(job.status)),
           if (job?.warningSummary != null)
             Text(
               job!.warningSummary!,
@@ -282,7 +284,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
             ),
           if (job?.errorSummary != null)
             Text(
-              job!.errorSummary!,
+              processingFailureLabel(job!.errorCode, job.errorSummary),
               style: const TextStyle(color: Palette.red),
             ),
           if (job?.status.isSuccessful == true)

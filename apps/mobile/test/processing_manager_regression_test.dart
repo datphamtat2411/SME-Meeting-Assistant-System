@@ -101,13 +101,13 @@ void main() {
       );
       await tester.pumpWidget(panel(true));
       await tester.pumpAndSettle();
-      expect(find.text('Job ID: $firstJobId'), findsOneWidget);
+      expect(find.text('Mã tác vụ: $firstJobId'), findsOneWidget);
       await tester.pumpWidget(panel(false));
       await tester.runAsync(
         () => manager.refresh(testMeetingId, scope: scope, explicit: true),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Job ID: $firstJobId'), findsNothing);
+      expect(find.text('Mã tác vụ: $firstJobId'), findsNothing);
       expect(
         find.text('Bạn không có quyền xem tiến trình xử lý'),
         findsOneWidget,

@@ -10,6 +10,7 @@ import 'local_media_repository.dart';
 import 'media_contracts.dart';
 import 'media_repository.dart';
 import 'processing_manager.dart';
+import 'processing_presentation.dart';
 import 'processing_repository.dart';
 import 'recording_coordinator.dart';
 import 'recording_workspace_controller.dart';
@@ -511,17 +512,22 @@ class _RecordingPageState extends State<RecordingPage> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  _jobLabel(job),
+                  processingJobTypeLabel(job.jobType),
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
-              StatePill(job.status.wireValue),
+              Flexible(
+                child: StatePill(
+                  job.status.wireValue,
+                  label: processingJobStatusLabel(job.status),
+                ),
+              ),
             ],
           ),
           if (job.currentStage != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text('Giai đoạn: ${job.currentStage}'),
+              child: Text('Giai đoạn: ${processingStageLabel(job.currentStage)}'),
             ),
           if (job.warningSummary != null)
             Padding(
@@ -535,7 +541,7 @@ class _RecordingPageState extends State<RecordingPage> {
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
-                'Tác vụ không hoàn tất. Kiểm tra khả năng thử lại.',
+                processingFailureLabel(job.errorCode, job.errorSummary),
                 style: const TextStyle(color: Palette.red),
               ),
             ),
@@ -559,7 +565,7 @@ class _RecordingPageState extends State<RecordingPage> {
               if (handoff != null && widget.onReviewRequested != null)
                 OutlinedButton(
                   onPressed: () => widget.onReviewRequested!(handoff),
-                  child: const Text('Mở duyệt bản ghi'),
+                  child: const Text('Mở rà soát bản ghi'),
                 ),
             ],
           ),
@@ -660,17 +666,6 @@ class _RecordingPageState extends State<RecordingPage> {
     MediaStatus.available => 'Đã sẵn sàng',
     MediaStatus.rejected => 'Bị từ chối',
     MediaStatus.failed => 'Thất bại',
-  };
-
-  String _jobLabel(ProcessingJobRecord job) => switch (job.status) {
-    ProcessingJobStatus.pending => 'Đang chờ',
-    ProcessingJobStatus.queued => 'Đã xếp hàng',
-    ProcessingJobStatus.running => 'Đang xử lý',
-    ProcessingJobStatus.waitingForReview => 'Chờ duyệt bản ghi',
-    ProcessingJobStatus.completed => 'Đã hoàn tất',
-    ProcessingJobStatus.completedWithWarnings => 'Hoàn tất có cảnh báo',
-    ProcessingJobStatus.failed => 'Xử lý thất bại',
-    ProcessingJobStatus.cancelled => 'Đã hủy',
   };
 
   String _bytes(int value) {
