@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { useState, useSyncExternalStore } from 'react'
 import { ArrowLeft, Bot } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -34,6 +35,7 @@ export function AssistantPage(props: SelectionProps) {
 }
 
 function AssistantWorkspace({ selection, onSelectionChange }: SelectionProps) {
+  const { t } = useUiTranslation()
   const [view, setView] = useState<'assistant' | 'discovery'>('assistant')
   const [createOpen, setCreateOpen] = useState(false)
   const [mobileBackFor, setMobileBackFor] = useState<string>()
@@ -61,14 +63,13 @@ function AssistantWorkspace({ selection, onSelectionChange }: SelectionProps) {
       <Main fixed fluid className='min-h-0 gap-4'>
         <div className='shrink-0 space-y-2'>
           <h1 className='flex items-center gap-2 text-xl font-bold sm:text-2xl'>
-            <Bot className='size-6 text-primary' /> AI Assistant & search
+            <Bot className='size-6 text-primary' /> {t('assistant:heading')}
           </h1>
           <p className='text-sm text-muted-foreground'>
-            Ask questions grounded in one authorized meeting or find meetings by
-            their metadata.
+            {t('assistant:intro')}
           </p>
           <nav
-            aria-label='Assistant views'
+            aria-label={t('assistant:views')}
             className='flex gap-2 border-b pb-2'
           >
             <Button
@@ -81,7 +82,7 @@ function AssistantWorkspace({ selection, onSelectionChange }: SelectionProps) {
                 setView('assistant')
               }}
             >
-              Assistant
+              {t('assistant:assistant')}
             </Button>
             <Button
               type='button'
@@ -92,7 +93,7 @@ function AssistantWorkspace({ selection, onSelectionChange }: SelectionProps) {
                 setView('discovery')
               }}
             >
-              Find meetings
+              {t('assistant:findMeetings')}
             </Button>
           </nav>
         </div>
@@ -132,7 +133,7 @@ function AssistantWorkspace({ selection, onSelectionChange }: SelectionProps) {
                     variant='ghost'
                     onClick={() => setMobileBackFor(selection.conversationId)}
                   >
-                    <ArrowLeft className='size-4' /> Conversations
+                    <ArrowLeft className='size-4' /> {t('assistant:conversations')}
                   </Button>
                 </div>
               )}
@@ -145,17 +146,16 @@ function AssistantWorkspace({ selection, onSelectionChange }: SelectionProps) {
               ) : (
                 <div className='flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center'>
                   <Bot className='size-12 text-muted-foreground' />
-                  <h2 className='text-xl font-semibold'>Ask about a meeting</h2>
+                  <h2 className='text-xl font-semibold'>{t('assistant:askMeeting')}</h2>
                   <p className='max-w-md text-sm text-muted-foreground'>
-                    Open an existing conversation or select an authorized
-                    meeting to start asking questions.
+                    {t('assistant:openOrCreate')}
                   </p>
                   <Button
                     type='button'
                     onClick={() => setCreateOpen(true)}
                     disabled={Boolean(conversation.selector.listAccessError)}
                   >
-                    Start a conversation
+                    {t('assistant:startConversation')}
                   </Button>
                 </div>
               )}

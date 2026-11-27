@@ -1,4 +1,5 @@
 import enActionItems from './locales/en/action-items.json'
+import enAssistant from './locales/en/assistant.json'
 import enAuth from './locales/en/auth.json'
 import enCalendar from './locales/en/calendar.json'
 import enCommon from './locales/en/common.json'
@@ -21,6 +22,7 @@ import enSummary from './locales/en/summary.json'
 import enTranscript from './locales/en/transcript.json'
 import enWorkspace from './locales/en/workspace.json'
 import viActionItems from './locales/vi/action-items.json'
+import viAssistant from './locales/vi/assistant.json'
 import viAuth from './locales/vi/auth.json'
 import viCalendar from './locales/vi/calendar.json'
 import viCommon from './locales/vi/common.json'
@@ -46,6 +48,7 @@ import viWorkspace from './locales/vi/workspace.json'
 export const resources = {
   en: {
     'action-items': enActionItems,
+    assistant: enAssistant,
     auth: enAuth,
     calendar: enCalendar,
     common: enCommon,
@@ -70,6 +73,7 @@ export const resources = {
   },
   vi: {
     'action-items': viActionItems,
+    assistant: viAssistant,
     auth: viAuth,
     calendar: viCalendar,
     common: viCommon,

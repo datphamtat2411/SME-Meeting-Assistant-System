@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { LoaderCircle, ShieldAlert } from 'lucide-react'
@@ -66,6 +67,7 @@ export function ConversationHistory({
   showLatest: boolean
   onShowLatestChange: (show: boolean) => void
 }) {
+  const { t } = useUiTranslation()
   const client = useQueryClient()
   useAssistantAccessRevision(client)
   const [inspection, setInspection] = useState<Inspection>()
@@ -144,7 +146,7 @@ export function ConversationHistory({
         ref={viewport}
         onScroll={() => rememberPosition()}
         className='min-h-0 flex-1 space-y-5 overflow-y-auto px-3 py-4 [overflow-anchor:none] sm:px-6'
-        aria-label='Conversation history'
+        aria-label={t('assistant:history')}
         tabIndex={0}
       >
         {olderPageError != null && <AssistantError error={olderPageError} />}
@@ -161,18 +163,18 @@ export function ConversationHistory({
             >
               {loadingOlder && <LoaderCircle className='size-4 animate-spin' />}
               {olderPageError
-                ? 'Retry loading older messages'
-                : 'Load older messages'}
+                ? t('assistant:retryOlderMessages')
+                : t('assistant:olderMessages')}
             </Button>
           </div>
         )}
         {!messages.length && (
           <div className='mx-auto max-w-lg space-y-4 py-8 text-center'>
             <h3 className='text-lg font-semibold'>
-              Conversation is ready for questions.
+              {t('assistant:ready')}
             </h3>
             <p className='text-sm text-muted-foreground'>
-              Explore the available knowledge from this meeting.
+              {t('assistant:explore')}
             </p>
             <div className='grid gap-2 sm:grid-cols-2'>
               {suggestions.map((question) => (
@@ -211,7 +213,7 @@ export function ConversationHistory({
             onShowLatestChange(false)
           }}
         >
-          Jump to latest
+          {t('assistant:jumpLatest')}
         </Button>
       )}
       {inspection && inspected && (
@@ -232,16 +234,16 @@ export function ConversationHistory({
 }
 
 const answerLabels = {
-  GROUNDED: 'Grounded answer',
-  PARTIAL: 'Partially supported answer',
-  INSUFFICIENT_EVIDENCE: 'Insufficient evidence',
-  FAILED: 'Answer failed',
+  GROUNDED: 'assistant:GROUNDED',
+  PARTIAL: 'assistant:PARTIAL',
+  INSUFFICIENT_EVIDENCE: 'assistant:INSUFFICIENT_EVIDENCE',
+  FAILED: 'assistant:FAILED',
 }
 
 const supportLabels: Record<string, string> = {
-  SUPPORTED: 'Supported',
-  UNSUPPORTED: 'Not established from evidence',
-  CONFLICTED: 'Conflicting evidence',
+  SUPPORTED: 'assistant:SUPPORTED',
+  UNSUPPORTED: 'assistant:UNSUPPORTED',
+  CONFLICTED: 'assistant:CONFLICTED',
 }
 
 function AssistantMessageCard({
@@ -251,6 +253,7 @@ function AssistantMessageCard({
   message: AssistantMessage
   onInspect: (id: string, trigger: HTMLElement, citationId?: string) => void
 }) {
+  const { t } = useUiTranslation()
   const isUser = message.role === 'USER'
   const sourceUnavailable = message.visibility !== 'VISIBLE'
   return (
@@ -264,7 +267,7 @@ function AssistantMessageCard({
     >
       <div className='flex flex-wrap items-center gap-2 text-xs text-muted-foreground'>
         <span className='font-medium text-foreground'>
-          {isUser ? 'You' : 'Meeting Assistant'}
+          {isUser ? t('assistant:you') : t('assistant:meetingAssistant')}
         </span>
         <time dateTime={message.createdAt}>
           <RegionalTimestamp value={message.createdAt} />
@@ -273,17 +276,16 @@ function AssistantMessageCard({
       {sourceUnavailable ? (
         <Alert>
           <ShieldAlert />
-          <AlertTitle>Source unavailable</AlertTitle>
+          <AlertTitle>{t('assistant:sourceUnavailable')}</AlertTitle>
           <AlertDescription>
-            The supporting evidence is no longer current or available. The
-            previous answer is withheld.
+            {t('assistant:sourceWithheld')}
           </AlertDescription>
         </Alert>
       ) : (
         <>
           {!isUser && message.answerStatus && (
             <p className='text-xs font-medium text-muted-foreground'>
-              {answerLabels[message.answerStatus]}
+              {t(answerLabels[message.answerStatus])}
             </p>
           )}
           {message.content && (
@@ -295,7 +297,7 @@ function AssistantMessageCard({
             message.answerStatus === 'INSUFFICIENT_EVIDENCE' &&
             message.citations.length === 0 && (
               <p className='text-sm text-muted-foreground'>
-                No verified citations were returned.
+                {t('assistant:noCitations')}
               </p>
             )}
           {!isUser && message.claims.length > 0 && (
@@ -307,7 +309,7 @@ function AssistantMessageCard({
               }
             >
               <summary className='cursor-pointer text-sm font-medium'>
-                Claim support ({message.claims.length})
+                {t('assistant:claims', { count: message.claims.length })}
               </summary>
               <div className='mt-3 space-y-2'>
                 {message.claims.map((claim) => (
@@ -317,8 +319,7 @@ function AssistantMessageCard({
                   >
                     <p className='whitespace-pre-wrap'>{claim.text}</p>
                     <p className='text-xs text-muted-foreground'>
-                      {supportLabels[claim.support] ??
-                        'Support not established'}
+                      {supportLabels[claim.support] ? t(supportLabels[claim.support]) : t('assistant:supportUnknown')}
                     </p>
                     <div className='flex flex-wrap gap-1'>
                       {message.citations.map((citation, index) =>
@@ -329,7 +330,7 @@ function AssistantMessageCard({
                             type='button'
                             variant='outline'
                             size='sm'
-                            aria-label={'Inspect citation ' + (index + 1)}
+                            aria-label={t('assistant:inspectCitation', { number: index + 1 })}
                             onClick={(event) =>
                               onInspect(
                                 message.id,
@@ -355,7 +356,7 @@ function AssistantMessageCard({
               variant='outline'
               onClick={(event) => onInspect(message.id, event.currentTarget)}
             >
-              Supporting evidence ({message.citations.length})
+              {t('assistant:citations', { count: message.citations.length })}
             </Button>
           )}
         </>

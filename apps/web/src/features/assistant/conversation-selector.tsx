@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { useState } from 'react'
 import { LoaderCircle, Plus } from 'lucide-react'
 import type { CoreApiError } from '@/lib/core-api'
@@ -66,9 +67,10 @@ export function ConversationSelector({
   createOpen: boolean
   onCreateOpenChange: (open: boolean) => void
 }) {
+  const { t } = useUiTranslation()
   const [search, setSearch] = useState('')
   const matches = allConversations.filter((item) =>
-    (item.title || 'Untitled conversation')
+    (item.title || t('assistant:untitled'))
       .toLocaleLowerCase()
       .includes(search.trim().toLocaleLowerCase())
   )
@@ -80,24 +82,23 @@ export function ConversationSelector({
   return (
     <div className='flex h-full min-h-0 flex-col gap-3 p-3'>
       <div className='flex items-center justify-between gap-2'>
-        <h2 className='font-semibold'>Conversations</h2>
+        <h2 className='font-semibold'>{t('assistant:conversations')}</h2>
         <Dialog open={createOpen} onOpenChange={onCreateOpenChange}>
           <DialogTrigger asChild>
             <Button
               type='button'
               size='icon'
               variant='outline'
-              aria-label='New conversation'
+              aria-label={t('assistant:newConversation')}
             >
               <Plus className='size-4' />
             </Button>
           </DialogTrigger>
           <DialogContent className='max-h-[90dvh] overflow-y-auto'>
             <DialogHeader>
-              <DialogTitle>New conversation</DialogTitle>
+              <DialogTitle>{t('assistant:newConversation')}</DialogTitle>
               <DialogDescription>
-                Choose one meeting. Questions in this conversation are limited
-                to its authorized knowledge.
+                {t('assistant:scopeDescription')}
               </DialogDescription>
             </DialogHeader>
             <MeetingScopePicker
@@ -112,23 +113,22 @@ export function ConversationSelector({
               />
             )}
             <label className='space-y-1.5 text-sm font-medium'>
-              <span>Conversation title (optional)</span>
+              <span>{t('assistant:optionalTitle')}</span>
               <Input
-                aria-label='Conversation title'
+                aria-label={t('assistant:conversationTitle')}
                 maxLength={255}
                 value={conversationTitle}
                 onChange={(event) =>
                   onConversationTitleChange(event.target.value)
                 }
-                placeholder='Questions about this meeting'
+                placeholder={t('assistant:titlePlaceholder')}
                 disabled={!selectedMeetingReady || createPending}
               />
             </label>
             {createError != null && <AssistantError error={createError} />}
             {uncertainCreation && (
               <p role='status' className='text-sm text-muted-foreground'>
-                The creation outcome is unresolved. Submit the same meeting and
-                title to retry safely, or review the conversation list.
+                {t('assistant:creationUnresolved')}
               </p>
             )}
             <DialogFooter>
@@ -137,7 +137,7 @@ export function ConversationSelector({
                 variant='outline'
                 onClick={() => onCreateOpenChange(false)}
               >
-                Cancel
+                {t('assistant:cancel')}
               </Button>
               <Button
                 type='button'
@@ -149,7 +149,7 @@ export function ConversationSelector({
                 {createPending && (
                   <LoaderCircle className='size-4 animate-spin' />
                 )}
-                Create conversation
+                {t('assistant:createConversation')}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -157,24 +157,23 @@ export function ConversationSelector({
       </div>
       {uncertainCreation && (
         <p role='status' className='text-xs text-muted-foreground'>
-          A creation request is unresolved. Retry with the same meeting and
-          title to recover it safely.
+          {t('assistant:creationRetry')}
         </p>
       )}
       <Input
-        aria-label='Search loaded conversations'
-        placeholder='Search loaded conversations'
+        aria-label={t('assistant:searchLoaded')}
+        placeholder={t('assistant:searchLoaded')}
         value={search}
         onChange={(event) => setSearch(event.target.value)}
       />
       {conversationsQuery.hasNextPage && (
         <p className='text-xs text-muted-foreground'>
-          Search covers loaded conversations only.
+          {t('assistant:searchLoadedOnly')}
         </p>
       )}
       <div className='min-h-0 flex-1 space-y-2 overflow-y-auto'>
         {conversationsQuery.isPending && !conversationsQuery.data ? (
-          <RequestLoading label='Loading Assistant conversations…' />
+          <RequestLoading label={t('assistant:loadingConversations')} />
         ) : conversationsQuery.isError && !conversationsQuery.data ? (
           <AssistantError
             error={conversationsQuery.error}
@@ -184,13 +183,13 @@ export function ConversationSelector({
           <RequestEmpty
             title={
               search
-                ? 'No matching loaded conversations'
-                : 'No conversations yet'
+                ? t('assistant:noMatchingConversations')
+                : t('assistant:noConversations')
             }
             description={
               search
                 ? undefined
-                : 'Start a conversation to ask about a meeting.'
+                : t('assistant:startHint')
             }
           />
         ) : (
@@ -205,21 +204,18 @@ export function ConversationSelector({
                 selectedConversationId === item.id ? 'true' : undefined
               }
               aria-label={
-                (selectedConversationId === item.id
-                  ? 'Opened: '
-                  : 'Open conversation: ') +
-                (item.title || 'Untitled conversation')
+                t(selectedConversationId === item.id ? 'assistant:opened' : 'assistant:openConversation', { title: item.title || t('assistant:untitled') })
               }
               onClick={() => onConversationOpen(item)}
               className='h-auto w-full flex-col items-start gap-1 p-3 text-start'
             >
               <span className='w-full truncate font-medium'>
-                {item.title || 'Untitled conversation'}
+                {item.title || t('assistant:untitled')}
               </span>
               <span className='w-full truncate text-xs font-normal text-muted-foreground'>
                 {selectedMeetingId === item.meetingId && selectedMeetingTitle
                   ? selectedMeetingTitle
-                  : 'One meeting'}
+                  : t('assistant:oneMeeting')}
               </span>
               <time
                 className='text-xs font-normal text-muted-foreground'
@@ -248,8 +244,8 @@ export function ConversationSelector({
               <LoaderCircle className='size-4 animate-spin' />
             )}
             {conversationsQuery.isFetchNextPageError
-              ? 'Retry loading older conversations'
-              : 'Load older conversations'}
+              ? t('assistant:retryOlderConversations')
+              : t('assistant:loadOlderConversations')}
           </Button>
         )}
       </div>

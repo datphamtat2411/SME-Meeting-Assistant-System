@@ -1,3 +1,5 @@
+import { localizedValidationMessage } from '@/lib/i18n/presentation'
+import { useUiTranslation } from '@/lib/i18n'
 import {
   useCallback,
   useRef,
@@ -84,6 +86,7 @@ export function ConversationPanel({
     blockedUntil?: number
   }
 }) {
+  const { t } = useUiTranslation()
   const form = useRef<HTMLFormElement>(null)
   const position = useRef<HistoryScrollPosition>({ following: true })
   const readPosition = useCallback(() => position.current, [])
@@ -102,7 +105,7 @@ export function ConversationPanel({
     return detailQuery.isError ? (
       <AssistantError error={detailQuery.error} onRetry={onRefresh} />
     ) : (
-      <RequestLoading label='Loading conversation history…' />
+      <RequestLoading label={t('assistant:loadingHistory')} />
     )
   }
 
@@ -111,10 +114,10 @@ export function ConversationPanel({
       <div className='flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-3 py-3 sm:px-6'>
         <div>
           <h3 className='font-semibold'>
-            {selectedConversation.title || 'Untitled conversation'}
+            {selectedConversation.title || t('assistant:untitled')}
           </h3>
           <p className='text-sm text-muted-foreground'>
-            {selectedMeetingTitle || 'Authorized meeting'} · One meeting
+            {selectedMeetingTitle || t('assistant:authorizedMeeting')} · {t('assistant:oneMeeting')}
           </p>
         </div>
         {selectedMeetingTitle && (
@@ -123,7 +126,7 @@ export function ConversationPanel({
               to='/meetings/$meetingId'
               params={{ meetingId: selectedConversation.meetingId }}
             >
-              Open meeting
+              {t('assistant:openMeeting')}
             </Link>
           </Button>
         )}
@@ -134,7 +137,7 @@ export function ConversationPanel({
           onClick={onRefresh}
           disabled={detailQuery.isFetching || historyRefreshing}
         >
-          <RefreshCw className='size-4' /> Refresh history
+          <RefreshCw className='size-4' /> {t('assistant:refreshHistory')}
         </Button>
       </div>
       {detailQuery.data ? (
@@ -166,33 +169,33 @@ export function ConversationPanel({
           <Alert>
             <AlertTitle>
               {workflow.phase === 'submitting'
-                ? 'Sending your question…'
+                ? t('assistant:sending')
                 : workflow.phase === 'recovering'
-                  ? 'Resuming the existing request…'
+                  ? t('assistant:resuming')
                   : workflow.phase === 'recoverable'
-                    ? 'This request needs to be resumed'
+                    ? t('assistant:recoverable')
                     : workflow.phase === 'paused'
-                      ? 'Turn outcome is unresolved'
+                      ? t('assistant:paused')
                       : workflow.phase === 'uncertain' ||
                           workflow.phase === 'lookup'
                         ? workflow.conflict
-                          ? 'Question rejected; checking the conflicting request'
-                          : 'Question submission is unresolved'
+                          ? t('assistant:conflict')
+                          : t('assistant:uncertain')
                         : workflow.conflict
-                          ? 'Core is processing the existing turn.'
-                          : 'Core is processing this question.'}
+                          ? t('assistant:existingTurn')
+                          : t('assistant:processingQuestion')}
             </AlertTitle>
             <AlertDescription>
               {workflow.phase === 'recoverable'
-                ? 'Resume the existing request. This will not send another question.'
+                ? t('assistant:resumeExisting')
                 : workflow.phase === 'paused'
-                  ? 'Resume read-only status checks to reconcile the durable turn.'
+                  ? t('assistant:resumeReadOnly')
                   : workflow.phase === 'uncertain' ||
                       workflow.phase === 'lookup'
                     ? workflow.conflict
-                      ? 'This question was rejected. Status checks concern the existing request, not acceptance of this question.'
-                      : 'The original request identity is retained. No automatic resubmission will occur.'
-                    : 'We will check for the result without sending another question.'}
+                      ? t('assistant:rejectedHint')
+                      : t('assistant:identityRetained')
+                    : t('assistant:checkWithoutSubmit')}
               {workflow.phase === 'recoverable' && (
                 <Button
                   type='button'
@@ -201,7 +204,7 @@ export function ConversationPanel({
                   onClick={onRecover}
                   disabled={!turnActions.recover}
                 >
-                  Recover turn
+                  {t('assistant:recoverTurn')}
                 </Button>
               )}
               {(workflow.phase === 'paused' ||
@@ -213,7 +216,7 @@ export function ConversationPanel({
                   onClick={onResumePolling}
                   disabled={!turnActions.resume}
                 >
-                  Resume status checks
+                  {t('assistant:resumeChecks')}
                 </Button>
               )}
             </AlertDescription>
@@ -235,7 +238,7 @@ export function ConversationPanel({
         )}
         {turnActions.blockedUntil != null && (
           <p className='text-sm text-muted-foreground' role='status'>
-            Core requested no retry before{' '}
+            {t('assistant:retryAfter')}{' '}
             <RegionalTimestamp
               value={new Date(turnActions.blockedUntil).toJSON()}
             />
@@ -244,7 +247,7 @@ export function ConversationPanel({
         )}
         {inactive && (
           <p className='text-sm text-muted-foreground'>
-            This conversation is not active.
+            {t('assistant:inactive')}
           </p>
         )}
       </div>
@@ -254,12 +257,12 @@ export function ConversationPanel({
         onSubmit={onQuestionSubmit}
       >
         <label className='space-y-1.5 text-sm font-medium'>
-          <span>Ask about this meeting</span>
+          <span>{t('assistant:askThisMeeting')}</span>
           <Textarea
-            aria-label='Assistant question'
+            aria-label={t('assistant:question')}
             value={question}
             onChange={(event) => onQuestionChange(event.target.value)}
-            placeholder='Ask a question grounded in the authorized meeting evidence'
+            placeholder={t('assistant:questionPlaceholder')}
             disabled={questionBusy}
             aria-invalid={
               questionCount > ASSISTANT_QUESTION_LIMIT ||
@@ -286,14 +289,12 @@ export function ConversationPanel({
         </label>
         <div className='flex flex-wrap items-center justify-between gap-3'>
           <span className='text-xs text-muted-foreground'>
-            {questionCount}/4096 Unicode code points · AI-derived answers;
-            verify important details
+            {t('assistant:questionCount', { count: questionCount })}
           </span>
           {(questionValidationError ||
             questionCount > ASSISTANT_QUESTION_LIMIT) && (
             <span role='alert' className='text-sm text-destructive'>
-              {questionValidationError ||
-                'Questions must be at most 4096 Unicode code points.'}
+              {questionValidationError ? localizedValidationMessage(questionValidationError, t) : t('assistant:questionLimit')}
             </span>
           )}
           <Button
@@ -304,7 +305,7 @@ export function ConversationPanel({
               questionCount > ASSISTANT_QUESTION_LIMIT
             }
           >
-            {questionMutationLabel(questionBusy, workflow)}
+            {questionMutationLabel(t, questionBusy, workflow)}
           </Button>
         </div>
       </form>
@@ -313,10 +314,11 @@ export function ConversationPanel({
 }
 
 function questionMutationLabel(
+  t: (key: string) => string,
   busy: boolean,
   workflow?: TurnWorkflow
 ): ReactNode {
-  if (workflow && workflow.phase !== 'settled') return 'Processing…'
+  if (workflow && workflow.phase !== 'settled') return t('assistant:processing')
   if (busy) return <LoaderCircle className='size-4 animate-spin' />
-  return 'Ask Assistant'
+  return t('assistant:askAssistant')
 }
