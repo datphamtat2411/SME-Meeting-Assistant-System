@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { type QueryClient } from '@tanstack/react-query'
 import {
   createRootRouteWithContext,
@@ -11,6 +12,9 @@ import { NavigationProgress } from '@/components/navigation-progress'
 import { GeneralError } from '@/features/errors/general-error'
 import { NotFoundError } from '@/features/errors/not-found-error'
 
+const DEFAULT_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+const SENSITIVE_REFERRER_POLICY = 'no-referrer'
+
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient
 }>()({
@@ -21,6 +25,22 @@ export const Route = createRootRouteWithContext<{
           location.pathname
         ),
     })
+    const referrerPolicy = sensitiveCallback
+      ? SENSITIVE_REFERRER_POLICY
+      : DEFAULT_REFERRER_POLICY
+
+    useEffect(() => {
+      let referrerMeta = document.querySelector<HTMLMetaElement>(
+        'meta[name="referrer"]'
+      )
+      if (!referrerMeta) {
+        referrerMeta = document.createElement('meta')
+        referrerMeta.name = 'referrer'
+        document.head.appendChild(referrerMeta)
+      }
+      referrerMeta.content = referrerPolicy
+    }, [referrerPolicy])
+
     return (
       <>
         <NavigationProgress />

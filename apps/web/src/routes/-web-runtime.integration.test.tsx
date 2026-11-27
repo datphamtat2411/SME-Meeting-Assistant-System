@@ -502,6 +502,24 @@ describe('integrated generated Web runtime', () => {
     expect(router.state.location.pathname).toBe('/sign-in')
   })
 
+  it('uses the baseline referrer policy for normal pages and no-referrer for callbacks', async () => {
+    const { router, screen } = await renderGeneratedRoute('/sign-in')
+    const getReferrerPolicy = () =>
+      document.querySelector<HTMLMetaElement>("meta[name='referrer']")?.content
+
+    await expect
+      .poll(getReferrerPolicy)
+      .toBe('strict-origin-when-cross-origin')
+
+    await router.navigate({ to: '/account-setup' })
+    await expect.poll(getReferrerPolicy).toBe('no-referrer')
+
+    await router.navigate({ to: '/sign-in' })
+    await expect.poll(getReferrerPolicy).toBe('strict-origin-when-cross-origin')
+
+    await screen.unmount()
+  })
+
   it.each([
     ['/401', '401'],
     ['/403', '403'],
