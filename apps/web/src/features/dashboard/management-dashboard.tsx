@@ -1,9 +1,12 @@
-import { useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage } from '@/lib/i18n/presentation'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, ListChecks, TriangleAlert } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+} from '@/lib/i18n/presentation'
 import { formatPresentationInstant } from '@/lib/presentation-time'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
@@ -127,9 +130,7 @@ function ManagementReport({
       let period
       if (preset === 'custom') {
         if (!timezone) {
-          throw new Error(
-            featureValidationMessage('dashboard:verifyZone')
-          )
+          throw new Error(featureValidationMessage('dashboard:verifyZone'))
         }
         period = customPeriod(start, end, timezone)
       } else {
@@ -149,7 +150,9 @@ function ManagementReport({
       }
     } catch (error) {
       setFilterError(
-        error instanceof Error ? error.message : featureValidationMessage('dashboard:invalidFilters')
+        error instanceof Error
+          ? error.message
+          : featureValidationMessage('dashboard:invalidFilters')
       )
     }
   }
@@ -273,7 +276,9 @@ function ManagementReport({
                 />
               </label>
               <p className='text-xs text-muted-foreground sm:col-span-2'>
-                {t('dashboard:calendarZone', { zone: timezone ?? t('dashboard:reportZoneFallback') })}
+                {t('dashboard:calendarZone', {
+                  zone: timezone ?? t('dashboard:reportZoneFallback'),
+                })}
               </p>
             </div>
           )}
@@ -302,10 +307,28 @@ function ManagementReport({
           <>
             <div className='space-y-1 text-xs text-muted-foreground'>
               <p>
-                {t('dashboard:appliedPeriod', { from: formatPresentationInstant(data.period.fromInclusive, data.timezone, locale), to: formatPresentationInstant(data.period.toExclusive, data.timezone, locale) })}
+                {t('dashboard:appliedPeriod', {
+                  from: formatPresentationInstant(
+                    data.period.fromInclusive,
+                    data.timezone,
+                    locale
+                  ),
+                  to: formatPresentationInstant(
+                    data.period.toExclusive,
+                    data.timezone,
+                    locale
+                  ),
+                })}
               </p>
               <p>
-                {t('dashboard:reportAsOf', { zone: data.timezone, date: formatPresentationInstant(data.asOf, data.timezone, locale) })}
+                {t('dashboard:reportAsOf', {
+                  zone: data.timezone,
+                  date: formatPresentationInstant(
+                    data.asOf,
+                    data.timezone,
+                    locale
+                  ),
+                })}
               </p>
               <p>
                 {t('dashboard:scope')}{' '}
@@ -316,7 +339,9 @@ function ManagementReport({
                   : t('dashboard:allUnits')}{' '}
                 ({numberFormat.format(data.scope.organizationalUnitIds.length)})
               </p>
-              {report.isFetching && <p role='status'>{t('dashboard:refreshingReport')}</p>}
+              {report.isFetching && (
+                <p role='status'>{t('dashboard:refreshingReport')}</p>
+              )}
             </div>
             <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
               <Metric
@@ -378,7 +403,9 @@ function ManagementReport({
             </section>
             {data.unavailableMetrics.length > 0 && (
               <section className='space-y-2 border-t pt-4'>
-                <h3 className='text-sm font-semibold'>{t('dashboard:limitations')}</h3>
+                <h3 className='text-sm font-semibold'>
+                  {t('dashboard:limitations')}
+                </h3>
                 {data.unavailableMetrics.map(({ metric, reason }) => (
                   <p key={metric} className='text-sm text-muted-foreground'>
                     {t(metricLabels[metric] ?? 'dashboard:additionalMetric')}:{' '}

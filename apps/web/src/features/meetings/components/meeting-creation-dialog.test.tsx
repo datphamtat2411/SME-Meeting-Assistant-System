@@ -175,7 +175,9 @@ describe('MeetingCreationDialog', () => {
 
   it('retains entered meeting data and sends the same draft payload after switching language', async () => {
     mockRoomQueries()
-    const createSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag').mockResolvedValue({ data: draftMeeting, meta: {}, etag: 'draft-etag' })
+    const createSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValue({ data: draftMeeting, meta: {}, etag: 'draft-etag' })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
         <RegionalPresentationProvider>
@@ -183,12 +185,23 @@ describe('MeetingCreationDialog', () => {
         </RegionalPresentationProvider>
       </QueryClientProvider>
     )
-    await userEvent.fill(screen.getByRole('textbox', { name: 'Title' }), 'Draft meeting')
-    await act(async () => { await setUiLanguage('vi') })
-    await expect.element(screen.getByRole('textbox', { name: 'Tiêu đề' })).toHaveValue('Draft meeting')
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Draft meeting'
+    )
+    await act(async () => {
+      await setUiLanguage('vi')
+    })
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Tiêu đề' }))
+      .toHaveValue('Draft meeting')
     await userEvent.click(screen.getByRole('button', { name: 'Lưu bản nháp' }))
     expect(createSpy).toHaveBeenCalledTimes(1)
-    expect(createSpy).toHaveBeenCalledWith('/meetings', { title: 'Draft meeting' }, { headers: { 'Idempotency-Key': expect.any(String) } })
+    expect(createSpy).toHaveBeenCalledWith(
+      '/meetings',
+      { title: 'Draft meeting' },
+      { headers: { 'Idempotency-Key': expect.any(String) } }
+    )
   })
 
   it('saves an authoritative DRAFT once with no organizer or fabricated participant IDs', async () => {

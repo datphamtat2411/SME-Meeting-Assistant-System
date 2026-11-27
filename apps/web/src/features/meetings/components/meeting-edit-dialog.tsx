@@ -1,5 +1,3 @@
-import { useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage, requestErrorFormMessage } from '@/lib/i18n/presentation'
 import { useDeferredValue, useEffect, useRef, useState } from 'react'
 import { z } from 'zod'
 import { useForm, useWatch } from 'react-hook-form'
@@ -13,6 +11,12 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import { compareInstants, instantCivilFields } from '@/lib/regional-time'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -93,7 +97,11 @@ import { SelectedRoomSchedulePreview } from './selected-room-schedule-preview'
 
 const meetingEditFormSchema = z
   .object({
-    title: z.string().trim().min(1, featureValidationMessage('meetings:edit_titleRequired')).max(255),
+    title: z
+      .string()
+      .trim()
+      .min(1, featureValidationMessage('meetings:edit_titleRequired'))
+      .max(255),
     description: z.string(),
     date: z.string(),
     endDate: z.string(),
@@ -304,7 +312,9 @@ export function MeetingEditDialog(props: MeetingEditDialogProps) {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t('meetings:edit_title')}</DialogTitle>
-            <DialogDescription>{t('meetings:edit_loadingRegional')}</DialogDescription>
+            <DialogDescription>
+              {t('meetings:edit_loadingRegional')}
+            </DialogDescription>
           </DialogHeader>
         </DialogContent>
       </Dialog>
@@ -664,12 +674,12 @@ function MeetingEditSession({
       )
       if (!lifecycleEditable) {
         setErrorMessage(
-          featureValidationMessage(`meetings:edit_statusPreserved_${latest.meeting.status}`)
+          featureValidationMessage(
+            `meetings:edit_statusPreserved_${latest.meeting.status}`
+          )
         )
       } else if (!ownsMeeting) {
-        setErrorMessage(
-          featureValidationMessage('meetings:edit_ownershipLost')
-        )
+        setErrorMessage(featureValidationMessage('meetings:edit_ownershipLost'))
       } else if (mode === 'precondition') {
         setErrorMessage(featureValidationMessage('meetings:edit_serverChanged'))
       } else if (intentMatchesMeeting(latest.meeting, intent)) {
@@ -1005,7 +1015,9 @@ function MeetingEditSession({
     if (!isEditableMeeting(base.meeting)) {
       setEditingBlocked(true)
       setErrorMessage(
-        featureValidationMessage(`meetings:edit_statusLocked_${base.meeting.status}`)
+        featureValidationMessage(
+          `meetings:edit_statusLocked_${base.meeting.status}`
+        )
       )
       return
     }
@@ -1074,7 +1086,9 @@ function MeetingEditSession({
     if (!isEditableMeeting(base.meeting) || base.meeting.status !== 'DRAFT') {
       setEditingBlocked(true)
       setErrorMessage(
-        featureValidationMessage(`meetings:edit_statusScheduleLocked_${base.meeting.status}`)
+        featureValidationMessage(
+          `meetings:edit_statusScheduleLocked_${base.meeting.status}`
+        )
       )
       return
     }
@@ -1141,9 +1155,7 @@ function MeetingEditSession({
       latestDetail.meeting.status !== 'DRAFT' &&
       latestDetail.meeting.status !== 'SCHEDULED'
     ) {
-      setErrorMessage(
-        featureValidationMessage('meetings:edit_lifecycleLocked')
-      )
+      setErrorMessage(featureValidationMessage('meetings:edit_lifecycleLocked'))
       setReloadConfirmationOpen(false)
       return
     }
@@ -1185,9 +1197,7 @@ function MeetingEditSession({
     setReloadConfirmationOpen(false)
     setErrorMessage(null)
     if (!ownsMeeting) {
-      setErrorMessage(
-        featureValidationMessage('meetings:edit_organizerLost')
-      )
+      setErrorMessage(featureValidationMessage('meetings:edit_organizerLost'))
     }
     setOutcome(null)
     clearPreview()
@@ -1221,9 +1231,7 @@ function MeetingEditSession({
         <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
           <DialogHeader>
             <DialogTitle>{t('meetings:edit_title')}</DialogTitle>
-            <DialogDescription>
-              {t('meetings:edit_hint')}
-            </DialogDescription>
+            <DialogDescription>{t('meetings:edit_hint')}</DialogDescription>
           </DialogHeader>
 
           <Form {...form}>
@@ -1236,7 +1244,10 @@ function MeetingEditSession({
                     <FormItem>
                       <FormLabel>{t('meetings:edit_fieldTitle')}</FormLabel>
                       <FormControl>
-                        <Input {...field} placeholder={t('meetings:edit_titlePlaceholder')} />
+                        <Input
+                          {...field}
+                          placeholder={t('meetings:edit_titlePlaceholder')}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -1306,7 +1317,9 @@ function MeetingEditSession({
               <div className='flex items-center gap-2 text-sm text-muted-foreground'>
                 <CalendarDays className='size-4' />
                 <span>
-                  {t('meetings:edit_editingStatus', { status: t(`status:meeting.${workingMeeting.status}`) })}
+                  {t('meetings:edit_editingStatus', {
+                    status: t(`status:meeting.${workingMeeting.status}`),
+                  })}
                 </span>
               </div>
 
@@ -1343,7 +1356,9 @@ function MeetingEditSession({
                   <AlertTitle>{t('meetings:edit_changedTitle')}</AlertTitle>
                   <AlertDescription>
                     <p>
-                      {t('meetings:edit_latestTitle', { title: latestDetail.meeting.title })}
+                      {t('meetings:edit_latestTitle', {
+                        title: latestDetail.meeting.title,
+                      })}
                     </p>
                     <p>
                       {t('meetings:edit_latestSchedule')}{' '}
@@ -1362,9 +1377,7 @@ function MeetingEditSession({
                           t('meetings:edit_roomDetailsUnavailable'))
                         : t('meetings:edit_noRoom')}
                     </p>
-                    <p>
-                      {t('meetings:edit_reviewVersion')}
-                    </p>
+                    <p>{t('meetings:edit_reviewVersion')}</p>
                     <Button
                       type='button'
                       variant='outline'
@@ -1456,7 +1469,9 @@ function MeetingEditSession({
               {phase === 'saving' ? (
                 <LoaderCircle className='animate-spin' />
               ) : null}
-              {phase === 'saving' ? t('meetings:edit_saving') : t('meetings:edit_save')}
+              {phase === 'saving'
+                ? t('meetings:edit_saving')
+                : t('meetings:edit_save')}
             </Button>
             {(latestDetail?.meeting.status ?? workingMeeting.status) ===
               'DRAFT' && (
@@ -1490,13 +1505,17 @@ function MeetingEditSession({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t('meetings:edit_reloadConfirm')}</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t('meetings:edit_reloadConfirm')}
+            </AlertDialogTitle>
             <AlertDialogDescription>
               {t('meetings:edit_reloadConfirmHint')}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>{t('meetings:edit_keepEdits')}</AlertDialogCancel>
+            <AlertDialogCancel>
+              {t('meetings:edit_keepEdits')}
+            </AlertDialogCancel>
             <AlertDialogAction onClick={() => adoptLatestMeeting(false)}>
               {t('meetings:edit_reload')}
             </AlertDialogAction>
@@ -1648,11 +1667,16 @@ function formatEditError(
     return featureValidationMessage('meetings:edit_unauthenticated')
   }
   if (kind === 'forbidden') {
-    return featureValidationMessage(({
-    'Saving meeting changes': 'meetings:edit_error_forbidden_saving',
-    'Scheduling the meeting': 'meetings:edit_error_forbidden_scheduling',
-    'Checking the meeting schedule': 'meetings:edit_error_forbidden_checking',
-  } as Record<string, string>)[operation] ?? 'meetings:edit_error_forbidden_generic')
+    return featureValidationMessage(
+      (
+        {
+          'Saving meeting changes': 'meetings:edit_error_forbidden_saving',
+          'Scheduling the meeting': 'meetings:edit_error_forbidden_scheduling',
+          'Checking the meeting schedule':
+            'meetings:edit_error_forbidden_checking',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:edit_error_forbidden_generic'
+    )
   }
   if (kind === 'conflict') {
     const code = error.code?.toLowerCase() ?? ''
@@ -1668,33 +1692,55 @@ function formatEditError(
     ) {
       return featureValidationMessage('meetings:edit_lifecycleConflict')
     }
-    return requestErrorFormMessage(error) || featureValidationMessage('meetings:edit_stateConflict')
+    return (
+      requestErrorFormMessage(error) ||
+      featureValidationMessage('meetings:edit_stateConflict')
+    )
   }
   if (kind === 'precondition') {
     return featureValidationMessage('meetings:edit_serverChanged')
   }
   if (kind === 'validation') {
-    return requestErrorFormMessage(error) || featureValidationMessage('meetings:edit_detailsRejected')
+    return (
+      requestErrorFormMessage(error) ||
+      featureValidationMessage('meetings:edit_detailsRejected')
+    )
   }
   if (kind === 'network') {
-    return featureValidationMessage(({
-    'Saving meeting changes': 'meetings:edit_error_network_saving',
-    'Scheduling the meeting': 'meetings:edit_error_network_scheduling',
-    'Checking the meeting schedule': 'meetings:edit_error_network_checking',
-  } as Record<string, string>)[operation] ?? 'meetings:edit_error_network_generic')
+    return featureValidationMessage(
+      (
+        {
+          'Saving meeting changes': 'meetings:edit_error_network_saving',
+          'Scheduling the meeting': 'meetings:edit_error_network_scheduling',
+          'Checking the meeting schedule':
+            'meetings:edit_error_network_checking',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:edit_error_network_generic'
+    )
   }
   if (kind === 'temporary') {
-    return featureValidationMessage(({
-    'Saving meeting changes': 'meetings:edit_error_temporary_saving',
-    'Scheduling the meeting': 'meetings:edit_error_temporary_scheduling',
-    'Checking the meeting schedule': 'meetings:edit_error_temporary_checking',
-  } as Record<string, string>)[operation] ?? 'meetings:edit_error_temporary_generic')
+    return featureValidationMessage(
+      (
+        {
+          'Saving meeting changes': 'meetings:edit_error_temporary_saving',
+          'Scheduling the meeting': 'meetings:edit_error_temporary_scheduling',
+          'Checking the meeting schedule':
+            'meetings:edit_error_temporary_checking',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:edit_error_temporary_generic'
+    )
   }
   return (
-    requestErrorFormMessage(error) || featureValidationMessage(({
-    'Saving meeting changes': 'meetings:edit_error_fallback_saving',
-    'Scheduling the meeting': 'meetings:edit_error_fallback_scheduling',
-    'Checking the meeting schedule': 'meetings:edit_error_fallback_checking',
-  } as Record<string, string>)[operation] ?? 'meetings:edit_error_fallback_generic')
+    requestErrorFormMessage(error) ||
+    featureValidationMessage(
+      (
+        {
+          'Saving meeting changes': 'meetings:edit_error_fallback_saving',
+          'Scheduling the meeting': 'meetings:edit_error_fallback_scheduling',
+          'Checking the meeting schedule':
+            'meetings:edit_error_fallback_checking',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:edit_error_fallback_generic'
+    )
   )
 }

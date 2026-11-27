@@ -1,4 +1,3 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useEffect, useRef } from 'react'
 import { skipToken, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -12,6 +11,7 @@ import {
   Users,
 } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
 import {
   formatPresentationDate,
   formatPresentationInstant,
@@ -76,15 +76,17 @@ function MeetingList({
           </Button>
         </div>
         <p className='text-xs text-muted-foreground'>
-          {t('dashboard:window', { from: windowFormat(window.fromInclusive), to: windowFormat(window.toExclusive), limit: window.limit })}
+          {t('dashboard:window', {
+            from: windowFormat(window.fromInclusive),
+            to: windowFormat(window.toExclusive),
+            limit: window.limit,
+          })}
         </p>
       </CardHeader>
       <CardContent className='space-y-2'>
         {meetings.length === 0 ? (
           <RequestEmpty
-            title={
-              recent ? t('dashboard:noRecent') : t('dashboard:noUpcoming')
-            }
+            title={recent ? t('dashboard:noRecent') : t('dashboard:noUpcoming')}
             description={t('dashboard:emptyWindow')}
           />
         ) : (
@@ -102,7 +104,9 @@ function MeetingList({
                 </Badge>
               </div>
               <p className='mt-1 text-xs text-muted-foreground'>
-                {recent ? t('dashboard:endedPrefix') : t('dashboard:startsPrefix')}
+                {recent
+                  ? t('dashboard:endedPrefix')
+                  : t('dashboard:startsPrefix')}
                 {format(recent ? meeting.endedAt : meeting.scheduledStartAt)}
               </p>
             </Link>
@@ -187,13 +191,16 @@ function MyActionItems({ identity }: { identity: AuthContext }) {
               </div>
               {item.overdue && (
                 <p className='text-xs text-muted-foreground'>
-                  {item.status === 'OPEN' ? t('dashboard:open') : t('dashboard:inProgress')}
+                  {item.status === 'OPEN'
+                    ? t('dashboard:open')
+                    : t('dashboard:inProgress')}
                 </p>
               )}
               <p className='text-xs text-muted-foreground'>
                 {item.dueDate ? (
                   <>
-                    {t('dashboard:due')} <RegionalCivilDate value={item.dueDate} />
+                    {t('dashboard:due')}{' '}
+                    <RegionalCivilDate value={item.dueDate} />
                   </>
                 ) : (
                   t('dashboard:noDueDate')
@@ -396,9 +403,7 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
                     />
                   ) : scheduleChanged ? (
                     <div className='space-y-3 rounded-lg border p-4 text-sm'>
-                      <p>
-                        {t('dashboard:scheduleChanged')}
-                      </p>
+                      <p>{t('dashboard:scheduleChanged')}</p>
                       <Button
                         size='sm'
                         variant='outline'
@@ -410,7 +415,9 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
                   ) : next ? (
                     <>
                       <div className='space-y-2'>
-                        <Badge variant='secondary'>{t('dashboard:scheduled')}</Badge>
+                        <Badge variant='secondary'>
+                          {t('dashboard:scheduled')}
+                        </Badge>
                         <h2 className='text-xl font-semibold break-words'>
                           {next.title}
                         </h2>
@@ -441,11 +448,19 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
                         {activeParticipants && (
                           <p className='flex items-center gap-2'>
                             <Users className='size-4 shrink-0 text-muted-foreground' />
-                            {t('dashboard:participants', { number: new Intl.NumberFormat(locale).format(activeParticipants.length) })}
+                            {t('dashboard:participants', {
+                              number: new Intl.NumberFormat(locale).format(
+                                activeParticipants.length
+                              ),
+                            })}
                           </p>
                         )}
                         {organizer?.displayName && (
-                          <p>{t('dashboard:organizer', { name: organizer.displayName })}</p>
+                          <p>
+                            {t('dashboard:organizer', {
+                              name: organizer.displayName,
+                            })}
+                          </p>
                         )}
                         {detail.isError ||
                         participants.isError ||
@@ -506,8 +521,13 @@ export function PersonalDashboard({ identity }: { identity: AuthContext }) {
               />
             </div>
             <p className='text-xs text-muted-foreground'>
-              {t('dashboard:asOf', { date: businessFormat(data.asOf), zone: data.timezone })}
-              {zone !== data.timezone ? t('dashboard:meetingZone', { zone }) : ''}
+              {t('dashboard:asOf', {
+                date: businessFormat(data.asOf),
+                zone: data.timezone,
+              })}
+              {zone !== data.timezone
+                ? t('dashboard:meetingZone', { zone })
+                : ''}
               {personal.isFetching ? t('dashboard:refreshing') : ''}
             </p>
           </>

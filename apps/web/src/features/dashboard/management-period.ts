@@ -25,7 +25,8 @@ function parseDate(value: string) {
 /** Find the first instant of the requested civil date, including DST changes. */
 function startOfCivilDate(date: string, zone: string) {
   const nominal = parseDate(date)
-  if (nominal === undefined) throw new Error(featureValidationMessage('dashboard:validDates'))
+  if (nominal === undefined)
+    throw new Error(featureValidationMessage('dashboard:validDates'))
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: zone,
     calendar: 'iso8601',
@@ -48,9 +49,7 @@ function startOfCivilDate(date: string, zone: string) {
     else high = mid
   }
   if (civilDate(low) !== date) {
-    throw new Error(
-      featureValidationMessage('dashboard:dateMissing')
-    )
+    throw new Error(featureValidationMessage('dashboard:dateMissing'))
   }
   return low
 }

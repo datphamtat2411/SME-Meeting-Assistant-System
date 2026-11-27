@@ -1,5 +1,3 @@
-import { useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage, requestErrorFormMessage } from '@/lib/i18n/presentation'
 import { useDeferredValue, useEffect, useRef, useState } from 'react'
 import { z } from 'zod'
 import { useForm, useWatch } from 'react-hook-form'
@@ -7,6 +5,12 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CalendarDays, Check, LoaderCircle } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import { parseCivilDate, compareInstants } from '@/lib/regional-time'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -85,7 +89,11 @@ function isValidLocalDateKey(value: unknown): value is string {
 
 const meetingFormSchema = z
   .object({
-    title: z.string().trim().min(1, featureValidationMessage('meetings:create_titleRequired')).max(255),
+    title: z
+      .string()
+      .trim()
+      .min(1, featureValidationMessage('meetings:create_titleRequired'))
+      .max(255),
     description: z.string(),
     date: z.string(),
     endDate: z.string(),
@@ -546,7 +554,9 @@ export function MeetingCreationDialog({
     })
     form.setError('startTime', {
       type: 'manual',
-      message: featureValidationMessage('meetings:create_scheduleStartRequired'),
+      message: featureValidationMessage(
+        'meetings:create_scheduleStartRequired'
+      ),
     })
     form.setError('endTime', {
       type: 'manual',
@@ -1180,9 +1190,7 @@ export function MeetingCreationDialog({
       >
         <DialogHeader>
           <DialogTitle>{t('meetings:create_newTitle')}</DialogTitle>
-          <DialogDescription>
-            {t('meetings:create_newHint')}
-          </DialogDescription>
+          <DialogDescription>{t('meetings:create_newHint')}</DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
@@ -1194,7 +1202,10 @@ export function MeetingCreationDialog({
                 <FormItem>
                   <FormLabel>{t('meetings:create_title')}</FormLabel>
                   <FormControl>
-                    <Input {...field} placeholder={t('meetings:create_titleExample')} />
+                    <Input
+                      {...field}
+                      placeholder={t('meetings:create_titleExample')}
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -1295,18 +1306,19 @@ export function MeetingCreationDialog({
               <span className='font-medium text-foreground'>
                 {currentUserQuery.isPending
                   ? t('meetings:create_loadingOrganizer')
-                  : (currentUser?.displayName ?? t('meetings:create_organizerUnavailable'))}
+                  : (currentUser?.displayName ??
+                    t('meetings:create_organizerUnavailable'))}
               </span>
             </div>
 
             {currentUserQuery.isError && (
               <Alert variant='destructive'>
                 <AlertCircle />
-                <AlertTitle>{t('meetings:create_organizerUnverified')}</AlertTitle>
+                <AlertTitle>
+                  {t('meetings:create_organizerUnverified')}
+                </AlertTitle>
                 <AlertDescription>
-                  <p>
-                    {t('meetings:create_organizerHint')}
-                  </p>
+                  <p>{t('meetings:create_organizerHint')}</p>
                   <Button
                     type='button'
                     variant='outline'
@@ -1356,7 +1368,9 @@ export function MeetingCreationDialog({
               <Alert variant='destructive'>
                 <AlertCircle />
                 <AlertTitle>{t('meetings:create_operationFailed')}</AlertTitle>
-                <AlertDescription>{localizedValidationMessage(errorMessage, t)}</AlertDescription>
+                <AlertDescription>
+                  {localizedValidationMessage(errorMessage, t)}
+                </AlertDescription>
               </Alert>
             )}
 
@@ -1411,7 +1425,9 @@ export function MeetingCreationDialog({
             {flow === 'draft' && busy ? (
               <LoaderCircle className='animate-spin' />
             ) : null}
-            {flow === 'draft' && busy ? t('meetings:create_saving') : t('meetings:create_saveDraft')}
+            {flow === 'draft' && busy
+              ? t('meetings:create_saving')
+              : t('meetings:create_saveDraft')}
           </Button>
           <Button
             type='button'
@@ -1457,9 +1473,7 @@ function CreationRecoveryNotice({
       <AlertCircle />
       <AlertTitle>{t('meetings:create_outcomeUnknown')}</AlertTitle>
       <AlertDescription>
-        <p>
-          {t('meetings:create_uncertainHint')}
-        </p>
+        <p>{t('meetings:create_uncertainHint')}</p>
         {replaySafe ? (
           <Button
             type='button'
@@ -1471,9 +1485,7 @@ function CreationRecoveryNotice({
             {t('meetings:create_retryCreation')}
           </Button>
         ) : (
-          <p>
-            {t('meetings:create_duplicateWindow')}
-          </p>
+          <p>{t('meetings:create_duplicateWindow')}</p>
         )}
       </AlertDescription>
     </Alert>
@@ -1537,7 +1549,9 @@ function DraftRecoveryNotice({
           ) : null}
           <Button asChild type='button' variant='ghost' size='sm'>
             <a href={`/meetings/${encodeURIComponent(recovery.meetingId)}`}>
-              {recovery.status === 'scheduled' ? t('meetings:create_viewMeeting') : t('meetings:create_viewDraft')}
+              {recovery.status === 'scheduled'
+                ? t('meetings:create_viewMeeting')
+                : t('meetings:create_viewDraft')}
             </a>
           </Button>
         </div>
@@ -1555,13 +1569,19 @@ function formatMutationError(
     return featureValidationMessage('meetings:create_unauthenticated')
   }
   if (kind === 'forbidden') {
-    return featureValidationMessage(({
-    'Scheduling': 'meetings:create_error_forbidden_scheduling',
-    'Checking the meeting schedule': 'meetings:create_error_forbidden_checking',
-    'Creating the meeting': 'meetings:create_error_forbidden_creating',
-    'Retrying the meeting creation': 'meetings:create_error_forbidden_retrying',
-    'Saving the draft': 'meetings:create_error_forbidden_saving',
-  } as Record<string, string>)[operation] ?? 'meetings:create_error_forbidden_generic')
+    return featureValidationMessage(
+      (
+        {
+          Scheduling: 'meetings:create_error_forbidden_scheduling',
+          'Checking the meeting schedule':
+            'meetings:create_error_forbidden_checking',
+          'Creating the meeting': 'meetings:create_error_forbidden_creating',
+          'Retrying the meeting creation':
+            'meetings:create_error_forbidden_retrying',
+          'Saving the draft': 'meetings:create_error_forbidden_saving',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:create_error_forbidden_generic'
+    )
   }
   if (kind === 'idempotency_conflict') {
     return featureValidationMessage('meetings:create_idempotencyConflict')
@@ -1582,31 +1602,50 @@ function formatMutationError(
     )
   }
   if (kind === 'network') {
-    return featureValidationMessage(({
-    'Scheduling': 'meetings:create_error_network_scheduling',
-    'Checking the meeting schedule': 'meetings:create_error_network_checking',
-    'Creating the meeting': 'meetings:create_error_network_creating',
-    'Retrying the meeting creation': 'meetings:create_error_network_retrying',
-    'Saving the draft': 'meetings:create_error_network_saving',
-  } as Record<string, string>)[operation] ?? 'meetings:create_error_network_generic')
+    return featureValidationMessage(
+      (
+        {
+          Scheduling: 'meetings:create_error_network_scheduling',
+          'Checking the meeting schedule':
+            'meetings:create_error_network_checking',
+          'Creating the meeting': 'meetings:create_error_network_creating',
+          'Retrying the meeting creation':
+            'meetings:create_error_network_retrying',
+          'Saving the draft': 'meetings:create_error_network_saving',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:create_error_network_generic'
+    )
   }
   if (kind === 'temporary') {
-    return featureValidationMessage(({
-    'Scheduling': 'meetings:create_error_temporary_scheduling',
-    'Checking the meeting schedule': 'meetings:create_error_temporary_checking',
-    'Creating the meeting': 'meetings:create_error_temporary_creating',
-    'Retrying the meeting creation': 'meetings:create_error_temporary_retrying',
-    'Saving the draft': 'meetings:create_error_temporary_saving',
-  } as Record<string, string>)[operation] ?? 'meetings:create_error_temporary_generic')
+    return featureValidationMessage(
+      (
+        {
+          Scheduling: 'meetings:create_error_temporary_scheduling',
+          'Checking the meeting schedule':
+            'meetings:create_error_temporary_checking',
+          'Creating the meeting': 'meetings:create_error_temporary_creating',
+          'Retrying the meeting creation':
+            'meetings:create_error_temporary_retrying',
+          'Saving the draft': 'meetings:create_error_temporary_saving',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:create_error_temporary_generic'
+    )
   }
   return (
-    requestErrorFormMessage(error) || featureValidationMessage(({
-    'Scheduling': 'meetings:create_error_fallback_scheduling',
-    'Checking the meeting schedule': 'meetings:create_error_fallback_checking',
-    'Creating the meeting': 'meetings:create_error_fallback_creating',
-    'Retrying the meeting creation': 'meetings:create_error_fallback_retrying',
-    'Saving the draft': 'meetings:create_error_fallback_saving',
-  } as Record<string, string>)[operation] ?? 'meetings:create_error_fallback_generic')
+    requestErrorFormMessage(error) ||
+    featureValidationMessage(
+      (
+        {
+          Scheduling: 'meetings:create_error_fallback_scheduling',
+          'Checking the meeting schedule':
+            'meetings:create_error_fallback_checking',
+          'Creating the meeting': 'meetings:create_error_fallback_creating',
+          'Retrying the meeting creation':
+            'meetings:create_error_fallback_retrying',
+          'Saving the draft': 'meetings:create_error_fallback_saving',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:create_error_fallback_generic'
+    )
   )
 }
 

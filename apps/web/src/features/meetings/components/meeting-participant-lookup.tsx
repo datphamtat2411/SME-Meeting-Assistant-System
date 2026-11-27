@@ -1,7 +1,7 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useDeferredValue, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Check, ChevronLeft, ChevronRight, X, Users } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import {
   Command,
@@ -81,7 +81,9 @@ export function MeetingParticipantLookup({
               <Users className='size-4 shrink-0 text-muted-foreground' />
               <span className='truncate'>
                 {value.length > 0
-                  ? t('meetings:schedule_selectedCount', { count: value.length })
+                  ? t('meetings:schedule_selectedCount', {
+                      count: value.length,
+                    })
                   : t('meetings:schedule_addParticipants')}
               </span>
             </span>
@@ -124,7 +126,9 @@ export function MeetingParticipantLookup({
                   </Button>
                 </div>
               ) : options.length === 0 ? (
-                <CommandEmpty>{t('meetings:schedule_noEligibleParticipants')}</CommandEmpty>
+                <CommandEmpty>
+                  {t('meetings:schedule_noEligibleParticipants')}
+                </CommandEmpty>
               ) : (
                 <CommandGroup>
                   {options.map((option) => {
@@ -216,7 +220,9 @@ export function MeetingParticipantLookup({
               <span className='truncate'>{candidate.displayName}</span>
               <button
                 type='button'
-                aria-label={t('meetings:schedule_removeParticipant', { name: candidate.displayName })}
+                aria-label={t('meetings:schedule_removeParticipant', {
+                  name: candidate.displayName,
+                })}
                 className='rounded-full p-0.5 text-muted-foreground hover:text-foreground'
                 onClick={() => onToggle(candidate)}
                 disabled={disabled}

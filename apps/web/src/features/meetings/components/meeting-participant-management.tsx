@@ -1,9 +1,12 @@
-import { i18n, useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage } from '@/lib/i18n/presentation'
 import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle, UserRound } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+} from '@/lib/i18n/presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -191,11 +194,15 @@ export function MeetingParticipantManagement({
         clearOperationIntent(operation)
         if (operation.type === 'add') {
           toast.success(i18n.t('meetings:participant_added'), {
-            description: i18n.t('meetings:participant_addedHint', { name: operation.displayName }),
+            description: i18n.t('meetings:participant_addedHint', {
+              name: operation.displayName,
+            }),
           })
         } else {
           toast.success(i18n.t('meetings:participant_removed'), {
-            description: i18n.t('meetings:participant_removedHint', { name: operation.displayName }),
+            description: i18n.t('meetings:participant_removedHint', {
+              name: operation.displayName,
+            }),
           })
         }
         return true
@@ -420,7 +427,9 @@ export function MeetingParticipantManagement({
       {canManage && (
         <div className='space-y-3 border-b pb-5'>
           <div>
-            <p className='text-sm font-semibold'>{t('meetings:participant_add')}</p>
+            <p className='text-sm font-semibold'>
+              {t('meetings:participant_add')}
+            </p>
             <p className='mt-1 text-xs text-muted-foreground'>
               {t('meetings:participant_addHint')}
             </p>
@@ -482,7 +491,9 @@ export function MeetingParticipantManagement({
       )}
 
       <div className='space-y-4'>
-        <p className='text-sm font-semibold'>{t('meetings:participant_active')}</p>
+        <p className='text-sm font-semibold'>
+          {t('meetings:participant_active')}
+        </p>
         {active.length ? (
           active.map((participant) => (
             <ParticipantMembership
@@ -503,7 +514,9 @@ export function MeetingParticipantManagement({
       {removed.length > 0 && (
         <div className='space-y-4 border-t pt-5'>
           <div>
-            <p className='text-sm font-semibold'>{t('meetings:participant_history')}</p>
+            <p className='text-sm font-semibold'>
+              {t('meetings:participant_history')}
+            </p>
             <p className='mt-1 text-xs text-muted-foreground'>
               {t('meetings:participant_historyHint')}
             </p>
@@ -524,7 +537,11 @@ export function MeetingParticipantManagement({
         title={t('meetings:participant_removeQuestion')}
         desc={
           <p>
-            {t('meetings:participant_removeHint', { name: removeTarget ? participantDisplayName(removeTarget) : t('meetings:participant_this') })}
+            {t('meetings:participant_removeHint', {
+              name: removeTarget
+                ? participantDisplayName(removeTarget)
+                : t('meetings:participant_this'),
+            })}
           </p>
         }
         confirmText={t('meetings:participant_remove')}
@@ -566,7 +583,9 @@ function ParticipantMembership({
               type='button'
               variant='ghost'
               size='sm'
-              aria-label={t('meetings:participant_removeName', { name: displayName })}
+              aria-label={t('meetings:participant_removeName', {
+                name: displayName,
+              })}
               onClick={onRemove}
               disabled={disabled}
             >
@@ -580,11 +599,13 @@ function ParticipantMembership({
             : t('meetings:participant_nameUnavailable')}
         </p>
         <p className='text-xs text-muted-foreground'>
-          {t('meetings:participant_addedAt')} <RegionalTimestamp value={participant.addedAt} />
+          {t('meetings:participant_addedAt')}{' '}
+          <RegionalTimestamp value={participant.addedAt} />
         </p>
         {historical && participant.removedAt && (
           <p className='text-xs text-muted-foreground'>
-            {t('meetings:participant_removedAt')} <RegionalTimestamp value={participant.removedAt} />
+            {t('meetings:participant_removedAt')}{' '}
+            <RegionalTimestamp value={participant.removedAt} />
           </p>
         )}
       </div>
@@ -593,7 +614,10 @@ function ParticipantMembership({
 }
 
 function participantDisplayName(participant: ParticipantView) {
-  return participant.displayName?.trim() || i18n.t('meetings:participant_nameUnavailable')
+  return (
+    participant.displayName?.trim() ||
+    i18n.t('meetings:participant_nameUnavailable')
+  )
 }
 
 function formatMutationFailure(
@@ -638,7 +662,9 @@ function formatConflictFailure(
     return formatMutationFailure(operation, 'not_found')
   }
   if (operation.type === 'remove' && kind === 'not_found') {
-    return featureValidationMessage('meetings:participant_removeMismatch', { name: operation.displayName })
+    return featureValidationMessage('meetings:participant_removeMismatch', {
+      name: operation.displayName,
+    })
   }
   return formatMutationFailure(operation, kind)
 }
@@ -647,15 +673,22 @@ function formatConfirmedStateMismatch(
   operation: PendingParticipantOperation,
   active: boolean
 ) {
-  return featureValidationMessage(`meetings:participant_mismatch_${operation.type}_${active ? 'active' : 'removed'}`, { name: operation.displayName })
+  return featureValidationMessage(
+    `meetings:participant_mismatch_${operation.type}_${active ? 'active' : 'removed'}`,
+    { name: operation.displayName }
+  )
 }
 
 function formatAmbiguousObserved(operation: PendingParticipantOperation) {
-  return featureValidationMessage(`meetings:participant_observed_${operation.type}`)
+  return featureValidationMessage(
+    `meetings:participant_observed_${operation.type}`
+  )
 }
 
 function formatAmbiguousNotObserved(operation: PendingParticipantOperation) {
-  return featureValidationMessage(`meetings:participant_notObserved_${operation.type}`)
+  return featureValidationMessage(
+    `meetings:participant_notObserved_${operation.type}`
+  )
 }
 
 function formatRefreshFailure(
@@ -664,13 +697,19 @@ function formatRefreshFailure(
 ) {
   const normalized = normalizeCoreApiError(error)
   if (normalized.status === 401) {
-    return featureValidationMessage('meetings:participant_refreshUnauthenticated')
+    return featureValidationMessage(
+      'meetings:participant_refreshUnauthenticated'
+    )
   }
   if (normalized.status === 403) {
     return featureValidationMessage('meetings:participant_refreshForbidden')
   }
   if (normalized.isNetworkError || normalized.isServerError) {
-    return featureValidationMessage(`meetings:participant_refreshNetwork_${operation.type}`)
+    return featureValidationMessage(
+      `meetings:participant_refreshNetwork_${operation.type}`
+    )
   }
-  return featureValidationMessage(`meetings:participant_refreshOther_${operation.type}`)
+  return featureValidationMessage(
+    `meetings:participant_refreshOther_${operation.type}`
+  )
 }

@@ -1,9 +1,14 @@
-import { i18n, useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage, operationErrorFormMessage, UiPresentationError } from '@/lib/i18n/presentation'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+  operationErrorFormMessage,
+  UiPresentationError,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { RegionalCivilDate } from '@/components/regional-timestamp'
@@ -164,8 +169,9 @@ export function ActionCommands({
           if (variables.owns()) {
             setConflict({
               latest: null,
-              message:
-                featureValidationMessage('action-items:currentUnavailable'),
+              message: featureValidationMessage(
+                'action-items:currentUnavailable'
+              ),
             })
           }
         } finally {
@@ -182,7 +188,9 @@ export function ActionCommands({
         return
       }
       toast.error(i18n.t('action-items:commandRejected'), {
-        description: localizedValidationMessage(operationErrorFormMessage(error)),
+        description: localizedValidationMessage(
+          operationErrorFormMessage(error)
+        ),
       })
     },
   })
@@ -220,7 +228,9 @@ export function ActionCommands({
     } catch (error) {
       if (!owns()) return
       toast.error(i18n.t('action-items:reviewFailed'), {
-        description: localizedValidationMessage(operationErrorFormMessage(error)),
+        description: localizedValidationMessage(
+          operationErrorFormMessage(error)
+        ),
       })
     } finally {
       setPendingReview((pending) => (pending?.owns === owns ? null : pending))
@@ -256,29 +266,29 @@ export function ActionCommands({
             setPendingReview(null)
           }
         }}
-        title={t('action-items:commandTitle', { command: t(labels[activeReview?.command ?? 'start']) })}
+        title={t('action-items:commandTitle', {
+          command: t(labels[activeReview?.command ?? 'start']),
+        })}
         desc={
           activeReview ? (
             <div className='space-y-2'>
-              <p>
-                {t('action-items:reviewHint')}
-              </p>
+              <p>{t('action-items:reviewHint')}</p>
               <ReviewContent
                 item={activeReview.item}
                 showEvidence={activeReview.item.capabilities.canAccessEvidence}
               />
               {activeReview.command === 'confirm' &&
                 !activeReview.item.assignee?.active && (
-                  <p role='alert'>
-                    {t('action-items:assignBeforeConfirm')}
-                  </p>
+                  <p role='alert'>{t('action-items:assignBeforeConfirm')}</p>
                 )}
               {conflict && (
                 <div role='alert' className='space-y-2 rounded border p-3'>
                   <p>{localizedValidationMessage(conflict.message, t)}</p>
                   {conflict.latest && (
                     <>
-                      <p className='font-medium'>{t('action-items:serverState')}</p>
+                      <p className='font-medium'>
+                        {t('action-items:serverState')}
+                      </p>
                       <ReviewContent
                         item={conflict.latest.item}
                         showEvidence={
@@ -367,10 +377,18 @@ function ReviewContent({
       <p className='font-medium'>{item.title}</p>
       {item.details && <p className='whitespace-pre-wrap'>{item.details}</p>}
       <p className='text-xs text-muted-foreground'>
-        {t('action-items:stateAssignee', { status: t(`action-items:status_${item.status}`) })}
+        {t('action-items:stateAssignee', {
+          status: t(`action-items:status_${item.status}`),
+        })}
         {item.assignee?.displayName ?? t('action-items:unassigned')}
-        {item.assignee && !item.assignee.active ? t('action-items:inactive') : ''} {t('action-items:duePrefix')}{' '}
-        <RegionalCivilDate value={item.dueDate} fallback={t('action-items:noneLower')} />
+        {item.assignee && !item.assignee.active
+          ? t('action-items:inactive')
+          : ''}{' '}
+        {t('action-items:duePrefix')}{' '}
+        <RegionalCivilDate
+          value={item.dueDate}
+          fallback={t('action-items:noneLower')}
+        />
       </p>
       {item.evidence.limitation && <p>{item.evidence.limitation}</p>}
       {showEvidence &&
@@ -378,7 +396,10 @@ function ReviewContent({
         item.evidence.references.map((reference, index) => (
           <div key={reference.segmentId} className='rounded border p-2'>
             <p className='text-xs font-medium'>
-              {t('action-items:evidence', { index: index + 1, freshness: item.evidence.freshness })}
+              {t('action-items:evidence', {
+                index: index + 1,
+                freshness: item.evidence.freshness,
+              })}
             </p>
             <p>
               {item.evidence.availability === 'AVAILABLE'

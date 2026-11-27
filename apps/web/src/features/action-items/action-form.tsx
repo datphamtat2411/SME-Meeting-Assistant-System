@@ -1,11 +1,16 @@
-import { i18n, useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage, operationErrorFormMessage, UiPresentationError } from '@/lib/i18n/presentation'
 import { useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Search } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+  operationErrorFormMessage,
+  UiPresentationError,
+} from '@/lib/i18n/presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -195,7 +200,9 @@ export function ActionForm({
       if (!submission.owns()) return
       intent.current = null
       setUnresolvedCreate(null)
-      toast.success(item ? i18n.t('action-items:saved') : i18n.t('action-items:created'))
+      toast.success(
+        item ? i18n.t('action-items:saved') : i18n.t('action-items:created')
+      )
       invalidateMeetingArtifacts(qc, result.item.meetingId, {
         actions: true,
         intelligence: 'none',
@@ -244,8 +251,7 @@ export function ActionForm({
             pending,
             latest: null,
             latestResult: null,
-            message:
-              operationErrorFormMessage(error),
+            message: operationErrorFormMessage(error),
           })
         } finally {
           if (submission.owns()) {
@@ -264,15 +270,20 @@ export function ActionForm({
         })
         setUnresolvedCreate(submission.creation.payload)
         toast.error(i18n.t('action-items:creationUncertain'), {
-          description:
-            i18n.t('action-items:retryIntent'),
+          description: i18n.t('action-items:retryIntent'),
         })
         return
       }
       if (submission.creation) intent.current = null
       toast.error(
-        item ? i18n.t('action-items:saveFailed') : i18n.t('action-items:createFailed'),
-        { description: localizedValidationMessage(operationErrorFormMessage(error)) }
+        item
+          ? i18n.t('action-items:saveFailed')
+          : i18n.t('action-items:createFailed'),
+        {
+          description: localizedValidationMessage(
+            operationErrorFormMessage(error)
+          ),
+        }
       )
     },
   })
@@ -383,12 +394,7 @@ export function ActionForm({
       })
       return
     }
-    if (
-      !next &&
-      dirty &&
-      !window.confirm(t('action-items:discard'))
-    )
-      return
+    if (!next && dirty && !window.confirm(t('action-items:discard'))) return
     if (!next) operation.current += 1
     onOpenChange(next)
   }
@@ -404,7 +410,9 @@ export function ActionForm({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button onClick={() => close(false)}>{t('action-items:closeReview')}</Button>
+            <Button onClick={() => close(false)}>
+              {t('action-items:closeReview')}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -421,9 +429,7 @@ export function ActionForm({
               : t('action-items:createTitle')}
           </DialogTitle>
           <DialogDescription>
-            {item
-              ? t('action-items:editHint')
-              : t('action-items:createHint')}
+            {item ? t('action-items:editHint') : t('action-items:createHint')}
           </DialogDescription>
         </DialogHeader>
         {item && detail.isPending && (
@@ -442,20 +448,37 @@ export function ActionForm({
             className='space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200'
           >
             <p className='font-medium'>
-              {conflict.message ? localizedValidationMessage(conflict.message, t) : t('action-items:changedWhileEditing')}
+              {conflict.message
+                ? localizedValidationMessage(conflict.message, t)
+                : t('action-items:changedWhileEditing')}
             </p>
             <p>
-              {t('action-items:reviewedVersion', { title: conflict.reviewed.title, version: conflict.reviewed.version })}
+              {t('action-items:reviewedVersion', {
+                title: conflict.reviewed.title,
+                version: conflict.reviewed.version,
+              })}
             </p>
             {conflict.latest ? (
               <>
                 <p>
-                  {t('action-items:currentVersion', { title: conflict.latest.title, version: conflict.latest.version })}
+                  {t('action-items:currentVersion', {
+                    title: conflict.latest.title,
+                    version: conflict.latest.version,
+                  })}
                 </p>
                 <div className='space-y-1 text-xs'>
-                  <p>{t('action-items:serverDetails', { details: conflict.latest.details ?? t('action-items:none') })}</p>
                   <p>
-                    {t('action-items:serverAssignee', { name: conflict.latest.assignee?.displayName ?? t('action-items:unassigned') })}
+                    {t('action-items:serverDetails', {
+                      details:
+                        conflict.latest.details ?? t('action-items:none'),
+                    })}
+                  </p>
+                  <p>
+                    {t('action-items:serverAssignee', {
+                      name:
+                        conflict.latest.assignee?.displayName ??
+                        t('action-items:unassigned'),
+                    })}
                   </p>
                   <p>
                     {t('action-items:serverDue')}{' '}
@@ -464,10 +487,14 @@ export function ActionForm({
                       fallback={t('action-items:none')}
                     />
                   </p>
-                  <p>{t('action-items:serverStatus', { status: t(`action-items:status_${conflict.latest.status}`) })}</p>
                   <p>
-                    {t('action-items:rebaseHint')}
+                    {t('action-items:serverStatus', {
+                      status: t(
+                        `action-items:status_${conflict.latest.status}`
+                      ),
+                    })}
                   </p>
+                  <p>{t('action-items:rebaseHint')}</p>
                 </div>
                 <Button
                   type='button'
@@ -515,11 +542,13 @@ export function ActionForm({
                 </Button>
               </>
             ) : (
-              <p>{conflict.message ? localizedValidationMessage(conflict.message, t) : t('action-items:stateUnavailable')}</p>
+              <p>
+                {conflict.message
+                  ? localizedValidationMessage(conflict.message, t)
+                  : t('action-items:stateUnavailable')}
+              </p>
             )}
-            <p className='text-xs'>
-              {t('action-items:pendingHint')}
-            </p>
+            <p className='text-xs'>{t('action-items:pendingHint')}</p>
           </div>
         )}
         <form onSubmit={submit} className='space-y-4'>
@@ -527,7 +556,9 @@ export function ActionForm({
             <Label>{t('action-items:originMeeting')}</Label>
             {isFixedMeeting ? (
               <div className='rounded-lg border p-3 text-sm'>
-                <span>{meetingLabel || t('action-items:authorizedMeeting')} · </span>
+                <span>
+                  {meetingLabel || t('action-items:authorizedMeeting')} ·{' '}
+                </span>
                 {(!item || displayItem?.capabilities.canAccessMeeting) && (
                   <Link
                     to='/meetings/$meetingId'
@@ -657,7 +688,9 @@ export function ActionForm({
             />
           </div>
           <div className='space-y-2'>
-            <Label htmlFor='action-assignee'>{t('action-items:primaryResponsibility')}</Label>
+            <Label htmlFor='action-assignee'>
+              {t('action-items:primaryResponsibility')}
+            </Label>
             <div className='flex items-center gap-2'>
               <Search className='size-4 text-muted-foreground' />
               <Input
@@ -805,21 +838,14 @@ export function ActionForm({
           {unresolvedCreate && (
             <div className='rounded-lg border border-amber-300 p-3 text-sm'>
               <p className='font-medium'>{t('action-items:unresolved')}</p>
-              <p className='mt-1'>
-                {t('action-items:unresolvedHint')}
-              </p>
+              <p className='mt-1'>{t('action-items:unresolvedHint')}</p>
               <Button
                 type='button'
                 size='sm'
                 variant='outline'
                 disabled={mutation.isPending}
                 onClick={() => {
-                  if (
-                    !window.confirm(
-                      t('action-items:abandonConfirm')
-                    )
-                  )
-                    return
+                  if (!window.confirm(t('action-items:abandonConfirm'))) return
                   operation.current += 1
                   intent.current = null
                   invalidateMeetingArtifacts(qc, meeting, {

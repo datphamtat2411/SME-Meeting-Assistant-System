@@ -1,10 +1,13 @@
-import { i18n, useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage } from '@/lib/i18n/presentation'
 import { useRef, useState } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { AlertCircle, Check, LoaderCircle, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+} from '@/lib/i18n/presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -163,8 +166,7 @@ export function MeetingLifecycleActions({
       setAuthorizationBlocked(true)
       setFeedback({
         variant: 'destructive',
-        message:
-          featureValidationMessage('meetings:lifecycle_ownershipLost'),
+        message: featureValidationMessage('meetings:lifecycle_ownershipLost'),
       })
       return null
     }
@@ -202,7 +204,9 @@ export function MeetingLifecycleActions({
     setFeedback(null)
     setSuccessAction(intent.action)
     toast.success(i18n.t(successLabels[intent.action]), {
-      description: i18n.t('meetings:lifecycle_successHint', { status: i18n.t(`status:meeting.${result.meeting.status}`) }),
+      description: i18n.t('meetings:lifecycle_successHint', {
+        status: i18n.t(`status:meeting.${result.meeting.status}`),
+      }),
     })
   }
 
@@ -464,20 +468,20 @@ export function MeetingLifecycleActions({
         }
         desc={
           confirmationAction === 'cancel' ? (
-            <p>
-              {t('meetings:lifecycle_cancelHint')}
-            </p>
+            <p>{t('meetings:lifecycle_cancelHint')}</p>
           ) : (
-            <p>
-              {t('meetings:lifecycle_endHint')}
-            </p>
+            <p>{t('meetings:lifecycle_endHint')}</p>
           )
         }
         confirmText={
-          confirmationAction === 'cancel' ? t('meetings:lifecycle_cancel') : t('meetings:lifecycle_end')
+          confirmationAction === 'cancel'
+            ? t('meetings:lifecycle_cancel')
+            : t('meetings:lifecycle_end')
         }
         cancelBtnText={
-          confirmationAction === 'cancel' ? t('meetings:lifecycle_keep') : t('meetings:lifecycle_keepLive')
+          confirmationAction === 'cancel'
+            ? t('meetings:lifecycle_keep')
+            : t('meetings:lifecycle_keepLive')
         }
         destructive
         isLoading={phase === 'mutating' || phase === 'reconciling'}
@@ -520,9 +524,13 @@ function formatMutationFailure(
     case 'not_found':
       return featureValidationMessage('meetings:lifecycle_notFound')
     case 'validation':
-      return featureValidationMessage(`meetings:lifecycle_validation_${intent.action}`)
+      return featureValidationMessage(
+        `meetings:lifecycle_validation_${intent.action}`
+      )
     default:
-      return featureValidationMessage(`meetings:lifecycle_fallback_${intent.action}`)
+      return featureValidationMessage(
+        `meetings:lifecycle_fallback_${intent.action}`
+      )
   }
 }
 
@@ -534,7 +542,9 @@ function formatReconciledFailure(
     return featureValidationMessage('meetings:lifecycle_precondition')
   }
   if (kind === 'conflict') {
-    return featureValidationMessage(`meetings:lifecycle_conflict_${intent.action}`)
+    return featureValidationMessage(
+      `meetings:lifecycle_conflict_${intent.action}`
+    )
   }
   return featureValidationMessage('meetings:lifecycle_unknown')
 }
@@ -543,7 +553,9 @@ function formatUnavailableAction(
   action: MeetingLifecycleAction,
   status: MeetingView['status']
 ) {
-  return featureValidationMessage(`meetings:lifecycle_unavailable_${action}_${status}`)
+  return featureValidationMessage(
+    `meetings:lifecycle_unavailable_${action}_${status}`
+  )
 }
 
 function formatRefreshFailure(error: unknown, intent: LifecycleIntent) {

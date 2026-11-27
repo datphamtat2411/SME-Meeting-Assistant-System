@@ -1,8 +1,8 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useBlocker } from '@tanstack/react-router'
 import { ListChecks, Plus, Search } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -114,8 +114,7 @@ export function ActionItemsPage() {
       const protection = protectionRef.current
       if (blockUnresolvedActionCreation(protection)) return true
       return (
-        protection === 'dirty' &&
-        !window.confirm(t('action-items:unsaved'))
+        protection === 'dirty' && !window.confirm(t('action-items:unsaved'))
       )
     },
   })
@@ -178,7 +177,8 @@ export function ActionItemsPage() {
               <div className='flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between'>
                 <div>
                   <CardTitle className='flex items-center gap-2'>
-                    <ListChecks className='size-5' /> {t('action-items:workspace')}
+                    <ListChecks className='size-5' />{' '}
+                    {t('action-items:workspace')}
                   </CardTitle>
                   <CardDescription>
                     {t('action-items:serverPagination')}
@@ -190,9 +190,15 @@ export function ActionItemsPage() {
               </div>
               <TabsList className='mt-3 w-fit flex-wrap'>
                 <TabsTrigger value='my'>{t('action-items:myWork')}</TabsTrigger>
-                <TabsTrigger value='visible'>{t('action-items:visibleWork')}</TabsTrigger>
-                <TabsTrigger value='proposals'>{t('action-items:reviewProposals')}</TabsTrigger>
-                <TabsTrigger value='history'>{t('action-items:history')}</TabsTrigger>
+                <TabsTrigger value='visible'>
+                  {t('action-items:visibleWork')}
+                </TabsTrigger>
+                <TabsTrigger value='proposals'>
+                  {t('action-items:reviewProposals')}
+                </TabsTrigger>
+                <TabsTrigger value='history'>
+                  {t('action-items:history')}
+                </TabsTrigger>
               </TabsList>
             </CardHeader>
             <CardContent className='p-4 sm:p-6'>
@@ -379,7 +385,9 @@ function ActionCollection({
           <SelectContent>
             {statuses.map((status) => (
               <SelectItem key={status} value={status}>
-                {status === 'all' ? t('action-items:allStatuses') : t(`action-items:status_${status}`)}
+                {status === 'all'
+                  ? t('action-items:allStatuses')
+                  : t(`action-items:status_${status}`)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -392,10 +400,18 @@ function ActionCollection({
             <SelectValue placeholder={t('action-items:sort')} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value='createdAt,desc'>{t('action-items:newest')}</SelectItem>
-            <SelectItem value='dueDate,asc'>{t('action-items:dueDate')}</SelectItem>
-            <SelectItem value='status,asc'>{t('action-items:status')}</SelectItem>
-            <SelectItem value='title,asc'>{t('action-items:itemTitle')}</SelectItem>
+            <SelectItem value='createdAt,desc'>
+              {t('action-items:newest')}
+            </SelectItem>
+            <SelectItem value='dueDate,asc'>
+              {t('action-items:dueDate')}
+            </SelectItem>
+            <SelectItem value='status,asc'>
+              {t('action-items:status')}
+            </SelectItem>
+            <SelectItem value='title,asc'>
+              {t('action-items:itemTitle')}
+            </SelectItem>
           </SelectContent>
         </Select>
         <div className='flex items-center gap-2'>
@@ -459,7 +475,9 @@ function ActionTable({
               <TableHead>{t('action-items:responsible')}</TableHead>
               <TableHead>{t('action-items:due')}</TableHead>
               <TableHead>{t('action-items:status')}</TableHead>
-              <TableHead className='text-end'>{t('action-items:commands')}</TableHead>
+              <TableHead className='text-end'>
+                {t('action-items:commands')}
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -478,10 +496,14 @@ function ActionTable({
                   </p>
                   <div className='mt-1 flex flex-wrap gap-1'>
                     <Badge variant={item.isOfficial ? 'secondary' : 'outline'}>
-                      {item.isOfficial ? t('action-items:official') : t('action-items:proposal')}
+                      {item.isOfficial
+                        ? t('action-items:official')
+                        : t('action-items:proposal')}
                     </Badge>
                     {item.overdue && (
-                      <Badge variant='destructive'>{t('action-items:overdue')}</Badge>
+                      <Badge variant='destructive'>
+                        {t('action-items:overdue')}
+                      </Badge>
                     )}
                   </div>
                 </TableCell>
@@ -506,10 +528,13 @@ function ActionTable({
                       className={!item.assignee.active ? 'text-amber-700' : ''}
                     >
                       {item.assignee.displayName ?? t('action-items:unnamed')}
-                      {!item.assignee.active && t('action-items:inactiveSuffix')}
+                      {!item.assignee.active &&
+                        t('action-items:inactiveSuffix')}
                     </span>
                   ) : (
-                    <span className='text-muted-foreground'>{t('action-items:unassigned')}</span>
+                    <span className='text-muted-foreground'>
+                      {t('action-items:unassigned')}
+                    </span>
                   )}
                 </TableCell>
                 <TableCell>
@@ -548,7 +573,9 @@ function ActionTable({
         </Table>
       </div>
       <div className='flex items-center justify-between text-sm text-muted-foreground'>
-        <span>{t('action-items:records', { count: query.data.page.totalElements })}</span>
+        <span>
+          {t('action-items:records', { count: query.data.page.totalElements })}
+        </span>
         <div className='flex items-center gap-2'>
           <Button
             variant='outline'
