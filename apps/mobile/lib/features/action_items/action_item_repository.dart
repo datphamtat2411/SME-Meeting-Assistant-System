@@ -125,7 +125,7 @@ class ActionItemRepository {
     required AuthenticatedSessionScope sessionScope,
   }) => _read(sessionScope, () async {
     final response = await api.get(
-      '/action-items/creation-meetings',
+      '/action-items/management-targets',
       query: query.toQueryParameters(),
       sessionScope: sessionScope,
     );
@@ -180,7 +180,36 @@ class ActionItemRepository {
     throw StateError('Creation meeting verification exceeded its page limit.');
   }
 
-  Future<PagedCollection<MeetingParticipantCandidate>> assignmentCandidates(
+  Future<PagedCollection<ActionItemAssignee>> assignmentCandidates(
+    ActionItemAssignmentQuery query, {
+    required AuthenticatedSessionScope sessionScope,
+  }) => _read(sessionScope, () async {
+    final response = await api.get(
+      '/action-items/assignee-candidates',
+      query: query.toQueryParameters(),
+      sessionScope: sessionScope,
+    );
+    return PagedCollection<ActionItemAssignee>.fromResult(
+      response,
+      (raw) {
+        final candidate = ActionItemAssignee.fromJson(raw, response: response);
+        final candidateId = query.candidateId;
+        if (!candidate.active ||
+            candidate.displayName == null ||
+            candidate.displayName!.trim().isEmpty ||
+            (candidateId != null &&
+                !sameActionItemIdentity(candidate.id, candidateId))) {
+          throw response.invalidDataFailure();
+        }
+        return candidate;
+      },
+      requestedPage: query.page,
+      requestedSize: query.size,
+    );
+  });
+
+  /// Collection filtering is not an assignment authorization operation.
+  Future<PagedCollection<MeetingParticipantCandidate>> filterCandidates(
     MeetingCandidateQuery query, {
     required AuthenticatedSessionScope sessionScope,
   }) => _read(sessionScope, () async {
@@ -192,14 +221,14 @@ class ActionItemRepository {
       throw const ApiFailure(
         0,
         ApiFailure.invalidResponseCode,
-        'The server returned an invalid assignment candidate.',
+        'The server returned an invalid filter candidate.',
       );
     }
     return page;
   });
 
-  /// The invite directory deliberately excludes its caller. Self assignment
-  /// remains an explicit selection, subject to server eligibility validation.
+  /// The invite directory excludes its caller. This local identity is useful
+  /// for collection filtering only; assignment uses the authorized API.
   ActionItemAssignee selfCandidate(AuthenticatedSessionScope sessionScope) {
     _requireCurrent(sessionScope);
     return ActionItemAssignee(

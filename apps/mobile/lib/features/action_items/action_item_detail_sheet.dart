@@ -111,10 +111,16 @@ class _ActionItemDetailPageState extends State<ActionItemDetailPage> {
 
   Future<void> _pickAssignee() async {
     final original = _controller.draft;
+    final snapshot = _controller.snapshot;
+    if (snapshot == null || !_controller.canUseSnapshot) return;
     final selected = await pickActionItemAssignee(
       context,
       widget.repository,
-      hostIsCurrent: widget.hostIsCurrent,
+      meetingId: snapshot.item.meetingId,
+      hostIsCurrent: () =>
+          _controller.canUseSnapshot &&
+          identical(original, _controller.draft) &&
+          identical(snapshot, _controller.snapshot),
     );
     if (!mounted ||
         !_controller.current ||

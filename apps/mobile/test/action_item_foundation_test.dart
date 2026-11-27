@@ -124,8 +124,8 @@ Map<String, dynamic> _eligiblePageMeta(int page, int total) => {
 
 Map<String, dynamic> _eligibleMeeting(String id) => {
   'id': id,
-  'title': null,
-  'canReadMeetingContext': false,
+  'label': 'Restricted meeting',
+  'restricted': true,
 };
 
 List<Map<String, dynamic>> _titleMatches() => List.generate(
@@ -135,7 +135,59 @@ List<Map<String, dynamic>> _titleMatches() => List.generate(
   ),
 );
 
+Map<String, dynamic> assignmentCandidateJson({String id = testUserId}) => {
+  'id': id,
+  'displayName': 'Test User',
+  'email': 'test@example.test',
+  'organizationalUnitName': null,
+  'active': true,
+};
+
 void main() {
+  test('exact assignment lookup is scoped and rejects mismatched identities', () async {
+    var wrongIdentity = false;
+    final client = MeetingTestHttpClient((request) async {
+      expect(request.url.path, endsWith('/assignee-candidates'));
+      expect(request.url.queryParameters['meetingId'], testMeetingId);
+      expect(request.url.queryParameters['candidateId'], testUserId);
+      expect(request.url.queryParameters.containsKey('q'), isFalse);
+      return meetingApiSuccess([
+        assignmentCandidateJson(id: wrongIdentity ? testRoomId : testUserId),
+      ], meta: pageMeta());
+    });
+    final repository = await repositoryFor(client);
+    final scope = repository.captureSession();
+    final query = ActionItemAssignmentQuery(
+      meetingId: testMeetingId,
+      candidateId: testUserId,
+    );
+    final page = await repository.assignmentCandidates(
+      query,
+      sessionScope: scope,
+    );
+    expect(page.items.single.id, testUserId);
+    wrongIdentity = true;
+    await expectLater(
+      repository.assignmentCandidates(query, sessionScope: scope),
+      throwsA(isA<ActionItemFailure>()),
+    );
+  });
+
+  test('assignment lookup does not use the invitation directory', () async {
+    final client = MeetingTestHttpClient((request) async {
+      expect(request.url.path, endsWith('/assignee-candidates'));
+      expect(request.url.queryParameters['meetingId'], testMeetingId);
+      return meetingApiFailure(404, 'NOT_FOUND');
+    });
+    final repository = await repositoryFor(client);
+    await expectLater(
+      repository.assignmentCandidates(
+        ActionItemAssignmentQuery(meetingId: testMeetingId, search: 'Al'),
+        sessionScope: repository.captureSession(),
+      ),
+      throwsA(isA<ActionItemFailure>()),
+    );
+  });
   test('exact creation meeting lookup scans beyond title matches', () async {
     final pages = <int>[];
     final client = MeetingTestHttpClient((request) async {
@@ -294,17 +346,18 @@ void main() {
     () async {
       final client = MeetingTestHttpClient((request) async {
         final path = request.url.path;
-        if (path.endsWith('/creation-meetings')) {
+        if (path.endsWith('/management-targets')) {
           expect(request.url.queryParameters['q'], testMeetingId);
           return meetingApiSuccess([
             {
               'id': testMeetingId,
-              'title': null,
-              'canReadMeetingContext': false,
+              'label': 'Restricted meeting',
+              'restricted': true,
             },
           ], meta: pageMeta());
         }
-        if (path.endsWith('/meeting-candidates')) {
+        if (path.endsWith('/assignee-candidates')) {
+          expect(request.url.queryParameters['meetingId'], testMeetingId);
           expect(request.url.queryParameters['q'], 'Al');
           return meetingApiSuccess([
             {
@@ -312,6 +365,7 @@ void main() {
               'displayName': 'Alice',
               'email': 'alice@example.test',
               'organizationalUnitName': null,
+              'active': true,
             },
           ], meta: pageMeta());
         }
@@ -337,7 +391,7 @@ void main() {
       );
       expect(meetings.items.single.title, isNull);
       final candidates = await repository.assignmentCandidates(
-        MeetingCandidateQuery(search: 'Al'),
+        ActionItemAssignmentQuery(meetingId: testMeetingId, search: 'Al'),
         sessionScope: scope,
       );
       expect(candidates.items.single.displayName, 'Alice');

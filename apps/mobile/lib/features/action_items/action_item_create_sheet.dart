@@ -127,6 +127,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
     );
     if (mounted && _current && selected != null) {
       setState(() {
+        if (_meeting?.id != selected.id) _assignee = null;
         _meeting = selected;
         _localError = null;
       });
@@ -134,13 +135,16 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
   }
 
   Future<void> _pickAssignee() async {
-    if (!_current) return;
+    final meeting = _meeting;
+    if (!_current || meeting == null) return;
+    bool ownsMeeting() => _current && _meeting?.id == meeting.id;
     final selected = await pickActionItemAssignee(
       context,
       _controller.repository,
-      hostIsCurrent: widget.hostIsCurrent,
+      meetingId: meeting.id,
+      hostIsCurrent: ownsMeeting,
     );
-    if (mounted && _current && selected != null) {
+    if (mounted && ownsMeeting() && selected != null) {
       setState(() => _assignee = selected);
     }
   }
@@ -376,7 +380,7 @@ class _ActionItemCreatePageState extends State<ActionItemCreatePage> {
                                   : actionItemAssigneeLabel(_assignee),
                               dueDate: _dueDate,
                               canEdit: !busy,
-                              canAssign: !busy,
+                              canAssign: !busy && _meeting != null,
                               onChanged: () => setState(() {}),
                               onAssignee: _pickAssignee,
                               onDueDate: _pickDate,

@@ -599,13 +599,55 @@ class ActionItemQuery {
   };
 }
 
+class ActionItemAssignmentQuery {
+  ActionItemAssignmentQuery({
+    required this.meetingId,
+    this.search,
+    this.candidateId,
+    this.page = 0,
+    this.size = 20,
+  }) {
+    requireActionItemUuid(meetingId, 'meetingId');
+    if ((search == null) == (candidateId == null)) {
+      throw ArgumentError('Provide exactly one assignment lookup selector.');
+    }
+    final normalized = search?.trim();
+    if (normalized != null &&
+        (normalized.length < 2 || normalized.length > 200)) {
+      throw ArgumentError('Invalid assignment search.');
+    }
+    if (candidateId != null) {
+      requireActionItemUuid(candidateId!, 'candidateId');
+    }
+    if (page < 0 || size < 1 || size > 20) {
+      throw ArgumentError('Invalid assignment candidate page.');
+    }
+  }
+
+  final String meetingId;
+  final String? search;
+  final String? candidateId;
+  final int page;
+  final int size;
+
+  Map<String, String> toQueryParameters() => {
+    'meetingId': meetingId,
+    if (search != null) 'q': search!.trim(),
+    if (candidateId != null) 'candidateId': candidateId!,
+    'page': '$page',
+    'size': '$size',
+  };
+}
+
 class ActionItemCreationMeetingQuery {
   ActionItemCreationMeetingQuery({
     String? search,
     this.page = 0,
     this.size = 20,
   }) : search = _search(search) {
-    _validatePage(page, size);
+    if (page < 0 || size < 1 || size > 20) {
+      throw ArgumentError('Invalid management target page.');
+    }
   }
 
   final String? search;
@@ -634,17 +676,12 @@ class ActionItemCreationMeeting {
     Map<String, dynamic> raw, {
     ApiResult? response,
   }) {
-    final title = optionalString(raw, 'title', response: response);
-    final canRead = requiredBool(
-      raw,
-      'canReadMeetingContext',
-      response: response,
-    );
-    if (!canRead && title != null) invalidApiData(response: response);
+    final restricted = requiredBool(raw, 'restricted', response: response);
+    final label = requiredString(raw, 'label', response: response);
     return ActionItemCreationMeeting._(
       id: _requiredUuid(raw, 'id', response),
-      title: title,
-      canReadMeetingContext: canRead,
+      title: restricted ? null : label,
+      canReadMeetingContext: !restricted,
     );
   }
 }

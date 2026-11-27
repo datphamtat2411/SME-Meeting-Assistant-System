@@ -50,7 +50,7 @@ void main() {
       if (path.endsWith('/dashboard/me')) {
         return meetingApiSuccess(_dashboard(4));
       }
-      if (path.endsWith('/creation-meetings')) {
+      if (path.endsWith('/management-targets')) {
         final size = int.parse(request.url.queryParameters['size']!);
         return meetingApiSuccess(
           [],

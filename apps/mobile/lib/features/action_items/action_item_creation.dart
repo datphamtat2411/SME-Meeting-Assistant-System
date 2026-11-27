@@ -3,7 +3,6 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
-import 'package:sme_meeting_assistant/features/meetings/participant_selection.dart';
 
 import 'action_item_models.dart';
 import 'action_item_repository.dart';
@@ -39,7 +38,6 @@ class ActionItemCreationController extends ChangeNotifier {
   ActionItemCreateIntent? _intent;
   ActionItemCreationMeeting? _recoveryMeeting;
   ActionItemAssignee? _recoveryAssignee;
-  String? _assigneeSearchHint;
   int _contextGeneration = 0;
   DateTime? _firstDispatch;
   Object? _error;
@@ -129,7 +127,6 @@ class ActionItemCreationController extends ChangeNotifier {
         idempotencyKey: _newKey(),
         sessionScope: _scope,
       );
-      _assigneeSearchHint = assignee.displayName;
       _firstDispatch = _now();
       _elapsed
         ..reset()
@@ -236,27 +233,15 @@ class ActionItemCreationController extends ChangeNotifier {
     if (!owns()) return;
     try {
       final assigneeId = intent.input.assigneeUserId;
-      if (sameActionItemIdentity(assigneeId, _scope.userId)) {
-        _recoveryAssignee = repository.selfCandidate(_scope);
-      } else {
-        final hint = _assigneeSearchHint?.trim();
-        if (hint == null || hint.length < 2 || hint.length > 200) return;
-        final page = await repository.assignmentCandidates(
-          MeetingCandidateQuery(search: hint),
-          sessionScope: _scope,
-        );
-        if (!owns()) return;
-        final candidate = page.items
-            .where((value) => sameActionItemIdentity(value.id, assigneeId))
-            .firstOrNull;
-        if (candidate != null) {
-          _recoveryAssignee = ActionItemAssignee(
-            id: candidate.id,
-            displayName: candidate.displayName,
-            accountStatus: ActionItemAccountStatus.active,
-          );
-        }
-      }
+      final page = await repository.assignmentCandidates(
+        ActionItemAssignmentQuery(
+          meetingId: intent.input.meetingId,
+          candidateId: assigneeId,
+        ),
+        sessionScope: _scope,
+      );
+      if (!owns()) return;
+      _recoveryAssignee = page.items.firstOrNull;
       if (owns()) notifyListeners();
     } catch (_) {
       // Candidate discovery is best effort. The immutable assignee identity
@@ -299,7 +284,6 @@ class ActionItemCreationController extends ChangeNotifier {
   void _clearIntent() {
     _intent = null;
     _clearRecoveryContext();
-    _assigneeSearchHint = null;
     _firstDispatch = null;
     _retryExpired = false;
     _elapsed
