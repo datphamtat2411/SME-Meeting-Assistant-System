@@ -1,10 +1,7 @@
 import { AlertCircle, Inbox, LoaderCircle, RefreshCw } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { useUiTranslation } from '@/lib/i18n'
-import {
-  requestErrorKey,
-  requestStatusErrorKey,
-} from '@/lib/i18n/presentation'
+import { requestErrorKey, requestStatusErrorKey } from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 
 export function RequestLoading({ label }: { label?: string }) {
