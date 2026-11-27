@@ -486,7 +486,9 @@ void main() {
           return meetingApiFailure(500, 'INTERNAL_ERROR');
         }
         if (request.url.path.endsWith('/assignee-candidates')) {
-          return meetingApiSuccess([assignmentCandidateJson()], meta: pageMeta());
+          return meetingApiSuccess([
+            assignmentCandidateJson(),
+          ], meta: pageMeta());
         }
         return meetingApiSuccess(
           [

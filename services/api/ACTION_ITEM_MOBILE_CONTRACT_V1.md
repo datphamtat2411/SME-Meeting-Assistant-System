@@ -1,4 +1,4 @@
-# Action Items — Mobile Wave 01 contract
+# Action Items — canonical cross-platform v1 contract
 
 This is an additive extension of the existing v1 Action Items API. The Core
 API remains authoritative for access, assignment, lifecycle, overdue state,
@@ -93,32 +93,32 @@ Cancelled official work is historical official work, not an active obligation.
 
 ## Creation-meeting discovery
 
-`GET /api/v1/action-items/creation-meetings` returns the common paginated
-response for meetings currently eligible for the caller's manual creation.
-Parameters: optional `q` (maximum 200 characters), `page` (default 0),
-`size` (default 20; range 1–100).
+Both repository clients use `GET /api/v1/action-items/management-targets`.
+Parameters: optional q (maximum 200 characters), page (default 0), size
+(default 20; range 1–20). Each row is {id, label, restricted}. The additive
+restricted boolean explicitly identifies a redacted meeting title; clients
+must not infer rights from a label or opaque ID. Search matches visible
+titles or exact authorized UUIDs, never hidden titles. Ordering uses only
+visible title and UUID. Blank search browses the authorized set. Creation
+independently revalidates eligibility. The existing creation-meetings route
+retains its {id, title, canReadMeetingContext} projection and 1–100 page size
+over the same query for v1 compatibility; the repository clients have migrated,
+but retirement requires deployed consumer inventory and explicit approval.
+The distinct management-capability endpoint returns {canCreate} globally or
+for an optional meetingId without protected metadata.
 
-Each row is `{id, title, canReadMeetingContext}`. A manageable meeting without
-content access has a null title. Search matches authorized titles or exact
-opaque meeting UUIDs; it never matches a restricted title. Ordering uses only
-the visible title and UUID as a deterministic tie-breaker. Creation independently
-revalidates eligibility. The existing Web `GET /api/v1/action-items/management-targets` returns
-`{id, label}` (size 1–20) from exactly the same authorized, paginated query.
-An inaccessible title is represented as `Restricted meeting (<opaque UUID>)`,
-never as a searchable hidden title. Blank search browses the authorized set.
-The Mobile creation-meetings projection remains a transitional compatibility
-route until INT-04/05 migrate consumers and verify API versioning/compatibility.
-The distinct `management-capability` endpoint returns `{canCreate}` for the
-current actor, globally or for an optional meetingId, without metadata.
-
-Assignment discovery differs from invitation discovery:
-`/action-items/assignee-candidates` requires current management authority on
-the requested meeting and returns active organizational users including self;
-`/users/meeting-candidates` is the active-actor invitation directory excluding
-self. Mobile's existing invite-directory-plus-self adapter is not a grant of
-assignment authority; actual assignment always revalidates management rights.
-INT-04/05 own migration to the meeting-scoped assignment lookup. Neither
-endpoint may be treated as permission to mutate a resource.
+Assignment discovery differs from invitation discovery. GET
+/api/v1/action-items/assignee-candidates requires current management authority
+on meetingId and returns active organizational users including self. Supply
+exactly one selector: q (2–200 characters, normalized name/email search) or
+candidateId (exact UUID). Supplying both or neither is a bad request.
+Exact lookup shares the authorization and active-account predicate, returns
+a paginated zero-or-one result and does not search name/email. Mobile uses
+exact lookup for self assignment and recovery of the original assignment
+identity; search remains available for other assignees. The separate
+/users/meeting-candidates invitation directory excludes self and is used
+only for collection filtering alongside known historical assignees, never
+to authorize assignment. Every mutation independently revalidates rights.
 
 ## Mobile foundation boundary
 
@@ -133,9 +133,9 @@ The foundation reports explicit rejected, not-dispatched and unknown outcomes;
 transport or invalid response ambiguity does not imply rollback. If dispatch
 cannot be established reliably, it errs toward unknown. Session-scoped
 invalidation marks projections stale after verified success or uncertain
-outcomes, not optimistic success. The old Action Items UI remains transitional;
-collection controllers, detail/creation UI, lifecycle orchestration and
-cross-feature integration belong to later waves.
+outcomes, not optimistic success. Web and Mobile collection, detail, creation
+and command flows consume this canonical contract. Live cross-client and
+full-product acceptance remain integration verification gates.
 
 ## Focused verification
 
@@ -144,5 +144,6 @@ cross-feature integration belong to later waves.
   `flutter analyze`, and `flutter test test/action_item_foundation_test.dart`
   from `apps/mobile` using the repository-pinned SDK.
 
-The executed verification is recorded in
-`docs/integration/INT-02-RESULTS.md`.
+Wave 01 verification is recorded in `docs/integration/INT-02-RESULTS.md`.
+Wave 02 acceptance uses the GitHub Actions results for the integrated commit;
+source changes alone do not establish passing verification.

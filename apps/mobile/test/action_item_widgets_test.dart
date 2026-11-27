@@ -357,11 +357,7 @@ void main() {
         return meetingApiSuccess([assignmentCandidateJson()], meta: pageMeta());
       }
       return meetingApiSuccess([
-        {
-          'id': testMeetingId,
-          'label': 'Eligible meeting',
-          'restricted': false,
-        },
+        {'id': testMeetingId, 'label': 'Eligible meeting', 'restricted': false},
       ], meta: _pageMeta(20, 1));
     });
     final repository = (await tester.runAsync(() => repositoryFor(client)))!;

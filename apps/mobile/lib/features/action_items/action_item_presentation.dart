@@ -167,9 +167,10 @@ Future<ActionItemAssignee?> pickActionItemAssignee(
     pinned: pinned,
     pinnedChanges: forFilter ? knownChanges : null,
     readPinned: () => [
-      for (final item in forFilter
-          ? readKnown?.call() ?? const <ActionItemAssignee>[]
-          : const <ActionItemAssignee>[])
+      for (final item
+          in forFilter
+              ? readKnown?.call() ?? const <ActionItemAssignee>[]
+              : const <ActionItemAssignee>[])
         if (!sameActionItemIdentity(item.id, self.id) &&
             (allowKnownInactive ||
                 item.accountStatus == ActionItemAccountStatus.active))

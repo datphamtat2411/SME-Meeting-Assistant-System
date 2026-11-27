@@ -143,6 +143,48 @@ class ActionItemConcurrentCommandsIntegrationTests {
         }
     }
 
+    @Test
+    void simultaneousCompleteAndCancelWithSameEtagHaveOneWinner() throws Exception {
+        MvcResult created=create(null,"Competing lifecycle commands");
+        assertThat(created.getResponse().getStatus()).isEqualTo(201);
+        UUID id=itemId(created);
+        String tag=created.getResponse().getHeader(HttpHeaders.ETAG);
+        ExecutorService pool=Executors.newFixedThreadPool(2);
+        CountDownLatch ready=new CountDownLatch(2),start=new CountDownLatch(1);
+        try {
+            Future<MvcResult> complete=pool.submit(commandCall(id,tag,"complete",ready,start));
+            Future<MvcResult> cancel=pool.submit(commandCall(id,tag,"cancel",ready,start));
+            assertThat(ready.await(15,TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            assertThat(List.of(complete.get(50,TimeUnit.SECONDS).getResponse().getStatus(),
+                cancel.get(50,TimeUnit.SECONDS).getResponse().getStatus()))
+                .containsExactlyInAnyOrder(200,412);
+            assertThat(jdbc.queryForObject("SELECT status FROM action_items WHERE id=?",
+                String.class,id)).isIn("DONE","CANCELLED");
+            assertThat(jdbc.queryForObject("SELECT version FROM action_items WHERE id=?",
+                Long.class,id)).isEqualTo(1L);
+            assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM action_item_history WHERE action_item_id=?",
+                Integer.class,id)).isEqualTo(3);
+            assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM action_item_assignment_revocations WHERE action_item_id=?",
+                Integer.class,id)).isEqualTo(1);
+        } finally {
+            start.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    private Callable<MvcResult> commandCall(UUID id,String tag,String command,
+            CountDownLatch ready,CountDownLatch start) {
+        return () -> {
+            ready.countDown();
+            if(!start.await(15,TimeUnit.SECONDS))throw new AssertionError("Start timeout");
+            return mvc.perform(post("/api/v1/action-items/{id}/"+command,id)
+                .principal(principal()).header(HttpHeaders.IF_MATCH,tag)).andReturn();
+        };
+    }
+
     private Callable<MvcResult> patchCall(UUID id,String tag,String title,
             CountDownLatch ready,CountDownLatch start) {
         return () -> {

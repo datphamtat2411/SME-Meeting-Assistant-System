@@ -767,9 +767,7 @@ export function ActionForm({
                       Boolean(conflict) ||
                       Boolean(unresolvedCreate)
                     }
-                    onClick={() =>
-                      setUserPage((page) => Math.max(0, page - 1))
-                    }
+                    onClick={() => setUserPage((page) => Math.max(0, page - 1))}
                   >
                     Previous
                   </Button>

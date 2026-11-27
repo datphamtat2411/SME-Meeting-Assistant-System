@@ -144,34 +144,37 @@ Map<String, dynamic> assignmentCandidateJson({String id = testUserId}) => {
 };
 
 void main() {
-  test('exact assignment lookup is scoped and rejects mismatched identities', () async {
-    var wrongIdentity = false;
-    final client = MeetingTestHttpClient((request) async {
-      expect(request.url.path, endsWith('/assignee-candidates'));
-      expect(request.url.queryParameters['meetingId'], testMeetingId);
-      expect(request.url.queryParameters['candidateId'], testUserId);
-      expect(request.url.queryParameters.containsKey('q'), isFalse);
-      return meetingApiSuccess([
-        assignmentCandidateJson(id: wrongIdentity ? testRoomId : testUserId),
-      ], meta: pageMeta());
-    });
-    final repository = await repositoryFor(client);
-    final scope = repository.captureSession();
-    final query = ActionItemAssignmentQuery(
-      meetingId: testMeetingId,
-      candidateId: testUserId,
-    );
-    final page = await repository.assignmentCandidates(
-      query,
-      sessionScope: scope,
-    );
-    expect(page.items.single.id, testUserId);
-    wrongIdentity = true;
-    await expectLater(
-      repository.assignmentCandidates(query, sessionScope: scope),
-      throwsA(isA<ActionItemFailure>()),
-    );
-  });
+  test(
+    'exact assignment lookup is scoped and rejects mismatched identities',
+    () async {
+      var wrongIdentity = false;
+      final client = MeetingTestHttpClient((request) async {
+        expect(request.url.path, endsWith('/assignee-candidates'));
+        expect(request.url.queryParameters['meetingId'], testMeetingId);
+        expect(request.url.queryParameters['candidateId'], testUserId);
+        expect(request.url.queryParameters.containsKey('q'), isFalse);
+        return meetingApiSuccess([
+          assignmentCandidateJson(id: wrongIdentity ? testRoomId : testUserId),
+        ], meta: pageMeta());
+      });
+      final repository = await repositoryFor(client);
+      final scope = repository.captureSession();
+      final query = ActionItemAssignmentQuery(
+        meetingId: testMeetingId,
+        candidateId: testUserId,
+      );
+      final page = await repository.assignmentCandidates(
+        query,
+        sessionScope: scope,
+      );
+      expect(page.items.single.id, testUserId);
+      wrongIdentity = true;
+      await expectLater(
+        repository.assignmentCandidates(query, sessionScope: scope),
+        throwsA(isA<ActionItemFailure>()),
+      );
+    },
+  );
 
   test('assignment lookup does not use the invitation directory', () async {
     final client = MeetingTestHttpClient((request) async {

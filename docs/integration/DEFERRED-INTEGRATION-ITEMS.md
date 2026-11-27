@@ -5,9 +5,9 @@ foundation work from remaining acceptance. Source review is not runtime proof.
 
 | ID | Owner | Already integrated / corrected | Remaining acceptance |
 | --- | --- | --- | --- |
-| ACT-01 | INT-03 | Shared meeting rights, lifecycle and one resource projection; discovery uses same rights | Verify all commands under current roles, inactive assignees, scope changes, concurrent writes and negative access cases |
-| ACT-02 | INT-04 | management-targets is preferred; creation-meetings is a transitional projection over the same query; capability lookup uses the same rights | Verify pagination, nullability, HTTP errors and exact route compatibility; retire compatibility projection only after consumer inventory, migration and required approval |
-| ACT-03 | INT-05 | Web and Mobile resource DTO adaptation; Web can browse restricted targets without hidden metadata | Migrate Mobile assignment discovery to meeting-scoped assignee-candidates; verify both clients against the same API including stale ETags and restricted context; remove transitional route only in coordinated release |
+| ACT-01 | INT-03 | Shared meeting rights and lifecycle eligibility; row-locked commands; concurrent lifecycle regression | Confirm CI and live scope-change acceptance |
+| ACT-02 | INT-04 | Canonical management-targets includes explicit restricted flag; assignment discovery supports exact scoped UUID selector; compatibility route retained | Confirm CI; retire compatibility projection only after deployed consumer inventory and required approval |
+| ACT-03 | INT-05 | Mobile migrated to management-targets and meeting-scoped assignee-candidates; exact self/recovery lookup; Web reviewable filter and candidate paging without redesign | Confirm CI and live cross-client acceptance; compatibility route retirement only in coordinated release |
 | INTEL-01 | INT-06/07 | Transcript revision, segment ETag, snapshot/source guard and Decision reviewed-source/detail reader | Verify concurrent edits, stale evidence and both workspace consumers |
 | AST-01 | INT-08 | V67, creation idempotency, flat status, history and recovery reconciliation | Verify replay, key conflicts, quota, lease fencing and pagination across real dependencies |
 | EVID-01 | INT-09 | Web evidence resolver retained | Verify stale and revoked source rejection across all canonical artifacts |
