@@ -299,7 +299,8 @@ class ExportJobIntegrationTests {
             if (version == 1) {
                 assertThat(ready.rendererVersion()).isEqualTo("markdown-v1");
                 assertThat(new String(artifact, java.nio.charset.StandardCharsets.UTF_8))
-                        .contains(owner.toString(), second.toString())
+                        .contains("- **Người phụ trách (ID):** " + owner.toString().replace("-", "\\-"),
+                                "- **Người phụ trách (ID):** " + second.toString().replace("-", "\\-"))
                         .doesNotContain("Nguyễn Văn An", "Trần Thị Bình");
             } else {
                 assertThat(ready.rendererVersion()).isEqualTo("pdf-v2-markdown-v2-dejavu-2.29");
