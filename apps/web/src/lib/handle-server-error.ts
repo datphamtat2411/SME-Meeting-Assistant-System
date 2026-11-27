@@ -2,10 +2,7 @@ import { AxiosError } from 'axios'
 import { toast } from 'sonner'
 import { CoreApiError, normalizeCoreApiError } from './core-api'
 import { i18n } from './i18n'
-import {
-  requestErrorKey,
-  requestStatusErrorKey,
-} from './i18n/presentation'
+import { requestErrorKey, requestStatusErrorKey } from './i18n/presentation'
 
 export function handleServerError(error: unknown) {
   if (import.meta.env.DEV) {
