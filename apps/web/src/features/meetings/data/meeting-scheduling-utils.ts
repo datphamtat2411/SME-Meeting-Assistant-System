@@ -1,3 +1,4 @@
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import { Temporal } from '@js-temporal/polyfill'
 import {
   compareInstants,
@@ -63,13 +64,13 @@ export function scheduleEndpointError(
   timezone: string
 ) {
   if (!timezone)
-    return 'Wait for regional preferences before entering a schedule.'
+    return featureValidationMessage('meetings:create_waitRegional')
   const result = resolveWallTime(date, time, timezone)
   if (result.kind === 'gap')
-    return 'This local time does not exist in the scheduling timezone. Choose another time.'
+    return featureValidationMessage('meetings:create_invalidLocalTime')
   if (result.kind === 'ambiguous')
-    return 'This local time occurs twice. Choose its UTC offset.'
-  return 'Enter a valid local date and time.'
+    return featureValidationMessage('meetings:create_ambiguousLocalTime')
+  return featureValidationMessage('meetings:create_validLocalDate')
 }
 
 export function scheduleFromInstants(
