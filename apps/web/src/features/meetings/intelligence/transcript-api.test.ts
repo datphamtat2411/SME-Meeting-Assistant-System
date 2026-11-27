@@ -2,6 +2,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { coreApi } from '@/lib/core-api'
 import {
+  correctTranscriptSegment,
   mapSpeaker,
   reviewCoverageQuery,
   transcriptReviewQuery,
@@ -38,6 +39,7 @@ const transcript = {
       speakerClusterId: speakerId,
       speakerLabel: 'Speaker 1',
       version: 3,
+      etag: '"opaque-segment-token"',
     },
   ],
 } as const
@@ -86,11 +88,21 @@ describe('transcript API concurrency contracts', () => {
     )
   })
 
-  it('uses the segment version ETag for corrections and requires a collection token for mapping', async () => {
+  it('uses the issued segment ETag for corrections and requires a collection token for mapping', async () => {
     const patch = vi.spyOn(coreApi, 'patch').mockResolvedValue({})
     const segment = transcript.segments[0]
 
-    expect(transcriptSegmentEtag(segment)).toBe(`"s-${segmentId}-3"`)
+    expect(transcriptSegmentEtag(segment)).toBe('"opaque-segment-token"')
+    await correctTranscriptSegment(meetingId, segment, 'Updated', '')
+    expect(patch).toHaveBeenCalledWith(
+      `/meetings/${meetingId}/transcript/segments/${segmentId}`,
+      { text: 'Updated', reason: null },
+      { headers: { 'If-Match': '"opaque-segment-token"' } }
+    )
+    patch.mockClear()
+    await expect(
+      correctTranscriptSegment(meetingId, { id: segmentId }, 'Updated', '')
+    ).rejects.toMatchObject({ code: 'PRECONDITION_REQUIRED' })
     await expect(mapSpeaker(meetingId, speakerId, null)).rejects.toMatchObject({
       code: 'PRECONDITION_REQUIRED',
     })
