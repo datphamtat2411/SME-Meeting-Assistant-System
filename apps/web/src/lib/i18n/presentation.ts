@@ -1,5 +1,5 @@
 import { i18n } from './index'
-import { resources } from './resources'
+import { type resources } from './resources'
 
 type ErrorCode = keyof typeof errorKeys
 const errorKeys = {
