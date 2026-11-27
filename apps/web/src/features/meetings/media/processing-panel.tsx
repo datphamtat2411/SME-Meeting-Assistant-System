@@ -2,10 +2,6 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { CoreApiError } from '@/lib/core-api'
 import { i18n, useUiTranslation } from '@/lib/i18n'
-import {
-  localizedValidationMessage,
-  operationErrorFormMessage,
-} from '@/lib/i18n/presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -25,19 +21,12 @@ import {
   MeetingSessionBoundary,
   useMeetingSession,
 } from './meeting-session-context'
+import { processingErrorDescription } from './media-error-presentation'
 import {
   presentProcessingJobType,
   presentProcessingStage,
   presentProcessingStatus,
 } from './processing-status-presentation'
-
-function processingErrorDescription(error: unknown): string | undefined {
-  if (error instanceof CoreApiError)
-    return localizedValidationMessage(operationErrorFormMessage(error))
-  return error instanceof Error
-    ? localizedValidationMessage(error.message)
-    : undefined
-}
 
 function isUncertainProcessingError(error: unknown): boolean {
   return error instanceof CoreApiError && error.recoveryOutcome === 'uncertain'

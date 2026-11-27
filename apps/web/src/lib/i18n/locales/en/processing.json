@@ -1,4 +1,6 @@
 {
+  "operationFailed": "The processing operation failed. Check the current status before trying again.",
+  "operationIdentityUnavailable": "This browser cannot securely identify the processing request. Use a supported browser and try again.",
   "jobQueued": "Processing job queued",
   "admissionUncertain": "Processing request outcome is uncertain",
   "admissionRejected": "Processing request rejected",

@@ -1,12 +1,34 @@
 import { describe, expect, it } from 'vitest'
-import { i18n } from '@/lib/i18n'
+import { i18n, setUiLanguage } from '@/lib/i18n'
 import { localizedValidationMessage } from '@/lib/i18n/presentation'
 import {
   MediaPresentationError,
   mediaErrorMessage,
+  processingErrorDescription,
 } from './media-error-presentation'
 
 describe('media error presentation', () => {
+  it('localizes known processing errors and hides unknown diagnostics', async () => {
+    try {
+      for (const language of ['en', 'vi'] as const) {
+        await setUiLanguage(language)
+        expect(processingErrorDescription(new Error('private diagnostic'))).toBe(
+          i18n.t('processing:operationFailed')
+        )
+        expect(
+          processingErrorDescription(
+            new MediaPresentationError(
+              'private identity diagnostic',
+              'processing:operationIdentityUnavailable'
+            )
+          )
+        ).toBe(i18n.t('processing:operationIdentityUnavailable'))
+      }
+    } finally {
+      await setUiLanguage('en')
+    }
+  })
+
   it('does not expose raw browser diagnostics', () => {
     const marker = mediaErrorMessage(new Error('private storage diagnostic'))
     expect(localizedValidationMessage(marker)).toBe('The operation failed.')

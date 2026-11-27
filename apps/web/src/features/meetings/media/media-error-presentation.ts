@@ -1,6 +1,7 @@
 import { CoreApiError } from '@/lib/core-api'
 import {
   featureValidationMessage,
+  localizedValidationMessage,
   operationErrorFormMessage,
   requestErrorKey,
   requestStatusErrorKey,
@@ -43,4 +44,12 @@ export function mediaErrorMessage(
     }
   }
   return featureValidationMessage(fallbackKey)
+}
+
+export function processingErrorDescription(error: unknown): string {
+  return localizedValidationMessage(
+    error instanceof CoreApiError
+      ? operationErrorFormMessage(error)
+      : mediaErrorMessage(error, 'processing:operationFailed')
+  )
 }

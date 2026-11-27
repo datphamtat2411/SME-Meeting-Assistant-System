@@ -538,7 +538,9 @@ export function MinutesPanel({
               </p>
               <p>
                 {t('minutes:status')}:{' '}
-                {transcript.status ?? t('minutes:notAvailable')}
+                {transcript.status
+                  ? minutesStatusLabel(transcript.status, t)
+                  : t('minutes:notAvailable')}
               </p>
               <p>
                 {t('minutes:language')}:{' '}

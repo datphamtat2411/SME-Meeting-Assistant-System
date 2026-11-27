@@ -1,4 +1,6 @@
 {
+  "operationFailed": "Thao tác xử lý thất bại. Hãy kiểm tra trạng thái hiện tại trước khi thử lại.",
+  "operationIdentityUnavailable": "Trình duyệt không thể tạo định danh an toàn cho yêu cầu xử lý. Hãy dùng trình duyệt được hỗ trợ rồi thử lại.",
   "jobQueued": "Tác vụ xử lý đã vào hàng đợi",
   "admissionUncertain": "Chưa xác định được kết quả yêu cầu xử lý",
   "admissionRejected": "Yêu cầu xử lý bị từ chối",
