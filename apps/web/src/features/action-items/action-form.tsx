@@ -617,7 +617,9 @@ export function ActionForm({
                       type='button'
                       variant='outline'
                       size='sm'
-                      disabled={!targets.data.page.hasNext || targets.isFetching}
+                      disabled={
+                        !targets.data.page.hasNext || targets.isFetching
+                      }
                       onClick={() => setMeetingPage((page) => page + 1)}
                     >
                       Next
