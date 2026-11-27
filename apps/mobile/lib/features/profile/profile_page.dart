@@ -83,6 +83,12 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
   bool get _eligible =>
       widget.active && _foreground && _routeVisible && controller.current;
 
+  bool get _canOpenAccountLink =>
+      !_confirmingLogout &&
+      controller.current &&
+      !controller.saving &&
+      !preferences.saving;
+
   void _scheduleRefresh() {
     if (!_refreshRequested || !_eligible || _refreshScheduled) return;
     _refreshScheduled = true;
@@ -324,16 +330,13 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
         AppearancePanel(controller: widget.appearance),
         const SizedBox(height: 12),
         if (widget.onOpenAccountLink != null)
-          OutlinedButton.icon(
-            onPressed:
-                _confirmingLogout ||
-                    !controller.current ||
-                    controller.saving ||
-                    preferences.saving
-                ? null
-                : widget.onOpenAccountLink,
-            icon: const Icon(Icons.link),
-            label: const Text('Mở liên kết tài khoản'),
+          ListenableBuilder(
+            listenable: preferences,
+            builder: (context, _) => OutlinedButton.icon(
+              onPressed: _canOpenAccountLink ? widget.onOpenAccountLink : null,
+              icon: const Icon(Icons.link),
+              label: const Text('Mở liên kết tài khoản'),
+            ),
           ),
         OutlinedButton.icon(
           onPressed: _confirmingLogout || !controller.current ? null : signOut,

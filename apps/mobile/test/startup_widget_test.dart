@@ -1668,6 +1668,62 @@ void main() {
     },
   );
 
+  testWidgets('Account workspace opens and cancels the account-link route', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(600, 1000);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final credentials = InMemoryCredentialStorage();
+    await _writeRefreshCredential(credentials, 'refresh-0');
+    final client = _authClient();
+    final harness = _Harness.create(client, credentials);
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.signedIn &&
+          find.byType(NavigationBar).evaluate().isNotEmpty,
+      reason: 'authenticated Account navigation',
+    );
+    final scope = harness.api.requireAuthenticatedSessionScope();
+    await tester.tap(find.text('Tài khoản'));
+    await pumpUntil(
+      tester,
+      () => find.text('Test User').evaluate().isNotEmpty,
+      reason: 'canonical profile to render',
+    );
+    final openLink = find.widgetWithText(
+      OutlinedButton,
+      'Mở liên kết tài khoản',
+    );
+    await revealScrollableControl(
+      tester,
+      openLink,
+      scrollable: find.descendant(
+        of: find.byType(ProfilePage),
+        matching: find.byType(Scrollable),
+      ),
+      delta: 250,
+    );
+    await tester.tap(openLink);
+    await tester.pumpAndSettle();
+    expect(find.text('Liên kết từ email'), findsOneWidget);
+    await tester.tap(find.text('Quay lại'));
+    await tester.pumpAndSettle();
+    expect(harness.api.isCurrentAuthenticatedSession(scope), isTrue);
+    expect(find.byType(ProfilePage), findsOneWidget);
+    expect(find.text('Liên kết từ email'), findsNothing);
+    expect(
+      client.requests.where((request) => request.method != 'GET'),
+      hasLength(1),
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   for (final scenario in ['confirmed', 'unconfirmed', 'storage']) {
     testWidgets('Account sign-out presents the $scenario outcome', (
       tester,
