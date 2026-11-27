@@ -216,5 +216,6 @@
   "recovery_ineligible_ACTIVE": "Trạng thái tài khoản mới nhất: đang hoạt động. Thao tác không còn phù hợp với tài khoản hiện tại hoặc trạng thái thành viên; kết quả trước vẫn chưa được xác nhận.",
   "recovery_ineligible_INACTIVE": "Trạng thái tài khoản mới nhất: đã vô hiệu hóa. Thao tác không còn phù hợp với tài khoản hiện tại hoặc trạng thái thành viên; kết quả trước vẫn chưa được xác nhận.",
   "recovery_ineligible_PENDING_SETUP": "Trạng thái tài khoản mới nhất: chờ thiết lập bảo mật. Thao tác không còn phù hợp với tài khoản hiện tại hoặc trạng thái thành viên; kết quả trước vẫn chưa được xác nhận.",
-  "recovery_incompatibleScope": "Tài khoản mới nhất không phải trưởng phòng. Bỏ thay đổi phạm vi quản lý không tương thích, hoặc xem xét việc nâng vai trò riêng trước khi khôi phục quyền quản lý."
+  "recovery_incompatibleScope": "Tài khoản mới nhất không phải trưởng phòng. Bỏ thay đổi phạm vi quản lý không tương thích, hoặc xem xét việc nâng vai trò riêng trước khi khôi phục quyền quản lý.",
+  "recovery_directoryUnavailable": "Tạm thời không thể xác minh danh sách thành viên."
 }

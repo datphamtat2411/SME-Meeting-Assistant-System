@@ -177,12 +177,15 @@ export function createMemberEditorRecovery(
         })
         return
       }
+      const failure = normalizeCoreApiError(error)
       dependencies.dispatch({
         type: 'VERIFICATION_FAILED',
         operationId: input.operationId,
         contextKey: input.contextKey,
         requestId: request.requestId,
-        error: requestErrorFormMessage(normalizeCoreApiError(error)),
+        error: failure.isNetworkError
+          ? featureValidationMessage('members:recovery_directoryUnavailable')
+          : requestErrorFormMessage(failure),
       })
     } finally {
       dependencies.requests.completeRequest(request)

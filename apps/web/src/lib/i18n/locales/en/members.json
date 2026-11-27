@@ -217,5 +217,6 @@
   "recovery_ineligible_ACTIVE": "The latest account state is active. This lifecycle operation is no longer eligible for the current account or member state; the previous outcome remains unconfirmed.",
   "recovery_ineligible_INACTIVE": "The latest account state is inactive. This lifecycle operation is no longer eligible for the current account or member state; the previous outcome remains unconfirmed.",
   "recovery_ineligible_PENDING_SETUP": "The latest account state is pending secure setup. This lifecycle operation is no longer eligible for the current account or member state; the previous outcome remains unconfirmed.",
-  "recovery_incompatibleScope": "The latest account is not a Department Manager. Discard the incompatible manager-scope intent, or review a separate role promotion before restoring manager authority."
+  "recovery_incompatibleScope": "The latest account is not a Department Manager. Discard the incompatible manager-scope intent, or review a separate role promotion before restoring manager authority.",
+  "recovery_directoryUnavailable": "Directory verification is temporarily unavailable."
 }
