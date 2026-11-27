@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/api_client.dart';
 import 'core/app_config.dart';
@@ -56,6 +57,9 @@ class ConfigurationErrorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'SME Meeting Assistant',
+    locale: const Locale('vi', 'VN'),
+    supportedLocales: const [Locale('vi', 'VN')],
+    localizationsDelegates: GlobalMaterialLocalizations.delegates,
     debugShowCheckedModeBanner: false,
     theme: AppTheme.light(),
     home: Scaffold(
@@ -224,6 +228,9 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
       return MaterialApp(
         key: ValueKey(scope),
         title: 'SME Meeting Assistant',
+        locale: const Locale('vi', 'VN'),
+        supportedLocales: const [Locale('vi', 'VN')],
+        localizationsDelegates: GlobalMaterialLocalizations.delegates,
         debugShowCheckedModeBanner: false,
         theme: AppTheme.light(),
         darkTheme: AppTheme.dark(),

@@ -58,6 +58,9 @@ void main() {
       () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
       reason: 'login ready',
     );
+    final loginContext = tester.element(find.text('Đăng nhập hệ thống'));
+    expect(Localizations.localeOf(loginContext).languageCode, 'vi');
+    expect(MaterialLocalizations.of(loginContext).cancelButtonLabel, 'Hủy');
     await tester.ensureVisible(find.text('Quên mật khẩu?'));
     await tester.tap(find.text('Quên mật khẩu?'));
     await tester.pump();

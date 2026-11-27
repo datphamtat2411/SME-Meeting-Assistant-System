@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
-import 'api_client.dart';
 import 'app_theme.dart';
 import 'models.dart';
+import 'ui_presentation.dart';
 
 class SectionHeading extends StatelessWidget {
   final String title;
@@ -202,9 +202,7 @@ class AsyncContent<T> extends StatelessWidget {
         return MessagePanel(
           icon: Icons.cloud_off_outlined,
           title: 'Không thể tải dữ liệu',
-          description: snapshot.error is ApiFailure
-              ? (snapshot.error as ApiFailure).message
-              : 'Đã xảy ra lỗi không mong muốn.',
+          description: apiFailureLabel(snapshot.error),
           onRetry: retry,
         );
       }
@@ -219,9 +217,7 @@ void showFailure(BuildContext context, Object error) {
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
-      content: Text(
-        error is ApiFailure ? error.message : 'Thao tác không thành công.',
-      ),
+      content: Text(apiFailureLabel(error)),
     ),
   );
 }
