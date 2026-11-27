@@ -104,6 +104,34 @@ describe('localized presentation mappings', () => {
     ).toBe(i18n.t('errors:forbidden'))
   })
 
+  it('keeps server diagnostics out of retained form messages', async () => {
+    const diagnostic = 'Upstream failure: internal-host.example.test'
+    for (const [status, key] of [
+      [500, 'errors:internal'],
+      [502, 'errors:serviceUnavailable'],
+      [503, 'errors:serviceUnavailable'],
+      [504, 'errors:gatewayTimeout'],
+      [599, 'errors:internal'],
+    ] as const) {
+      const marker = requestErrorFormMessage({
+        status,
+        message: diagnostic,
+        isServerError: true,
+      })
+      expect(marker).toBe(featureValidationMessage(key))
+      await setUiLanguage('en')
+      expect(localizedValidationMessage(marker)).toBe(i18n.t(key))
+      await setUiLanguage('vi')
+      expect(localizedValidationMessage(marker)).toBe(i18n.t(key))
+    }
+    expect(
+      requestErrorFormMessage({
+        message: diagnostic,
+        isServerError: true,
+      })
+    ).toBe(featureValidationMessage('errors:internal'))
+  })
+
   it('localizes a stable validation marker, not arbitrary text', async () => {
     await setUiLanguage('vi')
     expect(localizedValidationMessage(REQUIRED_VALIDATION_MESSAGE)).toBe(

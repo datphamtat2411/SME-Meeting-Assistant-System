@@ -1,3 +1,4 @@
+import { act } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   createMemoryHistory,
@@ -7,10 +8,12 @@ import {
   Outlet,
   RouterProvider,
 } from '@tanstack/react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { coreApi } from '@/lib/core-api'
+import { i18n, setUiLanguage } from '@/lib/i18n'
+import { UI_LANGUAGE_STORAGE_KEY } from '@/lib/i18n/language-preference'
 import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import type { ActionItem } from './action-api'
 import { ActionCommands } from './action-commands'
@@ -206,6 +209,10 @@ function reviewResult(item: ActionItem, etag: string) {
 
 describe('Action Item reviewed operation ownership', () => {
   beforeEach(() => vi.restoreAllMocks())
+  afterEach(async () => {
+    await setUiLanguage('en')
+    localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY)
+  })
 
   it('does not revive a cancelled review when management authority returns', async () => {
     const client = reviewClient()
@@ -242,61 +249,83 @@ describe('Action Item reviewed operation ownership', () => {
     expect(detail).toHaveBeenCalledTimes(2)
   })
 
-  it('reconciles a malformed command receipt without replaying the command', async () => {
-    const client = reviewClient()
-    const keys = [
-      ['dashboard', 'me', 'actor-scope'],
-      ['dashboard', 'management', 'manager-scope'],
-      ['minutes', officialOpenItem.meetingId],
-      ['export', 'pdf', officialOpenItem.meetingId, 'PDF', 'actor-scope'],
-      ['action-items', 'list', { assignee: 'me' }, undefined, 'actor-scope'],
-    ]
-    for (const key of keys) client.setQueryData(key, { observed: true })
-    const latest: ActionItem = {
-      ...officialOpenItem,
-      status: 'DONE',
-      version: 2,
-      capabilities: {
-        ...officialOpenItem.capabilities,
-        canComplete: false,
-        canEdit: false,
-        canAssign: false,
-        canStart: false,
-        canReopen: true,
-      },
-    }
-    const detail = vi
-      .spyOn(coreApi, 'getWithMetaAndEtag')
-      .mockResolvedValueOnce(reviewResult(officialOpenItem, '"reviewed"'))
-      .mockResolvedValueOnce(reviewResult(latest, '"latest"'))
-    const post = vi
-      .spyOn(coreApi, 'postWithMetaAndEtag')
-      .mockResolvedValue(
-        reviewResult(
-          { ...latest, id: '99999999-9999-4999-8999-999999999999' },
-          '"invalid"'
+  it.each(['en', 'vi'] as const)(
+    'reconciles a malformed command receipt without replaying the command (%s)',
+    async (language) => {
+      const client = reviewClient()
+      const keys = [
+        ['dashboard', 'me', 'actor-scope'],
+        ['dashboard', 'management', 'manager-scope'],
+        ['minutes', officialOpenItem.meetingId],
+        ['export', 'pdf', officialOpenItem.meetingId, 'PDF', 'actor-scope'],
+        ['action-items', 'list', { assignee: 'me' }, undefined, 'actor-scope'],
+      ]
+      for (const key of keys) client.setQueryData(key, { observed: true })
+      const intelligenceKeys = [
+        ['meeting-intelligence', officialOpenItem.meetingId, 'summary'],
+        ['meeting-intelligence', officialOpenItem.meetingId, 'decisions'],
+      ]
+      for (const key of intelligenceKeys) {
+        client.setQueryData(key, { observed: true })
+      }
+      const latest: ActionItem = {
+        ...officialOpenItem,
+        status: 'DONE',
+        version: 2,
+        capabilities: {
+          ...officialOpenItem.capabilities,
+          canComplete: false,
+          canEdit: false,
+          canAssign: false,
+          canStart: false,
+          canReopen: true,
+        },
+      }
+      const detail = vi
+        .spyOn(coreApi, 'getWithMetaAndEtag')
+        .mockResolvedValueOnce(reviewResult(officialOpenItem, '"reviewed"'))
+        .mockResolvedValueOnce(reviewResult(latest, '"latest"'))
+      const post = vi
+        .spyOn(coreApi, 'postWithMetaAndEtag')
+        .mockResolvedValue(
+          reviewResult(
+            { ...latest, id: '99999999-9999-4999-8999-999999999999' },
+            '"invalid"'
+          )
         )
+      const screen = await render(
+        <QueryClientProvider client={client}>
+          <ActionCommands item={officialOpenItem} />
+        </QueryClientProvider>
       )
-    const screen = await render(
-      <QueryClientProvider client={client}>
-        <ActionCommands item={officialOpenItem} />
-      </QueryClientProvider>
-    )
-    await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
-    const dialog = screen.getByRole('alertdialog')
-    await userEvent.click(dialog.getByRole('button', { name: 'Complete' }))
-    await expect
-      .element(screen.getByText('This command is no longer eligible.'))
-      .toBeInTheDocument()
-    await expect
-      .element(dialog.getByRole('button', { name: 'Complete' }))
-      .toBeDisabled()
-    expect(detail).toHaveBeenCalledTimes(2)
-    expect(post).toHaveBeenCalledOnce()
-    for (const key of keys) {
-      expect(client.getQueryState(key)?.isInvalidated).toBe(true)
+      await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
+      const dialog = screen.getByRole('alertdialog')
+      await act(async () => {
+        await setUiLanguage(language)
+      })
+      await userEvent.click(
+        dialog.getByRole('button', { name: i18n.t('action-items:complete') })
+      )
+      await expect
+        .element(
+          screen.getByText(i18n.t('action-items:commandNoLongerEligible'))
+        )
+        .toBeInTheDocument()
+      await expect
+        .element(
+          dialog.getByRole('button', { name: i18n.t('action-items:complete') })
+        )
+        .toBeDisabled()
+      expect(detail).toHaveBeenCalledTimes(2)
+      expect(post).toHaveBeenCalledOnce()
+      for (const key of keys) {
+        expect(client.getQueryState(key)?.isInvalidated).toBe(true)
+      }
+      for (const key of intelligenceKeys) {
+        expect(client.getQueryState(key)?.isInvalidated).toBe(false)
+      }
     }
-  })
+  )
 
   it('requires a new editor review after editing authority is lost and restored', async () => {
     const client = reviewClient()

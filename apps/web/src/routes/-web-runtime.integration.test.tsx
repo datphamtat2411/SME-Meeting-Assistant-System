@@ -12,6 +12,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi, resetCsrfToken } from '@/lib/core-api'
+import { i18n, setUiLanguage } from '@/lib/i18n'
+import { UI_LANGUAGE_STORAGE_KEY } from '@/lib/i18n/language-preference'
 import { DirectionProvider } from '@/context/direction-provider'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
@@ -715,7 +717,12 @@ describe('integrated generated Web runtime', () => {
       }
       const { getWithMeta } = installCoreFixtures(options)
       const { screen } = await renderGeneratedRoute('/')
-      await expect.element(screen.getByText('Work unavailable')).toBeVisible()
+      await expect
+        .element(screen.getByText(i18n.t('errors:serviceUnavailable')))
+        .toBeVisible()
+      await expect
+        .element(screen.getByText('Work unavailable'))
+        .not.toBeInTheDocument()
       await expect
         .element(screen.getByText('Pending action items'))
         .toBeVisible()
@@ -737,7 +744,7 @@ describe('integrated generated Web runtime', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
       await expect.element(screen.getByText(assigned.title)).toBeVisible()
       await expect
-        .element(screen.getByText('Work unavailable'))
+        .element(screen.getByText(i18n.t('errors:serviceUnavailable')))
         .not.toBeInTheDocument()
     }
   )
@@ -949,6 +956,59 @@ describe('integrated generated Web runtime', () => {
     const params = requests()[1][1]?.params
     expect(params?.orgUnitId).toBe(unitId)
     expect(Date.parse(params?.to) - Date.parse(params?.from)).toBe(7 * 86400000)
+  })
+
+  it('localizes management status labels without replacing the report or refetching', async () => {
+    const unitId = '11111111-2222-4333-8444-555555555555'
+    await setUiLanguage('en')
+    try {
+      const { get } = installCoreFixtures({
+        identity: {
+          ...identity,
+          globalRole: 'DEPARTMENT_MANAGER',
+          directoryManagementScope: { allUnits: false, unitIds: [unitId] },
+        },
+        managementUnitIds: [unitId],
+      })
+      const { screen } = await renderGeneratedRoute('/')
+      const labels = [
+        'dashboard:open',
+        'dashboard:inProgress',
+        'dashboard:completed',
+        'dashboard:cancelled',
+      ]
+      const english = screen.getByRole('region', {
+        name: i18n.t('dashboard:distribution'),
+      })
+      for (const key of labels) {
+        await expect
+          .element(english.getByText(i18n.t(key), { exact: true }))
+          .toBeVisible()
+      }
+      const requests = () =>
+        get.mock.calls.filter(([url]) => url === '/dashboard/management')
+      expect(requests()).toHaveLength(1)
+      await act(async () => {
+        await setUiLanguage('vi')
+      })
+      const vietnamese = screen.getByRole('region', {
+        name: i18n.t('dashboard:distribution'),
+      })
+      for (const key of labels) {
+        await expect
+          .element(vietnamese.getByText(i18n.t(key), { exact: true }))
+          .toBeVisible()
+        await expect
+          .element(vietnamese.getByText(key, { exact: true }))
+          .not.toBeInTheDocument()
+      }
+      expect(requests()).toHaveLength(1)
+    } finally {
+      await act(async () => {
+        await setUiLanguage('en')
+      })
+      localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY)
+    }
   })
 
   it('reconciles visible personal, managed and Minutes projections after completing official work', async () => {

@@ -178,7 +178,7 @@ export function ActionCommands({
           if (variables.owns()) {
             invalidateMeetingArtifacts(qc, variables.review.item.meetingId, {
               actions: true,
-              intelligence: t('action-items:noneLower'),
+              intelligence: 'none',
             })
           }
           setPendingReview((pending) =>

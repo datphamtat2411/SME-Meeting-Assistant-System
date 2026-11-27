@@ -51,6 +51,7 @@ export function requestErrorKey(failure: {
   code?: string
   status?: number
   isNetworkError?: boolean
+  isServerError?: boolean
 }) {
   // Preserve the existing explicit request-state distinctions.
   if (failure.status === 403) return 'errors:forbidden'
@@ -63,6 +64,8 @@ export function requestErrorKey(failure: {
     return 'errors:authRequired'
   if (/^AUTHZ_/.test(failure.code ?? '')) return 'errors:forbidden'
   if (/^INTERNAL_/.test(failure.code ?? '')) return 'errors:internal'
+  if (failure.isServerError && failure.status === undefined)
+    return 'errors:internal'
   return undefined
 }
 
@@ -86,6 +89,7 @@ export function requestErrorDetail(
     status?: number
     message: string
     isNetworkError?: boolean
+    isServerError?: boolean
   },
   message: string
 ) {
@@ -96,7 +100,8 @@ export function requestErrorDetail(
     status === 403 ||
     status === 404 ||
     status === 412 ||
-    status === 500 ||
+    failure.isServerError ||
+    (status !== undefined && status >= 500) ||
     /^(AUTH|AUTHZ|INTERNAL)_/.test(code ?? '')
   ) {
     return undefined
@@ -152,10 +157,10 @@ export function requestStatusErrorKey(status: number | undefined) {
       return 'errors:serviceUnavailable'
     case 504:
       return 'errors:gatewayTimeout'
-    case 500:
-      return 'errors:internal'
     default:
-      return undefined
+      return status !== undefined && status >= 500
+        ? 'errors:internal'
+        : undefined
   }
 }
 
@@ -164,6 +169,7 @@ export function requestErrorFormMessage(failure: {
   status?: number
   message: string
   isNetworkError?: boolean
+  isServerError?: boolean
 }) {
   const key = requestErrorKey(failure) ?? requestStatusErrorKey(failure.status)
   if (!key) return failure.message

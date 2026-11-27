@@ -379,10 +379,10 @@ function ManagementReport({
               </h3>
               {statuses.map((status) => (
                 <div
-                  key={t(status.label)}
+                  key={status.label}
                   className='grid grid-cols-[7rem_1fr_auto] items-center gap-3 text-sm'
                 >
-                  <span>{status.label}</span>
+                  <span>{t(status.label)}</span>
                   <div
                     className='h-3 overflow-hidden rounded bg-muted'
                     aria-hidden='true'

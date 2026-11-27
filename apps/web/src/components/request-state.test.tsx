@@ -12,26 +12,62 @@ afterEach(async () => {
 })
 
 describe('RequestError presentation', () => {
-  it('localizes an HTTP category without losing the server message', async () => {
+  it('localizes an HTTP category without losing a public business message', async () => {
     await setUiLanguage('en')
     const error = new CoreApiError({
-      message: 'Work unavailable',
-      status: 503,
-      kind: 'server',
+      message: 'The selected room is already reserved.',
+      status: 409,
+      code: 'MEETING_ROOM_CONFLICT',
+      kind: 'http',
     })
     const screen = await render(<RequestError error={error} />)
-    await expect.element(screen.getByText('Work unavailable')).toBeVisible()
     await expect
-      .element(screen.getByText(i18n.t('errors:serviceUnavailable')))
+      .element(screen.getByText('The selected room is already reserved.'))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText(i18n.t('errors:conflict')))
       .toBeVisible()
     await act(async () => {
       await setUiLanguage('vi')
     })
     await expect
-      .element(screen.getByText(i18n.t('errors:serviceUnavailable')))
+      .element(screen.getByText(i18n.t('errors:conflict')))
       .toBeVisible()
-    await expect.element(screen.getByText('Work unavailable')).toBeVisible()
+    await expect
+      .element(screen.getByText('The selected room is already reserved.'))
+      .toBeVisible()
   })
+
+  it.each([
+    [500, 'errors:internal'],
+    [502, 'errors:serviceUnavailable'],
+    [503, 'errors:serviceUnavailable'],
+    [504, 'errors:gatewayTimeout'],
+    [599, 'errors:internal'],
+  ] as const)(
+    'uses a safe localized category for HTTP %s without exposing diagnostics',
+    async (status, key) => {
+      await setUiLanguage('en')
+      const diagnostic = 'Upstream failure: internal-host.example.test'
+      const error = new CoreApiError({
+        message: diagnostic,
+        status,
+        kind: 'server',
+      })
+      const screen = await render(<RequestError error={error} />)
+      await expect.element(screen.getByText(i18n.t(key))).toBeVisible()
+      await expect
+        .element(screen.getByText(diagnostic))
+        .not.toBeInTheDocument()
+      await act(async () => {
+        await setUiLanguage('vi')
+      })
+      await expect.element(screen.getByText(i18n.t(key))).toBeVisible()
+      await expect
+        .element(screen.getByText(diagnostic))
+        .not.toBeInTheDocument()
+    }
+  )
 
   it('keeps safe business details when a generic code is mapped', async () => {
     await setUiLanguage('en')
