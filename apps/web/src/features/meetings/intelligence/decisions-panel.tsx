@@ -197,7 +197,9 @@ function DecisionsPanelContent({
         ? transcript.isError ||
           transcript.isFetching ||
           !currentTranscript ||
-          !['READY', 'READY_WITH_WARNINGS'].includes(currentTranscript.status) ||
+          !['READY', 'READY_WITH_WARNINGS'].includes(
+            currentTranscript.status
+          ) ||
           !coverage.isSuccess ||
           coverage.isFetching ||
           reviewedDecision.evidenceSegmentIds.length === 0 ||

@@ -115,10 +115,15 @@ describe('Decision API contracts', () => {
       createDecision(meetingId, 'New decision', decision.evidenceSegmentIds)
     ).rejects.toMatchObject({ code: 'REVIEWED_SOURCE_REQUIRED' })
     expect(post).not.toHaveBeenCalled()
-    await createDecision(meetingId, 'New decision', decision.evidenceSegmentIds, {
-      transcriptId: decision.transcriptId!,
-      contentRevision: 5,
-    })
+    await createDecision(
+      meetingId,
+      'New decision',
+      decision.evidenceSegmentIds,
+      {
+        transcriptId: decision.transcriptId!,
+        contentRevision: 5,
+      }
+    )
     expect(post).toHaveBeenCalledWith(`/meetings/${meetingId}/decisions`, {
       content: 'New decision',
       evidenceSegmentIds: decision.evidenceSegmentIds,
