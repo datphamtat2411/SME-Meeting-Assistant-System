@@ -87,7 +87,18 @@ export type PlaybackState = {
 
 export type RecordingStartResult =
   | { ok: true }
-  | { ok: false; title: string; description?: string }
+  | {
+      ok: false
+      reason:
+        | 'unavailable'
+        | 'active'
+        | 'unsupported-format'
+        | 'microphone-unsupported'
+        | 'microphone-failed'
+        | 'recorder-construction-failed'
+        | 'start-failed'
+      description?: string
+    }
 
 export type FallbackCapabilities = {
   canRecordAudio: boolean

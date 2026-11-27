@@ -5,6 +5,7 @@ import enCommon from './locales/en/common.json'
 import enDashboard from './locales/en/dashboard.json'
 import enErrors from './locales/en/errors.json'
 import enHelpCenter from './locales/en/help-center.json'
+import enMedia from './locales/en/media.json'
 import enMeetings from './locales/en/meetings.json'
 import enMembers from './locales/en/members.json'
 import enNavigation from './locales/en/navigation.json'
@@ -20,6 +21,7 @@ import viCommon from './locales/vi/common.json'
 import viDashboard from './locales/vi/dashboard.json'
 import viErrors from './locales/vi/errors.json'
 import viHelpCenter from './locales/vi/help-center.json'
+import viMedia from './locales/vi/media.json'
 import viMeetings from './locales/vi/meetings.json'
 import viMembers from './locales/vi/members.json'
 import viNavigation from './locales/vi/navigation.json'
@@ -38,6 +40,7 @@ export const resources = {
     dashboard: enDashboard,
     errors: enErrors,
     'help-center': enHelpCenter,
+    media: enMedia,
     meetings: enMeetings,
     members: enMembers,
     rooms: enRooms,
@@ -55,6 +58,7 @@ export const resources = {
     dashboard: viDashboard,
     errors: viErrors,
     'help-center': viHelpCenter,
+    media: viMedia,
     meetings: viMeetings,
     members: viMembers,
     rooms: viRooms,

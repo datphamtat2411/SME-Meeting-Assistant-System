@@ -30,10 +30,13 @@ describe('processing status presentation', () => {
     ['FAILED', 'Xử lý thất bại', 'failure'],
     ['CANCELLED', 'Đã hủy', 'neutral'],
     ['UNSUPPORTED_FUTURE_STATE', 'Không rõ trạng thái', 'neutral'],
-  ] as const)('localizes %s without changing its kind', (status, label, kind) => {
-    expect(presentProcessingStatus(status, i18n.getFixedT('vi'))).toEqual({
-      label,
-      kind,
-    })
-  })
+  ] as const)(
+    'localizes %s without changing its kind',
+    (status, label, kind) => {
+      expect(presentProcessingStatus(status, i18n.getFixedT('vi'))).toEqual({
+        label,
+        kind,
+      })
+    }
+  )
 })

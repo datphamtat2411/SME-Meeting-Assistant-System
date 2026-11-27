@@ -6,6 +6,7 @@ import {
   useState,
   type RefObject,
 } from 'react'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import type { MeetingAuthorizationContextValue } from '../meeting-authorization-context'
 import * as mediaApi from './media-api'
 import type { MeetingMedia } from './media-api'
@@ -61,7 +62,9 @@ function initialPlayback(): PlaybackState {
 }
 
 function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : 'The operation failed.'
+  return error instanceof Error
+    ? error.message
+    : featureValidationMessage('media:operationFailed')
 }
 
 export function usePlaybackOwner({
@@ -193,7 +196,7 @@ export function usePlaybackOwner({
           status: 'error',
           isLoading: false,
           pendingSeek: null,
-          error: 'The selected audio source could not be loaded.',
+          error: featureValidationMessage('media:sourceLoadFailed'),
         }))
       }
     },
@@ -665,7 +668,7 @@ export function usePlaybackOwner({
       update('error', {
         isLoading: false,
         pendingSeek: null,
-        error: 'The selected audio source could not be played.',
+        error: featureValidationMessage('media:sourcePlayFailed'),
       })
     }
     audio.addEventListener('loadedmetadata', onLoadedMetadata)

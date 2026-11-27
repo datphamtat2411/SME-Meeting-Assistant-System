@@ -1,13 +1,16 @@
-import { useState } from 'react'
+import { act, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
+import { setUiLanguage } from '@/lib/i18n'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import type { MeetingMedia } from './media-api'
 import {
   MeetingSessionProvider,
   useMeetingSession,
 } from './meeting-session-context'
+import { PlaybackControls } from './playback-controls'
 
 const mediaMocks = vi.hoisted(() => ({
   fetchMediaCapability: vi.fn(),
@@ -152,6 +155,7 @@ function PlaybackHarness() {
       >
         Cancel transcript A
       </button>
+      <PlaybackControls />
       <output data-testid='pending-seek'>
         {session.playback.pendingSeek?.ownerKey ?? 'none'}
       </output>
@@ -459,7 +463,26 @@ describe('meeting session ownership boundaries', () => {
     )
     await expect
       .element(screen.getByTestId('playback-error'))
+      .toHaveTextContent(featureValidationMessage('media:sourcePlayFailed'))
+    await expect
+      .element(screen.getByRole('alert'))
       .toHaveTextContent('The selected audio source could not be played.')
+    try {
+      await act(async () => {
+        await setUiLanguage('vi')
+      })
+      await expect
+        .element(screen.getByRole('alert'))
+        .toHaveTextContent('Không thể phát audio đã chọn.')
+      await expect
+        .element(screen.getByTestId('playback-state'))
+        .toHaveTextContent(`${firstMediaId}:error`)
+      expect(mediaMocks.requestMediaAccess).toHaveBeenCalledOnce()
+    } finally {
+      await act(async () => {
+        await setUiLanguage('en')
+      })
+    }
   })
 
   it('clears imported meeting resources when the provider scope changes', async () => {

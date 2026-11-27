@@ -389,7 +389,8 @@ function ProcessingPanelContent({
                 <div className='flex flex-wrap items-center justify-between gap-2'>
                   <div>
                     <span className='font-medium'>
-                      {job.jobType} · {job.currentStage || t('processing:pending')}
+                      {job.jobType} ·{' '}
+                      {job.currentStage || t('processing:pending')}
                     </span>
                     <p className='text-xs text-muted-foreground'>
                       {t('processing:attempt', {
@@ -422,7 +423,8 @@ function ProcessingPanelContent({
                 )}
                 {job.errorCode && (
                   <p className='text-xs text-destructive'>
-                    {job.errorCode}: {job.errorSummary || t('processing:failed')}
+                    {job.errorCode}:{' '}
+                    {job.errorSummary || t('processing:failed')}
                   </p>
                 )}
                 {job.stageRuns.length > 0 && (

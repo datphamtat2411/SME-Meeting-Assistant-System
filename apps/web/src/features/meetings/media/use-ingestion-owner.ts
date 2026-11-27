@@ -6,6 +6,8 @@ import {
   useState,
 } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
+import { i18n } from '@/lib/i18n'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import type { MeetingAuthorizationContextValue } from '../meeting-authorization-context'
 import * as mediaApi from './media-api'
 import type { MediaUploadPhase, MeetingMedia } from './media-api'
@@ -73,7 +75,9 @@ function createIdentity(): string {
 }
 
 function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : 'The operation failed.'
+  return error instanceof Error
+    ? error.message
+    : featureValidationMessage('media:operationFailed')
 }
 
 function readMediaId(error: unknown): string | null {
@@ -311,7 +315,7 @@ export function useIngestionOwner({
       legacyAllowed?: boolean
     ): Promise<MeetingMedia | null> => {
       if (!canSubmit(legacyAllowed)) {
-        const message = 'Media submission is no longer authorized.'
+        const message = featureValidationMessage('media:submissionUnauthorized')
         if (draft === 'recording') {
           setRecordingSubmissionPresentation({ error: message })
         } else {
@@ -414,7 +418,7 @@ export function useIngestionOwner({
             operation.execution = null
             publishSubmissionOperations()
             const message =
-              'The submission was cancelled before its server outcome was confirmed.'
+              featureValidationMessage('media:submissionCancelledUncertain')
             if (draft === 'recording') {
               setRecordingSubmissionPresentation({
                 uploadStatus: 'uncertain',
@@ -463,8 +467,7 @@ export function useIngestionOwner({
       if (current.artifactId && isArtifactLocked(current.artifactId)) {
         setImportedMedia((state) => ({
           ...state,
-          error:
-            'Choose a different file only after the current submission outcome is resolved.',
+          error: featureValidationMessage('media:changeFileBlocked'),
         }))
         return
       }
@@ -501,7 +504,7 @@ export function useIngestionOwner({
       const acknowledged =
         typeof window.confirm !== 'function' ||
         window.confirm(
-          'The previous server outcome is unresolved. Starting an independent submission may create another media resource. Continue?'
+          i18n.t('media:confirmIndependentSubmission')
         )
       if (!acknowledged) return
       operation.execution?.controller.abort()
@@ -666,8 +669,7 @@ export function useIngestionOwner({
       operation.execution = null
       operation.status = 'uncertain'
       changed = true
-      const message =
-        'Submission is paused while meeting authorization is being verified.'
+      const message = featureValidationMessage('media:submissionPaused')
       if (operation.sourceType === 'RECORDING') {
         setRecordingSubmissionPresentation({
           uploadStatus: 'uncertain',
