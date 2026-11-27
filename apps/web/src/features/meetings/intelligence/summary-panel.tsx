@@ -18,6 +18,10 @@ import {
   RequestLoading,
 } from '@/components/request-state'
 import { useOptionalMeetingSession } from '../media/meeting-session-context'
+import {
+  presentProcessingFailure,
+  presentProcessingStatus,
+} from '../media/processing-status-presentation'
 import { useOptionalMeetingAuthorization } from '../meeting-authorization-context'
 import {
   intelligenceReadAllowed,
@@ -497,11 +501,7 @@ function SummaryPanelContent({
               {session?.processing.summaryObservationStatus === 'unavailable'
                 ? t('summary:lastObserved')
                 : t('summary:regenerationStatus')}{' '}
-              {t(`summary:job_${regenerationJob.status}`, {
-                defaultValue: regenerationJob.status
-                  .replace(/_/g, ' ')
-                  .toLowerCase(),
-              })}
+              {presentProcessingStatus(regenerationJob.status, t).label}
             </p>
             {regenerationJob.warningSummary && (
               <p>
@@ -510,8 +510,14 @@ function SummaryPanelContent({
                 })}
               </p>
             )}
-            {regenerationJob.errorSummary && (
-              <p>{regenerationJob.errorSummary}</p>
+            {(regenerationJob.errorCode || regenerationJob.errorSummary) && (
+              <p>
+                {presentProcessingFailure(
+                  regenerationJob.errorCode,
+                  regenerationJob.errorSummary,
+                  t
+                )}
+              </p>
             )}
           </div>
         )}

@@ -6,8 +6,10 @@ enum AppBuildMode { debug, profile, release }
 
 class AppConfigException implements Exception {
   final String message;
+  final String presentationMessage;
 
-  const AppConfigException(this.message);
+  const AppConfigException(this.message, {String? presentationMessage})
+    : presentationMessage = presentationMessage ?? message;
 
   @override
   String toString() => message;
@@ -40,6 +42,8 @@ abstract final class AppConfig {
       throw const AppConfigException(
         'API_BASE_URL is required. Configure an absolute API URL ending in '
         '/api/v1 before starting the app.',
+        presentationMessage:
+            'Chưa cấu hình API_BASE_URL. Cần địa chỉ API tuyệt đối kết thúc bằng /api/v1.',
       );
     }
 
@@ -52,16 +56,22 @@ abstract final class AppConfig {
         (scheme != 'http' && scheme != 'https')) {
       throw const AppConfigException(
         'API_BASE_URL must be an absolute HTTP or HTTPS URL with a host.',
+        presentationMessage:
+            'API_BASE_URL phải là địa chỉ HTTP hoặc HTTPS tuyệt đối có tên máy chủ.',
       );
     }
     if (uri.authority.contains('@')) {
       throw const AppConfigException(
         'API_BASE_URL must not contain embedded user credentials.',
+        presentationMessage:
+            'API_BASE_URL không được chứa thông tin đăng nhập.',
       );
     }
     if (uri.hasQuery || uri.hasFragment) {
       throw const AppConfigException(
         'API_BASE_URL must not contain a query string or fragment.',
+        presentationMessage:
+            'API_BASE_URL không được chứa tham số truy vấn hoặc fragment.',
       );
     }
 
@@ -69,6 +79,8 @@ abstract final class AppConfig {
     if (normalizedPath != '/api/v1') {
       throw const AppConfigException(
         'API_BASE_URL must use the /api/v1 Core API base path.',
+        presentationMessage:
+            'API_BASE_URL phải sử dụng đường dẫn Core API /api/v1.',
       );
     }
 
@@ -78,6 +90,8 @@ abstract final class AppConfig {
       throw const AppConfigException(
         'HTTP API_BASE_URL values are limited to local debug development. '
         'Use HTTPS for this build.',
+        presentationMessage:
+            'HTTP chỉ được phép trong môi trường debug cục bộ. Hãy dùng HTTPS cho bản dựng này.',
       );
     }
 

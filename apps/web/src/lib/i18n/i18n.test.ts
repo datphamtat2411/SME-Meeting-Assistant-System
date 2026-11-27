@@ -77,9 +77,11 @@ describe('UI localization', () => {
   })
 
   it('falls back to Vietnamese when storage is unavailable', () => {
-    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
-      throw new Error('Storage unavailable')
-    })
+    const getItem = vi
+      .spyOn(Storage.prototype, 'getItem')
+      .mockImplementation(() => {
+        throw new Error('Storage unavailable')
+      })
     try {
       expect(readUiLanguage()).toBe('vi')
     } finally {
@@ -92,7 +94,12 @@ describe('UI localization', () => {
     for (const language of ['en', 'vi'] as const) {
       const namespaces = files
         .filter((file) => file.startsWith(`./locales/${language}/`))
-        .map((file) => file.split('/').at(-1)!.replace(/\.json$/, ''))
+        .map((file) =>
+          file
+            .split('/')
+            .at(-1)!
+            .replace(/\.json$/, '')
+        )
         .sort()
       expect(Object.keys(resources[language]).sort()).toEqual(namespaces)
     }

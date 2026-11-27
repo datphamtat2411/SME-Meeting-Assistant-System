@@ -65,7 +65,7 @@ class ConfigurationErrorApp extends StatelessWidget {
     home: Scaffold(
       body: SafeArea(
         child: Center(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 520),
@@ -80,7 +80,7 @@ class ConfigurationErrorApp extends StatelessWidget {
                     style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 10),
-                  Text(error.message, textAlign: TextAlign.center),
+                  Text(error.presentationMessage, textAlign: TextAlign.center),
                   const SizedBox(height: 16),
                   const Text(
                     'Hãy kiểm tra cấu hình và khởi động lại ứng dụng.',

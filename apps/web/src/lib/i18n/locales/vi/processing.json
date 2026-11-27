@@ -78,5 +78,14 @@
   "stage_INDEXED": "Đã lập chỉ mục",
   "stage_MEETING_INTELLIGENCE": "Phân tích cuộc họp",
   "jobType_OFFLINE_MEETING_PROCESSING": "Xử lý cuộc họp",
-  "jobType_DERIVED_STAGE_PROCESSING": "Xử lý kết quả AI"
+  "jobType_DERIVED_STAGE_PROCESSING": "Xử lý kết quả AI",
+  "failureLeaseExpired": "Tác vụ ngừng báo cáo tiến độ.",
+  "failureDeliveryExhausted": "Cần khôi phục tác vụ theo xác nhận từ máy chủ.",
+  "failureTranscription": "Nhận dạng lời nói thất bại.",
+  "failureEvidence": "Không thể xác minh bằng chứng bản ghi.",
+  "failureCorrection": "Hiệu chỉnh bản ghi theo ngữ cảnh thất bại.",
+  "failureDiarization": "Phân biệt người nói thất bại.",
+  "failureDiarizationStale": "Nguồn phân biệt người nói đã thay đổi.",
+  "failureSummary": "Tạo bản tóm tắt cuộc họp thất bại.",
+  "failureDispatch": "Không thể chuyển tác vụ sang hệ thống xử lý."
 }

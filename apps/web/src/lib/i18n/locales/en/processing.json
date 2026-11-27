@@ -78,5 +78,14 @@
   "stage_INDEXED": "INDEXED",
   "stage_MEETING_INTELLIGENCE": "MEETING_INTELLIGENCE",
   "jobType_OFFLINE_MEETING_PROCESSING": "OFFLINE_MEETING_PROCESSING",
-  "jobType_DERIVED_STAGE_PROCESSING": "DERIVED_STAGE_PROCESSING"
+  "jobType_DERIVED_STAGE_PROCESSING": "DERIVED_STAGE_PROCESSING",
+  "failureLeaseExpired": "Processing worker stopped reporting progress.",
+  "failureDeliveryExhausted": "Processing delivery requires Core-approved recovery.",
+  "failureTranscription": "Audio transcription failed.",
+  "failureEvidence": "Transcription evidence validation failed.",
+  "failureCorrection": "Whole-meeting contextual correction failed.",
+  "failureDiarization": "Speaker diarization failed.",
+  "failureDiarizationStale": "Speaker diarization source changed.",
+  "failureSummary": "Meeting summary processing failed.",
+  "failureDispatch": "Processing job dispatch failed."
 }

@@ -90,3 +90,35 @@ export function presentProcessingJobType(
       return code
   }
 }
+
+/** Core owns these public failure codes and their safe fallback summaries. */
+export function presentProcessingFailure(
+  code: string | null | undefined,
+  summary: string | null | undefined,
+  t: (key: string) => string = (key) => i18n.t(key)
+): string {
+  switch (code) {
+    case 'STAGE_LEASE_EXPIRED':
+      return t('processing:failureLeaseExpired')
+    case 'WORKER_DELIVERY_EXHAUSTED':
+      return t('processing:failureDeliveryExhausted')
+    case 'ASR_FAILED':
+    case 'TRANSCRIPTION_TEMPORARY':
+      return t('processing:failureTranscription')
+    case 'TRANSCRIPTION_EVIDENCE_INVALID':
+      return t('processing:failureEvidence')
+    case 'LLM_CORRECTION_FAILED':
+      return t('processing:failureCorrection')
+    case 'DIARIZATION_FAILED':
+      return t('processing:failureDiarization')
+    case 'DIARIZATION_SOURCE_STALE':
+      return t('processing:failureDiarizationStale')
+    case 'SUMMARY_FAILED':
+    case 'SUMMARY_PROVIDER_FAILURE':
+      return t('processing:failureSummary')
+    case 'PROCESSING_DISPATCH_FAILED':
+      return t('processing:failureDispatch')
+    default:
+      return summary || t('processing:failed')
+  }
+}

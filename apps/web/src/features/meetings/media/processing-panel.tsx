@@ -23,6 +23,7 @@ import {
   useMeetingSession,
 } from './meeting-session-context'
 import {
+  presentProcessingFailure,
   presentProcessingJobType,
   presentProcessingStage,
   presentProcessingStatus,
@@ -426,7 +427,7 @@ function ProcessingPanelContent({
                 {job.errorCode && (
                   <p className='text-xs text-destructive'>
                     {job.errorCode}:{' '}
-                    {job.errorSummary || t('processing:failed')}
+                    {presentProcessingFailure(job.errorCode, job.errorSummary, t)}
                   </p>
                 )}
                 {job.stageRuns.length > 0 && (

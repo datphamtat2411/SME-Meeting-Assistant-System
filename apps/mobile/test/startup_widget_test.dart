@@ -765,17 +765,24 @@ void main() {
   }
 
   testWidgets('shows a safe configuration failure', (tester) async {
-    await tester.pumpWidget(
-      const ConfigurationErrorApp(
-        error: AppConfigException(
-          'API_BASE_URL is required. Configure an absolute API URL ending in '
-          '/api/v1 before starting the app.',
-        ),
-      ),
-    );
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 568);
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    late AppConfigException failure;
+    try {
+      AppConfig.validateApiBaseUrl('');
+    } on AppConfigException catch (error) {
+      failure = error;
+    }
+    await tester.pumpWidget(ConfigurationErrorApp(error: failure));
 
     expect(find.text('Cấu hình ứng dụng không hợp lệ'), findsOneWidget);
-    expect(find.textContaining('API_BASE_URL is required'), findsOneWidget);
+    expect(find.textContaining('Chưa cấu hình API_BASE_URL'), findsOneWidget);
+    expect(failure.message, contains('API_BASE_URL is required'));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('keeps startup loading through real identity verification', (

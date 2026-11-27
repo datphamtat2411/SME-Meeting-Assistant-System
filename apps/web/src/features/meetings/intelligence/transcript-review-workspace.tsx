@@ -55,6 +55,7 @@ import {
 } from '../media/meeting-session-context'
 import { PlaybackControls } from '../media/playback-controls'
 import {
+  presentProcessingFailure,
   presentProcessingStage,
   presentProcessingStatus,
 } from '../media/processing-status-presentation'
@@ -1760,6 +1761,7 @@ function ProcessingAvailability({
     | {
         status: string
         currentStage: string | null
+        errorCode?: string | null
         errorSummary: string | null
         warningSummary: string | null
       }
@@ -1777,12 +1779,7 @@ function ProcessingAvailability({
   return (
     <div className='rounded-lg border p-4 text-sm'>
       <div className='flex items-center gap-2 font-medium'>
-        <span>{presentation.label}</span>
-        <Badge variant='outline'>
-          {t(`transcript:review_status_${job.status}`, {
-            defaultValue: job.status,
-          })}
-        </Badge>
+        <Badge variant='outline'>{presentation.label}</Badge>
       </div>
       {job.currentStage && (
         <p className='mt-1 text-muted-foreground'>
@@ -1791,12 +1788,14 @@ function ProcessingAvailability({
           })}
         </p>
       )}
-      {job.errorSummary && (
-        <p className='mt-2 text-destructive'>{job.errorSummary}</p>
+      {(job.errorCode || job.errorSummary) && (
+        <p className='mt-2 text-destructive'>
+          {presentProcessingFailure(job.errorCode, job.errorSummary, t)}
+        </p>
       )}
       {job.warningSummary && (
         <p className='mt-2 text-amber-700 dark:text-amber-300'>
-          {job.warningSummary}
+          {t('processing:warningDetail', { detail: job.warningSummary })}
         </p>
       )}
     </div>
