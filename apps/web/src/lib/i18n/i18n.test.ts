@@ -92,14 +92,10 @@ describe('UI localization', () => {
   it('registers all on-disk language namespaces', () => {
     const files = Object.keys(import.meta.glob('./locales/*/*.json'))
     for (const language of ['en', 'vi'] as const) {
+      const prefix = `./locales/${language}/`
       const namespaces = files
-        .filter((file) => file.startsWith(`./locales/${language}/`))
-        .map((file) =>
-          file
-            .split('/')
-            .at(-1)!
-            .replace(/\.json$/, '')
-        )
+        .filter((file) => file.startsWith(prefix))
+        .map((file) => file.slice(prefix.length).replace(/\.json$/, ''))
         .sort()
       expect(Object.keys(resources[language]).sort()).toEqual(namespaces)
     }
