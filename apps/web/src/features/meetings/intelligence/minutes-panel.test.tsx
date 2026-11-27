@@ -273,13 +273,8 @@ describe('MinutesPanel canonical document experience', () => {
       ],
     }
     const screen = await renderPanel(snapshot, {}, queryClient)
-    // Scope each deadline to its own action, not another date on the page.
-    const datedAction = screen.getByRole('article').filter({
-      has: screen.getByText('Dated action', { exact: true }),
-    })
-    const undatedAction = screen.getByRole('article').filter({
-      has: screen.getByText('Undated action', { exact: true }),
-    })
+    const datedTitle = screen.getByText('Dated action', { exact: true })
+    const undatedTitle = screen.getByText('Undated action', { exact: true })
 
     async function expectPresentation(
       timezone: string,
@@ -300,12 +295,17 @@ describe('MinutesPanel canonical document experience', () => {
           screen.getByText('Not recorded – ' + expectedEnd, { exact: true })
         )
         .toBeVisible()
-      await expect
-        .element(datedAction.getByText(deadline, { exact: true }))
-        .toBeVisible()
-      await expect
-        .element(undatedAction.getByText('No due date', { exact: true }))
-        .toBeVisible()
+      // Exact text excludes the meeting timestamp. Verify the actual DOM
+      // ownership too, so a matching date in another action cannot pass.
+      const datedDeadline = screen.getByText(deadline, { exact: true })
+      const undatedDeadline = screen.getByText('No due date', { exact: true })
+      await expect.element(datedDeadline).toBeVisible()
+      await expect.element(undatedDeadline).toBeVisible()
+      const datedArticle = datedDeadline.element().closest('article')
+      const undatedArticle = undatedDeadline.element().closest('article')
+      expect(datedArticle?.contains(datedTitle.element())).toBe(true)
+      expect(undatedArticle?.contains(undatedTitle.element())).toBe(true)
+      expect(datedArticle).not.toBe(undatedArticle)
       expect(queryClient.getQueryData(['minutes', meetingId])).toMatchObject({
         meeting: { endedAt: '2026-11-23T00:00:00Z' },
         officialActionItems: [
