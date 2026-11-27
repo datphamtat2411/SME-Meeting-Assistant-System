@@ -347,9 +347,7 @@ class ResultsWorkspaceController extends ChangeNotifier
       return admitted;
     } on ApiFailure catch (error) {
       if (ownsReview(epoch)) {
-        if (error.status == 401 ||
-            error.status == 403 ||
-            error.status == 404) {
+        if (error.status == 401 || error.status == 403 || error.status == 404) {
           await handleProtectedReadFailure(error, epoch: readEpoch);
         } else if (error.status == 409 || error.status == 412) {
           await loadTranscript(force: true);
@@ -362,6 +360,7 @@ class ResultsWorkspaceController extends ChangeNotifier
       if (!_disposed) notifyListeners();
     }
   }
+
   String? get acceptedRegenerationJobId => _mutations.acceptedRegenerationJobId;
   ProcessingJobRecord? get regenerationJob =>
       capabilities.canRead ? _mutations.regeneration.job : null;

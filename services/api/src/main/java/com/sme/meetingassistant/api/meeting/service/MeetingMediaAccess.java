@@ -19,6 +19,12 @@ public interface MeetingMediaAccess {
     /** AI resource admission is distinct from reading meeting content. */
     void requireProcessingAllowed(UUID meetingId, UUID actorId);
 
+    /**
+     * Revalidate processing authorization from current persisted state after
+     * the admission caller has acquired its user/meeting/job locks.
+     */
+    void requireLockedProcessingAllowed(UUID meetingId, UUID actorId);
+
     /** Transcript edits are reserved for the current meeting organizer. */
     void requireTranscriptEditAllowed(UUID meetingId, UUID actorId);
 

@@ -529,6 +529,18 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
 
     @Override
     @Transactional(readOnly = true)
+    public void requireLockedProcessingAllowed(UUID meetingId, UUID actorId) {
+        requireCurrentActiveActor(actorId);
+        String status = meetings.findCurrentProcessingStatus(meetingId, actorId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        if ("CANCELLED".equals(status)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Cancelled meetings do not accept new media or processing operations.");
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public void requireTranscriptEditAllowed(UUID meetingId, UUID actorId) {
         MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
         if (!meeting.getOrganizerUserId().equals(actorId)) {

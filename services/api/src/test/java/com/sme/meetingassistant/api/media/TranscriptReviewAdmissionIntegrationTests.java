@@ -16,6 +16,7 @@ import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.Cover
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.SegmentResult;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.TranscriptResult;
 import java.security.Principal;
+import java.sql.Connection;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -255,6 +256,94 @@ class TranscriptReviewAdmissionIntegrationTests {
             .andExpect(status().isConflict());
         assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",
             String.class, job)).isEqualTo("WAITING_FOR_REVIEW");
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM processing_job_transcript_reviews
+            WHERE processing_job_id=? AND admitted_at IS NOT NULL
+            """, Integer.class, job)).isZero();
+    }
+
+    @Test
+    void acknowledgementRechecksAccountAfterWaitingOnAdmissionLock() throws Exception {
+        assertRevokedReviewCannotCommit(false);
+    }
+
+    @Test
+    void admissionReplayRechecksAccountAfterWaitingOnAdmissionLock() throws Exception {
+        assertRevokedReviewCannotCommit(true);
+    }
+
+    private void assertRevokedReviewCannotCommit(boolean admit) throws Exception {
+        JsonNode transcript = currentTranscript();
+        String body = reviewBody(UUID.fromString(transcript.path("id").asText()),
+            transcript.path("contentRevision").asLong(), TranscriptCorrectionDigest.sha256(published));
+        String path = jobPath("/transcript-review/acknowledge");
+        String key = "blocked-acknowledgement";
+        if (admit) {
+            var acknowledgement = mvc.perform(post(path).principal(as(organizer))
+                    .header("Idempotency-Key", "pre-lock-review")
+                    .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andReturn();
+            String reviewId = json.readTree(acknowledgement.getResponse().getContentAsString())
+                .at("/data/reviewId").asText();
+            body = body.substring(0, body.length() - 1) + ",\"reviewId\":\"" + reviewId + "\"}";
+            path = jobPath("/meeting-intelligence/admit");
+            key = "blocked-admission";
+        }
+        final String requestBody = body;
+        final String requestPath = path;
+        final String requestKey = key;
+        try (var pool = Executors.newSingleThreadExecutor();
+             Connection lock = jdbc.getDataSource().getConnection()) {
+            lock.setAutoCommit(false);
+            try {
+                int blocker;
+                try (var statement = lock.createStatement();
+                     var rows = statement.executeQuery("SELECT pg_backend_pid()")) {
+                    assertThat(rows.next()).isTrue();
+                    blocker = rows.getInt(1);
+                }
+                try (var statement = lock.prepareStatement(
+                        "SELECT id FROM users WHERE id=? FOR NO KEY UPDATE")) {
+                    statement.setObject(1, organizer);
+                    try (var rows = statement.executeQuery()) {
+                        assertThat(rows.next()).isTrue();
+                    }
+                }
+                var request = pool.submit(() -> mvc.perform(post(requestPath)
+                    .principal(as(organizer)).header("Idempotency-Key", requestKey)
+                    .contentType(MediaType.APPLICATION_JSON).content(requestBody))
+                    .andReturn().getResponse().getStatus());
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+                boolean blocked = false;
+                while (System.nanoTime() < deadline) {
+                    if (Boolean.TRUE.equals(jdbc.queryForObject("""
+                        SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                            WHERE ? = ANY(pg_blocking_pids(pid)))
+                        """, Boolean.class, blocker))) {
+                        blocked = true;
+                        break;
+                    }
+                    if (request.isDone()) break;
+                    Thread.sleep(25);
+                }
+                assertThat(blocked).as("HTTP transaction must wait on the admission lock").isTrue();
+                try (var statement = lock.prepareStatement(
+                        "UPDATE users SET account_status='INACTIVE' WHERE id=?")) {
+                    statement.setObject(1, organizer);
+                    statement.executeUpdate();
+                }
+                lock.commit();
+                assertThat(request.get(50, TimeUnit.SECONDS)).isEqualTo(401);
+            } finally {
+                lock.rollback();
+            }
+        }
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",
+            String.class, job)).isEqualTo("WAITING_FOR_REVIEW");
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM processing_job_transcript_reviews
+            WHERE processing_job_id=?
+            """, Integer.class, job)).isEqualTo(admit ? 1 : 0);
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM processing_job_transcript_reviews
             WHERE processing_job_id=? AND admitted_at IS NOT NULL

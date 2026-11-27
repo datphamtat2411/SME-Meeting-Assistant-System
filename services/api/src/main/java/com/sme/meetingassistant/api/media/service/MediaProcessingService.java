@@ -465,6 +465,8 @@ public class MediaProcessingService {
         this.repository.lockAdmissionUser(actor);
         this.transcriptEvidence.lockTranscriptReview(jobId);
         target = this.repository.lockJobForOfflineSource(jobId).orElseThrow(MediaProcessingService::notFound);
+        // Initial authorization can become stale while waiting for a row lock.
+        this.meetingAccess.requireLockedProcessingAllowed(target.meetingId(), actor);
 
         UUID proposedReviewId = UUID.randomUUID();
         MediaRepository.IdempotencyClaim claim;
@@ -507,6 +509,8 @@ public class MediaProcessingService {
         this.repository.lockAdmissionUser(actor);
         this.transcriptEvidence.lockTranscriptReview(jobId);
         target = this.repository.lockJobForOfflineSource(jobId).orElseThrow(MediaProcessingService::notFound);
+        // Initial authorization can become stale while waiting for a row lock.
+        this.meetingAccess.requireLockedProcessingAllowed(target.meetingId(), actor);
         MediaRepository.IdempotencyClaim claim;
         try {
             claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,

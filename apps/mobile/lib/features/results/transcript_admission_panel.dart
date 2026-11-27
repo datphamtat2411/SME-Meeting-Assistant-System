@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../core/command_actions.dart';
 import '../../core/meeting_models.dart';
 import '../../core/widgets.dart';
 import '../recording/processing_manager.dart';
@@ -88,7 +87,8 @@ class TranscriptAdmissionPanel extends StatelessWidget {
         final coverage = workspace.coverage;
         final matchingCoverage =
             transcript != null &&
-            coverage.phase == ResultsResourcePhase.available &&
+            (coverage.phase == ResultsResourcePhase.available ||
+                coverage.phase == ResultsResourcePhase.empty) &&
             coverage.data?.transcriptId == transcript.id &&
             coverage.data?.transcriptEtag == transcript.etag;
         final sourceCurrent =

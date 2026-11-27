@@ -96,6 +96,13 @@ public interface MeetingRepository extends JpaRepository<MeetingEntity, UUID>,
     int captureActionItemScopeAtCreation(@Param("meetingId") UUID meetingId,
             @Param("organizerId") UUID organizerId);
 
+    /** Scalar read bypasses a potentially pre-lock managed entity snapshot. */
+    @Query(value = """
+        SELECT status FROM meetings WHERE id=:meetingId AND organizer_user_id=:actorId
+        """, nativeQuery = true)
+    Optional<String> findCurrentProcessingStatus(@Param("meetingId") UUID meetingId,
+            @Param("actorId") UUID actorId);
+
     /** Single-resource admission uses the same rights as set-based discovery. */
     @Query(value = """
         SELECT rights.content_visible AS "contentVisible", rights.manageable AS "manageable"
