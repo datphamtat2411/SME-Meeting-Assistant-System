@@ -38,3 +38,15 @@ analysis, complete Flutter tests and the Android verification/build steps in
 Mobile CI. Check the Web carry-over corrections with Web CI. A passing CI run
 does not replace real-device checks for text scaling, native system dialogs,
 font rendering and microphone behavior.
+
+## Final harmonization (LOC-05)
+
+Processing review uses "Cần rà soát". The public processing warning summary
+has no dedicated warning code in the current Core response, so preserve it
+under the Vietnamese "Cảnh báo" label rather than guessing its meaning from
+English prose. Configuration failures retain their original diagnostics in
+the exception and present a specific Vietnamese explanation in the app. The
+configuration error view is scrollable at increased text scaling.
+
+See the [cross-client localization acceptance record](../../web/docs/LOCALIZATION_ACCEPTANCE.md)
+for the automated verification scope and remaining manual device checks.

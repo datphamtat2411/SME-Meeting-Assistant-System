@@ -133,6 +133,10 @@ test('known dynamic status and source keys resolve without fallback', () => {
     ['transcript:reviewGate_status_', ['READY', 'READY_WITH_WARNINGS', 'FAILED', 'PROCESSING']],
     ['summary:status_', ['AI_GENERATED', 'HUMAN_EDIT', 'READY', 'READY_WITH_WARNINGS', 'FAILED']],
     ['export:status_', ['PENDING', 'GENERATING', 'READY', 'FAILED']],
+    ['media:mediaStatus_', ['PENDING_UPLOAD', 'AVAILABLE', 'REJECTED', 'FAILED']],
+    ['workspace:completeness_', ['COMPLETE', 'PARTIAL', 'NEEDS_REVIEW']],
+    ['assistant:meetingStatus_', ['DRAFT', 'SCHEDULED', 'IN_PROGRESS', 'ENDED', 'CANCELLED']],
+    ['action-items:meetingPanel_status_', ['PROPOSED', 'OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED']],
   ]
   for (const [prefix, values] of groups) {
     for (const value of values) {

@@ -1,8 +1,8 @@
 # UI localization
 
-LOC-01 establishes a Web-only presentation layer. English remains the default
-until LOC-05; Vietnamese is available through the header and authentication
-layout. Language preference is local to the browser and separate from regional
+The Web presentation layer supports Vietnamese (default) and English.
+The header and authentication layout expose the language switcher. A saved
+valid English or Vietnamese preference takes precedence over the default. Language preference is local to the browser and separate from regional
 preferences, timezone, and backend account data.
 
 ## Implementation
@@ -66,7 +66,8 @@ Verify switching without remounting, reload persistence, invalid storage
 values, catalog coverage, permission-sensitive navigation, command search,
 keyboard accessibility, responsive layout, and Vietnamese accents in Inter,
 Manrope, and System fonts. Run the focused browser tests and existing Web CI.
-Feature-local strings remain the responsibility of LOC-02 and LOC-03.
+The production surfaces covered by LOC-02 and LOC-03 are part of the final
+localization verification. See [Localization acceptance](LOCALIZATION_ACCEPTANCE.md).
 
 Shared date-only controls format the selected civil day with the resolved
 regional locale without converting it to a different timezone. Calendar
@@ -109,3 +110,20 @@ switch is presentation-only: do not translate canonical transcript text,
 user-supplied questions, generated content, source identifiers, versions,
 review fingerprints, request keys, or exported document bytes. Keep recovery
 messages actionable without replaying operations or exposing diagnostics.
+
+## Final localization conventions (LOC-05)
+
+Use "Rà soát" for the transcript review workflow and "Cần rà soát" for a
+processing job requiring user review. The member reconciliation comparison
+localizes role labels by field and preserves the original values, choices,
+authorization and ETag. Core-owned processing failure codes use a localized
+presentation matching the safe public failure contract on Mobile. Processing
+warning summaries have no separate warning code in the current public DTO;
+retain the public message under a localized warning label. Never classify
+warnings by matching their English prose.
+
+Production startup defaults to Vietnamese; existing browser preferences are
+not migrated or overwritten. English remains the catalog fallback and an
+explicitly supported UI language. Browser business tests initialize English
+explicitly in the test setup; preference tests cover the Vietnamese production
+default, invalid storage and unavailable storage.

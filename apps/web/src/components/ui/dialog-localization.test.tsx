@@ -39,11 +39,15 @@ it('keeps localized conflict actions visible and focused on a narrow screen', as
     const focused = action.element()
     await setUiLanguage('vi')
     await expect
-      .element(screen.getByRole('button', { name: i18n.t('members:resolveConflicts') }))
+      .element(
+        screen.getByRole('button', { name: i18n.t('members:resolveConflicts') })
+      )
       .toBeVisible()
     expect(document.activeElement).toBe(focused)
     const footer = focused.closest<HTMLElement>('[data-slot="dialog-footer"]')!
-    await expect.poll(() => footer.scrollWidth <= footer.clientWidth + 1).toBe(true)
+    await expect
+      .poll(() => footer.scrollWidth <= footer.clientWidth + 1)
+      .toBe(true)
     for (const button of footer.querySelectorAll('button')) {
       expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth + 1)
     }

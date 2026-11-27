@@ -35,7 +35,7 @@ function displayEditableValue(
   ) {
     return i18n.t(roleKey(value))
   }
-  if (field === 'primaryOrgUnitId' && typeof value === 'string') {
+  if (field === 'primaryOrgUnitId' && typeof value === 'string' && value !== '') {
     return units.find((unit) => unit.id === value)?.name ?? value
   }
   if (Array.isArray(value)) {

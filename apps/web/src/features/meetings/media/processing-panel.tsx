@@ -427,7 +427,11 @@ function ProcessingPanelContent({
                 {job.errorCode && (
                   <p className='text-xs text-destructive'>
                     {job.errorCode}:{' '}
-                    {presentProcessingFailure(job.errorCode, job.errorSummary, t)}
+                    {presentProcessingFailure(
+                      job.errorCode,
+                      job.errorSummary,
+                      t
+                    )}
                   </p>
                 )}
                 {job.stageRuns.length > 0 && (
