@@ -1,5 +1,8 @@
-import { featureValidationMessage, lengthValidationMessage } from '@/lib/i18n/presentation'
 import { z } from 'zod'
+import {
+  featureValidationMessage,
+  lengthValidationMessage,
+} from '@/lib/i18n/presentation'
 import type { Room } from './room-api'
 
 const maxRoomCapacity = 2_147_483_647
@@ -18,13 +21,16 @@ const capacityInputSchema = z
       )
     },
     {
-      message:
-        featureValidationMessage('rooms:capacityInvalid'),
+      message: featureValidationMessage('rooms:capacityInvalid'),
     }
   )
 
 export const roomFormSchema = z.object({
-  code: z.string().trim().min(1, featureValidationMessage('rooms:codeRequired')).max(64, lengthValidationMessage('maxLength', 64)),
+  code: z
+    .string()
+    .trim()
+    .min(1, featureValidationMessage('rooms:codeRequired'))
+    .max(64, lengthValidationMessage('maxLength', 64)),
   name: z
     .string()
     .trim()

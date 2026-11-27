@@ -1,6 +1,6 @@
-import { i18n, useUiTranslation } from '@/lib/i18n'
 import { useState } from 'react'
 import { Check, ChevronDown } from 'lucide-react'
+import { i18n, useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import {
   Command,
@@ -103,7 +103,9 @@ export function OrganizationUnitSelect({
             value={search}
             onValueChange={setSearch}
             placeholder={t('members:searchAuthorizedUnitsEllipsis')}
-            aria-label={t('members:searchLabel', { label: label.toLocaleLowerCase() })}
+            aria-label={t('members:searchLabel', {
+              label: label.toLocaleLowerCase(),
+            })}
           />
           <CommandList>
             <CommandEmpty>

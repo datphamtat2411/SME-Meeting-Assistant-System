@@ -1,9 +1,12 @@
-import { i18n, useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage } from '@/lib/i18n/presentation'
 import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import type { FieldErrors } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -105,7 +108,10 @@ function roomDisplayValues(room: RoomSnapshot['room']) {
     [i18n.t('rooms:tableCode'), room.code],
     [i18n.t('rooms:name'), room.name],
     [i18n.t('rooms:location'), room.location ?? i18n.t('rooms:notSet')],
-    [i18n.t('rooms:capacity'), room.capacity === null ? i18n.t('rooms:notSet') : String(room.capacity)],
+    [
+      i18n.t('rooms:capacity'),
+      room.capacity === null ? i18n.t('rooms:notSet') : String(room.capacity),
+    ],
     [i18n.t('rooms:notes'), room.notes ?? i18n.t('rooms:notSet')],
   ] as const
 }
@@ -141,9 +147,7 @@ function RoomConflictResolution({
     <div className='space-y-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3'>
       <div>
         <p className='font-medium'>{t('rooms:conflicts')}</p>
-        <p className='text-muted-foreground'>
-          {t('rooms:conflictHelp')}
-        </p>
+        <p className='text-muted-foreground'>{t('rooms:conflictHelp')}</p>
       </div>
       {reconciliation.conflicts.map((field) => {
         const comparison = reconciliation.fields[field]
@@ -375,9 +379,7 @@ export function RoomEditorDialog({
           <>
             <DialogHeader>
               <DialogTitle>{t('rooms:loadingCurrent')}</DialogTitle>
-              <DialogDescription>
-                {t('rooms:loadingEditor')}
-              </DialogDescription>
+              <DialogDescription>{t('rooms:loadingEditor')}</DialogDescription>
             </DialogHeader>
             <div
               role='status'
@@ -395,15 +397,15 @@ export function RoomEditorDialog({
           <>
             <DialogHeader>
               <DialogTitle>{t('rooms:detailsError')}</DialogTitle>
-              <DialogDescription>
-                {t('rooms:noEditSession')}
-              </DialogDescription>
+              <DialogDescription>{t('rooms:noEditSession')}</DialogDescription>
             </DialogHeader>
             <div
               role='alert'
               className='rounded-md border border-destructive/30 p-3 text-sm'
             >
-              {session.loadError ? localizedValidationMessage(session.loadError, t) : t('rooms:detailRequestFailed')}
+              {session.loadError
+                ? localizedValidationMessage(session.loadError, t)
+                : t('rooms:detailRequestFailed')}
             </div>
             <DialogFooter>
               <Button variant='outline' onClick={onClose}>
@@ -426,9 +428,7 @@ export function RoomEditorDialog({
                 {editing ? t('rooms:editMetadata') : t('rooms:add')}
               </DialogTitle>
               <DialogDescription>
-                {editing
-                  ? t('rooms:immutable')
-                  : t('rooms:createHelp')}
+                {editing ? t('rooms:immutable') : t('rooms:createHelp')}
               </DialogDescription>
             </DialogHeader>
             {isRecoveryRequired && feedback && (
@@ -453,7 +453,10 @@ export function RoomEditorDialog({
                     {(recoveryError || feedback.reconciliationError) && (
                       <div className='space-y-2'>
                         <p role='alert' className='text-destructive'>
-                          {localizedValidationMessage(recoveryError ?? feedback.reconciliationError ?? '', t)}
+                          {localizedValidationMessage(
+                            recoveryError ?? feedback.reconciliationError ?? '',
+                            t
+                          )}
                         </p>
                         <Button
                           type='button'
@@ -599,7 +602,9 @@ export function RoomEditorDialog({
                 className='space-y-2 rounded-md border bg-muted/40 p-3 text-sm'
               >
                 <p>
-                  {t('rooms:codeExists', { code: feedback.creationReconciliation.room.code })}
+                  {t('rooms:codeExists', {
+                    code: feedback.creationReconciliation.room.code,
+                  })}
                   {feedback.creationReconciliation.metadataMatches
                     ? t('rooms:creationMatches')
                     : t('rooms:creationDiffers')}
@@ -620,7 +625,9 @@ export function RoomEditorDialog({
             )}
             {sessionRoom && (
               <div className='rounded-md border bg-muted/40 px-3 py-2 text-sm'>
-                <span className='text-muted-foreground'>{t('rooms:identity')}</span>
+                <span className='text-muted-foreground'>
+                  {t('rooms:identity')}
+                </span>
                 <span className='font-mono font-medium'>
                   {sessionRoom.code}
                 </span>
@@ -734,9 +741,7 @@ export function RoomEditorDialog({
                           disabled={saving || isRecoveryRequired}
                         />
                       </FormControl>
-                      <FormDescription>
-                        {t('rooms:notesHelp')}
-                      </FormDescription>
+                      <FormDescription>{t('rooms:notesHelp')}</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -745,7 +750,10 @@ export function RoomEditorDialog({
                   (session?.status === 'ready' &&
                     feedback?.outcome === 'rejected')) && (
                   <p role='alert' className='text-sm text-destructive'>
-                    {localizedValidationMessage(localError ?? feedback?.message ?? '', t)}
+                    {localizedValidationMessage(
+                      localError ?? feedback?.message ?? '',
+                      t
+                    )}
                   </p>
                 )}
               </form>
@@ -769,7 +777,11 @@ export function RoomEditorDialog({
                   isRecoveryRequired
                 }
               >
-                {saving ? t('rooms:saving') : editing ? t('rooms:save') : t('rooms:create')}
+                {saving
+                  ? t('rooms:saving')
+                  : editing
+                    ? t('rooms:save')
+                    : t('rooms:create')}
               </Button>
             </DialogFooter>
           </>

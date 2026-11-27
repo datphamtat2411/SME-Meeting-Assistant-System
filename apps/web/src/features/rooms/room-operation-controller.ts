@@ -1,5 +1,3 @@
-import { i18n } from '@/lib/i18n'
-import { featureValidationMessage, requestErrorFormMessage } from '@/lib/i18n/presentation'
 import {
   useCallback,
   useEffect,
@@ -10,6 +8,11 @@ import {
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import {
   classifyRoomMutationOutcome,
   createRoom,
@@ -523,7 +526,9 @@ export function useRoomOperationController({
       await synchronizeRoomCaches(queryClient, result.mutation)
       if (!isCurrentOperation(input.operationId, input.contextKey)) return
       toast.success(
-        result.mutation === 'created' ? i18n.t('rooms:created') : i18n.t('rooms:updated')
+        result.mutation === 'created'
+          ? i18n.t('rooms:created')
+          : i18n.t('rooms:updated')
       )
       dispatch({ type: 'close' })
     },
@@ -621,8 +626,7 @@ export function useRoomOperationController({
           ...(baseFeedback ??
             current ?? {
               outcome: 'unknown',
-              message:
-                featureValidationMessage('rooms:createUnconfirmed'),
+              message: featureValidationMessage('rooms:createUnconfirmed'),
             }),
           submittedCreationPayload: payload,
           creationReconciliation: undefined,
@@ -670,7 +674,9 @@ export function useRoomOperationController({
           feedback: {
             ...(feedback ?? baseFeedback!),
             creationReconciliation: undefined,
-            reconciliationError: requestErrorFormMessage(normalizeCoreApiError(error)),
+            reconciliationError: requestErrorFormMessage(
+              normalizeCoreApiError(error)
+            ),
             reconciliationLoading: false,
             submittedCreationPayload: payload,
           },
@@ -699,8 +705,7 @@ export function useRoomOperationController({
       reconciliationController.current = controller
       const fallbackFeedback: RoomOperationFeedback = {
         outcome: 'unknown',
-        message:
-          featureValidationMessage('rooms:editUnconfirmed'),
+        message: featureValidationMessage('rooms:editUnconfirmed'),
       }
       const initialFeedback =
         baseFeedback ??
@@ -756,7 +761,9 @@ export function useRoomOperationController({
             ...(currentFeedback ?? initialFeedback),
             originalSnapshot: original,
             submittedPatch: payload,
-            reconciliationError: requestErrorFormMessage(normalizeCoreApiError(error)),
+            reconciliationError: requestErrorFormMessage(
+              normalizeCoreApiError(error)
+            ),
             reconciliationLoading: false,
           },
         })
@@ -798,7 +805,11 @@ export function useRoomOperationController({
       const normalizedError = normalizeCoreApiError(error)
       const baseFeedback: RoomOperationFeedback = {
         outcome,
-        message: roomOperationErrorMessage(error, 'deactivate', featureValidationMessage),
+        message: roomOperationErrorMessage(
+          error,
+          'deactivate',
+          featureValidationMessage
+        ),
         fieldErrors: normalizedError.fieldErrors,
       }
       if (outcome === 'uncertain' || outcome === 'unknown') {
@@ -835,8 +846,9 @@ export function useRoomOperationController({
             contextKey: input.contextKey,
             feedback: {
               ...baseFeedback,
-              reconciliationError:
-                requestErrorFormMessage(normalizeCoreApiError(reconciliationError)),
+              reconciliationError: requestErrorFormMessage(
+                normalizeCoreApiError(reconciliationError)
+              ),
             },
           })
         } finally {
@@ -1079,8 +1091,7 @@ export function useRoomOperationController({
       })
       if (Object.keys(resolved.patch).length === 0) {
         toast.success(i18n.t('rooms:upToDate'), {
-          description:
-            i18n.t('rooms:noAdditionalUpdate'),
+          description: i18n.t('rooms:noAdditionalUpdate'),
         })
       }
     },

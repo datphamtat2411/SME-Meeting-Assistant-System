@@ -1,5 +1,5 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useState } from 'react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -34,7 +34,9 @@ export function ManagerScopePicker({
 
   return (
     <fieldset className='space-y-2 rounded-lg border p-3'>
-      <legend className='px-1 text-sm font-medium'>{t('members:managerScopeUnits')}</legend>
+      <legend className='px-1 text-sm font-medium'>
+        {t('members:managerScopeUnits')}
+      </legend>
       <p className='text-xs text-muted-foreground'>
         {t('members:scopeExplanation')}
       </p>
@@ -60,7 +62,8 @@ export function ManagerScopePicker({
           key={id}
           className='rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground'
         >
-          {t('members:missingScopeGrant')}<code className='break-all'>{id}</code>
+          {t('members:missingScopeGrant')}
+          <code className='break-all'>{id}</code>
         </p>
       ))}
       {lookupStatus === 'success' && units.length === 0 ? (

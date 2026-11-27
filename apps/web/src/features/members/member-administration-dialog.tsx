@@ -1,9 +1,12 @@
-import { i18n, useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage } from '@/lib/i18n/presentation'
 import { useEffect, useRef, useState } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import type { FieldErrors } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -105,7 +108,9 @@ function memberSummary(member: Member) {
         </dd>
       </div>
       <div>
-        <dt className='text-muted-foreground'>{i18n.t('members:accountStatusLabel')}</dt>
+        <dt className='text-muted-foreground'>
+          {i18n.t('members:accountStatusLabel')}
+        </dt>
         <dd className='font-medium'>
           {member.accountStatus === 'PENDING_SETUP'
             ? i18n.t('members:pendingSecureSetup')
@@ -338,7 +343,9 @@ export function MemberAdministrationDialog({
               </DialogDescription>
             </DialogHeader>
             <p role='alert' className='text-sm text-destructive'>
-              {session.loadError ? localizedValidationMessage(session.loadError, t) : t('members:detailFailed')}
+              {session.loadError
+                ? localizedValidationMessage(session.loadError, t)
+                : t('members:detailFailed')}
             </p>
             <DialogFooter>
               <Button variant='outline' disabled={saving} onClick={onClose}>
@@ -358,7 +365,9 @@ export function MemberAdministrationDialog({
           <>
             <DialogHeader>
               <DialogTitle>
-                {editing ? t('members:editMemberTitle') : t('members:createAccount')}
+                {editing
+                  ? t('members:editMemberTitle')
+                  : t('members:createAccount')}
               </DialogTitle>
               <DialogDescription>
                 {t('members:secureSetupHelp')}
@@ -479,7 +488,9 @@ export function MemberAdministrationDialog({
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
-                            <SelectItem value='EMPLOYEE'>{t('members:employee')}</SelectItem>
+                            <SelectItem value='EMPLOYEE'>
+                              {t('members:employee')}
+                            </SelectItem>
                             <SelectItem value='DEPARTMENT_MANAGER'>
                               {t('members:departmentManager')}
                             </SelectItem>
@@ -518,7 +529,10 @@ export function MemberAdministrationDialog({
                 {(localError ||
                   (feedback?.outcome === 'rejected' && !reviewRequired)) && (
                   <p role='alert' className='text-sm text-destructive'>
-                    {localizedValidationMessage(localError ?? feedback?.message ?? '', t)}
+                    {localizedValidationMessage(
+                      localError ?? feedback?.message ?? '',
+                      t
+                    )}
                   </p>
                 )}
               </form>
@@ -537,7 +551,11 @@ export function MemberAdministrationDialog({
                 form='member-editor-form'
                 disabled={saving || !authorizationVerified || !canEditValues}
               >
-                {saving ? t('members:saving') : editing ? t('members:saveMember') : t('members:saveMember')}
+                {saving
+                  ? t('members:saving')
+                  : editing
+                    ? t('members:saveMember')
+                    : t('members:saveMember')}
               </Button>
             </DialogFooter>
           </>

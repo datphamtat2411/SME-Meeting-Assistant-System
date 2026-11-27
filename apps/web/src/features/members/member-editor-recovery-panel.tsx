@@ -1,6 +1,6 @@
+import { useState } from 'react'
 import { i18n, useUiTranslation } from '@/lib/i18n'
 import { localizedValidationMessage } from '@/lib/i18n/presentation'
-import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import type {
   MemberEditorSession,
@@ -60,7 +60,9 @@ function memberSummary(member: Member) {
         </dd>
       </div>
       <div>
-        <dt className='text-muted-foreground'>{i18n.t('members:accountStatusLabel')}</dt>
+        <dt className='text-muted-foreground'>
+          {i18n.t('members:accountStatusLabel')}
+        </dt>
         <dd className='font-medium'>
           {member.accountStatus === 'PENDING_SETUP'
             ? i18n.t('members:pendingSecureSetup')
@@ -178,7 +180,9 @@ function MemberConflictResolution({
               {t('members:understandDemotion')}
             </span>
             <span className='block text-muted-foreground'>
-              {t('members:grantsRemoved', { grants: latestGrants || t('members:none') })}
+              {t('members:grantsRemoved', {
+                grants: latestGrants || t('members:none'),
+              })}
             </span>
           </span>
         </label>
@@ -201,7 +205,9 @@ function MemberConflictResolution({
               {t('members:understandScope')}
             </span>
             <span className='block text-muted-foreground'>
-              {t('members:grantsAssigned', { grants: intendedGrants || t('members:none') })}
+              {t('members:grantsAssigned', {
+                grants: intendedGrants || t('members:none'),
+              })}
             </span>
           </span>
         </label>
@@ -279,7 +285,9 @@ export function MemberEditorRecoveryPanel({
         >
           <p>{localizedValidationMessage(feedback.message, t)}</p>
           {feedback.reconciliationError && (
-            <p className='text-destructive'>{localizedValidationMessage(feedback.reconciliationError, t)}</p>
+            <p className='text-destructive'>
+              {localizedValidationMessage(feedback.reconciliationError, t)}
+            </p>
           )}
           {feedback.reconciliationLoading && (
             <p role='status' className='text-muted-foreground'>
@@ -298,9 +306,7 @@ export function MemberEditorRecoveryPanel({
             </div>
           )}
           {feedback.creationReconciliation?.status === 'not-found' && (
-            <p className='text-muted-foreground'>
-              {t('members:noMatch')}
-            </p>
+            <p className='text-muted-foreground'>{t('members:noMatch')}</p>
           )}
         </div>
       )}

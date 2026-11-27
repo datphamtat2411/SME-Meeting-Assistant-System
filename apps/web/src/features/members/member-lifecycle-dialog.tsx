@@ -113,7 +113,9 @@ export function MemberLifecycleDialog({
         {session?.phase === 'loading' ? (
           <>
             <AlertDialogHeader>
-              <AlertDialogTitle>{t('members:preparingOperation')}</AlertDialogTitle>
+              <AlertDialogTitle>
+                {t('members:preparingOperation')}
+              </AlertDialogTitle>
               <AlertDialogDescription>
                 {t('members:loadingConfirmation')}
               </AlertDialogDescription>
@@ -130,18 +132,20 @@ export function MemberLifecycleDialog({
         ) : session?.status === 'error' ? (
           <>
             <AlertDialogHeader>
-              <AlertDialogTitle>
-                {t('members:detailError')}
-              </AlertDialogTitle>
+              <AlertDialogTitle>{t('members:detailError')}</AlertDialogTitle>
               <AlertDialogDescription>
                 {t('members:lifecycleUnavailable')}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <p role='alert' className='text-sm text-destructive'>
-              {session.loadError ? localizedValidationMessage(session.loadError, t) : t('members:detailFailed')}
+              {session.loadError
+                ? localizedValidationMessage(session.loadError, t)
+                : t('members:detailFailed')}
             </p>
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={saving}>{t('members:close')}</AlertDialogCancel>
+              <AlertDialogCancel disabled={saving}>
+                {t('members:close')}
+              </AlertDialogCancel>
               <Button
                 disabled={!authorizationVerified}
                 onClick={() =>
@@ -169,19 +173,25 @@ export function MemberLifecycleDialog({
                   <dd className='font-medium'>{snapshot.member.displayName}</dd>
                 </div>
                 <div>
-                  <dt className='text-muted-foreground'>{t('members:email')}</dt>
+                  <dt className='text-muted-foreground'>
+                    {t('members:email')}
+                  </dt>
                   <dd className='font-medium break-all'>
                     {snapshot.member.email}
                   </dd>
                 </div>
                 <div>
-                  <dt className='text-muted-foreground'>{t('members:currentLifecycle')}</dt>
+                  <dt className='text-muted-foreground'>
+                    {t('members:currentLifecycle')}
+                  </dt>
                   <dd className='font-medium'>
                     {stateLabel(snapshot.member.accountStatus)}
                   </dd>
                 </div>
                 <div>
-                  <dt className='text-muted-foreground'>{t('members:roleLabel')}</dt>
+                  <dt className='text-muted-foreground'>
+                    {t('members:roleLabel')}
+                  </dt>
                   <dd className='font-medium'>
                     {snapshot.member.globalRole === 'DEPARTMENT_MANAGER'
                       ? t('members:departmentManager')
@@ -204,7 +214,10 @@ export function MemberLifecycleDialog({
                 <p>{localizedValidationMessage(feedback.message, t)}</p>
                 {feedback.reconciliationError && (
                   <p className='text-destructive'>
-                    {localizedValidationMessage(feedback.reconciliationError, t)}
+                    {localizedValidationMessage(
+                      feedback.reconciliationError,
+                      t
+                    )}
                   </p>
                 )}
                 {feedback.reconciliationLoading && (
@@ -268,7 +281,9 @@ export function MemberLifecycleDialog({
               </div>
             )}
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={saving}>{t('members:cancel')}</AlertDialogCancel>
+              <AlertDialogCancel disabled={saving}>
+                {t('members:cancel')}
+              </AlertDialogCancel>
               <AlertDialogAction
                 disabled={
                   saving ||

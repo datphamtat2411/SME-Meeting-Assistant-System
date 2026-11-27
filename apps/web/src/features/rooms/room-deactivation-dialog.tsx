@@ -1,6 +1,9 @@
-import { useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage } from '@/lib/i18n/presentation'
 import { useState } from 'react'
+import { useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+} from '@/lib/i18n/presentation'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -112,7 +115,9 @@ export function RoomDeactivationDialog({
         {session?.phase === 'loading' ? (
           <>
             <AlertDialogHeader>
-              <AlertDialogTitle>{t('rooms:preparingDeactivate')}</AlertDialogTitle>
+              <AlertDialogTitle>
+                {t('rooms:preparingDeactivate')}
+              </AlertDialogTitle>
               <AlertDialogDescription>
                 {t('rooms:loadingConfirmation')}
               </AlertDialogDescription>
@@ -121,24 +126,28 @@ export function RoomDeactivationDialog({
               {t('rooms:loadingCurrentDetails')}
             </div>
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={saving}>{t('rooms:cancel')}</AlertDialogCancel>
+              <AlertDialogCancel disabled={saving}>
+                {t('rooms:cancel')}
+              </AlertDialogCancel>
             </AlertDialogFooter>
           </>
         ) : session?.phase === 'error' ? (
           <>
             <AlertDialogHeader>
-              <AlertDialogTitle>
-                {t('rooms:detailsError')}
-              </AlertDialogTitle>
+              <AlertDialogTitle>{t('rooms:detailsError')}</AlertDialogTitle>
               <AlertDialogDescription>
                 {t('rooms:deactivateUnavailable')}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <p role='alert' className='text-sm text-destructive'>
-              {session.loadError ? localizedValidationMessage(session.loadError, t) : t('rooms:detailRequestFailed')}
+              {session.loadError
+                ? localizedValidationMessage(session.loadError, t)
+                : t('rooms:detailRequestFailed')}
             </p>
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={saving}>{t('rooms:close')}</AlertDialogCancel>
+              <AlertDialogCancel disabled={saving}>
+                {t('rooms:close')}
+              </AlertDialogCancel>
               <Button
                 disabled={!authorizationVerified}
                 onClick={() =>
@@ -152,7 +161,9 @@ export function RoomDeactivationDialog({
         ) : (
           <>
             <AlertDialogHeader>
-              <AlertDialogTitle>{t('rooms:deactivateQuestion')}</AlertDialogTitle>
+              <AlertDialogTitle>
+                {t('rooms:deactivateQuestion')}
+              </AlertDialogTitle>
               <AlertDialogDescription>
                 {t('rooms:deactivateHelp')}
               </AlertDialogDescription>
@@ -170,13 +181,19 @@ export function RoomDeactivationDialog({
                   <dd className='font-medium'>{snapshot.room.name}</dd>
                 </div>
                 <div>
-                  <dt className='text-muted-foreground'>{t('rooms:currentLifecycle')}</dt>
+                  <dt className='text-muted-foreground'>
+                    {t('rooms:currentLifecycle')}
+                  </dt>
                   <dd className='font-medium'>
-                    {snapshot.room.status === 'ACTIVE' ? t('rooms:active') : t('rooms:inactive')}
+                    {snapshot.room.status === 'ACTIVE'
+                      ? t('rooms:active')
+                      : t('rooms:inactive')}
                   </dd>
                 </div>
                 <div>
-                  <dt className='text-muted-foreground'>{t('rooms:location')}</dt>
+                  <dt className='text-muted-foreground'>
+                    {t('rooms:location')}
+                  </dt>
                   <dd className='font-medium'>
                     {snapshot.room.location ?? t('rooms:notSet')}
                   </dd>
@@ -195,13 +212,20 @@ export function RoomDeactivationDialog({
                 <p>{localizedValidationMessage(feedback.message, t)}</p>
                 {feedback.reconciliationError && (
                   <p role='alert' className='text-destructive'>
-                    {localizedValidationMessage(feedback.reconciliationError, t)}
+                    {localizedValidationMessage(
+                      feedback.reconciliationError,
+                      t
+                    )}
                   </p>
                 )}
                 {reviewedSnapshot && (
                   <div className='space-y-2 rounded-md border bg-background p-3'>
                     <p className='font-medium'>
-                      {t(reviewedSnapshot.room.status === 'ACTIVE' ? 'rooms:latestActive' : 'rooms:latestInactive')}
+                      {t(
+                        reviewedSnapshot.room.status === 'ACTIVE'
+                          ? 'rooms:latestActive'
+                          : 'rooms:latestInactive'
+                      )}
                     </p>
                     <p>
                       <span className='font-mono'>
@@ -247,7 +271,9 @@ export function RoomDeactivationDialog({
                     </Button>
                     {latestError && (
                       <div className='space-y-2'>
-                        <p className='text-destructive'>{localizedValidationMessage(latestError, t)}</p>
+                        <p className='text-destructive'>
+                          {localizedValidationMessage(latestError, t)}
+                        </p>
                         <Button
                           type='button'
                           variant='outline'
@@ -274,7 +300,8 @@ export function RoomDeactivationDialog({
                           · {latestSnapshot.room.name}
                         </p>
                         <p className='text-muted-foreground'>
-                          {latestSnapshot.room.location ?? t('rooms:locationNotSet')}
+                          {latestSnapshot.room.location ??
+                            t('rooms:locationNotSet')}
                         </p>
                         {latestSnapshot.room.status === 'ACTIVE' ? (
                           <Button
@@ -304,7 +331,9 @@ export function RoomDeactivationDialog({
               </div>
             )}
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={saving}>{t('rooms:cancel')}</AlertDialogCancel>
+              <AlertDialogCancel disabled={saving}>
+                {t('rooms:cancel')}
+              </AlertDialogCancel>
               <AlertDialogAction
                 disabled={
                   saving ||
@@ -325,7 +354,9 @@ export function RoomDeactivationDialog({
                   }
                 }}
               >
-                {saving ? t('rooms:deactivating') : t('rooms:deactivateRoomButton')}
+                {saving
+                  ? t('rooms:deactivating')
+                  : t('rooms:deactivateRoomButton')}
               </AlertDialogAction>
             </AlertDialogFooter>
           </>
