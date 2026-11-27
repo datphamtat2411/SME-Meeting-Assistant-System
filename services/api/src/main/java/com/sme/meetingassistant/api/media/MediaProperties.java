@@ -168,7 +168,7 @@ public class MediaProperties {
         private String ffprobePath;
         private Duration probeTimeout = Duration.ofSeconds(30);
         private Duration sourceTransferTimeout = Duration.ofMinutes(8);
-        private Duration uploadUrlTtl = Duration.ofMinutes(30);
+        private Duration uploadUrlTtl = Duration.ofMinutes(15);
         private Duration downloadUrlTtl = Duration.ofMinutes(5);
         public List<String> getAllowedExtensions() { return allowedExtensions; }
         public void setAllowedExtensions(List<String> value) { allowedExtensions = value; }

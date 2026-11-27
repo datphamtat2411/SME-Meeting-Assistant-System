@@ -64,7 +64,7 @@ export const minutesSchema = z
     assembledAt: instant,
     sourceFingerprint: z.string().regex(/^[0-9a-f]{64}$/i),
     completeness: z.enum(['COMPLETE', 'PARTIAL', 'NEEDS_REVIEW']),
-    proposalsIncluded: z.literal(false),
+    proposalsIncluded: z.boolean(),
     warnings: z.array(z.string()),
     meeting: z.object({
       id: z.string().uuid(),

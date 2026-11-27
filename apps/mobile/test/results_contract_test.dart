@@ -341,9 +341,15 @@ void main() {
       null,
       <String, dynamic>{},
       {'assigneeDisplayNames': []},
-      {'assigneeDisplayNames': {'': 'Name'}},
-      {'assigneeDisplayNames': {'external-user': '  '}},
-      {'assigneeDisplayNames': {'external-user': 42}},
+      {
+        'assigneeDisplayNames': {'': 'Name'},
+      },
+      {
+        'assigneeDisplayNames': {'external-user': '  '},
+      },
+      {
+        'assigneeDisplayNames': {'external-user': 42},
+      },
     ]) {
       final raw = minutesFixture()..['displayMetadata'] = metadata;
       expect(

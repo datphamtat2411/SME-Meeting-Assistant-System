@@ -269,7 +269,8 @@ class MinutesPanel extends StatelessWidget {
                       'Người phụ trách',
                       action.assigneeUserId == null
                           ? 'Chưa giao'
-                          : minutes.assigneeDisplayNames[action.assigneeUserId] ??
+                          : minutes.assigneeDisplayNames[action
+                                    .assigneeUserId] ??
                                 workspace.meetingIdentityLabel(
                                   action.assigneeUserId,
                                 ) ??
