@@ -377,11 +377,9 @@ public final class AssistantService {
                 return new Admission(prior,false);
             }
             admission.lockAskLocalScopes(user,conversation.meetingId());
-        access.requireReadable(conversation.meetingId(),user);
             access.requireReadable(conversation.meetingId(),user);
             admission.ensureScopedActiveCapacity(user,conversation.meetingId());
             admission.lockAskGlobalScope();
-        access.requireReadable(conversation.meetingId(),user);
             access.requireReadable(conversation.meetingId(),user);
             admission.ensureGlobalActiveCapacity();
             var reclaimed=store.reclaim(prior);
@@ -396,9 +394,11 @@ public final class AssistantService {
             admission.leaseExpired();
         }
         admission.lockAskLocalScopes(user,conversation.meetingId());
+        access.requireReadable(conversation.meetingId(),user);
         admission.ensureAskQuota(user);
         admission.ensureScopedActiveCapacity(user,conversation.meetingId());
         admission.lockAskGlobalScope();
+        access.requireReadable(conversation.meetingId(),user);
         admission.ensureGlobalActiveCapacity();
         var inserted=store.insertTurn(conversationId,key,fingerprint,question,
             version(conversation.meetingId(),user));

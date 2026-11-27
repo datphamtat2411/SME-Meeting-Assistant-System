@@ -542,6 +542,69 @@ class AssistantAdmissionIntegrationTests {
         assertThat(rejected(reason) - baseline).isGreaterThanOrEqualTo(amount);
     }
 
+    @Test
+    void revokedParticipantCannotStartInferenceAfterGlobalAdmissionWait() throws Exception {
+        UUID owner = user(), participant = user();
+        UUID meeting = meeting(owner, participant);
+        UUID conversation = conversation(participant, meeting);
+        fastProvider();
+        try (HeldTransaction held = holdGlobalLock()) {
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            try {
+                Future<MvcResult> blocked = executor.submit(
+                    () -> submit(participant, conversation, "revoked-while-waiting"));
+                awaitAdvisoryLockWait();
+                jdbc.update("UPDATE meeting_participants SET removed_at=CURRENT_TIMESTAMP WHERE meeting_id=? AND user_id=?",
+                    meeting, participant);
+                held.release();
+                assertThat(blocked.get(10, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(404);
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+        verifyNoAiCalls();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_turns WHERE conversation_id=?",
+            Long.class, conversation)).isZero();
+    }
+
+    @Test
+    void deactivatedActorCannotStartInferenceAfterGlobalAdmissionWait() throws Exception {
+        UUID owner = user();
+        UUID meeting = meeting(owner);
+        UUID conversation = conversation(owner, meeting);
+        fastProvider();
+        try (HeldTransaction held = holdGlobalLock()) {
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            try {
+                Future<MvcResult> blocked = executor.submit(
+                    () -> submit(owner, conversation, "inactive-while-waiting"));
+                awaitAdvisoryLockWait();
+                jdbc.update("UPDATE users SET account_status='INACTIVE',deactivated_at=CURRENT_TIMESTAMP WHERE id=?", owner);
+                held.release();
+                assertThat(blocked.get(10, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(401);
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+        verifyNoAiCalls();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_turns WHERE conversation_id=?",
+            Long.class, conversation)).isZero();
+    }
+
+    private void awaitAdvisoryLockWait() {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            Long waiting = jdbc.queryForObject("""
+                SELECT count(*) FROM pg_stat_activity
+                 WHERE wait_event_type='Lock' AND wait_event='advisory'
+                   AND query ILIKE '%pg_advisory_xact_lock%'
+                """, Long.class);
+            if (waiting != null && waiting > 0) return;
+            Thread.onSpinWait();
+        }
+        throw new AssertionError("assistant admission did not reach its advisory lock wait");
+    }
+
     private void awaitConversationLockWait() {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (System.nanoTime() < deadline) {
