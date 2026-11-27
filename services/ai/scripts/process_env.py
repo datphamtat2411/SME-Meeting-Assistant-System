@@ -186,6 +186,8 @@ _PROCESS_EXPECTATIONS = {
 _PROTECTED_SOURCE_ENV_KEYS = {
     "RABBITMQ_PASSWORD": "AI_RABBITMQ_PASSWORD",
     "RAG_QDRANT_API_KEY": None,
+    "DIARIZATION_WORKER_S3_ACCESS_KEY_ID": None,
+    "DIARIZATION_WORKER_S3_SECRET_ACCESS_KEY": None,
     "MEETING_INTELLIGENCE_RABBITMQ_USERNAME": "MI_RABBITMQ_USERNAME",
     "MEETING_INTELLIGENCE_RABBITMQ_PASSWORD": "MI_RABBITMQ_PASSWORD",
     "MEETING_INTELLIGENCE_S3_ACCESS_KEY_ID": "MI_STORAGE_ACCESS_KEY_ID",
@@ -489,22 +491,59 @@ def _scrubbed_environment(values: dict[str, str]) -> dict[str, str]:
     } | values
 
 
+def _read_runtime_environment(path: str | Path) -> dict[str, str]:
+    destination = Path(path).absolute()
+    try:
+        info = destination.lstat()
+    except OSError as error:
+        raise ProcessEnvironmentError("Generated AI environment is unavailable") from error
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_uid != os.getuid()
+        or info.st_mode & 0o077
+    ):
+        raise ProcessEnvironmentError("Generated AI environment is not private")
+    values = read_environment(destination)
+    if any(
+        not (name.startswith("AI_") or name in {"OPENROUTER_API_KEY", "REPLICATE_API_TOKEN"})
+        for name in values
+    ):
+        raise ProcessEnvironmentError("Generated AI environment contains an unexpected setting")
+    return values
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=".env", type=Path)
-    parser.add_argument("--process", choices=tuple(_PROCESS_PREFIXES), required=True)
+    parser.add_argument("--process", choices=tuple(_PROCESS_PREFIXES))
+    parser.add_argument("--runtime-env", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--validate-files", action="store_true")
     parser.add_argument("--enable-selected-worker", action="store_true")
     parser.add_argument("--exec", dest="command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
-        values = build_environment(
-            read_environment(args.config),
-            args.process,
-            validate_files=args.validate_files,
-            enable_selected_worker=args.enable_selected_worker,
-        )
+        if args.runtime_env is not None:
+            if (
+                args.process is not None
+                or args.output is not None
+                or args.validate_files
+                or args.enable_selected_worker
+            ):
+                raise ProcessEnvironmentError(
+                    "--runtime-env cannot be combined with canonical process options"
+                )
+            values = _read_runtime_environment(args.runtime_env)
+        else:
+            if args.process is None:
+                raise ProcessEnvironmentError("--process is required without --runtime-env")
+            values = build_environment(
+                read_environment(args.config),
+                args.process,
+                validate_files=args.validate_files,
+                enable_selected_worker=args.enable_selected_worker,
+            )
         if args.output is not None:
             write_environment(args.output, values)
         if args.command:

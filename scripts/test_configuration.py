@@ -162,3 +162,15 @@ def test_public_certificate_may_be_other_readable_without_write_access(tmp_path)
         "BROKER_TLS_DIR",
         ("issuer-ca.crt",),
     ) == 0
+
+
+def test_web_environment_requires_fixed_local_core_proxy(tmp_path):
+    environment = tmp_path / ".env"
+    environment.write_text(
+        "VITE_CORE_API_BASE_URL=/api/v1\n"
+        "VITE_CORE_API_PROXY_TARGET=http://127.0.0.1:8080\n",
+        encoding="utf-8",
+    )
+    environment.chmod(0o600)
+
+    assert configuration.check_web_environment(environment) == 0

@@ -16,7 +16,7 @@ import org.slf4j.LoggerFactory;
 
 /** Independent consumer credentials; ACK occurs only after the proxied transaction returns. */
 @Component
-@ConditionalOnProperty(name="app.worker.dead-letter.enabled",havingValue="true")
+@ConditionalOnProperty(name="app.worker.dead-letter.replay-enabled",havingValue="true")
 public class DeadLetterConsumer implements SmartLifecycle {
     private final SimpleMessageListenerContainer container;
     private final CachingConnectionFactory connection;

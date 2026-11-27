@@ -18,6 +18,7 @@ SPEC.loader.exec_module(module_env)
 def _api() -> dict[str, str]:
     return {
         "SPRING_PROFILES_ACTIVE": "secure-integration",
+        "APP_ENVIRONMENT": "development",
         "APP_MEDIA_OUTBOX_ENABLED": "true",
         "APP_WORKER_TRANSCRIPTION_ENABLED": "true",
         "APP_WORKER_TRANSCRIPTION_INFRASTRUCTURE_VERIFIED": "true",
@@ -113,3 +114,67 @@ def test_missing_postgres_setting_is_rejected_without_value():
 
     with pytest.raises(module_env.ModuleEnvironmentError, match="incomplete"):
         module_env.build_core_environment(_api(), values, inherited={})
+
+
+def test_full_mode_preserves_feature_gates_but_disables_historical_dlq_replay():
+    api = _api() | {
+        "APP_MEDIA_INTELLIGENCE_ENABLED": "true",
+        "APP_MEDIA_INTELLIGENCE_DISPATCH_ENABLED": "true",
+        "APP_MEDIA_INTELLIGENCE_INFRASTRUCTURE_VERIFIED": "true",
+        "APP_MI_INTERNAL_RESULT_ENABLED": "true",
+        "APP_MEDIA_KNOWLEDGE_INDEXING_ENABLED": "true",
+        "APP_MEDIA_PROCESSING_REQUIRED_DOWNSTREAM_STAGES": "GENERATING_SUMMARY,INDEXING",
+        "APP_MEDIA_PROCESSING_ACTION_ITEM_HANDOFF_ENABLED": "true",
+        "APP_ASSISTANT_ENABLED": "true",
+        "APP_WORKER_DEAD_LETTER_REPLAY_ENABLED": "true",
+    }
+
+    result = module_env.build_core_environment(api, _postgres(), inherited={}, full_mode=True)
+
+    assert result["APP_WORKER_DEAD_LETTER_ENABLED"] == "true"
+    assert result["APP_WORKER_DEAD_LETTER_REPLAY_ENABLED"] == "false"
+    module_env.validate_effective_environment(result, full_mode=True)
+
+
+def test_full_mode_preserves_explicit_diarization_activation():
+    api = _api() | {
+        "APP_MEDIA_INTELLIGENCE_ENABLED": "true",
+        "APP_MEDIA_INTELLIGENCE_DISPATCH_ENABLED": "true",
+        "APP_MEDIA_INTELLIGENCE_INFRASTRUCTURE_VERIFIED": "true",
+        "APP_MI_INTERNAL_RESULT_ENABLED": "true",
+        "APP_MEDIA_KNOWLEDGE_INDEXING_ENABLED": "true",
+        "APP_MEDIA_PROCESSING_REQUIRED_DOWNSTREAM_STAGES": "GENERATING_SUMMARY,INDEXING",
+        "APP_MEDIA_PROCESSING_ACTION_ITEM_HANDOFF_ENABLED": "true",
+        "APP_ASSISTANT_ENABLED": "true",
+        "APP_MEDIA_PROCESSING_DIARIZATION_ENABLED": "true",
+        "APP_WORKER_DIARIZATION_ENABLED": "true",
+        "APP_WORKER_DIARIZATION_INFRASTRUCTURE_VERIFIED": "true",
+        "APP_WORKER_DIARIZATION_STORAGE_ID": "private",
+    }
+
+    result = module_env.build_core_environment(api, _postgres(), inherited={}, full_mode=True)
+    application = json.loads(result["SPRING_APPLICATION_JSON"])
+
+    assert application["app"]["media"]["processing"]["diarization-enabled"] is True
+    assert result["APP_WORKER_DIARIZATION_ENABLED"] == "true"
+    assert result["APP_WORKER_DIARIZATION_INFRASTRUCTURE_VERIFIED"] == "true"
+    assert result["APP_WORKER_DIARIZATION_STORAGE_ID"] == "private"
+    module_env.validate_effective_environment(result, full_mode=True)
+
+
+def test_safe_transport_disables_diarization_capability_and_admission():
+    api = _api() | {
+        "APP_MEDIA_PROCESSING_DIARIZATION_ENABLED": "true",
+        "APP_WORKER_DIARIZATION_ENABLED": "true",
+        "APP_WORKER_DIARIZATION_INFRASTRUCTURE_VERIFIED": "true",
+        "APP_WORKER_DIARIZATION_STORAGE_ID": "private",
+    }
+
+    result = module_env.build_core_environment(api, _postgres(), inherited={}, safe_transport=True)
+    application = json.loads(result["SPRING_APPLICATION_JSON"])
+
+    assert application["app"]["media"]["processing"]["diarization-enabled"] is False
+    assert result["APP_WORKER_DIARIZATION_ENABLED"] == "false"
+    assert result["APP_WORKER_DIARIZATION_INFRASTRUCTURE_VERIFIED"] == "false"
+    assert result["APP_WORKER_DIARIZATION_STORAGE_ID"] == ""
+    module_env.validate_effective_environment(result, full_mode=False)

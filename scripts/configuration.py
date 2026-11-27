@@ -191,6 +191,32 @@ def require_settings(path: Path, names: tuple[str, ...]) -> int:
     return 0
 
 
+def check_web_environment(path: Path) -> int:
+    """Validate the fixed local Web origin and Core proxy contract."""
+    try:
+        values = read_literal(path)
+    except ConfigurationCheckError as error:
+        print(f"BLOCKED: {error}", file=sys.stderr)
+        return 1
+    if values.get("VITE_CORE_API_BASE_URL") != "/api/v1":
+        print("BLOCKED: Web Core API base URL must be /api/v1", file=sys.stderr)
+        return 1
+    if values.get("VITE_CORE_API_PROXY_TARGET") != "http://127.0.0.1:8080":
+        print(
+            "BLOCKED: Web Core API proxy target must be http://127.0.0.1:8080",
+            file=sys.stderr,
+        )
+        return 1
+    for name, value in values.items():
+        if name.startswith("VITE_") and (
+            "\x00" in value or "\n" in value or "\r" in value
+        ):
+            print("BLOCKED: Web environment contains an unsafe browser setting", file=sys.stderr)
+            return 1
+    print("PASS: Web environment uses the fixed localhost origin and Core proxy")
+    return 0
+
+
 def _read_posix_acl(path: Path) -> dict[tuple[int, int], int] | None:
     """Read a Linux access ACL without treating its mode mask as group access."""
     try:
@@ -377,6 +403,9 @@ def main() -> int:
     paths.add_argument("--allow-acl-uid", action="append", type=_acl_uid, default=[])
     paths.add_argument("filenames", nargs="+")
 
+    web = subparsers.add_parser("web")
+    web.add_argument("--file", required=True, type=Path)
+
     args = parser.parse_args()
     if args.action == "migration":
         return migration_check(args.root)
@@ -389,6 +418,8 @@ def main() -> int:
             print(f"BLOCKED: {error}", file=sys.stderr)
             return 1
         return 0
+    if args.action == "web":
+        return check_web_environment(args.file)
     return check_directory_setting(
         args.file,
         args.directory_key,

@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory;
 
 /** Bounded durable backlog recovery; never holds DB locks across broker/storage I/O. */
 @Component
-@ConditionalOnProperty(name="app.worker.dead-letter.enabled",havingValue="true")
+@ConditionalOnProperty(name="app.worker.dead-letter.replay-enabled",havingValue="true")
 public class DeadLetterRecovery {
     private final JdbcTemplate jdbc;
     private final DeadLetterReconciliation reconciliation;

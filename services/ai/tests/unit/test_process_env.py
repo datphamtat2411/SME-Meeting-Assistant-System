@@ -104,6 +104,49 @@ def test_worker_mapping_is_role_specific():
     assert "AI_RAG_QDRANT_API_KEY" not in result
 
 
+def test_transcription_mapping_preserves_diarization_approval_and_capability_settings():
+    values = _values() | {
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_ENABLED": "true",
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_PROVIDER_APPROVED": "true",
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_PROJECTION_READY": "true",
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_S3_ACCESS_KEY_ID": "diarization-access",
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_S3_SECRET_ACCESS_KEY": "diarization-secret",
+    }
+
+    result = process_env.build_environment(values, "transcription-worker", inherited={})
+
+    assert result["AI_DIARIZATION_WORKER_ENABLED"] == "true"
+    assert result["AI_DIARIZATION_WORKER_PROVIDER_APPROVED"] == "true"
+    assert result["AI_DIARIZATION_WORKER_PROJECTION_READY"] == "true"
+    assert result["AI_DIARIZATION_WORKER_S3_ACCESS_KEY_ID"] == "diarization-access"
+    assert result["AI_DIARIZATION_WORKER_S3_SECRET_ACCESS_KEY"] == "diarization-secret"
+
+
+def test_transcription_mapping_resolves_dedicated_diarization_storage_files(tmp_path):
+    access = tmp_path / "diarization-access"
+    access.write_text("diarization-access\n", encoding="utf-8")
+    access.chmod(0o600)
+    secret = tmp_path / "diarization-secret"
+    secret.write_text("diarization-secret\n", encoding="utf-8")
+    secret.chmod(0o600)
+    values = _values() | {
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_ENABLED": "true",
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_PROVIDER_APPROVED": "true",
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_PROJECTION_READY": "true",
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_S3_ACCESS_KEY_ID": "",
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_S3_ACCESS_KEY_ID_FILE": str(access),
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_S3_SECRET_ACCESS_KEY": "",
+        "AI_TRANSCRIPTION_PROCESS_DIARIZATION_WORKER_S3_SECRET_ACCESS_KEY_FILE": str(secret),
+    }
+
+    result = process_env.build_environment(values, "transcription-worker", inherited={})
+
+    assert result["AI_DIARIZATION_WORKER_S3_ACCESS_KEY_ID"] == "diarization-access"
+    assert result["AI_DIARIZATION_WORKER_S3_SECRET_ACCESS_KEY"] == "diarization-secret"
+    assert "AI_DIARIZATION_WORKER_S3_ACCESS_KEY_ID_FILE" not in result
+    assert "AI_DIARIZATION_WORKER_S3_SECRET_ACCESS_KEY_FILE" not in result
+
+
 def test_explicit_worker_launcher_enables_only_selected_knowledge_capability():
     values = {
         "AI_KNOWLEDGE_PROCESS_SERVICE_NAME": "knowledge-ai",
@@ -396,3 +439,15 @@ def test_generated_environment_is_private_and_sorted(tmp_path):
 
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
     assert destination.read_text(encoding="utf-8").splitlines() == ["A_KEY=a", "Z_KEY=z"]
+
+
+def test_generated_runtime_environment_can_be_consumed_without_role_sources(tmp_path):
+    destination = tmp_path / "private" / "runtime.env"
+    process_env.write_environment(
+        destination,
+        {"AI_SERVICE_NAME": "ai", "AI_SERVICE_IDENTITY": "ai-core"},
+    )
+
+    result = process_env._read_runtime_environment(destination)
+
+    assert result == {"AI_SERVICE_NAME": "ai", "AI_SERVICE_IDENTITY": "ai-core"}
