@@ -1,0 +1,17 @@
+{
+  "success": false,
+  "code": "VALIDATION_FAILED",
+  "message": "Request validation failed.",
+  "data": null,
+  "meta": {
+    "requestId": "33333333-3333-4333-8333-333333333333",
+    "timestamp": "2026-11-23T12:02:00Z"
+  },
+  "errors": [
+    {
+      "field": "title",
+      "code": "NOT_BLANK",
+      "message": "must not be blank"
+    }
+  ]
+}

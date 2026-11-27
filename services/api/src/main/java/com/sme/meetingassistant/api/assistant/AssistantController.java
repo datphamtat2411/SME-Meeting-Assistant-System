@@ -27,8 +27,10 @@ final class AssistantController {
             .body(responses.success(service.list(page,size)));
     }
     @PostMapping
-    ResponseEntity<ApiResponse<ConversationView>> create(@Valid @RequestBody CreateConversation input){
-        ConversationView view=service.create(input);
+    ResponseEntity<ApiResponse<ConversationView>> create(
+            @RequestHeader(value="Idempotency-Key",required=false) String key,
+            @Valid @RequestBody CreateConversation input){
+        ConversationView view=service.create(input,key);
         return ResponseEntity.created(URI.create("/api/v1/assistant/conversations/"+view.id()))
             .cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
             .body(responses.success(view));

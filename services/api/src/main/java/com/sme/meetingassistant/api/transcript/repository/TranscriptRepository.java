@@ -9,6 +9,7 @@ import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.SpeakerView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.TranscriptView;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion;
 import com.sme.meetingassistant.api.transcript.service.TranscriptCorrectionDigest;
+import com.sme.meetingassistant.api.transcript.service.TranscriptVersionTags;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.CoverageResult;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.SegmentResult;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.SpeakerResult;
@@ -531,9 +532,10 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
             LEFT JOIN speaker_clusters c ON c.id=s.speaker_cluster_id AND c.transcript_id=s.transcript_id
             WHERE s.transcript_id=? ORDER BY s.ordinal
             """, (rs, row) -> new SegmentView(rs.getObject("id", UUID.class), rs.getInt("ordinal"),
-                rs.getLong("start_ms"), rs.getLong("end_ms"), rs.getString("current_text"),
-                rs.getString("quality_status"), rs.getObject("speaker_cluster_id", UUID.class),
-                rs.getString("label"), rs.getLong("version")), h.id());
+                 rs.getLong("start_ms"), rs.getLong("end_ms"), rs.getString("current_text"),
+                 rs.getString("quality_status"), rs.getObject("speaker_cluster_id", UUID.class),
+                 rs.getString("label"), rs.getLong("version"),
+                 TranscriptVersionTags.segment(rs.getObject("id", UUID.class), rs.getLong("version"))), h.id());
         return Optional.of(new TranscriptView(h.id(), h.meetingId(), h.mediaId(), h.jobId(), h.version(),
             h.language(), h.status(), h.duration(), h.finalizedAt(), h.contentRevision(), segments));
     }
@@ -575,7 +577,8 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
         if (old.version() != expectedVersion) throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
         // Explicit acceptance of suspicious text is a review decision even if text is unchanged.
         if (old.text().equals(text) && "ACCEPTED".equals(old.quality())) {
-            return new CorrectionView(segmentId, old.text(), old.quality(), old.version(), null, null);
+            return new CorrectionView(segmentId, old.text(), old.quality(), old.version(), null, null,
+                TranscriptVersionTags.segment(segmentId, old.version()));
         }
         int revision = this.jdbc.queryForObject(
             "SELECT COALESCE(MAX(revision_number),0)+1 FROM transcript_segment_revisions WHERE segment_id=?",
@@ -591,7 +594,8 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
             """, text, actorId, now, now, segmentId, expectedVersion);
         if (changed != 1) throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
         increaseContentRevision(meetingId);
-        return new CorrectionView(segmentId, text, "ACCEPTED", expectedVersion + 1, actorId, now);
+        return new CorrectionView(segmentId, text, "ACCEPTED", expectedVersion + 1, actorId, now,
+            TranscriptVersionTags.segment(segmentId, expectedVersion + 1));
     }
 
     public SpeakerMapResult mapSpeaker(UUID meetingId, UUID clusterId, UUID userId, UUID actorId,

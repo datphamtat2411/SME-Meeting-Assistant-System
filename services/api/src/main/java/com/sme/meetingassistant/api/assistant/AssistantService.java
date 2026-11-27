@@ -69,7 +69,7 @@ public final class AssistantService {
             "ASSISTANT_UNAVAILABLE","Assistant state is temporarily unavailable.");
     }
 
-    ConversationView create(CreateConversation input) {
+    ConversationView create(CreateConversation input,String idempotencyKey) {
         requireEnabled();
         UUID user;
         try {
@@ -79,6 +79,11 @@ public final class AssistantService {
         }
         if(input==null||input.meetingId()==null)throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         String title=input.title()==null||input.title().isBlank()?null:input.title().trim();
+        if(idempotencyKey!=null&&!KEY.matcher(idempotencyKey).matches())
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+        String keyDigest=idempotencyKey==null?null:WorkerJson.sha256(idempotencyKey.getBytes(StandardCharsets.UTF_8));
+        String requestDigest=keyDigest==null?null:WorkerJson.sha256(
+            (input.meetingId()+"\n"+(title==null?"":title)).getBytes(StandardCharsets.UTF_8));
         try {
             access.requireReadable(input.meetingId(),user);
         } catch (DataAccessException|TransactionException unavailable) {
@@ -89,8 +94,18 @@ public final class AssistantService {
             created=tx.execute(s->{
                 admission.lockConversationCreationScope(user);
                 access.requireReadable(input.meetingId(),user);
+                if(keyDigest!=null){
+                    var prior=store.findCreation(user,keyDigest);
+                    if(prior!=null){
+                        access.requireReadable(prior.conversation().meetingId(),user);
+                        if(!prior.requestDigest().equals(requestDigest))
+                            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                                "Idempotency key reused with different conversation intent");
+                        return prior.conversation().view();
+                    }
+                }
                 admission.ensureConversationCreationQuota(user);
-                var saved=store.create(UUID.randomUUID(),user,input.meetingId(),title);
+                var saved=store.create(UUID.randomUUID(),user,input.meetingId(),title,keyDigest,requestDigest);
                 admission.recordConversationCreation(user,saved.id());
                 return saved.view();
             });
@@ -104,11 +119,6 @@ public final class AssistantService {
     List<ConversationView> list(int page,int size){
         requireEnabled();validatePage(page,size);
         return readWithAvailability(()->store.list(actor(),page,size));
-    }
-
-
-    ConversationDetail detail(UUID id,int page,int size){
-        return detail(id,page,size,null);
     }
 
     ConversationDetail detail(UUID id,Integer page,int size,UUID beforeMessageId){
@@ -220,6 +230,11 @@ public final class AssistantService {
     private static AssistantDomainException turnNotFound(){
         return new AssistantDomainException(HttpStatus.NOT_FOUND,"ASSISTANT_TURN_NOT_FOUND",
             "Assistant turn was not found.");
+    }
+
+    /** Read-only recovery lookup: never reserves, reclaims or invokes inference. */
+    TurnStatusView turnStatus(UUID conversationId,String key) {
+        return observe(conversationId, null, key);
     }
 
     TurnOutcome submit(UUID conversationId,String idempotencyKey,Ask input){

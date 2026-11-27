@@ -9,7 +9,14 @@ Target: `pre-integration-develop`.
 | feat/mobile-reintegration | 6a32ad343c3c41df39e5968d53c85d4ce6b7c5ba |
 | main (reference only) | 8d9e41f0e7a4f054bb21a45a0ad6f9fd8677b363 |
 
-Both source comparisons report develop as merge base and zero commits behind (222 ahead each). Full recursive tree results were not truncated. 730 distinct changed paths; 15 shared paths, 14 divergent. This is a mode/blob comparison, not a native Git merge or rename detection. Native Git access failed with DNS resolution error in the execution environment. Build/CI baseline is not certified.
+Both source comparisons report develop as merge base and zero commits behind
+(222 ahead each). Full recursive tree results were not truncated. 730 distinct
+changed paths; 15 shared paths, 14 divergent. This remains a mode/blob
+comparison, not a native Git merge or rename detection. The earlier inventory
+run could not access native Git metadata because of a DNS resolution error;
+native preflight was subsequently completed and is recorded in
+INTEGRATION-SPEC.md and CONFLICT-INVENTORY.md. Build/CI baseline is not
+certified.
 
 ## Inventory
 

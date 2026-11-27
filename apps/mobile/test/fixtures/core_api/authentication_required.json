@@ -1,0 +1,10 @@
+{
+  "success": false,
+  "code": "AUTH_REQUIRED",
+  "message": "Authentication is required.",
+  "data": null,
+  "meta": {
+    "requestId": "44444444-4444-4444-8444-444444444444",
+    "timestamp": "2026-11-23T12:03:00Z"
+  }
+}

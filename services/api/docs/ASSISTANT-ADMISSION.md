@@ -76,6 +76,12 @@ records the ASK event. A conversation creation similarly inserts its event only
 after the conversation row. A rollback removes both the business row and its
 event.
 
+Keyed conversation creation binds an owner-scoped key digest and normalized
+intent digest to the conversation in the same transaction as its quota event.
+Same-intent replay reauthorizes and returns the existing conversation without
+another quota event. A different intent under the same key conflicts.
+Unkeyed legacy creation remains non-idempotent.
+
 Terminal or live same-key requests return the existing turn without charging.
 An expired same-key turn is reclaimed with a new claim token without another
 ASK event. A different question under the same key remains a 409 conflict.
@@ -90,6 +96,12 @@ request may reclaim the turn. The claim token remains the fencing authority:
 the stale worker cannot persist after the newer claim owns the turn. Successful
 completion and failure clear the lease normally. Authorization and source
 revision checks remain unchanged and still fail closed.
+
+The authenticated read-only turn-status endpoint uses the original key in a
+header, never a URL. It returns the durable state and whether an expired
+PROCESSING lease is eligible for explicit same-key recovery; it does not
+reserve quota, reclaim a lease, or invoke the provider. Failed and stale
+source outcomes do not expose answer/evidence.
 
 ## HTTP and Retry Behavior
 

@@ -1,0 +1,15 @@
+include: package:flutter_lints/flutter.yaml
+analyzer:
+  errors:
+    deprecated_member_use: ignore
+    invalid_use_of_visible_for_testing_member: ignore
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+linter:
+  rules:
+    avoid_print: true
+    prefer_const_constructors: false
+    prefer_interpolation_to_compose_strings: false
+    curly_braces_in_flow_control_structures: false

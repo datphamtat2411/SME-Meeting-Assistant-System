@@ -1,6 +1,25 @@
 # Cross-platform integration — Wave 01 decision baseline
 
-Status: owner-directed working decisions; implementation and acceptance pending. The user authorized execution on pre-integration-develop, based on develop, Web first then Mobile. The source heads are pinned in BASELINE-INVENTORY.md. Do not alter source branches, develop, or main. No force-push. No shortcuts that conceal errors. Root-cause fixes, not weakened tests.
+Status: INT-02 verification complete; the final tree is assembled as a
+non-squashed two-parent merge on `pre-integration-develop`. The user authorized
+execution on `pre-integration-develop`, based on develop, Web first then
+Mobile. The source heads are pinned in BASELINE-INVENTORY.md. Do not alter
+source branches, develop, or main. No force-push. No shortcuts that conceal
+errors. Root-cause fixes, not weakened tests. See
+`docs/integration/INT-02-RESULTS.md` for commands and deferred gaps.
+
+## Native preflight evidence
+
+On 2026-11-27, `git merge-tree --write-tree HEAD feat/mobile-reintegration`
+completed against `HEAD=dba6e856f2b071c7e83a3b9655652e0e0a25c99f` and the pinned
+Mobile head `6a32ad343c3c41df39e5968d53c85d4ce6b7c5ba`. Git produced candidate
+tree `9aa544de7102d941c0ad2eb3409066a854f4f923` and nine textual conflicts:
+the API workflow, three Action Item files, three Assistant files, and two
+Decision files. `AssistantModels.java`, `DecisionController.java`,
+`DecisionService.java`, and the three listed integration tests auto-merged and
+were subject to semantic inspection. The conflicts were resolved in the
+working tree, verified, and assembled into the final two-parent merge without
+rewriting either source branch.
 
 ## Decision policy
 Approved requirements outrank branch preferences (API-GEN-001/005/006, API-VER-002/003, API-NAME-005, API-ERR-002, ARCH-GEN-002/003/004, BR-GEN-002/003/006/008, BR-MTG-009/010, FEAT-GEN-003/008, SEC-BASE-003/005/007). Choose the stronger implementation for correctness, security, integrity, reliability and maintainability; tie-break in favor of Web presentation compatibility. Web integration-rush is the actual presentation baseline; main mock is reference only. Keep layouts, navigation, design system and workflows unless correctness requires changes. Prefer adapters, typed schemas and hooks. Preserve Mobile features; change transport models where needed. No new feature solely because it exists in mock; priority and global Assistant scope are separate requirement-gap decisions, not silently delivered or waived.

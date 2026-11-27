@@ -2,9 +2,9 @@ package com.sme.meetingassistant.api.actionitems;
 
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
-import java.util.List;
 import java.time.ZoneOffset;
 import java.util.UUID;
+import java.util.List;
 
 public record ActionItemView(UUID id, UUID meetingId, String title, String details,
         ActionItemStatus status, UUID assigneeUserId, LocalDate dueDate, boolean overdue,
@@ -59,6 +59,8 @@ public record ActionItemView(UUID id, UUID meetingId, String title, String detai
     }
 
     public record Reference(UUID segmentId, Integer ordinal, String preview) { }
+
+    public record CreationMeeting(UUID id, String title, boolean canReadMeetingContext) { }
 
     public ActionItemView withProjection(boolean official, Capabilities resourceCapabilities,
             Assignee resourceAssignee, MeetingDisplay originatingMeeting,

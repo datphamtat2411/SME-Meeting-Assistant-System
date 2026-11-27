@@ -45,6 +45,7 @@ public class ActionItemController {
             @RequestParam(required=false) @Size(max=64) String assignee,
             @RequestParam(required=false) Boolean overdue,
             @RequestParam(required=false) Boolean official,
+            @RequestParam(required=false) Boolean reviewable,
             @RequestParam(defaultValue="0") @Min(0) int page,
             @RequestParam(defaultValue="20") @Min(1) @Max(100) int size,
             @RequestParam(defaultValue="createdAt,desc") String sort) {
@@ -54,7 +55,7 @@ public class ActionItemController {
         try { direction = Sort.Direction.fromString(parts[1]); }
         catch (IllegalArgumentException bad) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST); }
         return responses.successPage(service.list(caller.requireUserId(), meetingId, status, q, assignee,
-            overdue, official, PageRequest.of(page, size, Sort.by(direction, parts[0]))));
+            overdue, official, reviewable, PageRequest.of(page, size, Sort.by(direction, parts[0]))));
     }
 
     @GetMapping("/management-targets")
@@ -78,6 +79,15 @@ public class ActionItemController {
             @RequestParam(defaultValue="0") @Min(0) int page,
             @RequestParam(defaultValue="20") @Min(1) @Max(20) int size) {
         return responses.successPage(service.assigneeCandidates(caller.requireUserId(), meetingId, q, page, size));
+    }
+
+    @GetMapping("/creation-meetings")
+    public ApiResponse<List<ActionItemView.CreationMeeting>> creationMeetings(
+            @RequestParam(required=false) @Size(max=200) String q,
+            @RequestParam(defaultValue="0") @Min(0) int page,
+            @RequestParam(defaultValue="20") @Min(1) @Max(100) int size) {
+        return responses.successPage(service.creationMeetings(caller.requireUserId(), q,
+            PageRequest.of(page, size)));
     }
 
     @PostMapping

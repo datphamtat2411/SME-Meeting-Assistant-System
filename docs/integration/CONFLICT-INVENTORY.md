@@ -1,24 +1,30 @@
 # Conflict inventory and task ownership
 
-Source-tree evidence: BASELINE-INVENTORY.md. Shared-file differences are not proof of native conflict hunks. Native preflight pending; no execution claims.
+Source-tree evidence: BASELINE-INVENTORY.md. Shared-file differences are not
+proof of native conflict hunks. Native preflight was run on 2026-11-27 with
+`git merge-tree --write-tree HEAD feat/mobile-reintegration`: candidate tree
+`9aa544de7102d941c0ad2eb3409066a854f4f923`, nine textual conflicts, and no
+worktree changes. All nine conflicts were resolved, verified, and included in
+the final two-parent merge. Verification details are in
+`docs/integration/INT-02-RESULTS.md`.
 
-| Shared path | Resolution owner | Direction |
+| Shared path | Native result | Resolution owner | Direction |
 |---|---|---|
-| .github/workflows/api-ci.yml | INT-02 | Union branch triggers; preserve gates; add target |
-| services/api/src/main/java/com/sme/meetingassistant/api/actionitems/ActionItemController.java | INT-03/04/05 | Apply canonical decision, preserve both valid behaviors |
-| services/api/src/main/java/com/sme/meetingassistant/api/actionitems/ActionItemService.java | INT-03/04/05 | Apply canonical decision, preserve both valid behaviors |
-| services/api/src/main/java/com/sme/meetingassistant/api/actionitems/ActionItemView.java | INT-03/04/05 | Apply canonical decision, preserve both valid behaviors |
-| services/api/src/main/java/com/sme/meetingassistant/api/assistant/AssistantController.java | INT-08/09/10 | Apply canonical decision, preserve both valid behaviors |
-| services/api/src/main/java/com/sme/meetingassistant/api/assistant/AssistantModels.java | INT-08/09/10 | Apply canonical decision, preserve both valid behaviors |
-| services/api/src/main/java/com/sme/meetingassistant/api/assistant/AssistantService.java | INT-08/09/10 | Apply canonical decision, preserve both valid behaviors |
-| services/api/src/main/java/com/sme/meetingassistant/api/assistant/AssistantStore.java | INT-08/09/10 | Apply canonical decision, preserve both valid behaviors |
-| services/api/src/main/java/com/sme/meetingassistant/api/meetingintelligence/controller/DecisionController.java | INT-06/07 | Identical changes; retain once |
-| services/api/src/main/java/com/sme/meetingassistant/api/meetingintelligence/dto/DecisionView.java | INT-06/07 | Apply canonical decision, preserve both valid behaviors |
-| services/api/src/main/java/com/sme/meetingassistant/api/meetingintelligence/repository/DecisionRepository.java | INT-06/07 | Apply canonical decision, preserve both valid behaviors |
-| services/api/src/main/java/com/sme/meetingassistant/api/meetingintelligence/service/DecisionService.java | INT-06/07 | Apply canonical decision, preserve both valid behaviors |
-| services/api/src/test/java/com/sme/meetingassistant/api/actionitems/ActionItemsIntegrationTests.java | INT-03/04/05 | Retain behavioral assertions from both; migrate to canonical contract |
-| services/api/src/test/java/com/sme/meetingassistant/api/assistant/AssistantHttpIntegrationTests.java | INT-08/09/10 | Retain behavioral assertions from both; migrate to canonical contract |
-| services/api/src/test/java/com/sme/meetingassistant/api/meetingintelligence/IntelligenceContractValidationTests.java | INT-06/07 | Retain behavioral assertions from both; migrate to canonical contract |
+| .github/workflows/api-ci.yml | conflict | INT-02 | Union branch triggers; preserve gates; add target |
+| services/api/src/main/java/com/sme/meetingassistant/api/actionitems/ActionItemController.java | conflict | INT-03/04/05 | Apply canonical decision, preserve both valid behaviors |
+| services/api/src/main/java/com/sme/meetingassistant/api/actionitems/ActionItemService.java | conflict | INT-03/04/05 | Apply canonical decision, preserve both valid behaviors |
+| services/api/src/main/java/com/sme/meetingassistant/api/actionitems/ActionItemView.java | conflict | INT-03/04/05 | Apply canonical decision, preserve both valid behaviors |
+| services/api/src/main/java/com/sme/meetingassistant/api/assistant/AssistantController.java | conflict | INT-08/09/10 | Apply canonical decision, preserve both valid behaviors |
+| services/api/src/main/java/com/sme/meetingassistant/api/assistant/AssistantModels.java | auto-merged | INT-08/09/10 | Inspect bounded status/history DTOs against the canonical contract |
+| services/api/src/main/java/com/sme/meetingassistant/api/assistant/AssistantService.java | conflict | INT-08/09/10 | Apply canonical decision, preserve both valid behaviors |
+| services/api/src/main/java/com/sme/meetingassistant/api/assistant/AssistantStore.java | conflict | INT-08/09/10 | Apply canonical decision, preserve both valid behaviors |
+| services/api/src/main/java/com/sme/meetingassistant/api/meetingintelligence/controller/DecisionController.java | auto-merged | INT-06/07 | Verify identical route and authorization behavior; retain once |
+| services/api/src/main/java/com/sme/meetingassistant/api/meetingintelligence/dto/DecisionView.java | conflict | INT-06/07 | Apply canonical decision, preserve both valid behaviors |
+| services/api/src/main/java/com/sme/meetingassistant/api/meetingintelligence/repository/DecisionRepository.java | conflict | INT-06/07 | Apply canonical decision, preserve both valid behaviors |
+| services/api/src/main/java/com/sme/meetingassistant/api/meetingintelligence/service/DecisionService.java | auto-merged | INT-06/07 | Inspect reviewed-source and stale-version behavior |
+| services/api/src/test/java/com/sme/meetingassistant/api/actionitems/ActionItemsIntegrationTests.java | auto-merged | INT-03/04/05 | Retain behavioral assertions from both; migrate to canonical contract |
+| services/api/src/test/java/com/sme/meetingassistant/api/assistant/AssistantHttpIntegrationTests.java | auto-merged | INT-08/09/10 | Retain behavioral assertions from both; migrate to canonical contract |
+| services/api/src/test/java/com/sme/meetingassistant/api/meetingintelligence/IntelligenceContractValidationTests.java | auto-merged | INT-06/07 | Retain behavioral assertions from both; migrate to canonical contract |
 
 ## Semantic and downstream ledger
 | ID | Conflict or dependency | Selected direction | Owner / verification |

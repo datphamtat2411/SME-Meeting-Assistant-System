@@ -68,7 +68,7 @@ public class TranscriptReviewService implements TranscriptIngestion {
         UUID actor = this.authenticatedUser.requireUserId();
         this.repository.lockMeetingForReview(meetingId);
         this.meetingAccess.requireTranscriptEditAllowed(meetingId, actor);
-        long version = segmentVersion(segmentId, ifMatch);
+        long version = TranscriptVersionTags.requireSegmentMatch(segmentId, ifMatch);
         if (request == null || request.text() == null || request.text().isBlank()) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         }
@@ -120,23 +120,6 @@ public class TranscriptReviewService implements TranscriptIngestion {
     }
 
     private record TranscriptTag(UUID transcriptId, long revision) {}
-
-    private static long segmentVersion(UUID segmentId, String ifMatch) {
-        if (ifMatch == null || ifMatch.isBlank()) {
-            throw new ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED);
-        }
-        String prefix = "\"s-" + segmentId + "-";
-        if (!ifMatch.startsWith(prefix) || !ifMatch.endsWith("\"")) {
-            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
-        }
-        try {
-            long version = Long.parseLong(ifMatch.substring(prefix.length(), ifMatch.length() - 1));
-            if (version < 0) throw new NumberFormatException();
-            return version;
-        } catch (NumberFormatException e) {
-            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
-        }
-    }
 
     private static ResponseStatusException notFound() {
         return new ResponseStatusException(HttpStatus.NOT_FOUND);
