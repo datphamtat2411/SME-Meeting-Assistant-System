@@ -1,0 +1,22 @@
+{
+  "currentVersion": "Hiện tại · v{{version}}",
+  "staleSource": "Nguồn đã thay đổi",
+  "created": "Đã tạo",
+  "transcriptRevision": "Bản sửa đổi lời thoại {{revision}}",
+  "notAvailable": "không có",
+  "producedBy": "Được tạo bởi {{provider}} · {{model}}",
+  "content": "Nội dung tóm tắt",
+  "editingVersion": "{{used}} / {{limit}} ký tự · đang chỉnh sửa phiên bản {{version}}",
+  "saving": "Đang lưu…",
+  "saveReviewed": "Lưu phiên bản đã xem xét",
+  "cancel": "Hủy",
+  "version": "Phiên bản {{version}}",
+  "current": "Hiện tại",
+  "candidate": "Đề xuất từ AI",
+  "stale": "Đã lỗi thời",
+  "status_AI_GENERATED": "Do AI tạo",
+  "status_HUMAN_EDIT": "Do người dùng chỉnh sửa",
+  "status_READY": "Sẵn sàng",
+  "status_READY_WITH_WARNINGS": "Sẵn sàng, có cảnh báo",
+  "status_FAILED": "Thất bại"
+}

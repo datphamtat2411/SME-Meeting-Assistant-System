@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  localizedValidationMessage,
+  operationErrorFormMessage,
+  UiPresentationError,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -24,6 +30,7 @@ export function SpeakersPanel({
   meetingId: string
   canMapSpeakers: boolean
 }) {
+  const { t } = useUiTranslation()
   const qc = useQueryClient()
   const canMapRef = useRef(canMapSpeakers)
   useEffect(() => {
@@ -49,33 +56,30 @@ export function SpeakersPanel({
   const mutation = useMutation({
     mutationFn: (payload: { speakerId: string; userId: string | null }) => {
       if (!canMapRef.current) {
-        throw new Error('Speaker mapping is no longer authorized.')
+        throw new UiPresentationError('speakers:notAuthorized')
       }
       const ifMatch = transcript.data?.etag
       if (!ifMatch) {
-        throw new Error(
-          'Reload the canonical transcript before changing speaker mapping.'
-        )
+        throw new UiPresentationError('speakers:reloadTranscript')
       }
       return mapSpeaker(meetingId, payload.speakerId, payload.userId, ifMatch)
     },
     onSuccess: () => {
-      toast.success('Speaker identity updated')
+      toast.success(i18n.t('speakers:mapped'))
       setSelected(null)
       invalidateMeetingArtifacts(qc, meetingId, { transcript: true })
     },
     onError: (e) =>
-      toast.error('Unable to map speaker', {
-        description: e instanceof Error ? e.message : undefined,
+      toast.error(i18n.t('speakers:mapFailed'), {
+        description: localizedValidationMessage(operationErrorFormMessage(e)),
       }),
   })
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Speaker identification</CardTitle>
+        <CardTitle>{t('speakers:title')}</CardTitle>
         <p className='text-sm text-muted-foreground'>
-          Speaker labels are AI-derived until mapped to an eligible user by a
-          reviewer.
+          {t('speakers:description')}
         </p>
       </CardHeader>
       <CardContent className='space-y-3'>
@@ -87,7 +91,7 @@ export function SpeakersPanel({
             retry={() => void speakers.refetch()}
           />
         ) : speakers.data.length === 0 ? (
-          <RequestEmpty title='No speakers detected' />
+          <RequestEmpty title={t('speakers:empty')} />
         ) : (
           speakers.data.map((speaker) => (
             <div key={speaker.id} className='rounded-lg border p-3'>
@@ -95,7 +99,7 @@ export function SpeakersPanel({
                 <div>
                   <p className='font-medium'>{speaker.label}</p>
                   <p className='text-xs text-muted-foreground'>
-                    {speaker.displayName ?? 'Identity not confirmed'}
+                    {speaker.displayName ?? t('speakers:unconfirmed')}
                   </p>
                 </div>
                 {canMapSpeakers && transcript.data?.etag && (
@@ -109,7 +113,7 @@ export function SpeakersPanel({
                         )
                       }
                     >
-                      Map
+                      {t('speakers:map')}
                     </Button>
                     {speaker.userId && (
                       <Button
@@ -123,7 +127,7 @@ export function SpeakersPanel({
                           })
                         }
                       >
-                        Unmap
+                        {t('speakers:unmap')}
                       </Button>
                     )}
                   </div>
@@ -139,13 +143,13 @@ export function SpeakersPanel({
                     }}
                   >
                     <Input
-                      aria-label='Search eligible users'
-                      placeholder='Search name or email (2+ characters)'
+                      aria-label={t('speakers:searchLabel')}
+                      placeholder={t('speakers:searchPlaceholder')}
                       value={searchInput}
                       onChange={(e) => setSearchInput(e.target.value)}
                     />
                     <Button type='submit' variant='secondary'>
-                      Search
+                      {t('speakers:search')}
                     </Button>
                   </form>
                   {candidates.isError && (

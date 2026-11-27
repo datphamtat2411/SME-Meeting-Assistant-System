@@ -1,4 +1,5 @@
 import { AlertTriangle } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -25,27 +26,36 @@ export function CurrentSummary({
   onSave: () => void
   onCancel: () => void
 }) {
+  const { t } = useUiTranslation()
   const { locale } = useRegionalPresentation()
   const summary = snapshot.summary
   return (
     <section className='space-y-4'>
       <div className='flex flex-wrap items-center gap-2'>
-        <Badge>Current · v{summary.versionNumber}</Badge>
-        <Badge variant='outline'>{summary.sourceType}</Badge>
-        <Badge variant='outline'>{summary.qualityStatus}</Badge>
-        {summary.isStale && <Badge variant='destructive'>Stale source</Badge>}
+        <Badge>{t('summary:currentVersion', { version: summary.versionNumber })}</Badge>
+        <Badge variant='outline'>{t(`summary:status_${summary.sourceType}`, {
+            defaultValue: summary.sourceType,
+          })}</Badge>
+        <Badge variant='outline'>{t(`summary:status_${summary.qualityStatus}`, {
+            defaultValue: summary.qualityStatus,
+          })}</Badge>
+        {summary.isStale && <Badge variant='destructive'>{t('summary:staleSource')}</Badge>}
       </div>
       <div className='grid gap-2 text-xs text-muted-foreground sm:grid-cols-2'>
         <span>
-          Created <RegionalTimestamp value={summary.createdAt} />
+          {t('summary:created')} <RegionalTimestamp value={summary.createdAt} />
         </span>
         <span>
-          Transcript revision {summary.contentRevision ?? 'not available'}
+          {t('summary:transcriptRevision', {
+            revision: summary.contentRevision ?? t('summary:notAvailable'),
+          })}
         </span>
         {summary.aiProducer?.model && (
           <span>
-            Produced by {summary.aiProducer.provider ?? 'AI'} ·{' '}
-            {summary.aiProducer.model}
+            {t('summary:producedBy', {
+              provider: summary.aiProducer.provider ?? 'AI',
+              model: summary.aiProducer.model,
+            })}
           </span>
         )}
       </div>
@@ -67,7 +77,7 @@ export function CurrentSummary({
           }}
         >
           <Textarea
-            aria-label='Summary content'
+            aria-label={t('summary:content')}
             rows={12}
             maxLength={20_000}
             value={draft}
@@ -76,9 +86,11 @@ export function CurrentSummary({
           />
           <div className='flex flex-wrap items-center justify-between gap-2'>
             <span className='text-xs text-muted-foreground'>
-              {draft.length.toLocaleString(locale)} /{' '}
-              {(20_000).toLocaleString(locale)} characters · editing version{' '}
-              {editorSnapshot.summary.versionNumber}
+              {t('summary:editingVersion', {
+                used: draft.length.toLocaleString(locale),
+                limit: (20_000).toLocaleString(locale),
+                version: editorSnapshot.summary.versionNumber,
+              })}
             </span>
             <div className='flex gap-2'>
               <Button
@@ -90,7 +102,7 @@ export function CurrentSummary({
                   draft.length > 20_000
                 }
               >
-                {savePending ? 'Saving…' : 'Save reviewed version'}
+                {savePending ? t('summary:saving') : t('summary:saveReviewed')}
               </Button>
               <Button
                 type='button'
@@ -98,7 +110,7 @@ export function CurrentSummary({
                 disabled={savePending}
                 onClick={onCancel}
               >
-                Cancel
+                {t('summary:cancel')}
               </Button>
             </div>
           </div>
@@ -121,6 +133,7 @@ export function VersionRow({
   selected: boolean
   onSelect: () => void
 }) {
+  const { t } = useUiTranslation()
   return (
     <div
       className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 ${
@@ -134,15 +147,17 @@ export function VersionRow({
         aria-pressed={selected}
       >
         <span className='flex flex-wrap items-center gap-2 font-medium'>
-          Version {version.versionNumber}
-          {version.isCurrent && <Badge>Current</Badge>}
+          {t('summary:version', { version: version.versionNumber })}
+          {version.isCurrent && <Badge>{t('summary:current')}</Badge>}
           {!version.isCurrent && version.sourceType === 'AI_GENERATED' && (
-            <Badge variant='secondary'>AI candidate</Badge>
+            <Badge variant='secondary'>{t('summary:candidate')}</Badge>
           )}
-          {version.isStale && <Badge variant='destructive'>Stale</Badge>}
+          {version.isStale && <Badge variant='destructive'>{t('summary:stale')}</Badge>}
         </span>
         <span className='mt-1 block text-xs text-muted-foreground'>
-          {version.sourceType} · <RegionalTimestamp value={version.createdAt} />
+          {t(`summary:status_${version.sourceType}`, {
+            defaultValue: version.sourceType,
+          })} · <RegionalTimestamp value={version.createdAt} />
         </span>
       </button>
     </div>

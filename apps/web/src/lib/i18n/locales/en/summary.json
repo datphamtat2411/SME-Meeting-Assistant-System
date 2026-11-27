@@ -1,0 +1,22 @@
+{
+  "currentVersion": "Current · v{{version}}",
+  "staleSource": "Stale source",
+  "created": "Created",
+  "transcriptRevision": "Transcript revision {{revision}}",
+  "notAvailable": "not available",
+  "producedBy": "Produced by {{provider}} · {{model}}",
+  "content": "Summary content",
+  "editingVersion": "{{used}} / {{limit}} characters · editing version {{version}}",
+  "saving": "Saving…",
+  "saveReviewed": "Save reviewed version",
+  "cancel": "Cancel",
+  "version": "Version {{version}}",
+  "current": "Current",
+  "candidate": "AI candidate",
+  "stale": "Stale",
+  "status_AI_GENERATED": "AI_GENERATED",
+  "status_HUMAN_EDIT": "HUMAN_EDIT",
+  "status_READY": "READY",
+  "status_READY_WITH_WARNINGS": "READY_WITH_WARNINGS",
+  "status_FAILED": "FAILED"
+}
