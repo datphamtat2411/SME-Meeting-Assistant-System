@@ -40,7 +40,9 @@ Future<String?> _readRefreshCredential(CredentialStorage storage) async =>
     ).read()).refreshToken;
 
 void main() {
-  testWidgets('Vietnamese login remains usable with large text', (tester) async {
+  testWidgets('Vietnamese login remains usable with large text', (
+    tester,
+  ) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(320, 568);
     tester.platformDispatcher.textScaleFactorTestValue = 2;
