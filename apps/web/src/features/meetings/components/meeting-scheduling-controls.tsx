@@ -1,3 +1,4 @@
+import { i18n, useUiTranslation } from '@/lib/i18n'
 import { useFormContext, useWatch } from 'react-hook-form'
 import {
   AlertCircle,
@@ -42,6 +43,7 @@ export function MeetingScheduleFields({
 }: {
   onDateInputChange?: () => void
 }) {
+  const { t } = useUiTranslation()
   const { control, getValues, setValue } =
     useFormContext<MeetingScheduleFormValues>()
   const regional = useRegionalPresentation()
@@ -68,7 +70,7 @@ export function MeetingScheduleFields({
           name='date'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Date</FormLabel>
+              <FormLabel>{t('meetings:schedule_date')}</FormLabel>
               <FormControl>
                 <Input
                   {...field}
@@ -99,7 +101,7 @@ export function MeetingScheduleFields({
           name='endDate'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>End date</FormLabel>
+              <FormLabel>{t('meetings:schedule_endDate')}</FormLabel>
               <FormControl>
                 <Input
                   {...field}
@@ -120,7 +122,7 @@ export function MeetingScheduleFields({
           name='startTime'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Start time</FormLabel>
+              <FormLabel>{t('meetings:schedule_startTime')}</FormLabel>
               <FormControl>
                 <Input
                   {...field}
@@ -140,7 +142,7 @@ export function MeetingScheduleFields({
           name='endTime'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>End time</FormLabel>
+              <FormLabel>{t('meetings:schedule_endTime')}</FormLabel>
               <FormControl>
                 <Input
                   {...field}
@@ -174,13 +176,11 @@ export function MeetingScheduleFields({
           />
           <p className='flex items-center gap-2 text-xs text-muted-foreground'>
             <Clock3 className='size-3.5' />
-            Scheduling timezone: {timezone}. Times are sent to Core API as
-            absolute instants.
+            {t('meetings:schedule_zone', { timezone })}
           </p>
           {regional.timezone !== timezone && (
             <p role='status' className='text-xs text-muted-foreground'>
-              Regional preferences changed. This editor retains {timezone}; a
-              new editor will use {regional.timezone}.
+              {t('meetings:schedule_zoneChanged', { timezone, next: regional.timezone })}
             </p>
           )}
           {fallbackRequired && (
@@ -190,8 +190,7 @@ export function MeetingScheduleFields({
               render={({ field }) => (
                 <FormItem className='rounded-md border p-3'>
                   <p className='text-sm'>
-                    The configured timezone was unavailable when this editor
-                    opened.
+                    {t('meetings:schedule_timezoneUnavailableOnOpen')}
                   </p>
                   <div className='flex items-center gap-2'>
                     <FormControl>
@@ -206,7 +205,7 @@ export function MeetingScheduleFields({
                         }
                       />
                     </FormControl>
-                    <FormLabel>I confirm scheduling in {timezone}.</FormLabel>
+                    <FormLabel>{t('meetings:schedule_confirmTimezone', { timezone })}</FormLabel>
                   </div>
                   <FormMessage />
                   {regional.retry && (
@@ -216,7 +215,7 @@ export function MeetingScheduleFields({
                       size='sm'
                       onClick={regional.retry}
                     >
-                      Retry regional preferences
+                      {t('meetings:schedule_retryRegional')}
                     </Button>
                   )}
                 </FormItem>
@@ -226,7 +225,7 @@ export function MeetingScheduleFields({
         </>
       ) : (
         <p role='status' className='text-xs text-muted-foreground'>
-          Loading regional preferences…
+          {t('meetings:schedule_loadingRegional')}
         </p>
       )}
     </>
@@ -246,14 +245,15 @@ function ScheduleOccurrenceField({
   timezone: string
   original?: string | null
 }) {
+  const { t } = useUiTranslation()
   const { control } = useFormContext<MeetingScheduleFormValues>()
   const resolution = resolveWallTime(date, time, timezone)
   const label =
-    name === 'startOccurrence' ? 'Start time UTC offset' : 'End time UTC offset'
+    name === 'startOccurrence' ? t('meetings:schedule_startOffset') : t('meetings:schedule_endOffset')
   if (resolution.kind === 'gap') {
     return (
       <p role='alert' className='text-sm text-destructive'>
-        {label}: this local time does not exist. Choose another time.
+        {t('meetings:schedule_timeGap', { label })}
       </p>
     )
   }
@@ -282,7 +282,7 @@ function ScheduleOccurrenceField({
               value={field.value || originalChoice || ''}
               onChange={(event) => field.onChange(event.target.value)}
             >
-              <option value=''>Choose occurrence</option>
+              <option value=''>{t('meetings:schedule_chooseOccurrence')}</option>
               {resolution.occurrences.map((candidate) => (
                 <option key={candidate.instant} value={candidate.instant}>
                   {time} (UTC{candidate.offset})
@@ -291,7 +291,7 @@ function ScheduleOccurrenceField({
             </select>
           </FormControl>
           <p className='text-xs text-muted-foreground'>
-            This local time occurs twice. Select the intended occurrence.
+            {t('meetings:schedule_ambiguousTime')}
           </p>
           <FormMessage />
         </FormItem>
@@ -337,6 +337,7 @@ export function MeetingRoomLookup({
   selectedLoading: boolean
   selectedUnavailable: boolean
 }) {
+  const { t } = useUiTranslation()
   const currentPage = pagination ? pagination.page + 1 : page
   const totalPages = Math.max(pagination?.totalPages ?? 0, 1)
 
@@ -348,7 +349,7 @@ export function MeetingRoomLookup({
           variant='outline'
           role='combobox'
           aria-expanded={open}
-          aria-label='Meeting room'
+          aria-label={t('meetings:schedule_room')}
           className='w-full justify-between font-normal'
         >
           <span className='flex min-w-0 items-center gap-2 truncate'>
@@ -357,10 +358,10 @@ export function MeetingRoomLookup({
               {selectedOption
                 ? formatRoomOption(selectedOption)
                 : selectedLoading
-                  ? 'Loading room...'
+                  ? t('meetings:schedule_loadingRoom')
                   : selectedUnavailable
-                    ? 'Room unavailable'
-                    : 'No room selected'}
+                    ? t('meetings:schedule_roomUnavailable')
+                    : t('meetings:schedule_noRoomSelected')}
             </span>
           </span>
           <ChevronRight className='size-4 rotate-90 opacity-50' />
@@ -374,16 +375,16 @@ export function MeetingRoomLookup({
           <CommandInput
             value={searchValue}
             onValueChange={onSearchChange}
-            placeholder='Search authorized rooms...'
+            placeholder={t('meetings:schedule_roomSearch')}
           />
           <CommandList>
             {isLoading ? (
               <div role='status' className='px-3 py-6 text-center text-sm'>
-                Loading room options...
+                {t('meetings:schedule_loadingRoomOptions')}
               </div>
             ) : isError ? (
               <div className='grid gap-2 px-3 py-6 text-center text-sm'>
-                <span>Room options could not be loaded.</span>
+                <span>{t('meetings:schedule_roomOptionsError')}</span>
                 <Button
                   type='button'
                   variant='outline'
@@ -391,11 +392,11 @@ export function MeetingRoomLookup({
                   onClick={onRetry}
                   className='mx-auto'
                 >
-                  Try again
+                  {t('meetings:schedule_retry')}
                 </Button>
               </div>
             ) : options.length === 0 ? (
-              <CommandEmpty>No authorized rooms found.</CommandEmpty>
+              <CommandEmpty>{t('meetings:schedule_noAuthorizedRooms')}</CommandEmpty>
             ) : (
               <CommandGroup>
                 {options.map((option) => (
@@ -428,7 +429,7 @@ export function MeetingRoomLookup({
                     }}
                     className='justify-center text-center'
                   >
-                    Clear room selection
+                    {t('meetings:schedule_clearRoom')}
                   </CommandItem>
                 </CommandGroup>
               </>
@@ -439,7 +440,7 @@ export function MeetingRoomLookup({
               role='status'
               className='border-t px-3 py-2 text-xs text-muted-foreground'
             >
-              Updating room options...
+              {t('meetings:schedule_updatingRooms')}
             </p>
           )}
           {!isLoading &&
@@ -451,20 +452,20 @@ export function MeetingRoomLookup({
                   type='button'
                   variant='ghost'
                   size='sm'
-                  aria-label='Previous room options page'
+                  aria-label={t('meetings:schedule_previousRoomPage')}
                   onClick={() => onPageChange(page - 1)}
                   disabled={!pagination.hasPrevious}
                 >
                   <ChevronLeft />
                 </Button>
                 <span className='text-xs text-muted-foreground'>
-                  Page {currentPage} of {totalPages}
+                  {t('page', { current: currentPage, total: totalPages })}
                 </span>
                 <Button
                   type='button'
                   variant='ghost'
                   size='sm'
-                  aria-label='Next room options page'
+                  aria-label={t('meetings:schedule_nextRoomPage')}
                   onClick={() => onPageChange(page + 1)}
                   disabled={!pagination.hasNext}
                 >
@@ -489,6 +490,7 @@ export function SchedulePreviewNotice({
   onReviewDetails: () => void
   onScheduleAnyway: () => void
 }) {
+  const { t } = useUiTranslation()
   const warnings = result.warnings
   const blocked =
     !result.previewOnly || !result.canSchedule || result.roomConflict
@@ -496,19 +498,18 @@ export function SchedulePreviewNotice({
     <Alert variant={blocked ? 'destructive' : 'default'}>
       {blocked ? <AlertCircle /> : <Check />}
       <AlertTitle>
-        {!blocked ? 'Schedule preview passed' : 'Schedule preview blocked'}
+        {!blocked ? t('meetings:schedule_previewPassed') : t('meetings:schedule_previewBlocked')}
       </AlertTitle>
       <AlertDescription>
         <p>
-          Preview only. Core API rechecks the room when the meeting is changed.
+          {t('meetings:schedule_previewOnly')}
         </p>
         {warnings.length > 0 && (
           <>
             <p>
-              Review these advisory warnings before choosing whether to continue
-              anyway.
+              {t('meetings:schedule_reviewAdvisories')}
             </p>
-            <ul aria-label='Schedule warnings' className='list-disc ps-5'>
+            <ul aria-label={t('meetings:schedule_warnings')} className='list-disc ps-5'>
               {warnings.map((warning, index) => (
                 <li key={`${warning.code}-${warning.userId ?? 'all'}-${index}`}>
                   {formatWarning(warning.code)}
@@ -517,14 +518,13 @@ export function SchedulePreviewNotice({
             </ul>
             {reviewOpen && (
               <p>
-                Review the selected time, room, and current participant
-                memberships before confirming this exact scheduling intent.
+                {t('meetings:schedule_reviewSchedule')}
               </p>
             )}
             {!blocked && (
               <div className='flex flex-wrap gap-2'>
                 <Button type='button' size='sm' onClick={onScheduleAnyway}>
-                  Schedule anyway
+                  {t('meetings:schedule_anyway')}
                 </Button>
                 <Button
                   type='button'
@@ -532,7 +532,7 @@ export function SchedulePreviewNotice({
                   size='sm'
                   onClick={onReviewDetails}
                 >
-                  Review details
+                  {t('meetings:schedule_reviewDetails')}
                 </Button>
               </div>
             )}
@@ -548,8 +548,8 @@ function formatRoomOption(room: RoomFilterOption) {
 }
 
 function formatWarning(code: string) {
-  if (code === 'CAPACITY_ADVISORY_EXCEEDED') return 'Room capacity advisory.'
+  if (code === 'CAPACITY_ADVISORY_EXCEEDED') return i18n.t('meetings:schedule_capacityAdvisory')
   if (code === 'PARTICIPANT_OVERLAP')
-    return 'Participant schedule overlap warning.'
-  return `Schedule warning: ${code}`
+    return i18n.t('meetings:schedule_participantOverlap')
+  return i18n.t('meetings:schedule_unknownWarning', { code })
 }

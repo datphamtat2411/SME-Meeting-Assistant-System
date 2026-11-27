@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { useDeferredValue, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Check, ChevronLeft, ChevronRight, X, Users } from 'lucide-react'
@@ -38,8 +39,9 @@ export function MeetingParticipantLookup({
   excludedIds,
   disabled = false,
   closeOnSelect = false,
-  ariaLabel = 'Participants',
+  ariaLabel,
 }: MeetingParticipantLookupProps) {
+  const { t } = useUiTranslation()
   const [open, setOpen] = useState(false)
   const [searchValue, setSearchValue] = useState('')
   const [page, setPage] = useState(1)
@@ -71,7 +73,7 @@ export function MeetingParticipantLookup({
             variant='outline'
             role='combobox'
             aria-expanded={open}
-            aria-label={ariaLabel}
+            aria-label={ariaLabel ?? t('meetings:schedule_participantsLabel')}
             className='w-full justify-between font-normal'
             disabled={disabled}
           >
@@ -79,8 +81,8 @@ export function MeetingParticipantLookup({
               <Users className='size-4 shrink-0 text-muted-foreground' />
               <span className='truncate'>
                 {value.length > 0
-                  ? `${value.length} participant${value.length === 1 ? '' : 's'} selected`
-                  : 'Add participants'}
+                  ? t('meetings:schedule_selectedCount', { count: value.length })
+                  : t('meetings:schedule_addParticipants')}
               </span>
             </span>
             <ChevronRight className='size-4 rotate-90 opacity-50' />
@@ -97,20 +99,20 @@ export function MeetingParticipantLookup({
                 setSearchValue(value)
                 setPage(1)
               }}
-              placeholder='Search active participants...'
+              placeholder={t('meetings:schedule_participantSearch')}
             />
             <CommandList>
               {!searchReady ? (
                 <CommandEmpty>
-                  Enter at least 2 characters to search.
+                  {t('meetings:schedule_participantSearchHint')}
                 </CommandEmpty>
               ) : candidatesQuery.isPending ? (
                 <div role='status' className='px-3 py-6 text-center text-sm'>
-                  Loading participant options...
+                  {t('meetings:schedule_loadingParticipantOptions')}
                 </div>
               ) : candidatesQuery.isError ? (
                 <div className='grid gap-2 px-3 py-6 text-center text-sm'>
-                  <span>Participant options could not be loaded.</span>
+                  <span>{t('meetings:schedule_participantOptionsError')}</span>
                   <Button
                     type='button'
                     variant='outline'
@@ -118,11 +120,11 @@ export function MeetingParticipantLookup({
                     onClick={() => void candidatesQuery.refetch()}
                     className='mx-auto'
                   >
-                    Try again
+                    {t('meetings:schedule_retry')}
                   </Button>
                 </div>
               ) : options.length === 0 ? (
-                <CommandEmpty>No eligible participants found.</CommandEmpty>
+                <CommandEmpty>{t('meetings:schedule_noEligibleParticipants')}</CommandEmpty>
               ) : (
                 <CommandGroup>
                   {options.map((option) => {
@@ -163,7 +165,7 @@ export function MeetingParticipantLookup({
                 role='status'
                 className='border-t px-3 py-2 text-xs text-muted-foreground'
               >
-                Updating participant options...
+                {t('meetings:schedule_updatingParticipants')}
               </p>
             )}
             {searchReady &&
@@ -176,20 +178,20 @@ export function MeetingParticipantLookup({
                     type='button'
                     variant='ghost'
                     size='sm'
-                    aria-label='Previous participant options page'
+                    aria-label={t('meetings:schedule_prevParticipantPage')}
                     onClick={() => setPage((current) => current - 1)}
                     disabled={!pagination.hasPrevious}
                   >
                     <ChevronLeft />
                   </Button>
                   <span className='text-xs text-muted-foreground'>
-                    Page {currentPage} of {totalPages}
+                    {t('page', { current: currentPage, total: totalPages })}
                   </span>
                   <Button
                     type='button'
                     variant='ghost'
                     size='sm'
-                    aria-label='Next participant options page'
+                    aria-label={t('meetings:schedule_nextParticipantPage')}
                     onClick={() => setPage((current) => current + 1)}
                     disabled={!pagination.hasNext}
                   >
@@ -204,7 +206,7 @@ export function MeetingParticipantLookup({
       {selectedCandidates.length > 0 && (
         <div
           className='flex flex-wrap gap-2'
-          aria-label='Selected participants'
+          aria-label={t('meetings:schedule_selectedParticipants')}
         >
           {selectedCandidates.map((candidate) => (
             <span
@@ -214,7 +216,7 @@ export function MeetingParticipantLookup({
               <span className='truncate'>{candidate.displayName}</span>
               <button
                 type='button'
-                aria-label={`Remove ${candidate.displayName}`}
+                aria-label={t('meetings:schedule_removeParticipant', { name: candidate.displayName })}
                 className='rounded-full p-0.5 text-muted-foreground hover:text-foreground'
                 onClick={() => onToggle(candidate)}
                 disabled={disabled}
