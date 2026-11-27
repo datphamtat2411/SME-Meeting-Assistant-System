@@ -1,4 +1,3 @@
-import { i18n } from '@/lib/i18n'
 import { z } from 'zod'
 import { queryOptions, skipToken } from '@tanstack/react-query'
 import {
@@ -8,6 +7,7 @@ import {
   type ApiResponseData,
   type ApiResponseDataWithEtag,
 } from '@/lib/core-api'
+import { i18n } from '@/lib/i18n'
 import {
   paginationParams,
   validatedPageInfo,

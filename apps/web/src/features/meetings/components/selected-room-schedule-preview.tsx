@@ -1,7 +1,7 @@
-import { i18n, useUiTranslation } from '@/lib/i18n'
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, Check, RefreshCw, Users } from 'lucide-react'
+import { i18n, useUiTranslation } from '@/lib/i18n'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -43,7 +43,9 @@ export function SelectedRoomSchedulePreview({
         className='flex items-center gap-2 text-xs text-muted-foreground'
       >
         <span className='size-4 animate-spin rounded-full border-2 border-current border-e-transparent' />
-        {t('meetings:schedule_checkingRoom', { room: roomName ?? t('meetings:schedule_selectedRoomLower') })}
+        {t('meetings:schedule_checkingRoom', {
+          room: roomName ?? t('meetings:schedule_selectedRoomLower'),
+        })}
       </div>
     )
   }
@@ -54,9 +56,7 @@ export function SelectedRoomSchedulePreview({
         <AlertCircle />
         <AlertTitle>{t('meetings:schedule_roomCheckFailed')}</AlertTitle>
         <AlertDescription>
-          <p>
-            {t('meetings:schedule_roomCheckUnknown')}
-          </p>
+          <p>{t('meetings:schedule_roomCheckUnknown')}</p>
           <Button
             type='button'
             variant='outline'
@@ -100,12 +100,16 @@ function RoomScheduleResult({
   const title = conflict
     ? room?.active === false
       ? t('meetings:schedule_roomInactive')
-      : t('meetings:schedule_roomConflict', { room: roomName ?? t('meetings:schedule_selectedRoomTitle') })
+      : t('meetings:schedule_roomConflict', {
+          room: roomName ?? t('meetings:schedule_selectedRoomTitle'),
+        })
     : !room
       ? t('meetings:schedule_roomUnconfirmed')
       : !result.previewOnly || !result.canSchedule
         ? t('meetings:schedule_intervalNotApproved')
-        : t('meetings:schedule_roomAppearsAvailable', { room: roomName ?? t('meetings:schedule_selectedRoomTitle') })
+        : t('meetings:schedule_roomAppearsAvailable', {
+            room: roomName ?? t('meetings:schedule_selectedRoomTitle'),
+          })
 
   const advisories = [...result.warnings]
   if (
@@ -120,17 +124,22 @@ function RoomScheduleResult({
       {blocked ? <AlertCircle /> : <Check />}
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription>
-        <p>
-          {t('meetings:schedule_roomPreviewOnly')}
-        </p>
+        <p>{t('meetings:schedule_roomPreviewOnly')}</p>
         {room?.capacityExceeded && (
           <p className='flex items-center gap-1'>
             <Users className='size-4' />
-            {t('meetings:schedule_capacityHint', { capacity: room.capacity ?? t('meetings:schedule_unknownCapacity'), participants: room.participantCount ?? t('meetings:schedule_unknownCapacity') })}
+            {t('meetings:schedule_capacityHint', {
+              capacity: room.capacity ?? t('meetings:schedule_unknownCapacity'),
+              participants:
+                room.participantCount ?? t('meetings:schedule_unknownCapacity'),
+            })}
           </p>
         )}
         {advisories.length > 0 && (
-          <ul aria-label={t('meetings:schedule_roomAdvisories')} className='list-disc ps-5'>
+          <ul
+            aria-label={t('meetings:schedule_roomAdvisories')}
+            className='list-disc ps-5'
+          >
             {advisories.map((warning, index) => (
               <li key={`${warning.code}-${warning.userId ?? 'all'}-${index}`}>
                 {formatWarning(warning.code)}
@@ -150,7 +159,8 @@ function RoomScheduleResult({
 }
 
 function formatWarning(code: string) {
-  if (code === 'CAPACITY_ADVISORY_EXCEEDED') return i18n.t('meetings:schedule_capacityAdvisory')
+  if (code === 'CAPACITY_ADVISORY_EXCEEDED')
+    return i18n.t('meetings:schedule_capacityAdvisory')
   if (code === 'PARTICIPANT_OVERLAP')
     return i18n.t('meetings:schedule_participantOverlap')
   return i18n.t('meetings:schedule_unknownWarning', { code })

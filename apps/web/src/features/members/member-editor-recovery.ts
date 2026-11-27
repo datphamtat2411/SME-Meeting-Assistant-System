@@ -1,5 +1,8 @@
-import { featureValidationMessage, requestErrorFormMessage } from '@/lib/i18n/presentation'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import {
+  featureValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import type { AuthorizedMemberDirectoryAccess } from './member-access-policy'
 import {
   memberDetail,
@@ -97,8 +100,9 @@ export function createMemberEditorRecovery(
     )
   }
 
-  const verificationDeferredMessage =
-    featureValidationMessage('members:recovery_verificationDeferred')
+  const verificationDeferredMessage = featureValidationMessage(
+    'members:recovery_verificationDeferred'
+  )
 
   async function verifyCreation(input: {
     operationId: number

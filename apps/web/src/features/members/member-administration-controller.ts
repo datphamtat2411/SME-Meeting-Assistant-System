@@ -1,5 +1,3 @@
-import { i18n } from '@/lib/i18n'
-import { featureValidationMessage, requestErrorFormMessage } from '@/lib/i18n/presentation'
 import {
   useCallback,
   useEffect,
@@ -12,6 +10,11 @@ import {
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import {
   currentUserQueryKey,
   type AuthContext,
@@ -87,11 +90,13 @@ class ObsoleteMemberOperationError extends Error {
   }
 }
 
-const snapshotVerificationDeferredMessage =
-  featureValidationMessage('members:recovery_snapshotDeferred')
+const snapshotVerificationDeferredMessage = featureValidationMessage(
+  'members:recovery_snapshotDeferred'
+)
 
-const submissionAuthorizationBlockedMessage =
-  featureValidationMessage('members:recovery_submissionBlocked')
+const submissionAuthorizationBlockedMessage = featureValidationMessage(
+  'members:recovery_submissionBlocked'
+)
 
 export type MemberEditorSubmit =
   | {
@@ -430,9 +435,7 @@ export function useMemberAdministrationController({
           !currentIdentity ||
           !canManageMemberTarget(currentIdentity, snapshot.member)
         ) {
-          throw new Error(
-            featureValidationMessage('members:recovery_noManage')
-          )
+          throw new Error(featureValidationMessage('members:recovery_noManage'))
         }
         dispatchOperation({
           type: 'SNAPSHOT_LOADED',
@@ -960,7 +963,11 @@ export function useMemberAdministrationController({
       const normalized = normalizeCoreApiError(error)
       const baseFeedback: MemberOperationFeedback = {
         outcome,
-        message: memberOperationErrorMessage(error, input.action, featureValidationMessage),
+        message: memberOperationErrorMessage(
+          error,
+          input.action,
+          featureValidationMessage
+        ),
         fieldErrors: normalized.fieldErrors,
       }
       if (
@@ -1322,8 +1329,7 @@ export function useMemberAdministrationController({
       })
       if (Object.keys(resolved.patch).length === 0) {
         toast.success(i18n.t('members:recovery_upToDate'), {
-          description:
-            i18n.t('members:recovery_noUpdate'),
+          description: i18n.t('members:recovery_noUpdate'),
         })
       }
     },

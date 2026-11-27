@@ -72,7 +72,8 @@ describe('localized presentation mappings', () => {
     expect(localizedValidationMessage('validation.params:{bad')).toBe(
       'validation.params:{bad'
     )
-    const malformed = 'validation.params:["meetings:participant_removeMismatch",{"name":{}}]'
+    const malformed =
+      'validation.params:["meetings:participant_removeMismatch",{"name":{}}]'
     expect(localizedValidationMessage(malformed)).toBe(malformed)
     expect(localizedValidationMessage('validation.key:missing:key')).toBe(
       'validation.key:missing:key'
@@ -83,9 +84,24 @@ describe('localized presentation mappings', () => {
     const local = new UiPresentationError('action-items:noChanges')
     const message = operationErrorFormMessage(local)
     await setUiLanguage('vi')
-    expect(localizedValidationMessage(message)).toBe('Không có thay đổi công việc để lưu.')
-    expect(requestErrorFormMessage({ status: 409, code: 'RESOURCE_CONFLICT', message: 'Room is already reserved.' })).toBe('Room is already reserved.')
-    expect(localizedValidationMessage(requestErrorFormMessage({ status: 403, message: 'Private account detail' }))).toBe(i18n.t('errors:forbidden'))
+    expect(localizedValidationMessage(message)).toBe(
+      'Không có thay đổi công việc để lưu.'
+    )
+    expect(
+      requestErrorFormMessage({
+        status: 409,
+        code: 'RESOURCE_CONFLICT',
+        message: 'Room is already reserved.',
+      })
+    ).toBe('Room is already reserved.')
+    expect(
+      localizedValidationMessage(
+        requestErrorFormMessage({
+          status: 403,
+          message: 'Private account detail',
+        })
+      )
+    ).toBe(i18n.t('errors:forbidden'))
   })
 
   it('localizes a stable validation marker, not arbitrary text', async () => {

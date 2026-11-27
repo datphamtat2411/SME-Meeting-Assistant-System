@@ -1,5 +1,5 @@
-import { featureValidationMessage } from '@/lib/i18n/presentation'
 import { z } from 'zod'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import type { Member, MemberPatchPayload, MemberSnapshot } from './member-api'
 import { memberRoles, type MemberRole } from './member-directory-state'
 import { normalizeManagerScope, sameManagerScope } from './member-form'
@@ -361,8 +361,7 @@ export function resolveMemberEditReconciliation(
     if (scopeIntentSelected && values.managerScopeUnitIds.length > 0) {
       return {
         status: 'invalid',
-        message:
-          featureValidationMessage('members:recovery_incompatibleScope'),
+        message: featureValidationMessage('members:recovery_incompatibleScope'),
       }
     }
     values.managerScopeUnitIds = []

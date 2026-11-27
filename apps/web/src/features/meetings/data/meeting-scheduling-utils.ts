@@ -1,5 +1,5 @@
-import { featureValidationMessage } from '@/lib/i18n/presentation'
 import { Temporal } from '@js-temporal/polyfill'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import {
   compareInstants,
   instantCivilFields,
@@ -63,8 +63,7 @@ export function scheduleEndpointError(
   time: string,
   timezone: string
 ) {
-  if (!timezone)
-    return featureValidationMessage('meetings:create_waitRegional')
+  if (!timezone) return featureValidationMessage('meetings:create_waitRegional')
   const result = resolveWallTime(date, time, timezone)
   if (result.kind === 'gap')
     return featureValidationMessage('meetings:create_invalidLocalTime')

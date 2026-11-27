@@ -1,4 +1,3 @@
-import { i18n, useUiTranslation } from '@/lib/i18n'
 import { useFormContext, useWatch } from 'react-hook-form'
 import {
   AlertCircle,
@@ -8,6 +7,7 @@ import {
   Clock3,
   MapPin,
 } from 'lucide-react'
+import { i18n, useUiTranslation } from '@/lib/i18n'
 import { instantCivilFields, resolveWallTime } from '@/lib/regional-time'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -180,7 +180,10 @@ export function MeetingScheduleFields({
           </p>
           {regional.timezone !== timezone && (
             <p role='status' className='text-xs text-muted-foreground'>
-              {t('meetings:schedule_zoneChanged', { timezone, next: regional.timezone })}
+              {t('meetings:schedule_zoneChanged', {
+                timezone,
+                next: regional.timezone,
+              })}
             </p>
           )}
           {fallbackRequired && (
@@ -205,7 +208,9 @@ export function MeetingScheduleFields({
                         }
                       />
                     </FormControl>
-                    <FormLabel>{t('meetings:schedule_confirmTimezone', { timezone })}</FormLabel>
+                    <FormLabel>
+                      {t('meetings:schedule_confirmTimezone', { timezone })}
+                    </FormLabel>
                   </div>
                   <FormMessage />
                   {regional.retry && (
@@ -249,7 +254,9 @@ function ScheduleOccurrenceField({
   const { control } = useFormContext<MeetingScheduleFormValues>()
   const resolution = resolveWallTime(date, time, timezone)
   const label =
-    name === 'startOccurrence' ? t('meetings:schedule_startOffset') : t('meetings:schedule_endOffset')
+    name === 'startOccurrence'
+      ? t('meetings:schedule_startOffset')
+      : t('meetings:schedule_endOffset')
   if (resolution.kind === 'gap') {
     return (
       <p role='alert' className='text-sm text-destructive'>
@@ -282,7 +289,9 @@ function ScheduleOccurrenceField({
               value={field.value || originalChoice || ''}
               onChange={(event) => field.onChange(event.target.value)}
             >
-              <option value=''>{t('meetings:schedule_chooseOccurrence')}</option>
+              <option value=''>
+                {t('meetings:schedule_chooseOccurrence')}
+              </option>
               {resolution.occurrences.map((candidate) => (
                 <option key={candidate.instant} value={candidate.instant}>
                   {time} (UTC{candidate.offset})
@@ -396,7 +405,9 @@ export function MeetingRoomLookup({
                 </Button>
               </div>
             ) : options.length === 0 ? (
-              <CommandEmpty>{t('meetings:schedule_noAuthorizedRooms')}</CommandEmpty>
+              <CommandEmpty>
+                {t('meetings:schedule_noAuthorizedRooms')}
+              </CommandEmpty>
             ) : (
               <CommandGroup>
                 {options.map((option) => (
@@ -498,29 +509,26 @@ export function SchedulePreviewNotice({
     <Alert variant={blocked ? 'destructive' : 'default'}>
       {blocked ? <AlertCircle /> : <Check />}
       <AlertTitle>
-        {!blocked ? t('meetings:schedule_previewPassed') : t('meetings:schedule_previewBlocked')}
+        {!blocked
+          ? t('meetings:schedule_previewPassed')
+          : t('meetings:schedule_previewBlocked')}
       </AlertTitle>
       <AlertDescription>
-        <p>
-          {t('meetings:schedule_previewOnly')}
-        </p>
+        <p>{t('meetings:schedule_previewOnly')}</p>
         {warnings.length > 0 && (
           <>
-            <p>
-              {t('meetings:schedule_reviewAdvisories')}
-            </p>
-            <ul aria-label={t('meetings:schedule_warnings')} className='list-disc ps-5'>
+            <p>{t('meetings:schedule_reviewAdvisories')}</p>
+            <ul
+              aria-label={t('meetings:schedule_warnings')}
+              className='list-disc ps-5'
+            >
               {warnings.map((warning, index) => (
                 <li key={`${warning.code}-${warning.userId ?? 'all'}-${index}`}>
                   {formatWarning(warning.code)}
                 </li>
               ))}
             </ul>
-            {reviewOpen && (
-              <p>
-                {t('meetings:schedule_reviewSchedule')}
-              </p>
-            )}
+            {reviewOpen && <p>{t('meetings:schedule_reviewSchedule')}</p>}
             {!blocked && (
               <div className='flex flex-wrap gap-2'>
                 <Button type='button' size='sm' onClick={onScheduleAnyway}>
@@ -548,7 +556,8 @@ function formatRoomOption(room: RoomFilterOption) {
 }
 
 function formatWarning(code: string) {
-  if (code === 'CAPACITY_ADVISORY_EXCEEDED') return i18n.t('meetings:schedule_capacityAdvisory')
+  if (code === 'CAPACITY_ADVISORY_EXCEEDED')
+    return i18n.t('meetings:schedule_capacityAdvisory')
   if (code === 'PARTICIPANT_OVERLAP')
     return i18n.t('meetings:schedule_participantOverlap')
   return i18n.t('meetings:schedule_unknownWarning', { code })

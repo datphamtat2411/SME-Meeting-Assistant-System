@@ -227,10 +227,10 @@ export function operationErrorFormMessage(error: unknown) {
 
 export function localizedValidationMessage(
   message: string,
-  translate: (key: string, options?: { count: number } | { replace: PresentationValues }) => string = (
-    key,
-    options
-  ) => i18n.t(key, options)
+  translate: (
+    key: string,
+    options?: { count: number } | { replace: PresentationValues }
+  ) => string = (key, options) => i18n.t(key, options)
 ) {
   if (message === REQUIRED_VALIDATION_MESSAGE)
     return translate('errors:required')
@@ -244,7 +244,9 @@ export function localizedValidationMessage(
 
   if (message.startsWith('validation.params:')) {
     try {
-      const decoded: unknown = JSON.parse(message.slice('validation.params:'.length))
+      const decoded: unknown = JSON.parse(
+        message.slice('validation.params:'.length)
+      )
       if (
         Array.isArray(decoded) &&
         decoded.length === 2 &&
@@ -260,7 +262,9 @@ export function localizedValidationMessage(
               (typeof value === 'number' && Number.isFinite(value)))
         )
       ) {
-        return translate(decoded[0], { replace: decoded[1] as PresentationValues })
+        return translate(decoded[0], {
+          replace: decoded[1] as PresentationValues,
+        })
       }
     } catch {
       // Malformed markers are displayed as ordinary text, not interpreted.

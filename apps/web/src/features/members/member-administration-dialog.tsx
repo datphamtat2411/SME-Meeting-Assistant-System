@@ -7,7 +7,6 @@ import {
   featureValidationMessage,
   localizedValidationMessage,
 } from '@/lib/i18n/presentation'
-import { MemberPolicyError } from './member-administration-policy'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -41,6 +40,7 @@ import type {
   MemberEditorSubmit,
   MemberOperationFeedback,
 } from './member-administration-controller'
+import { MemberPolicyError } from './member-administration-policy'
 import type { Member } from './member-api'
 import { MemberEditorRecoveryPanel } from './member-editor-recovery-panel'
 import {
@@ -278,7 +278,7 @@ export function MemberAdministrationDialog({
             ? featureValidationMessage(error.messageKey)
             : error instanceof Error
               ? error.message
-            : featureValidationMessage('members:invalidValues')
+              : featureValidationMessage('members:invalidValues')
       )
     }
   }

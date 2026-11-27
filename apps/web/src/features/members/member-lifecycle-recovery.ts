@@ -1,6 +1,9 @@
-import { i18n } from '@/lib/i18n'
-import { featureValidationMessage, requestErrorFormMessage } from '@/lib/i18n/presentation'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import type { AuthContext } from '@/features/auth/session/current-user'
 import {
   canPerformMemberLifecycle,
@@ -45,7 +48,10 @@ function desiredStatePresent(
   return false
 }
 
-function setupReissueMessage(snapshot: MemberSnapshot, translate: (key: string) => string): string {
+function setupReissueMessage(
+  snapshot: MemberSnapshot,
+  translate: (key: string) => string
+): string {
   if (snapshot.member.accountStatus === 'PENDING_SETUP') {
     return translate('members:recovery_setupPending')
   }
@@ -142,8 +148,9 @@ export function createMemberLifecycleRecovery(
     )
   }
 
-  const verificationDeferredMessage =
-    featureValidationMessage('members:recovery_verificationDeferred')
+  const verificationDeferredMessage = featureValidationMessage(
+    'members:recovery_verificationDeferred'
+  )
 
   async function verifyLifecycle(input: {
     operationId: number
