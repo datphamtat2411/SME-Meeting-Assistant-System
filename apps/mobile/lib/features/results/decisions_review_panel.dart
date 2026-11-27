@@ -368,9 +368,9 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                       'Nguồn hoặc quyết định đã đổi. Hãy mở lại để đối chiếu.',
                     ),
                   StatePill(
-                     decision.status,
-                     label: decisionStatusLabel(decision.status),
-                   ),
+                    decision.status,
+                    label: decisionStatusLabel(decision.status),
+                  ),
                   SelectableText(decision.content),
                   ..._provenance(decision),
                   const Divider(),
@@ -516,8 +516,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       Text(
         'Người từ chối: ${widget.workspace.meetingIdentityLabel(decision.rejectedByUserId) ?? 'Chưa rõ tên'}',
       ),
-    if (decision.stale)
-      const Text('Nguồn bản ghi đã thay đổi; cần đối chiếu.'),
+    if (decision.stale) const Text('Nguồn bản ghi đã thay đổi; cần đối chiếu.'),
     if (decision.contentRevision != null)
       Text('Lần chỉnh sửa nguồn: ${decision.contentRevision}'),
     if (decision.aiUncertainty == 'MATERIAL')
@@ -723,9 +722,9 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         StatePill(
-                     decision.status,
-                     label: decisionStatusLabel(decision.status),
-                   ),
+                          decision.status,
+                          label: decisionStatusLabel(decision.status),
+                        ),
                         SelectableText(decision.content),
                         Text(
                           '${decision.evidenceSegmentIds.length} đoạn bằng chứng',

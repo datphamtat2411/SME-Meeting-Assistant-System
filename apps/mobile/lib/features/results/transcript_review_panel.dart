@@ -451,7 +451,9 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                           (value) => DropdownMenuItem(
                             value: value,
                             child: Text(
-                              value == 'Tất cả' ? value : transcriptQualityLabel(value),
+                              value == 'Tất cả'
+                                  ? value
+                                  : transcriptQualityLabel(value),
                             ),
                           ),
                         )

@@ -296,7 +296,10 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              StatePill(item.status.apiValue, label: actionItemStateLabel(item)),
+              StatePill(
+                item.status.apiValue,
+                label: actionItemStateLabel(item),
+              ),
               SectionHeading(item.title),
               if (item.details != null) SelectableText(item.details!),
               if (item.assignee != null)

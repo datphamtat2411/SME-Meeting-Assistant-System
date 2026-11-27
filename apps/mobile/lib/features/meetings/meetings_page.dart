@@ -382,6 +382,5 @@ class _MeetingsPageState extends State<MeetingsPage> {
     },
   );
 
-  String _failureMessage(Object? error) =>
-      apiFailureLabel(error);
+  String _failureMessage(Object? error) => apiFailureLabel(error);
 }

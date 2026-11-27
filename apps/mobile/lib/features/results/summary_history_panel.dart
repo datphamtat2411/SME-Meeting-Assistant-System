@@ -277,7 +277,10 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
         children: [
           Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
           if (job != null)
-            StatePill(job.status.wireValue, label: processingJobStatusLabel(job.status)),
+            StatePill(
+              job.status.wireValue,
+              label: processingJobStatusLabel(job.status),
+            ),
           if (job?.warningSummary != null)
             Text(
               job!.warningSummary!,

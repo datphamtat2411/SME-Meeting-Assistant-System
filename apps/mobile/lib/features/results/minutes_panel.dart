@@ -166,9 +166,9 @@ class MinutesPanel extends StatelessWidget {
                       Text(resultSourceLabel(summary.sourceType)),
                     if (summary.qualityStatus != null)
                       StatePill(
-                         summary.qualityStatus!,
-                         label: summaryQualityLabel(summary.qualityStatus!),
-                       ),
+                        summary.qualityStatus!,
+                        label: summaryQualityLabel(summary.qualityStatus!),
+                      ),
                     if (summary.contentRevision != null)
                       _label('Lần chỉnh sửa nguồn', summary.contentRevision),
                     if (summary.isStale)
@@ -196,9 +196,9 @@ class MinutesPanel extends StatelessWidget {
                   final decision = decisions[index];
                   return _card([
                     StatePill(
-                       decision.status,
-                       label: decisionStatusLabel(decision.status),
-                     ),
+                      decision.status,
+                      label: decisionStatusLabel(decision.status),
+                    ),
                     SelectableText(decision.content),
                     Text(resultSourceLabel(decision.sourceType)),
                     _label(
@@ -263,7 +263,10 @@ class MinutesPanel extends StatelessWidget {
                       style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
                     if (action.details != null) SelectableText(action.details!),
-                    StatePill(action.status, label: actionStates[action.status]),
+                    StatePill(
+                      action.status,
+                      label: actionStates[action.status],
+                    ),
                     Text(resultSourceLabel(action.sourceType)),
                     _label(
                       'Người phụ trách',
@@ -305,9 +308,9 @@ class MinutesPanel extends StatelessWidget {
                     Text(_availability(transcript.availability)),
                     if (transcript.status != null)
                       StatePill(
-                         transcript.status!,
-                         label: transcriptStatusLabel(transcript.status!),
-                       ),
+                        transcript.status!,
+                        label: transcriptStatusLabel(transcript.status!),
+                      ),
                     _label('Phiên bản', transcript.versionNumber),
                     _label('Lần chỉnh sửa', transcript.contentRevision),
                     _label('Ngôn ngữ', transcript.languageCode),

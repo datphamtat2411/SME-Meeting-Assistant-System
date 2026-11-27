@@ -120,7 +120,9 @@ class StatePill extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         child: Text(
-          label ?? meetingStates[status] ?? actionStates[status] ??
+          label ??
+              meetingStates[status] ??
+              actionStates[status] ??
               'Trạng thái chưa được nhận diện ($status)',
           style: TextStyle(
             color: tone,
@@ -221,11 +223,8 @@ class AsyncContent<T> extends StatelessWidget {
 
 void showFailure(BuildContext context, Object error) {
   if (!context.mounted) return;
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text(apiFailureLabel(error)),
-    ),
-  );
+  ScaffoldMessenger.of(context)
+      .showSnackBar(SnackBar(content: Text(apiFailureLabel(error))));
 }
 
 void showSuccess(BuildContext context, String message) {

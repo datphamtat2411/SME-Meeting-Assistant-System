@@ -12,9 +12,9 @@ describe('media error presentation', () => {
     try {
       for (const language of ['en', 'vi'] as const) {
         await setUiLanguage(language)
-        expect(processingErrorDescription(new Error('private diagnostic'))).toBe(
-          i18n.t('processing:operationFailed')
-        )
+        expect(
+          processingErrorDescription(new Error('private diagnostic'))
+        ).toBe(i18n.t('processing:operationFailed'))
         expect(
           processingErrorDescription(
             new MediaPresentationError(

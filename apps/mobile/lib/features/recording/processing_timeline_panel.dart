@@ -313,7 +313,10 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Text(
-                        processingFailureLabel(item.errorCode, item.errorSummary),
+                        processingFailureLabel(
+                          item.errorCode,
+                          item.errorSummary,
+                        ),
                         style: const TextStyle(color: Palette.red),
                       ),
                     ),

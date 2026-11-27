@@ -198,7 +198,9 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: Text(title),
-          content: Text('$detail\n\nTrạng thái hiện tại: ${meetingStatusLabel(meeting.status)}.'),
+          content: Text(
+            '$detail\n\nTrạng thái hiện tại: ${meetingStatusLabel(meeting.status)}.',
+          ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
@@ -224,7 +226,9 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('$detail\n\nTrạng thái hiện tại: ${meetingStatusLabel(meeting.status)}.'),
+              Text(
+                '$detail\n\nTrạng thái hiện tại: ${meetingStatusLabel(meeting.status)}.',
+              ),
               const SizedBox(height: 12),
               TextField(
                 controller: reason,
@@ -715,8 +719,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
     },
   );
 
-  String _failureMessage(Object? error) =>
-      apiFailureLabel(error);
+  String _failureMessage(Object? error) => apiFailureLabel(error);
 
   void _openTranscriptReview(TranscriptReviewHandoff handoff) {
     if (!mounted ||

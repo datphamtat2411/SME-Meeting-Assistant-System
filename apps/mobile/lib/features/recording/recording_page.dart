@@ -527,7 +527,9 @@ class _RecordingPageState extends State<RecordingPage> {
           if (job.currentStage != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text('Giai đoạn: ${processingStageLabel(job.currentStage)}'),
+              child: Text(
+                'Giai đoạn: ${processingStageLabel(job.currentStage)}',
+              ),
             ),
           if (job.warningSummary != null)
             Padding(

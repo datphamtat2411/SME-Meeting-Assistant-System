@@ -204,11 +204,7 @@ class _ResultsPanelState extends State<ResultsPanel> {
     final current = widget.workspace;
     final tabs = <(ResultsSection, String, IconData)>[
       (ResultsSection.summary, 'Tóm tắt', Icons.auto_awesome_outlined),
-      (
-        ResultsSection.transcript,
-        'Bản ghi lời thoại',
-        Icons.notes_outlined,
-      ),
+      (ResultsSection.transcript, 'Bản ghi lời thoại', Icons.notes_outlined),
       (ResultsSection.decisions, 'Quyết định', Icons.fact_check_outlined),
       if (widget.dependencies != null)
         (ResultsSection.actionItems, 'Công việc', Icons.checklist),
