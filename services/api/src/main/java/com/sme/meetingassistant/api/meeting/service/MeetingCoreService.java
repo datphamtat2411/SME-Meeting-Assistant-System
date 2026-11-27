@@ -434,8 +434,11 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     @Override
     @Transactional(readOnly = true)
     public void requireReadable(UUID meetingId, UUID actorId) {
-        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
-        requireAccess(meeting, actorId);
+        // Re-read persisted content rights: a transaction may already have cached the
+        // actor or meeting before waiting on an admission or evidence lock.
+        if (!actionItemRights(meetingId, actorId).getContentVisible()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
     }
 
     @Override
@@ -451,6 +454,7 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     public void requireCurrentActiveActor(UUID actorId) {
         UUID currentActor = authorization.requireActiveActor().getId();
         if (!currentActor.equals(actorId)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        if (!users.isActive(actorId)) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     }
 
     @Override
@@ -479,9 +483,7 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     @Override
     @Transactional(readOnly = true)
     public boolean canManageActionItems(UUID meetingId, UUID actorId) {
-        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
-        return meeting.getOrganizerUserId().equals(actorId)
-            || hasScopedActionItemManager(meeting, actorId);
+        return actionItemRights(meetingId, actorId).getManageable();
     }
 
     @Override
@@ -493,34 +495,20 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     @Override
     @Transactional(readOnly = true)
     public boolean canReadMeetingContent(UUID meetingId, UUID actorId) {
-        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
-        return hasMeetingReadAccess(meeting, actorId);
+        return actionItemRights(meetingId, actorId).getContentVisible();
     }
 
     @Override
     @Transactional(readOnly = true)
     public boolean canReadActionItems(UUID meetingId, UUID actorId) {
-        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
-        return hasMeetingReadAccess(meeting, actorId)
-            || hasScopedActionItemManager(meeting, actorId);
+        var rights = actionItemRights(meetingId, actorId);
+        return rights.getContentVisible() || rights.getManageable();
     }
 
-    private boolean hasMeetingReadAccess(MeetingEntity meeting, UUID actorId) {
-        return meeting.getOrganizerUserId().equals(actorId)
-            || participants.existsByMeetingIdAndUserIdAndRemovedAtIsNull(meeting.getId(), actorId);
-    }
-
-    /**
-     * Management-scope rows grant directory powers; Action Item visibility
-     * additionally requires a stable, Meeting-owned unit classification.
-     * Neither historical organizer transfers nor unscoped legacy meetings
-     * can confer implicit rights.
-     */
-    private boolean hasScopedActionItemManager(MeetingEntity meeting, UUID actorId) {
-        UserEntity current = authorization.requireActiveActor();
-        return current.getId().equals(actorId)
-            && current.getGlobalRole() == com.sme.meetingassistant.api.userorganization.entity.GlobalRole.DEPARTMENT_MANAGER
-            && meetings.hasActiveGrantedActionItemScope(meeting.getId(), actorId);
+    private MeetingRepository.ActionItemRights actionItemRights(UUID meetingId, UUID actorId) {
+        requireCurrentActiveActor(actorId);
+        return meetings.findActionItemRights(meetingId, actorId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
     }
 
     @Override
@@ -544,9 +532,30 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
 
     @Override
     @Transactional(readOnly = true)
+    public void requireLockedProcessingAllowed(UUID meetingId, UUID actorId) {
+        requireCurrentActiveActor(actorId);
+        String status = meetings.findCurrentProcessingStatus(meetingId, actorId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        if ("CANCELLED".equals(status)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Cancelled meetings do not accept new media or processing operations.");
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public void requireTranscriptEditAllowed(UUID meetingId, UUID actorId) {
         MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
         if (!meeting.getOrganizerUserId().equals(actorId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireTranscriptRefreshAllowed(UUID meetingId, UUID actorId) {
+        if (!users.isActive(actorId) || meetings.findCurrentProcessingStatus(meetingId, actorId)
+                .filter(status -> !"CANCELLED".equals(status)).isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
     }

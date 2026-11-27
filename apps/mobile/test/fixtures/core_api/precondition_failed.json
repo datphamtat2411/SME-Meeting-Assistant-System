@@ -1,0 +1,10 @@
+{
+  "success": false,
+  "code": "PRECONDITION_FAILED",
+  "message": "The request precondition failed.",
+  "data": null,
+  "meta": {
+    "requestId": "66666666-6666-4666-8666-666666666666",
+    "timestamp": "2026-11-23T12:05:00Z"
+  }
+}

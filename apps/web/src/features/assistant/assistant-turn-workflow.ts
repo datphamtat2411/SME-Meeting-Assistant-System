@@ -1,0 +1,650 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { CoreApiError, normalizeCoreApiError } from '@/lib/core-api'
+import {
+  beginAssistantQuestion,
+  captureAssistantAccess,
+  containAssistantAccessFailure,
+  invalidateAssistantHistory,
+  isAssistantAccessCurrent,
+  readAssistantProtected,
+  revalidateAssistantHistory,
+  subscribeAssistantAccess,
+  type AssistantAccessToken,
+} from './assistant-access'
+import {
+  fetchAssistantTurnStatus,
+  lookupAssistantTurn,
+  recoverAssistantTurn,
+  submitAssistantQuestion,
+  type AssistantConversationDetail,
+  type AssistantTurn,
+  type AssistantTurnStatus,
+} from './assistant-api'
+import { canRetryAssistantSubmission } from './assistant-error-policy'
+import type { Submission } from './assistant-types'
+
+type Operation = {
+  access: AssistantAccessToken
+  // A rejected intent remains rejected even when observing the conflicting
+  // durable turn, or when a later transport error replaces the last error.
+  conflict?: CoreApiError
+}
+type Intent = Operation & {
+  phase: 'submitting' | 'lookup' | 'uncertain'
+  submission: Submission
+  error?: unknown
+  retryAt?: number
+}
+type KnownTurn = Operation & {
+  phase: 'observing' | 'paused' | 'recoverable' | 'recovering'
+  turnId: string
+  replacementTurnId?: string
+  error?: unknown
+  retryAt?: number
+}
+type Settled = Operation & {
+  phase: 'settled'
+  turnId?: string
+  error?: unknown
+}
+export type TurnWorkflow = Intent | KnownTurn | Settled
+
+export function retryAt(error: unknown, now = Date.now()): number {
+  const value = normalizeCoreApiError(error).retryAfter
+  if (!value) return now
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return now + seconds * 1000
+  const date = Date.parse(value)
+  return Number.isFinite(date) ? Math.max(now, date) : now
+}
+
+const observationBudget = 60_000
+const statusKey = (id: string, turnId: string) =>
+  ['assistant', 'turn', id, 'status', turnId] as const
+
+function terminalError(state: AssistantTurn['state']) {
+  if (state === 'FAILED')
+    return new CoreApiError({
+      status: 503,
+      code: 'ASSISTANT_TURN_FAILED',
+      kind: 'server',
+      message: 'Core confirmed that this turn failed.',
+    })
+  if (state === 'STALE_SOURCE')
+    return new CoreApiError({
+      status: 409,
+      code: 'ASSISTANT_SOURCE_STALE',
+      kind: 'http',
+      message: 'Assistant evidence is no longer current.',
+    })
+  return undefined
+}
+
+// Operation identities survive conversation switches, but never leave the
+// authenticated feature's memory. Canonical history stays in TanStack Query.
+export function useAssistantTurnWorkflow(
+  detail: AssistantConversationDetail | undefined,
+  historyReady: boolean,
+  selectedId?: string
+) {
+  const client = useQueryClient()
+  const records = useRef(new Map<string, TurnWorkflow>())
+  const observationRetryAt = useRef(new Map<string, Map<string, number>>())
+  const lastDetail = useRef<AssistantConversationDetail | undefined>(undefined)
+  const [workflows, setWorkflows] = useState<ReadonlyMap<string, TurnWorkflow>>(
+    new Map()
+  )
+  const [refreshErrors, setRefreshErrors] = useState<
+    ReadonlyMap<string, unknown>
+  >(new Map())
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  const conversation = historyReady ? detail?.conversation : undefined
+  const id = selectedId
+  const pending = historyReady ? detail?.pendingTurn : undefined
+
+  const write = useCallback((key: string, next: TurnWorkflow) => {
+    if (!mounted.current) return
+    records.current.set(key, next)
+    setWorkflows(new Map(records.current))
+  }, [])
+  const owns = useCallback(
+    (key: string, operation: TurnWorkflow) =>
+      mounted.current &&
+      records.current.get(key) === operation &&
+      isAssistantAccessCurrent(client, operation.access),
+    [client]
+  )
+
+  // Subscribe to the existing containment boundary. Remove retained intent
+  // immediately on denial, not on an unrelated React rendering pass.
+  useEffect(
+    () =>
+      subscribeAssistantAccess(client, () => {
+        const removed: string[] = []
+        for (const [key, value] of records.current) {
+          if (!isAssistantAccessCurrent(client, value.access)) {
+            records.current.delete(key)
+            observationRetryAt.current.delete(key)
+            removed.push(key)
+          }
+        }
+        if (removed.length) {
+          setWorkflows(new Map(records.current))
+          setRefreshErrors((previous) => {
+            const next = new Map(previous)
+            for (const key of removed) next.delete(key)
+            return next
+          })
+        }
+      }),
+    [client]
+  )
+
+  const refresh = useCallback(
+    async (key: string, operation: TurnWorkflow, reset = false) => {
+      if (!owns(key, operation)) return
+      setRefreshErrors((previous) => {
+        const next = new Map(previous)
+        next.delete(key)
+        return next
+      })
+      try {
+        if (reset) {
+          await revalidateAssistantHistory(client, key)
+        } else {
+          // Infinite-query refetch recomputes every loaded continuation from
+          // the newest page. Never merge a fresh head onto old offset pages.
+          await client.refetchQueries(
+            {
+              queryKey: ['assistant', 'conversation', key, 'history'],
+              type: 'active',
+            },
+            { throwOnError: true }
+          )
+          await client.invalidateQueries({
+            queryKey: ['assistant', 'conversation', key, 'history'],
+            refetchType: 'none',
+          })
+        }
+      } catch (error) {
+        if (owns(key, operation))
+          setRefreshErrors((previous) => new Map(previous).set(key, error))
+      }
+    },
+    [client, owns]
+  )
+
+  const adopt = useCallback(
+    (
+      key: string,
+      operation: TurnWorkflow,
+      turn: AssistantTurnStatus | AssistantTurn
+    ) => {
+      if (!owns(key, operation)) return
+      if (turn.state === 'PROCESSING') {
+        const expired = 'leaseStatus' in turn && turn.leaseStatus === 'EXPIRED'
+        write(key, {
+          phase: expired ? 'recoverable' : 'observing',
+          access: operation.access,
+          conflict: operation.conflict,
+          turnId: turn.turnId,
+          retryAt: observationRetryAt.current.get(key)?.get(turn.turnId),
+        })
+        return
+      }
+      observationRetryAt.current.get(key)?.delete(turn.turnId)
+      const next: Settled = {
+        phase: 'settled',
+        access: operation.access,
+        conflict: operation.conflict,
+        turnId: turn.turnId,
+        error: terminalError(turn.state),
+      }
+      write(key, next)
+      void refresh(key, next, turn.state === 'STALE_SOURCE')
+    },
+    [owns, refresh, write]
+  )
+
+  useEffect(() => {
+    if (!id || !historyReady || !detail) {
+      lastDetail.current = undefined
+      return
+    }
+    const fresh = lastDetail.current !== detail
+    lastDetail.current = detail
+    const previous = records.current.get(id)
+    if (previous && isAssistantAccessCurrent(client, previous.access)) {
+      if (
+        previous.phase === 'recoverable' ||
+        previous.phase === 'paused' ||
+        previous.phase === 'observing'
+      ) {
+        const replacementTurnId =
+          pending && pending.turnId !== previous.turnId
+            ? pending.turnId
+            : undefined
+        // Resolve the previous durable identity before adopting a different
+        // pending turn. Never offer recovery for the displaced identity.
+        if (replacementTurnId || previous.replacementTurnId) {
+          if (previous.replacementTurnId !== replacementTurnId)
+            write(id, {
+              ...previous,
+              phase: 'observing',
+              replacementTurnId,
+            })
+          return
+        }
+        if (fresh && previous.phase !== 'observing') {
+          if (Date.now() < (previous.retryAt ?? 0)) return
+          const phase =
+            pending?.leaseStatus === 'EXPIRED' ? 'recoverable' : 'observing'
+          if (previous.phase !== phase)
+            write(id, {
+              ...previous,
+              phase,
+              error: undefined,
+              retryAt:
+                Math.max(
+                  previous.retryAt ?? 0,
+                  observationRetryAt.current.get(id)?.get(previous.turnId) ?? 0
+                ) || undefined,
+            })
+          return
+        }
+      }
+      if (previous.phase !== 'settled' || previous.turnId === pending?.turnId)
+        return
+    }
+    if (!pending || pending.conversationId !== id) return
+    write(id, {
+      phase: pending.leaseStatus === 'EXPIRED' ? 'recoverable' : 'observing',
+      access: captureAssistantAccess(client, id),
+      conflict: previous?.conflict,
+      turnId: pending.turnId,
+      retryAt: observationRetryAt.current.get(id)?.get(pending.turnId),
+    })
+  }, [client, id, detail, historyReady, pending, workflows, write])
+
+  const lookup = useCallback(
+    async (key: string, operation: Intent) => {
+      if (!owns(key, operation)) return
+      const next: Intent = { ...operation, phase: 'lookup' }
+      write(key, next)
+      try {
+        const turn = await readAssistantProtected(client, key, () =>
+          lookupAssistantTurn(key, operation.submission.idempotencyKey)
+        )
+        if (!owns(key, next)) return
+        adopt(key, next, turn)
+      } catch (error) {
+        if (!owns(key, next)) return
+        // Absence is not proof of rejection; preserve the original intent.
+        const failure = normalizeCoreApiError(error)
+        write(key, {
+          ...next,
+          phase: 'uncertain',
+          error:
+            failure.code === 'ASSISTANT_TURN_NOT_FOUND'
+              ? operation.error
+              : error,
+          retryAt:
+            Math.max(
+              operation.retryAt ?? 0,
+              failure.retryAfter ? retryAt(error) : 0
+            ) || undefined,
+        })
+      }
+    },
+    [adopt, client, owns, write]
+  )
+
+  const submit = useCallback(
+    async (submission: Submission, previous?: Intent) => {
+      const key = submission.conversationId
+      if (
+        previous &&
+        (previous.conflict ||
+          !owns(key, previous) ||
+          Date.now() < (previous.retryAt ?? 0))
+      )
+        return
+      const current = records.current.get(key)
+      if (
+        !previous &&
+        current &&
+        isAssistantAccessCurrent(client, current.access) &&
+        current.phase !== 'settled'
+      )
+        return
+      const operation: Intent = {
+        phase: 'submitting',
+        access: beginAssistantQuestion(client, key),
+        submission,
+      }
+      write(key, operation)
+      try {
+        const turn = await submitAssistantQuestion(
+          key,
+          submission.question,
+          submission.idempotencyKey
+        )
+        if (!owns(key, operation)) return
+        if (
+          turn.citations.some(
+            (citation) => citation.meetingId !== submission.meetingId
+          )
+        ) {
+          throw new CoreApiError({
+            kind: 'malformed',
+            code: 'MALFORMED_RESPONSE',
+            message: 'Core returned evidence for another meeting.',
+          })
+        }
+        adopt(key, operation, turn)
+      } catch (error) {
+        if (
+          containAssistantAccessFailure(client, operation.access, error) ||
+          !owns(key, operation)
+        )
+          return
+        const failure = normalizeCoreApiError(error)
+        if (
+          canRetryAssistantSubmission(error) ||
+          failure.code === 'ASSISTANT_IDEMPOTENCY_CONFLICT'
+        ) {
+          const conflict =
+            failure.code === 'ASSISTANT_IDEMPOTENCY_CONFLICT'
+              ? failure
+              : undefined
+          const next: Intent = {
+            ...operation,
+            phase: 'uncertain',
+            conflict,
+            error: conflict ? undefined : error,
+            retryAt: failure.retryAfter ? retryAt(error) : undefined,
+          }
+          write(key, next)
+          if (failure.status !== 429) void lookup(key, next)
+          return
+        }
+        const next: Settled = {
+          phase: 'settled',
+          access: operation.access,
+          error,
+        }
+        write(key, next)
+        if (failure.code === 'ASSISTANT_SOURCE_STALE')
+          invalidateAssistantHistory(client, key)
+        else if (
+          failure.code === 'ASSISTANT_TURN_IN_PROGRESS' ||
+          failure.code === 'ASSISTANT_TURN_FAILED' ||
+          failure.code === 'ASSISTANT_CONVERSATION_INACTIVE'
+        )
+          void refresh(key, next, true)
+      }
+    },
+    [adopt, client, lookup, owns, refresh, write]
+  )
+
+  const workflow = id ? workflows.get(id) : undefined
+  const active =
+    workflow && isAssistantAccessCurrent(client, workflow.access)
+      ? workflow
+      : undefined
+  const observing = active?.phase === 'observing' ? active : undefined
+  const retryDeadline =
+    active && 'retryAt' in active ? active.retryAt : undefined
+  const [clock, setClock] = useState(() => Date.now())
+  useEffect(() => {
+    if (!retryDeadline || retryDeadline <= clock) return
+    const timer = setTimeout(
+      () => setClock(Date.now()),
+      Math.min(2_147_483_647, Math.max(0, retryDeadline - Date.now()))
+    )
+    return () => clearTimeout(timer)
+  }, [retryDeadline, clock])
+
+  // Presentation consumes the same prerequisites as the action handlers.
+  // Wall-clock/operation ownership is checked again at the action boundary.
+  const canAct = Boolean(historyReady && id && active)
+  const canRecover =
+    canAct &&
+    conversation?.status === 'ACTIVE' &&
+    active?.phase === 'recoverable' &&
+    (!pending || pending.turnId === active.turnId) &&
+    !active.replacementTurnId
+  const canResume =
+    canAct && (active?.phase === 'paused' || active?.phase === 'uncertain')
+  const canRetry =
+    canAct &&
+    conversation?.status === 'ACTIVE' &&
+    active?.phase === 'uncertain' &&
+    !active.conflict &&
+    !pending &&
+    canRetryAssistantSubmission(active.error)
+  const blockedUntil =
+    retryDeadline && retryDeadline > clock ? retryDeadline : undefined
+
+  useEffect(() => {
+    if (!id || !observing) return
+    const operation = observing
+    const deadline = Date.now() + observationBudget
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let interval = 1000
+    const key = statusKey(id, operation.turnId)
+    const deadlines = observationRetryAt.current
+    const notBefore = () =>
+      Math.max(
+        operation.retryAt ?? 0,
+        deadlines.get(id)?.get(operation.turnId) ?? 0
+      )
+    const rememberDeadline = (error: unknown) => {
+      if (!normalizeCoreApiError(error).retryAfter) return
+      const turns = deadlines.get(id) ?? new Map<string, number>()
+      turns.set(operation.turnId, Math.max(notBefore(), retryAt(error)))
+      deadlines.set(id, turns)
+    }
+    const pause = (error?: unknown) => {
+      if (!cancelled && owns(id, operation))
+        write(id, {
+          ...operation,
+          phase: 'paused',
+          error,
+          retryAt: notBefore() || undefined,
+        })
+    }
+    const budgetTimer = setTimeout(() => {
+      pause()
+      void client.cancelQueries({ queryKey: key, exact: true })
+    }, observationBudget)
+
+    const schedule = (delay: number) => {
+      if (Date.now() + delay >= deadline) return
+      timer = setTimeout(() => void poll(), delay)
+    }
+    const poll = async () => {
+      if (cancelled || !owns(id, operation) || Date.now() >= deadline) return
+      if (Date.now() < notBefore()) {
+        schedule(notBefore() - Date.now())
+        return
+      }
+      try {
+        const status = await client.fetchQuery({
+          queryKey: key,
+          queryFn: ({ signal, client: queryClient }) =>
+            readAssistantProtected(queryClient, id, () =>
+              fetchAssistantTurnStatus(id, operation.turnId, signal)
+            ),
+          staleTime: 0,
+          retry: false,
+        })
+        if (cancelled || !owns(id, operation)) return
+        if (operation.replacementTurnId) {
+          // The old status was read, not inferred from the new pending ID.
+          // Observe the newly discovered identity before permitting recovery.
+          if (status.state !== 'PROCESSING')
+            deadlines.get(id)?.delete(operation.turnId)
+          write(id, {
+            phase: 'observing',
+            access: operation.access,
+            conflict: operation.conflict,
+            turnId: operation.replacementTurnId,
+          })
+          if (status.state === 'STALE_SOURCE')
+            invalidateAssistantHistory(client, id)
+          return
+        }
+        if (status.state !== 'PROCESSING' || status.leaseStatus === 'EXPIRED') {
+          adopt(id, operation, status)
+          return
+        }
+        interval = Math.min(interval * 2, 5000)
+        schedule(interval)
+      } catch (error) {
+        if (cancelled || !owns(id, operation)) return
+        const failure = normalizeCoreApiError(error)
+        rememberDeadline(error)
+        if (
+          operation.replacementTurnId &&
+          failure.code === 'ASSISTANT_TURN_NOT_FOUND'
+        ) {
+          write(id, {
+            phase: 'observing',
+            access: operation.access,
+            conflict: operation.conflict,
+            turnId: operation.replacementTurnId,
+          })
+          return
+        }
+        if (
+          failure.status === 429 ||
+          failure.isNetworkError ||
+          failure.isServerError
+        ) {
+          interval = Math.min(interval * 2, 5000)
+          const delay = Math.max(interval, notBefore() - Date.now())
+          if (Date.now() + delay >= deadline) pause(error)
+          else schedule(delay)
+        } else pause(error)
+      }
+    }
+    schedule(Math.max(interval, notBefore() - Date.now()))
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      clearTimeout(budgetTimer)
+      void client.cancelQueries({ queryKey: key, exact: true })
+    }
+  }, [adopt, client, id, observing, owns, write])
+
+  const recover = async () => {
+    if (
+      !canRecover ||
+      !id ||
+      active?.phase !== 'recoverable' ||
+      !owns(id, active)
+    )
+      return
+    if (
+      Date.now() <
+      Math.max(
+        active.retryAt ?? 0,
+        observationRetryAt.current.get(id)?.get(active.turnId) ?? 0
+      )
+    )
+      return
+    const operation: KnownTurn = {
+      ...active,
+      phase: 'recovering',
+      access: beginAssistantQuestion(client, id),
+    }
+    write(id, operation)
+    try {
+      const turn = await recoverAssistantTurn(id, operation.turnId)
+      if (!owns(id, operation)) return
+      if (
+        turn.citations.some(
+          (citation) => citation.meetingId !== conversation?.meetingId
+        )
+      ) {
+        throw new CoreApiError({
+          kind: 'malformed',
+          code: 'MALFORMED_RESPONSE',
+          message: 'Core returned evidence for another meeting.',
+        })
+      }
+      adopt(id, operation, turn)
+    } catch (error) {
+      if (
+        containAssistantAccessFailure(client, operation.access, error) ||
+        !owns(id, operation)
+      )
+        return
+      const failure = normalizeCoreApiError(error)
+      if (
+        failure.code === 'ASSISTANT_TURN_FAILED' ||
+        failure.code === 'ASSISTANT_SOURCE_STALE' ||
+        failure.code === 'ASSISTANT_CONVERSATION_INACTIVE'
+      ) {
+        const next: Settled = {
+          phase: 'settled',
+          access: operation.access,
+          conflict: operation.conflict,
+          turnId: operation.turnId,
+          error,
+        }
+        write(id, next)
+        void refresh(id, next, true)
+      } else {
+        // Recovery may have been admitted; observe the same durable turn.
+        write(id, {
+          ...operation,
+          phase: 'paused',
+          error,
+          retryAt: failure.retryAfter ? retryAt(error) : undefined,
+        })
+      }
+    }
+  }
+
+  const resume = () => {
+    if (!canResume || !id || !active || !owns(id, active)) return
+    if ('retryAt' in active && Date.now() < (active.retryAt ?? 0)) return
+    if (active.phase === 'paused')
+      write(id, { ...active, phase: 'observing', error: undefined })
+    if (active.phase === 'uncertain') void lookup(id, active)
+  }
+
+  return {
+    workflow: active,
+    actions: {
+      recover: canRecover && !blockedUntil,
+      resume: canResume && !blockedUntil,
+      retry: canRetry && !blockedUntil,
+      blockedUntil,
+    },
+    busy: Boolean(
+      (active && active.phase !== 'settled') ||
+      (pending &&
+        (!active ||
+          (active.phase === 'settled' && active.turnId !== pending.turnId)))
+    ),
+    historyRefreshError: id ? refreshErrors.get(id) : undefined,
+    submit,
+    recover: () => void recover(),
+    resume,
+    retry: () => {
+      if (canRetry && active?.phase === 'uncertain')
+        void submit(active.submission, active)
+    },
+  }
+}

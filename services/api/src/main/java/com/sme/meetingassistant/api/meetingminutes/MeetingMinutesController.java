@@ -24,9 +24,9 @@ public class MeetingMinutesController {
     }
 
     @Operation(summary = "Get authorized current canonical meeting minutes",
-        description = "Official Summary, confirmed Decisions, official Action Items, "
+         description = "Current Summary, confirmed Decisions, official Action Items, "
             + "current Transcript reference and quality warnings. "
-            + "Unapproved AI proposals excluded until DE-01 D08 approval. "
+             + "Current unconfirmed AI proposals are listed separately. "
             + "Snapshot source fingerprint excludes retrieval time.")
     @GetMapping("/{meetingId}/minutes")
     public ResponseEntity<ApiResponse<MinutesSnapshot>> current(

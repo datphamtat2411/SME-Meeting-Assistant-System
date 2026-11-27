@@ -3,6 +3,7 @@ package com.sme.meetingassistant.api.meetingexport;
 import com.sme.meetingassistant.api.meeting.service.MeetingMediaAccess;
 import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +24,16 @@ public class ExportIntentService {
         this.access = access;
         this.identity = identity;
         this.repository = repository;
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<ExportRecord> recover(UUID meetingId, ExportFormat format, String key) {
+        Objects.requireNonNull(meetingId, "meetingId");
+        Objects.requireNonNull(format, "format");
+        UUID actorId = identity.requireUserId();
+        access.requireReadable(meetingId, actorId);
+        ExportDigests.requireKey(key);
+        return repository.recover(actorId, meetingId, format, key);
     }
 
     @Transactional

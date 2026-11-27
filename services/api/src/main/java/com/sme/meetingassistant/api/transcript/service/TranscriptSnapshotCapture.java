@@ -1,7 +1,6 @@
 package com.sme.meetingassistant.api.transcript.service;
 
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
-import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -34,12 +33,9 @@ public class TranscriptSnapshotCapture {
                 || current.segments().isEmpty()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "No eligible finalized transcript.");
         }
-        byte[] bytes = json.writeValueAsBytes(Map.of(
-            "schemaVersion", "1.0",
-            "transcript", current,
-            "coverage", transcripts.coverage(meetingId),
-            "speakers", transcripts.speakers(meetingId)
-        ));
+        // The immutable worker schema is independent of public HTTP DTO evolution.
+        byte[] bytes = json.writeValueAsBytes(TranscriptSnapshotV1.from(
+            current, transcripts.coverage(meetingId), transcripts.speakers(meetingId)));
         if (bytes.length == 0 || bytes.length > 8 * 1024 * 1024) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
                 "Transcript snapshot exceeds the approved size bound.");

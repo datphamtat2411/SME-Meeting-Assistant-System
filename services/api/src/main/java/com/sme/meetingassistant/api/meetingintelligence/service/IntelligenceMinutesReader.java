@@ -51,4 +51,12 @@ public class IntelligenceMinutesReader implements IntelligenceMinutesSource {
         }
         return new CurrentMinutesIntelligence(summary, confirmed);
     }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<DecisionView> currentProposals(UUID meetingId) {
+        access.requireIntelligenceReadable(meetingId, principal.requireUserId());
+        return decisions.page(meetingId, "PROPOSED", 0, PAGE_SIZE).getContent().stream()
+            .filter(decision -> "AI_EXTRACTED".equals(decision.sourceType()) && !decision.isStale()).toList();
+    }
 }

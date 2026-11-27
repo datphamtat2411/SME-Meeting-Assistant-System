@@ -14,6 +14,7 @@ import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
@@ -24,13 +25,16 @@ public class TranscriptReviewService implements TranscriptIngestion {
     private final MeetingMediaAccess meetingAccess;
     private final AuthenticatedUserId authenticatedUser;
     private final KnowledgeIndexingProducer knowledge;
+    private final ApplicationEventPublisher events;
 
     public TranscriptReviewService(TranscriptRepository repository, MeetingMediaAccess meetingAccess,
-            AuthenticatedUserId authenticatedUser, KnowledgeIndexingProducer knowledge) {
+            AuthenticatedUserId authenticatedUser, KnowledgeIndexingProducer knowledge,
+            ApplicationEventPublisher events) {
         this.repository = repository;
         this.meetingAccess = meetingAccess;
         this.authenticatedUser = authenticatedUser;
         this.knowledge = knowledge;
+        this.events = events;
     }
 
     @Override
@@ -68,14 +72,18 @@ public class TranscriptReviewService implements TranscriptIngestion {
         UUID actor = this.authenticatedUser.requireUserId();
         this.repository.lockMeetingForReview(meetingId);
         this.meetingAccess.requireTranscriptEditAllowed(meetingId, actor);
-        long version = segmentVersion(segmentId, ifMatch);
+        long version = TranscriptVersionTags.requireSegmentMatch(segmentId, ifMatch);
         if (request == null || request.text() == null || request.text().isBlank()) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         }
         var corrected = this.repository.correct(meetingId, segmentId, actor, request.text().trim(), request.reason(), version);
-        this.repository.current(meetingId).ifPresent(current ->
-            this.knowledge.request("TRANSCRIPT", current.id(), meetingId));
-        this.knowledge.invalidateStaleTranscriptDependents(meetingId);
+        if (corrected.version() != version) {
+            this.repository.current(meetingId).ifPresent(current -> {
+                this.knowledge.request("TRANSCRIPT", current.id(), meetingId);
+                this.events.publishEvent(new TranscriptRevisionChanged(meetingId, current.id(), current.contentRevision(), actor));
+            });
+            this.knowledge.invalidateStaleTranscriptDependents(meetingId);
+        }
         return corrected;
     }
 
@@ -91,8 +99,11 @@ public class TranscriptReviewService implements TranscriptIngestion {
         TranscriptTag tag = transcriptTag(ifMatch);
         var mapped = this.repository.mapSpeaker(meetingId, clusterId,
             request == null ? null : request.userId(), actor, tag.transcriptId(), tag.revision());
-        this.knowledge.request("TRANSCRIPT", mapped.transcriptId(), meetingId);
-        this.knowledge.invalidateStaleTranscriptDependents(meetingId);
+        if (mapped.contentRevision() != tag.revision()) {
+            this.knowledge.request("TRANSCRIPT", mapped.transcriptId(), meetingId);
+            this.knowledge.invalidateStaleTranscriptDependents(meetingId);
+            this.events.publishEvent(new TranscriptRevisionChanged(meetingId, mapped.transcriptId(), mapped.contentRevision(), actor));
+        }
         return mapped;
     }
 
@@ -120,23 +131,6 @@ public class TranscriptReviewService implements TranscriptIngestion {
     }
 
     private record TranscriptTag(UUID transcriptId, long revision) {}
-
-    private static long segmentVersion(UUID segmentId, String ifMatch) {
-        if (ifMatch == null || ifMatch.isBlank()) {
-            throw new ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED);
-        }
-        String prefix = "\"s-" + segmentId + "-";
-        if (!ifMatch.startsWith(prefix) || !ifMatch.endsWith("\"")) {
-            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
-        }
-        try {
-            long version = Long.parseLong(ifMatch.substring(prefix.length(), ifMatch.length() - 1));
-            if (version < 0) throw new NumberFormatException();
-            return version;
-        } catch (NumberFormatException e) {
-            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
-        }
-    }
 
     private static ResponseStatusException notFound() {
         return new ResponseStatusException(HttpStatus.NOT_FOUND);

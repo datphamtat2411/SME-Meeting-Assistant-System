@@ -76,6 +76,27 @@ class PdfMinutesRendererTests {
     }
 
     @Test
+    void versionTwoIncludesPinnedVietnameseAssigneeInActualPdf() throws Exception {
+        MinutesSnapshot base = sample();
+        var assignee = base.officialActionItems().getFirst().assigneeUserId();
+        MinutesSnapshot enriched = new MinutesSnapshot(base.schemaVersion(), base.assembledAt(),
+                base.sourceFingerprint(), base.completeness(), base.meeting(), base.summary(),
+                base.confirmedDecisions(), base.officialActionItems(), base.transcript(), base.warnings(),
+                base.proposalsIncluded(), new MinutesSnapshot.DisplayMetadata(
+                        java.util.Map.of(assignee, "Nguyễn Văn An")));
+        var rendered = renderer.render(enriched, PdfMinutesRenderer.VERSION_2);
+        assertThat(rendered.rendererVersion()).isEqualTo(PdfMinutesRenderer.VERSION_2);
+        assertThat(rendered.sourceFingerprint()).isEqualTo(base.sourceFingerprint());
+        try (PDDocument doc = Loader.loadPDF(rendered.bytes())) {
+            assertThat(new PDFTextStripper().getText(doc)).contains("Nguyễn Văn An");
+            assertThat(doc.getDocumentInformation().getProducer()).contains(PdfMinutesRenderer.VERSION_2);
+        }
+        try (PDDocument doc = Loader.loadPDF(renderer.render(enriched).bytes())) {
+            assertThat(new PDFTextStripper().getText(doc)).doesNotContain("Nguyễn Văn An");
+        }
+    }
+
+    @Test
     void longVietnameseParagraphsAreWrappedAcrossPagesWithNumberedFooters() throws Exception {
         var original = sample();
         String longContent = ("Quyết định kiểm tra nội dung tiếng Việt và bảo toàn ngữ nghĩa. "

@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -28,6 +31,7 @@ _SAFE_ENV = frozenset({
     "USER",
     "VIRTUAL_ENV",
 })
+_FINGERPRINT = re.compile(r"[a-f0-9]{64}\Z")
 
 
 def _state_dir(path: Path) -> Path:
@@ -49,9 +53,16 @@ def _state_path(directory: Path, name: str) -> Path:
 
 
 def _read_state(path: Path) -> dict | None:
-    if not path.exists():
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
         return None
-    if path.is_symlink() or path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o077:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or info.st_uid != os.getuid()
+        or info.st_mode & 0o077
+    ):
         raise ProcessError("development process state is unsafe")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -108,15 +119,35 @@ def _safe_environment() -> dict[str, str]:
     }
 
 
-def start(directory: Path, name: str, cwd: Path, log: Path, command: list[str]) -> dict[str, object]:
+def _command_fingerprint(command: list[str]) -> str:
+    digest = hashlib.sha256()
+    for item in command:
+        digest.update(item.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def start(
+    directory: Path,
+    name: str,
+    cwd: Path,
+    log: Path,
+    command: list[str],
+    fingerprint: str | None = None,
+) -> dict[str, object]:
     if not command or any(not item or "\x00" in item for item in command):
         raise ProcessError("development command is invalid")
+    if fingerprint is not None and _FINGERPRINT.fullmatch(fingerprint) is None:
+        raise ProcessError("development process fingerprint is invalid")
+    fingerprint = fingerprint or _command_fingerprint(command)
     directory = _state_dir(directory)
     state_path = _state_path(directory, name)
     current = _read_state(state_path)
     if _owned(current):
+        if current.get("command") != command or current.get("fingerprint") != fingerprint:
+            raise ProcessError("owned development process configuration does not match")
         return _status(name, current)
-    if state_path.exists():
+    if current is not None:
         state_path.unlink()
     cwd = cwd.absolute()
     if not cwd.is_dir():
@@ -130,6 +161,20 @@ def start(directory: Path, name: str, cwd: Path, log: Path, command: list[str]) 
     log_info = log_parent.stat()
     if log_info.st_uid != os.getuid() or log_info.st_mode & 0o077:
         raise ProcessError("development log directory must be private")
+    try:
+        existing_log = log.lstat()
+    except FileNotFoundError:
+        existing_log = None
+    if existing_log is not None and (
+        not stat.S_ISREG(existing_log.st_mode)
+        or existing_log.st_uid != os.getuid()
+    ):
+        raise ProcessError("development log is unsafe")
+    if existing_log is not None and existing_log.st_mode & 0o077:
+        # Logs are lifecycle-owned artifacts.  Tighten a legacy mode rather
+        # than exposing prior process output or refusing an otherwise owned
+        # restart.
+        os.chmod(log, 0o600)
     fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
     output = os.fdopen(fd, "a", encoding="utf-8", buffering=1)
     try:
@@ -155,6 +200,7 @@ def start(directory: Path, name: str, cwd: Path, log: Path, command: list[str]) 
             "pgid": child.pid,
             "starttime": starttime,
             "command": command,
+            "fingerprint": fingerprint,
             "log": str(log),
         }
         temporary = state_path.with_name(f".{state_path.name}.{os.getpid()}.tmp")
@@ -180,8 +226,7 @@ def stop(directory: Path, name: str, timeout: float = 30.0) -> dict[str, object]
     state_path = _state_path(directory, name)
     state = _read_state(state_path)
     if not _owned(state):
-        if state_path.exists():
-            state_path.unlink()
+        state_path.unlink(missing_ok=True)
         return {"name": name, "running": False}
     assert state
     pid = state["pid"]
@@ -221,13 +266,21 @@ def main() -> int:
     parser.add_argument("--name", required=True)
     parser.add_argument("--cwd", type=Path)
     parser.add_argument("--log", type=Path)
+    parser.add_argument("--fingerprint")
     parser.add_argument("--timeout", type=float, default=30)
     args = parser.parse_args(raw_arguments)
     try:
         if args.action == "start":
             if args.cwd is None or args.log is None:
                 raise ProcessError("start requires cwd and log")
-            result = start(args.state_dir, args.name, args.cwd, args.log, command)
+            result = start(
+                args.state_dir,
+                args.name,
+                args.cwd,
+                args.log,
+                command,
+                args.fingerprint,
+            )
         elif args.action == "stop":
             result = stop(args.state_dir, args.name, args.timeout)
         else:

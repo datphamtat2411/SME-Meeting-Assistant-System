@@ -26,31 +26,73 @@ final class AssistantController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(responses.success(service.list(page,size)));
     }
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201",
+            description = "Conversation created or exact creation intent replayed", useReturnTypeSchema = true)
     @PostMapping
-    ResponseEntity<ApiResponse<ConversationView>> create(@Valid @RequestBody CreateConversation input){
-        ConversationView view=service.create(input);
+    ResponseEntity<ApiResponse<ConversationView>> create(
+            @RequestHeader(value="Idempotency-Key",required=false) String key,
+            @Valid @RequestBody CreateConversation input){
+        ConversationView view=service.create(input,key);
         return ResponseEntity.created(URI.create("/api/v1/assistant/conversations/"+view.id()))
             .cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
             .body(responses.success(view));
     }
     @GetMapping("/{conversationId}")
     ResponseEntity<ApiResponse<ConversationDetail>> detail(@PathVariable UUID conversationId,
-            @RequestParam(defaultValue="0") int page,@RequestParam(defaultValue="50") int size){
+            @RequestParam(required=false) Integer page,@RequestParam(defaultValue="50") int size,
+            @RequestParam(required=false) UUID beforeMessageId){
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
-            .body(responses.success(service.detail(conversationId,page,size)));
+            .body(responses.success(service.detail(conversationId,page,size,beforeMessageId)));
     }
+    @GetMapping("/{conversationId}/turns/{turnId}")
+    ResponseEntity<ApiResponse<TurnStatusView>> observe(@PathVariable UUID conversationId,@PathVariable UUID turnId){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
+            .body(responses.success(service.observe(conversationId,turnId,null)));
+    }
+    @GetMapping("/{conversationId}/turns")
+    ResponseEntity<ApiResponse<TurnStatusView>> lookup(@PathVariable UUID conversationId,
+            @RequestHeader("Idempotency-Key") String key){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
+            .body(responses.success(service.observe(conversationId,null,key)));
+    }
+    @GetMapping("/{conversationId}/messages/{messageId}/evidence")
+    ResponseEntity<ApiResponse<MessageEvidence>> evidence(@PathVariable UUID conversationId,
+            @PathVariable UUID messageId){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
+            .body(responses.success(service.evidence(conversationId,messageId)));
+    }
+    @ExceptionHandler(AssistantDomainException.class)
+    ResponseEntity<ApiResponse<Void>> domainError(AssistantDomainException error){
+        return ResponseEntity.status(error.getStatusCode()).cacheControl(CacheControl.noStore())
+            .header("Referrer-Policy","no-referrer")
+            .body(responses.error(error.code(),error.getReason(),null));
+    }
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+            description = "Terminal completed turn", useReturnTypeSchema = true)
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable turn still processing", useReturnTypeSchema = true)
     @PostMapping("/{conversationId}/messages")
     ResponseEntity<ApiResponse<TurnView>> submit(@PathVariable UUID conversationId,
            @RequestHeader("Idempotency-Key") String key,@Valid @RequestBody Ask input){
-        TurnOutcome outcome=service.submit(conversationId,key,input);
+        return turnResponse(service.submit(conversationId,key,input));
+    }
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+            description = "Terminal completed turn", useReturnTypeSchema = true)
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable turn still processing", useReturnTypeSchema = true)
+    @PostMapping("/{conversationId}/turns/{turnId}/recover")
+    ResponseEntity<ApiResponse<TurnView>> recover(@PathVariable UUID conversationId,@PathVariable UUID turnId){
+        return turnResponse(service.recover(conversationId,turnId));
+    }
+    private ResponseEntity<ApiResponse<TurnView>> turnResponse(TurnOutcome outcome){
         if(outcome.httpStatus()==503){
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .cacheControl(CacheControl.noStore()).header("Referrer-Policy","no-referrer")
-                .body(responses.error("ASSISTANT_UNAVAILABLE","Assistant answer is unavailable.",null));
+                .body(responses.error("ASSISTANT_TURN_FAILED","Assistant answer is unavailable.",null));
         }
         if(outcome.httpStatus()==409){
             return ResponseEntity.status(HttpStatus.CONFLICT).cacheControl(CacheControl.noStore())
-                .body(responses.error("ASSISTANT_SOURCE_STALE",
+                .header("Referrer-Policy","no-referrer").body(responses.error("ASSISTANT_SOURCE_STALE",
                     "Assistant evidence is no longer current.",null));
         }
         return ResponseEntity.status(outcome.httpStatus())

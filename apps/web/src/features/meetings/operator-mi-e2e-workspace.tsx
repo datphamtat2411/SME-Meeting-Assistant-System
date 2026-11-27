@@ -188,6 +188,11 @@ export function OperatorMiE2eWorkspace() {
     job?.status === 'COMPLETED_WITH_WARNINGS' ||
     job?.status === 'FAILED'
   const jobIsWaitingForTranscriptReview = job?.status === 'WAITING_FOR_REVIEW'
+  const transcriptPublished = job?.stageRuns.some(
+    (stage) =>
+      stage.stageCode === 'FINALIZING_TRANSCRIPT' &&
+      ['SUCCEEDED', 'SUCCEEDED_WITH_WARNING'].includes(stage.status)
+  )
   const canCreate =
     operatorMatchesExpected &&
     !meetingResult &&
@@ -379,7 +384,12 @@ export function OperatorMiE2eWorkspace() {
   }
 
   const loadTranscript = async (savedSegmentId?: string) => {
-    if (!meetingId || (!jobIsWaitingForTranscriptReview && !jobIsTerminal))
+    if (
+      !meetingId ||
+      (!transcriptPublished &&
+        !jobIsWaitingForTranscriptReview &&
+        !jobIsTerminal)
+    )
       return false
     setTranscriptPending(true)
     setTranscriptError(null)
@@ -455,13 +465,7 @@ export function OperatorMiE2eWorkspace() {
   }
 
   const saveCorrection = async (segmentId: string) => {
-    if (
-      !meetingId ||
-      !transcript ||
-      !jobIsWaitingForTranscriptReview ||
-      correctionPending ||
-      transcriptPending
-    )
+    if (!meetingId || !transcript || correctionPending || transcriptPending)
       return
     const segment = transcript.transcript.segments.find(
       (candidate) => candidate.id === segmentId
@@ -885,10 +889,9 @@ export function OperatorMiE2eWorkspace() {
               Regenerate Meeting Intelligence?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Core must verify the original admitted review for this exact
-              revision. This starts a separate Summary, Decision, and Action
-              Item run with its own inference budget. It does not retranscribe
-              the audio or replace the selected Summary or existing proposals.
+              This runs the configured intelligence stages for the current
+              transcript revision with a separate inference budget. Confirmed
+              records and selected human-edited summaries are preserved.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1448,6 +1451,11 @@ function TranscriptCard({
   onSaveCorrection: (segmentId: string) => void
 }) {
   const ready =
+    job?.stageRuns.some(
+      (stage) =>
+        stage.stageCode === 'FINALIZING_TRANSCRIPT' &&
+        ['SUCCEEDED', 'SUCCEEDED_WITH_WARNING'].includes(stage.status)
+    ) ||
     job?.status === 'WAITING_FOR_REVIEW' ||
     job?.status === 'COMPLETED' ||
     job?.status === 'COMPLETED_WITH_WARNINGS' ||
@@ -1516,8 +1524,7 @@ function TranscriptCard({
         )}
         {!ready && !evidence && (
           <p className='text-sm text-muted-foreground'>
-            Wait for Core to report WAITING_FOR_REVIEW; this page does not poll
-            automatically.
+            Refresh the processing job after Core publishes the transcript.
           </p>
         )}
         {evidence && (
@@ -1579,7 +1586,7 @@ function TranscriptCard({
                 <SpeakerMappings
                   meetingId={meetingId}
                   organizer={organizer}
-                  readOnly={!reviewGateOpen}
+                  readOnly={!ready}
                   disabled={
                     pending ||
                     Boolean(correctionPending) ||
@@ -1709,8 +1716,7 @@ function TranscriptCard({
                   }
                   const changed = draft.text.trim() !== segment.text.trim()
                   const canSave =
-                    reviewGateOpen &&
-                    (changed || segment.qualityStatus === 'SUSPICIOUS')
+                    ready && (changed || segment.qualityStatus === 'SUSPICIOUS')
                   const correctionHint =
                     !changed && segment.qualityStatus !== 'SUSPICIOUS'
                       ? 'Edit the transcript text above before approving this correction.'
@@ -1741,7 +1747,7 @@ function TranscriptCard({
                             approved: false,
                           })
                         }
-                        readOnly={!reviewGateOpen}
+                        readOnly={!ready}
                         disabled={
                           pending ||
                           Boolean(correctionPending) ||
@@ -1762,7 +1768,7 @@ function TranscriptCard({
                           })
                         }
                         disabled={
-                          !reviewGateOpen ||
+                          !ready ||
                           pending ||
                           Boolean(correctionPending) ||
                           reviewPending ||

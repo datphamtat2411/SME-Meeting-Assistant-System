@@ -1709,6 +1709,18 @@ Citations preserve exact source revisions and validated claim linkage. Historica
 answers must pass current meeting authorization and authoritative source verification.
 If ANY cited revision is no longer eligible/current, withhold the entire answer.
 
+V68 adds `CONVERSATIONAL` and `MEETING` citation support without rewriting
+historical messages. `answer_diagnostics` records safe limitation codes and
+bounded contributing source revisions. On a stale dependency, withhold the
+reply even if it has no displayed citations.
+
+`transcript_intelligence_refresh` holds one pending revision per meeting. A new
+revision replaces pending work; bounded leases and retry counts fence concurrent
+pollers. Committed derived jobs pin the immutable transcript snapshot and use
+the existing intelligence outbox. `processing_mi_regenerations.origin_review_id`
+is optional on new jobs; historical review receipts remain. Previously waiting
+offline jobs return to the ordinary processing lifecycle.
+
 ## 23.4 `assistant_admission_events`
 
 Core resource-abuse protection uses a dedicated PostgreSQL event table rather

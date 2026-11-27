@@ -1,0 +1,208 @@
+name: Mobile CI
+
+on:
+  push:
+    branches:
+      - pre-integration-develop
+      - develop
+      - 'feat/mobile-reintegration'
+      - 'feat/vietnamese-ui'
+      - main
+      - 'integration/**'
+      - 'mobile/**'
+  pull_request:
+    branches:
+      - pre-integration-develop
+      - develop
+      - 'feat/mobile-reintegration'
+      - 'feat/vietnamese-ui'
+      - main
+      - 'integration/**'
+      - 'mobile/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mobile-verify:
+    name: Mobile / Android verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/mobile
+    env:
+      CI: true
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read the committed Flutter SDK pin
+        id: flutter-pin
+        run: |
+          version="$(python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          version = json.loads(Path(".fvmrc").read_text()).get("flutter")
+          if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+              raise SystemExit("apps/mobile/.fvmrc must contain a stable Flutter version.")
+          print(version)
+          PY
+          )"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.flutter-pin.outputs.version }}
+          channel: stable
+          cache: true
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: |
+            apps/mobile/pubspec.lock
+            apps/mobile/android/gradle/wrapper/gradle-wrapper.properties
+            apps/mobile/android/settings.gradle.kts
+            apps/mobile/android/build.gradle.kts
+            apps/mobile/android/app/build.gradle.kts
+            apps/mobile/android/gradle.properties
+
+      - name: Verify effective Flutter, Dart, Java, Android SDK, and Gradle
+        run: |
+          flutter --version
+          dart --version
+          dart_version="$(dart --version 2>&1)"
+          grep -Fq '3.14.0' <<< "$dart_version" ||
+            { echo "Expected the Flutter-pinned Dart 3.14.0 toolchain." >&2; exit 1; }
+
+          java -version
+          java_major="$(java -version 2>&1 | sed -nE 's/.*version "([0-9]+).*/\1/p' | head -n 1)"
+          [[ "$java_major" == "17" ]] ||
+            { echo "Expected JDK 17, found Java $java_major." >&2; exit 1; }
+
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          [[ -n "$sdk_root" && -d "$sdk_root" ]] ||
+            { echo "The runner Android SDK is not available." >&2; exit 1; }
+          echo "Android SDK: $sdk_root"
+          gradle_version_file="$RUNNER_TEMP/mobile-gradle-version.txt"
+          (cd android && ./gradlew --version --console=plain) |
+            tee "$gradle_version_file"
+          grep -Fq 'Gradle 9.5.0' "$gradle_version_file" ||
+            { echo "The Android Gradle Wrapper did not resolve Gradle 9.5.0." >&2; exit 1; }
+          grep -Eq 'JVM: +17([.]|$)' "$gradle_version_file" ||
+            { echo "Gradle is not running on JDK 17." >&2; exit 1; }
+
+      - name: Resolve committed Flutter dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Test Android native verification diagnostics
+        run: python3 -m unittest tool.test_android_native_verification
+
+      - name: Validate static native Android configuration
+        run: python3 tool/validate_native_config.py
+
+      - name: Check dependency and native configuration drift
+        run: |
+          git -C "$GITHUB_WORKSPACE" diff --exit-code -- \
+            apps/mobile/.fvmrc \
+            apps/mobile/pubspec.yaml \
+            apps/mobile/pubspec.lock \
+            apps/mobile/android/settings.gradle.kts \
+            apps/mobile/android/gradle/wrapper/gradle-wrapper.properties \
+            apps/mobile/android/gradle.properties
+
+      - name: Check Dart formatting
+        run: |
+          if ! dart format --output=none --set-exit-if-changed lib test; then
+            dart format lib test
+            git diff -- lib test
+            exit 1
+          fi
+
+      - name: Analyze Mobile
+        run: flutter analyze
+
+      - name: Run complete Flutter tests with coverage
+        run: |
+          mkdir -p build/ci-evidence
+          flutter test \
+            --reporter=github \
+            --file-reporter=json:build/ci-evidence/flutter-test.json \
+            --timeout=2m \
+            --coverage \
+            --coverage-path=coverage/lcov.info
+
+      - name: Verify merged manifest and Android credential durability
+        run: python3 tool/run_android_native_verification.py
+
+      - name: Build and verify configured Android account links
+        run: |
+          flutter build apk --debug \
+            --dart-define=API_BASE_URL=https://api.mobile-ci.invalid/api/v1 \
+            --dart-define=ACCOUNT_LINK_HOST=meeting.mobile-ci.invalid
+          python3 tool/validate_account_link_manifest.py --host meeting.mobile-ci.invalid
+
+      - name: Build Android debug APK
+        run: >-
+          flutter build apk --debug
+          --dart-define=API_BASE_URL=https://api.mobile-ci.invalid/api/v1
+
+      - name: Verify disabled Android account links
+        run: python3 tool/validate_account_link_manifest.py
+
+      - name: Upload Android native verification diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mobile-android-native-diagnostics
+          path: |
+            apps/mobile/build/app/test-results/testDebugUnitTest/*.xml
+            apps/mobile/build/reports/profile/*.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload test report and coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mobile-test-evidence
+          path: |
+            apps/mobile/build/ci-evidence/flutter-test.json
+            apps/mobile/coverage/lcov.info
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Android debug APK
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mobile-android-debug-apk
+          path: apps/mobile/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Verify pinned toolchain and dependency inputs stayed unchanged
+        if: ${{ !cancelled() }}
+        run: |
+          git -C "$GITHUB_WORKSPACE" diff --exit-code -- \
+            apps/mobile/.fvmrc \
+            apps/mobile/pubspec.yaml \
+            apps/mobile/pubspec.lock \
+            apps/mobile/android/settings.gradle.kts \
+            apps/mobile/android/gradle/wrapper/gradle-wrapper.properties \
+            apps/mobile/android/gradle.properties

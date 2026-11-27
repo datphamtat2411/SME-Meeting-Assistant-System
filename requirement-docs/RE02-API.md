@@ -844,9 +844,16 @@ A separate `/my-action-items` route is not required in the baseline. `GET /actio
 | API-EP-AST-001 | GET | /api/v1/assistant/conversations | List assistant conversations owned/visible to the caller. |
 | API-EP-AST-002 | POST | /api/v1/assistant/conversations | Create an assistant conversation with the approved meeting/global knowledge scope. |
 | API-EP-AST-003 | GET | /api/v1/assistant/conversations/{conversationId} | Retrieve an authorized assistant conversation/history. |
-| API-EP-AST-004 | POST | /api/v1/assistant/conversations/{conversationId}/messages | Submit a user question/message and obtain or initiate the grounded assistant response. |
+| API-EP-AST-004 | POST | /api/v1/assistant/conversations/{conversationId}/messages | Submit a message and obtain or initiate a conversational, grounded, mixed or evidence-limited reply. |
 
 Conversation history MUST NOT widen current authorization. Source citations/evidence returned with assistant answers remain subject to current meeting-content authorization.
+
+`CONVERSATIONAL` answers have general units and no citations. `GROUNDED` and
+`PARTIAL` answers carry verified citations; `PARTIAL` can express degraded
+retrieval, qualified evidence or interpretation. A generated
+`INSUFFICIENT_EVIDENCE` reply may include uncited explanation. `limitation` is
+an optional diagnostic code on message/turn views. A source-dependent reply
+can become unavailable when a contributing revision changes.
 
 ---
 
@@ -879,6 +886,14 @@ Purely client-local appearance preferences do not require a backend API unless p
 | API-EP-EXP-002 | POST | /api/v1/meetings/{meetingId}/exports | Create/generate an authorized export in a supported format such as Markdown or PDF. |
 | API-EP-EXP-003 | GET | /api/v1/exports/{exportId} | Retrieve export generation status/metadata. |
 | API-EP-EXP-004 | POST | /api/v1/exports/{exportId}/access-url | Create a short-lived authorized access capability for a persisted export artifact. |
+| API-EP-EXP-005 | GET | /api/v1/meetings/{meetingId}/exports/capabilities | Read the configured availability of export admission, recovery, status, and access for an authorized meeting. |
+| API-EP-EXP-006 | POST | /api/v1/meetings/{meetingId}/exports/recover | Recover an existing admission receipt without creating an export. |
+
+Export status includes the server-derived boolean `retryEligible`. It is true only when the observed durable FAILED attempt is eligible for automatic requeue under the configured worker retry policy (including an immutable intake and remaining attempts). It does not promise that a worker is currently running or that retry backoff has elapsed. Clients must continue observing the original export and must not treat retry-eligible failures as terminal. A client receiving a legacy FAILED response without this field cannot safely infer terminal failure from the error code or attempt count alone.
+
+Export capability discovery requires current meeting-content read authorization and returns `meetingId` and four booleans: `admission`, `recovery`, `status`, `access`. Availability describes configured endpoints, not worker health, storage health, or permission to generate a particular Minutes revision. Public admission and worker gates remain unchanged. Recovery and status require the public export gate; new admission and access require both public and worker gates.
+
+Replay-only recovery requires current content authorization, the original `Idempotency-Key` header, and the original `format`. It matches the same actor, meeting and request digest, and returns HTTP 200 with `outcome: RECOVERED` and the original `admission` receipt, or `outcome: UNAVAILABLE` with no admission. Expiration is evaluated on the server clock. The operation MUST NOT create a receipt, intake, or export job; an unavailable receipt MUST NOT trigger automatic submission to the creation endpoint. A distinct route avoids treating recovery as ordinary creation on older deployments. Responses to both discovery and recovery are non-cacheable.
 
 # 23. Endpoint Areas Intentionally Not Duplicated
 
@@ -909,7 +924,7 @@ AI Core SHALL still enforce the approved retrieval/filtering contract and MUST N
 Internal synchronous AI calls SHALL have explicit timeouts and SHALL fail safely without fabricating an answer when the dependency is unavailable.
 | ID | Method | Path | Purpose |
 | --- | --- | --- | --- |
-| API-EP-INT-001 | POST | /internal/v1/assistant/answers | Generate a grounded assistant answer for an approved caller/query/scope supplied by Core API. |
+| API-EP-INT-001 | POST | /internal/v1/assistant/answers | Generate an Assistant reply for a Core-approved scope, using verified retrieval or bounded canonical source context as appropriate. |
 
 The detailed internal request/response schema remains package/task-level because it may evolve faster than the public client API. Additional internal endpoints MUST be justified by architecture needs; they are not automatically created for every AI pipeline stage.
 

@@ -9,15 +9,19 @@ import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { handleServerError } from '@/lib/handle-server-error'
+import { i18n } from '@/lib/i18n'
 import { setRequestRecoverySessionLossHandler } from '@/lib/request-recovery'
 import { configureAuthLifecycle } from '@/features/auth/session/auth-lifecycle'
+import { getSafeSessionRedirect } from '@/features/auth/session/current-user'
 import {
-  clearCurrentUserCache,
-  getSafeSessionRedirect,
-} from '@/features/auth/session/current-user'
+  configureSessionRevalidation,
+  noteBrowserSessionLoss,
+  revalidateBrowserSession,
+} from '@/features/auth/session/session-revalidation'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
+import { containProtectedState } from './protected-state-containment'
 // Generated Routes
 import { routeTree } from './routeTree.gen'
 // Styles
@@ -53,18 +57,24 @@ const queryClient = new QueryClient({
         handleServerError(error)
 
         if (apiError.status === 304) {
-          toast.error('Content not modified!')
+          toast.error(i18n.t('errors:notModified'))
         }
       },
     },
   },
   queryCache: new QueryCache({
-    onError: (error) => {
+    onError: (error, query) => {
+      if (
+        query.meta?.featureErrorBoundary === true ||
+        query.meta?.handlesOwnErrors === true
+      ) {
+        return
+      }
       const apiError = normalizeCoreApiError(error)
       if (apiError.recoveryOutcome) return
 
       if (apiError.status === 500) {
-        toast.error('Internal Server Error!')
+        toast.error(i18n.t('errors:internal'))
         // Only navigate to error page in production to avoid disrupting HMR in development
         if (import.meta.env.PROD) {
           router.navigate({ to: '/500' })
@@ -82,16 +92,31 @@ const router = createRouter({
   defaultPreloadStaleTime: 0,
 })
 
-function containProtectedState(): void {
-  void queryClient.cancelQueries()
-  queryClient.removeQueries()
-  queryClient.getMutationCache().clear()
-  clearCurrentUserCache(queryClient)
-}
+configureSessionRevalidation({
+  queryClient,
+  onContainment: () => containProtectedState(queryClient),
+  onChanged: (preserveProtectedRoute) => {
+    // An unchanged mounted protected route already observes verification
+    // reactively. Reloading its loaders can discard compatible local drafts.
+    if (
+      preserveProtectedRoute &&
+      router.state.matches.some(
+        (match) =>
+          match.routeId === '/_authenticated' && match.status === 'success'
+      )
+    ) {
+      return
+    }
+    void router.invalidate()
+  },
+})
 
 configureAuthLifecycle({
+  onRevalidation: () => {
+    void revalidateBrowserSession()
+  },
   onContainment: () => {
-    containProtectedState()
+    containProtectedState(queryClient)
     void router.invalidate()
   },
   onNavigate: (redirect) => {
@@ -104,7 +129,8 @@ configureAuthLifecycle({
 })
 
 setRequestRecoverySessionLossHandler(() => {
-  containProtectedState()
+  noteBrowserSessionLoss()
+  containProtectedState(queryClient)
   void router.invalidate()
 })
 

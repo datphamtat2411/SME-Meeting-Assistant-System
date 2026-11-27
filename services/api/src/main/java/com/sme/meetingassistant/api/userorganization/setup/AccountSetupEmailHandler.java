@@ -1,5 +1,7 @@
 package com.sme.meetingassistant.api.userorganization.setup;
 
+import com.sme.meetingassistant.api.config.ApplicationPageUrlPolicy;
+import com.sme.meetingassistant.api.config.RuntimeProperties;
 import com.sme.meetingassistant.api.notification.email.TransactionalEmailHandler;
 import java.net.URI;
 import java.util.Optional;
@@ -13,13 +15,15 @@ import org.springframework.stereotype.Component;
 public final class AccountSetupEmailHandler implements TransactionalEmailHandler {
     private final JdbcTemplate jdbc;
     private final AccountSetupTokenCodec tokens;
-    private final String setupUrl;
+    private final URI destination;
 
     public AccountSetupEmailHandler(JdbcTemplate jdbc, AccountSetupTokenCodec tokens,
-            @Value("${app.account-setup.setup-url:}") String setupUrl) {
+            @Value("${app.account-setup.setup-url:}") String setupUrl,
+            RuntimeProperties runtimeProperties) {
         this.jdbc = jdbc;
         this.tokens = tokens;
-        this.setupUrl = setupUrl;
+        this.destination = ApplicationPageUrlPolicy.validate(
+                setupUrl, runtimeProperties.getEnvironment(), "Setup");
     }
 
     @Override
@@ -38,12 +42,6 @@ public final class AccountSetupEmailHandler implements TransactionalEmailHandler
             """, Integer.class, tokenId, recipientEmail);
         if (count == null || count != 1) return Optional.empty();
 
-        URI destination = URI.create(setupUrl);
-        if (!"https".equalsIgnoreCase(destination.getScheme()) || destination.getHost() == null
-                || destination.getUserInfo() != null || destination.getFragment() != null
-                || destination.getRawQuery() != null) {
-            throw new IllegalStateException("Setup destination is not an approved HTTPS page");
-        }
         String link = destination + "#token=" + tokens.issue(tokenId);
         return Optional.of(new Content("Complete your SME Meeting Assistant account setup",
             "Set your account password using this one-time link (expires within 24 hours):\n"

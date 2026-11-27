@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { queryOptions } from '@tanstack/react-query'
 import {
   CoreApiError,
   coreApi,
@@ -7,6 +8,7 @@ import {
   type ApiResponseDataWithEtag,
   type FieldErrors,
 } from '@/lib/core-api'
+import { wallTimeInstant } from '@/lib/regional-time'
 import { meetingViewSchema, type MeetingView } from './detail-api'
 
 const idSchema = z.string().min(1)
@@ -359,6 +361,19 @@ export async function checkMeetingSchedule(
   return parseScheduleCheckResponse({ data: response, meta: {} })
 }
 
+export function meetingScheduleCheckQueryOptions(input: ScheduleCheckInput) {
+  const payload = buildScheduleCheckPayload(input)
+  return queryOptions({
+    queryKey: ['meeting-schedule-checks', 'preview', payload] as const,
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      checkMeetingSchedule(payload, signal),
+    retry: false,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: false,
+  })
+}
+
 export async function scheduleMeeting(
   meetingId: string,
   etag: string,
@@ -383,45 +398,12 @@ export async function scheduleMeeting(
 
 export function canonicalizeLocalDateTime(
   date: string,
-  time: string
+  time: string,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone,
+  occurrence?: string
 ): string | undefined {
-  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
-  const timeMatch = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(time)
-  if (!dateMatch || !timeMatch) return undefined
-
-  const year = Number(dateMatch[1])
-  const month = Number(dateMatch[2])
-  const day = Number(dateMatch[3])
-  const hours = Number(timeMatch[1])
-  const minutes = Number(timeMatch[2])
-  const seconds = Number(timeMatch[3] ?? 0)
-  if (
-    month < 1 ||
-    month > 12 ||
-    day < 1 ||
-    hours > 23 ||
-    minutes > 59 ||
-    seconds > 59
-  ) {
-    return undefined
-  }
-
-  const value = new Date(0)
-  value.setFullYear(year, month - 1, day)
-  value.setHours(hours, minutes, seconds, 0)
-  if (
-    !Number.isFinite(value.getTime()) ||
-    value.getFullYear() !== year ||
-    value.getMonth() !== month - 1 ||
-    value.getDate() !== day ||
-    value.getHours() !== hours ||
-    value.getMinutes() !== minutes ||
-    value.getSeconds() !== seconds
-  ) {
-    return undefined
-  }
-
-  return value.toISOString()
+  const instant = wallTimeInstant(date, time, timezone, occurrence)
+  return instant ? new Date(instant).toISOString() : undefined
 }
 
 function mapMeetingFieldErrorsFromZod(error: z.ZodError): FieldErrors {

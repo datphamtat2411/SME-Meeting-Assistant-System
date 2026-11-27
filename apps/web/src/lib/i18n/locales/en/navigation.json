@@ -1,0 +1,17 @@
+{
+  "general": "General",
+  "dashboard": "Dashboard",
+  "meetings": "Meetings",
+  "calendar": "Calendar",
+  "actionItems": "Action Items",
+  "assistant": "AI Assistant",
+  "rooms": "Meeting Rooms",
+  "members": "Members",
+  "other": "Other",
+  "settings": "Settings",
+  "account": "Account",
+  "profile": "Profile",
+  "appearance": "Appearance",
+  "notifications": "Notifications",
+  "helpCenter": "Help Center"
+}

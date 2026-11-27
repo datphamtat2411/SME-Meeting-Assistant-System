@@ -14,9 +14,15 @@ final class AssistantAnswerValidator {
     static final int MAX_BYTES=256*1024;
     private static final Pattern CITATION=Pattern.compile("C[1-9][0-9]{0,2}");
     private static final Pattern CLAIM=Pattern.compile("A[1-9][0-9]{0,2}");
-    private static final Set<String> TYPES=Set.of("TRANSCRIPT","SUMMARY","DECISION","ACTION_ITEM");
-    private static final Set<String> STATUSES=Set.of("GROUNDED","PARTIAL","INSUFFICIENT_EVIDENCE","FAILED");
-    private static final Set<String> SUPPORTS=Set.of("SUPPORTED","UNSUPPORTED","CONFLICTED");
+    private static final Set<String> TYPES=Set.of("TRANSCRIPT","SUMMARY","DECISION","ACTION_ITEM","MEETING");
+    private static final Set<String> STATUSES=Set.of("GROUNDED","PARTIAL","CONVERSATIONAL","INSUFFICIENT_EVIDENCE","FAILED");
+    private static final Set<String> SUPPORTS=Set.of("SUPPORTED","UNSUPPORTED","CONFLICTED","GENERAL","INFERRED");
+    private static final Set<String> CITED=Set.of("SUPPORTED","CONFLICTED","INFERRED");
+    private static final Set<String> FAILURE_CODES=Set.of("INVALID_REQUEST","INVALID_AUTHORIZATION",
+        "AUTHORIZATION_UNAVAILABLE","SOURCE_VERIFICATION_UNAVAILABLE","SOURCE_INVALIDATED","RETRIEVAL_FAILURE",
+        "MODEL_INDEX_INCOMPATIBLE","PROVIDER_UNAVAILABLE","PROVIDER_TIMEOUT","INVALID_GENERATED_RESPONSE",
+        "CITATION_VALIDATION_FAILURE","CONTEXT_BUDGET_EXHAUSTED","INSUFFICIENT_CONTEXT","FEATURE_UNAVAILABLE",
+        "DEPENDENCY_UNAVAILABLE","REQUEST_TIMEOUT","CANCELLED");
     private final AssistantSourceVerifier sources;
     AssistantAnswerValidator(AssistantSourceVerifier sources) { this.sources=sources; }
 
@@ -44,22 +50,45 @@ final class AssistantAnswerValidator {
         if ("FAILED".equals(status)) {
             if(text!=null||claims.size()!=0||citations.size()!=0||failures.isEmpty())
                 throw new InvalidAnswer();
+            var diagnostics=WorkerJson.MAPPER.createObjectNode();
             for(JsonNode failure:failures) {
                 if(!failure.isObject()||!failure.path("category").isString()
                         ||!failure.path("code").isString()||!failure.path("retryable").isBoolean()
                         ||!failure.path("message").isString()) throw new InvalidAnswer();
+                String code=failure.path("category").asString();
+                if(!FAILURE_CODES.contains(code)||!code.equals(failure.path("code").asString()))throw new InvalidAnswer();
             }
+            diagnostics.put("failureCode",failures.get(0).path("category").asString());
             return new ValidatedAnswer("FAILED","Assistant is temporarily unavailable.",
-                claims,diag,null,List.of(),List.of());
+                claims,diagnostics,null,List.of(),List.of());
         }
         if(!scopeId.toString().equals(WorkerJson.string(root,"scopeId",36))
             || !scopeVersion.equals(WorkerJson.string(root,"scopeVersion",128))
             || !failures.isEmpty()) throw new InvalidAnswer();
         if (text==null) throw new InvalidAnswer();
-        if("INSUFFICIENT_EVIDENCE".equals(status)) {
-            if(!claims.isEmpty()||!citations.isEmpty()||(provenance!=null&&!provenance.isNull()))
-                throw new InvalidAnswer();
-            return new ValidatedAnswer(status,text,claims,diag,null,List.of(),List.of());
+        var safeDiagnostics=WorkerJson.MAPPER.createObjectNode();
+        JsonNode limitation=diag.get("contextLimitation");
+        if(limitation!=null&&!limitation.isNull()){
+            String code=WorkerJson.string(diag,"contextLimitation",96);
+            if(!code.matches("[A-Z][A-Z0-9_]{0,95}"))throw new InvalidAnswer();
+            safeDiagnostics.put("contextLimitation",code);
+        }
+        JsonNode dependencies=diag.get("sourceDependencies");
+        var safeDependencies=safeDiagnostics.putArray("sourceDependencies");
+        if(dependencies!=null){
+            for(JsonNode dependency:WorkerJson.array(diag,"sourceDependencies",0,8)){
+                JsonNode sourceIdentity=dependency.get("sourceIdentity");
+                String kind=WorkerJson.string(sourceIdentity,"sourceType",32);
+                UUID id=WorkerJson.uuid(sourceIdentity,"sourceId");
+                long revision=WorkerJson.number(dependency.get("sourceRevision"),"number",0,Long.MAX_VALUE);
+                if(!TYPES.contains(kind)||!meetingId.equals(WorkerJson.uuid(sourceIdentity,"meetingId"))
+                        ||!sources.current(kind,id,meetingId,revision))throw new InvalidAnswer();
+                safeDependencies.addObject().put("type",kind).put("id",id.toString()).put("revision",revision);
+            }
+        }
+        if("INSUFFICIENT_EVIDENCE".equals(status) && claims.isEmpty()
+                && citations.isEmpty() && (provenance==null || provenance.isNull())) {
+            return new ValidatedAnswer(status,text,claims,safeDiagnostics,null,List.of(),List.of());
         }
         if(claims.isEmpty()||provenance==null||!provenance.isObject()) throw new InvalidAnswer();
         if(!provenance.path("provider").isString()||!provenance.path("configuredModel").isString()
@@ -100,7 +129,7 @@ final class AssistantAnswerValidator {
         for(String id:byId.keySet())usage.put(id,new ArrayList<>());
         Set<String> seenClaims=new HashSet<>();
         List<ClaimView> safeClaims=new ArrayList<>();
-        boolean hasSupported=false,hasUnsupported=false;
+        Set<String> supports=new HashSet<>();
         for(JsonNode claim:claims) {
             String id=WorkerJson.string(claim,"claimId",8);
             String body=WorkerJson.string(claim,"text",4000);
@@ -116,26 +145,29 @@ final class AssistantAnswerValidator {
                 ids.add(citationId);
                 usage.get(citationId).add(id);
             }
-            if("UNSUPPORTED".equals(support)) {
-                hasUnsupported=true;
-                if(!ids.isEmpty())throw new InvalidAnswer();
-            } else {
-                hasSupported=true;
-                if(ids.isEmpty()||("CONFLICTED".equals(support)&&ids.size()<2))throw new InvalidAnswer();
-            }
+            if(CITED.contains(support)!=!ids.isEmpty() || ("CONFLICTED".equals(support)&&ids.size()<2))
+                throw new InvalidAnswer();
+            supports.add(support);
             safeClaims.add(new ClaimView(id,body,support,List.copyOf(ids)));
         }
-        if(!hasSupported||("GROUNDED".equals(status)&&hasUnsupported)
-            ||("PARTIAL".equals(status)&&!hasUnsupported
-                && safeClaims.stream().noneMatch(c->"CONFLICTED".equals(c.support())))
-            ||usage.values().stream().anyMatch(List::isEmpty))throw new InvalidAnswer();
+        boolean hasCited=supports.stream().anyMatch(CITED::contains);
+        boolean valid=switch(status) {
+            case "GROUNDED" -> hasCited && Set.of("SUPPORTED","CONFLICTED").containsAll(supports);
+            case "PARTIAL" -> hasCited;
+            case "CONVERSATIONAL" -> supports.equals(Set.of("GENERAL"));
+            case "INSUFFICIENT_EVIDENCE" -> !hasCited && supports.contains("UNSUPPORTED");
+            default -> false;
+        };
+        if(!valid || usage.values().stream().anyMatch(List::isEmpty)
+            ||!text.equals(String.join("\n\n",safeClaims.stream().map(ClaimView::text).toList())))
+            throw new InvalidAnswer();
         List<CitationView> safeCitations=new ArrayList<>();
         for(var entry:byId.entrySet()){
             var c=entry.getValue();
             safeCitations.add(new CitationView(c.citationId(),c.sourceType(),c.sourceId(),c.meetingId(),
                 c.sourceRevision(),c.retrievalChunkId(),List.copyOf(usage.get(entry.getKey()))));
         }
-        return new ValidatedAnswer(status,text,claims,diag,provenance,
+        return new ValidatedAnswer(status,text,claims,safeDiagnostics,provenance,
             List.copyOf(safeCitations),List.copyOf(safeClaims));
     }
     static final class InvalidAnswer extends RuntimeException {

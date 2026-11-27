@@ -1,12 +1,13 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { ContentSection } from '../components/content-section'
 import { AccountForm } from './account-form'
 
 export function SettingsAccount() {
+  const { t } = useUiTranslation()
   return (
     <ContentSection
-      title='Account'
-      desc='Update your account settings. Set your preferred language and
-          timezone.'
+      title={t('settings:account')}
+      desc={t('settings:accountDescription')}
     >
       <AccountForm />
     </ContentSection>

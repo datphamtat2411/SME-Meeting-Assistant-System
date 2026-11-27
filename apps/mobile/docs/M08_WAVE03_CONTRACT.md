@@ -1,0 +1,140 @@
+# M08 — Wave 03 secure Android account links
+
+## Contract and deployment configuration
+
+Build with an explicitly approved Web hostname via
+`--dart-define=ACCOUNT_LINK_HOST=<approved-web-host>`, separately from
+`API_BASE_URL`. The Flutter Gradle dart-defines property supplies the same
+host to the generated Android manifest. No host means disabled account-link
+handling, with browser guidance; malformed explicit host configuration fails.
+There is no default production hostname or wildcard. Login and recovery
+requests remain usable without this configuration.
+
+The authoritative Dart parser accepts HTTPS at the exact configured host
+(with an omitted port or explicit 443), no user information or query, the
+exact paths `/account-setup` and `/reset-password` or existing compatibility
+paths `/sign-up` and `/otp`, and exactly one fragment token parameter.
+Form-style URL decoding occurs once; malformed encodings, whitespace/control
+characters, invalid UTF-16, unexpected paths, and overlong values are rejected.
+Raw URL size is bounded at 40,000 UTF-16 code units and decoded capability size
+at 4,096. A parsed capability is not proof of backend authorization.
+
+## Lifecycle and ownership
+
+Android VIEW intents are acquired by the existing activity, not generic
+Flutter routing. The transient native buffer holds at most four distinct raw
+entries and drops the oldest on overflow; Dart takes each entry once in
+arrival order. Each delivery carries its original launch/subsequent-intent
+classification; dequeue order never grants initial-link auto-entry.
+Activity recreation does not re-read the original intent.
+The default Flutter deep-link handler is disabled. The application-scoped
+receiver registers its listener before draining and rechecks after delivery.
+Raw URL references are dropped after parsing. Dart retains at most one
+validated pending candidate and one active ticket; equivalent path aliases
+and decoded capability values deduplicate by a bounded, non-persistent
+fingerprint. A terminal attempt does not auto-reopen on repeated delivery.
+
+Signed-out initial links may open once after safe session restoration.
+Other deliveries require deliberate continuation, including a subsequent
+intent received before the receiver's first drain; authenticated links explain
+that the capability may belong to another account. New links never replace
+an active form or terminal outcome silently. Cancel the existing form or
+finish the operation before continuing a deferred link. Active recording,
+import, submission/upload and unsafe session transitions block entry.
+The same guards are rechecked before credential mutation dispatch. Existing
+session containment remains authoritative even when work is active.
+Incompatible session navigation changes discard stale link context. A fresh
+link received during the verification gate remains deferred; after successful
+verification it cannot replace the terminal outcome and requires explicit
+continuation after that outcome is acknowledged.
+Deferred links are not restored from persistent storage or auto-opened on idle.
+Wave 04 binds initial entry, paste continuation, banner actions and deferred
+cleanup to the non-sensitive pending-candidate revision. Equivalent duplicates
+retain the same revision. A stale continuation or discard cannot act on a
+replacement candidate; the replacement requires its own explicit action.
+
+The account route reuses Wave 02 credential workflows; the host continues to
+own non-sensitive outcomes when mandatory reset reconciliation replaces the
+navigator. Retry deadlines are application-scoped, preserving the existing
+60-second recovery acknowledgement cooldown and server Retry-After. HTTP 404
+means service unavailable, not proof that a capability expired or was consumed.
+Cancellation returns to a compatible prior route; signed-out terminal
+continuation explicitly returns to sign-in, even from recovery acknowledgement.
+Whole-link paste uses the same parser and entry rules, with no raw token input
+in the production authentication flow. Clipboard access is deliberate.
+
+The existing foreground-only recording lifecycle may interrupt recording when
+the user switches to an external email application. Account-link guards prevent
+additional avoidable interruption from link entry or mutation; they do not
+provide background recording or override mandatory security containment.
+Physical-device acceptance must verify this interaction.
+
+## Android association and verification
+
+Build example (synthetic host for configuration tests only):
+
+```sh
+flutter build apk --debug \
+  --dart-define=API_BASE_URL=https://api.mobile-ci.invalid/api/v1 \
+  --dart-define=ACCOUNT_LINK_HOST=meeting.mobile-ci.invalid
+python3 tool/validate_account_link_manifest.py --host meeting.mobile-ci.invalid
+```
+
+For an unconfigured build omit ACCOUNT_LINK_HOST and run the same manifest
+validator without --host. The configured manifest contains exact path
+filters, verified HTTPS VIEW/DEFAULT/BROWSABLE intent configuration, and no
+generic domain-wide filter. Native intent matching does not enforce the
+default port when no explicit port is present; Dart enforces it.
+
+Deployment owner must publish at
+`https://<approved-web-host>/.well-known/assetlinks.json` (HTTPS, JSON,
+no redirect), substituting the actual installed APK signing SHA-256 certificate:
+
+```json
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "vn.sme.meetingassistant.sme_meeting_assistant",
+      "sha256_cert_fingerprints": ["<actual-signing-certificate-sha256>"]
+    }
+  }
+]
+```
+
+Use apksigner verify --print-certs on the installed build's APK or the
+deployment-approved Play app-signing certificate (not the upload key).
+Never publish a debug certificate on a production domain without approval.
+
+On supported Android 12+ devices, inspect and request re-verification:
+
+```sh
+adb shell pm set-app-links --package vn.sme.meetingassistant.sme_meeting_assistant 0 all
+adb shell pm verify-app-links --re-verify vn.sme.meetingassistant.sme_meeting_assistant
+adb shell pm get-app-links vn.sme.meetingassistant.sme_meeting_assistant
+```
+
+Allow Android to complete asynchronous verification; inspect the actual host
+state and user link-selection settings. For forced intent delivery tests use
+synthetic, non-authorizing links only; an explicit component/package proves
+delivery, not verified default handling. Verify cold launch, warm launch,
+activity recreation, duplicate links, and normal email-client handoff without
+forcing the component, including fragment preservation. Browser fallback
+uses the existing Web callback; test with the app absent or link association
+disabled. Never paste real capabilities into shell history, logs or screenshots.
+
+## Acceptance status
+
+The Wave 03 baseline [713ddc85](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/commit/713ddc8531abacd4ed95ee68d11a910ac49d2f74)
+passed [Mobile CI 45901286507](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45901286507):
+634 Flutter tests, formatting, analysis, native credential verification and
+both configured/unconfigured Android APK and effective manifest checks.
+This resolves the earlier Maven Central HTTP 429 provisioning blocker without
+changing dependency pins or verification gates. Wave 04 adds candidate-bound
+continuation fencing and regressions; see [M08 acceptance](M08_ACCEPTANCE.md)
+for its separate revision-specific results and remaining deployment gates.
+
+Approved deployment host, actual installed signing certificate, published
+Digital Asset Links association, physical-device verification, SMTP and live
+Core/Web acceptance remain separate from synthetic build and fixture evidence.

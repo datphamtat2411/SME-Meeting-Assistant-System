@@ -119,14 +119,21 @@ public final class ExportJobProcessor {
         var snapshot = envelope.snapshot();
         if (!stillOwner.get()) return false;
 
-        byte[] snapshotBytes = codec.snapshotBytes(snapshot);
+        byte[] snapshotBytes = codec.snapshotBytes(envelope, frozen);
         String snapshotSha = ExportSnapshotCodec.sha256(snapshotBytes);
         String snapshotKey = ExportDigests.snapshotKey(claim.id(), snapshot.sourceFingerprint());
-        storage.putVerified(snapshotKey, snapshotBytes, "application/json", snapshotSha);
+        if (envelope.schemaVersion() == ExportSnapshotCodec.LEGACY_INTAKE_VERSION) {
+            storage.putLegacySnapshotVerified(snapshotKey, snapshotBytes,
+                    observed -> codec.sameLegacySnapshot(snapshotBytes, observed));
+        } else {
+            storage.putVerified(snapshotKey, snapshotBytes, "application/json", snapshotSha);
+        }
         if (!stillOwner.get()) return false;
 
+        boolean enriched = envelope.schemaVersion() == ExportSnapshotCodec.CURRENT_INTAKE_VERSION;
         String version = claim.format() == ExportFormat.PDF
-                ? PdfMinutesRenderer.VERSION : MarkdownMinutesRenderer.VERSION;
+                ? (enriched ? PdfMinutesRenderer.VERSION_2 : PdfMinutesRenderer.VERSION)
+                : (enriched ? MarkdownMinutesRenderer.VERSION_2 : MarkdownMinutesRenderer.VERSION);
         if (!state.pinSnapshot(claim.id(), claim.claimToken(),
                 snapshot.sourceFingerprint(), version)) {
             return false;
@@ -137,12 +144,12 @@ public final class ExportJobProcessor {
         String artifactSha;
         String contentType;
         if (claim.format() == ExportFormat.PDF) {
-            var result = pdf.render(snapshot);
+            var result = pdf.render(snapshot, version);
             artifact = result.bytes();
             artifactSha = result.sha256();
             contentType = result.mediaType();
         } else {
-            var result = markdown.render(snapshot);
+            var result = markdown.render(snapshot, version);
             artifact = result.utf8();
             artifactSha = result.sha256();
             contentType = result.mediaType();
@@ -174,10 +181,8 @@ public final class ExportJobProcessor {
         metrics.expiredClaims(state.failExpired(25));
         List<UUID> due = jdbc.query("""
             SELECT e.id FROM meeting_exports e
-              JOIN meeting_export_intakes i ON i.export_id=e.id
-             WHERE e.status='FAILED' AND e.generation_attempt < ?
-               AND e.last_error_code IN
-                   ('EXPORT_STORAGE_UNAVAILABLE','EXPORT_LEASE_EXPIRED')
+             WHERE
+            """ + MeetingExportRepository.RETRY_ELIGIBLE + """
                AND e.updated_at <= clock_timestamp() -
                    ((? * (1 << LEAST(e.generation_attempt-1, 10))) * INTERVAL '1 second')
              ORDER BY e.updated_at,e.id LIMIT 25

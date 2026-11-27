@@ -11,7 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -24,7 +24,7 @@ import tools.jackson.databind.JsonNode;
 /** Private mTLS Core authority check used by retrieval; it returns no canonical content. */
 @RestController
 @RequestMapping("/internal/v1/worker/knowledge-indexing/source-verification")
-@ConditionalOnProperty(prefix = "app.media.knowledge-indexing", name = "enabled", havingValue = "true")
+@ConditionalOnExpression("${app.media.knowledge-indexing.enabled:false} || ${app.assistant.enabled:false}")
 public class KnowledgeSourceVerificationController {
     private static final int MAX_COMMAND_BYTES = 64 * 1024;
     private final KnowledgeIndexingWorkerService worker;
@@ -56,7 +56,7 @@ public class KnowledgeSourceVerificationController {
         JsonNode identity = value.get("sourceIdentity");
         WorkerJson.fields(identity, "sourceType", "sourceId", "meetingId");
         String sourceType = WorkerJson.choice(identity, "sourceType", "TRANSCRIPT", "SUMMARY", "DECISION",
-            "ACTION_ITEM");
+            "ACTION_ITEM", "MEETING");
         UUID sourceId = WorkerJson.uuid(identity, "sourceId");
         UUID meetingId = WorkerJson.uuid(identity, "meetingId");
         JsonNode revision = value.get("sourceRevision");

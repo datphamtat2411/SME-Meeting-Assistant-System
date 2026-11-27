@@ -1,10 +1,12 @@
 import { Logo } from '@/assets/logo'
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import dashboardDark from './assets/dashboard-dark.png'
 import dashboardLight from './assets/dashboard-light.png'
 import { UserAuthForm } from './components/user-auth-form'
 
 export function SignIn2() {
+  const { t } = useUiTranslation()
   return (
     <div className='relative container grid h-svh flex-col items-center justify-center lg:max-w-none lg:grid-cols-2 lg:px-0'>
       <div className='lg:p-8'>
@@ -16,27 +18,28 @@ export function SignIn2() {
         </div>
         <div className='mx-auto flex w-full max-w-sm flex-col justify-center space-y-2'>
           <div className='flex flex-col space-y-2 text-start'>
-            <h2 className='text-lg font-semibold tracking-tight'>Sign in</h2>
+            <h2 className='text-lg font-semibold tracking-tight'>
+              {t('auth:signIn')}
+            </h2>
             <p className='text-sm text-muted-foreground'>
-              Enter your email and password below to log into{' '}
-              <br className='max-sm:hidden' /> your account.
+              {t('auth:signInDescription')}
             </p>
           </div>
           <UserAuthForm />
           <p className='px-8 text-center text-sm text-muted-foreground'>
-            By clicking sign in, you agree to our{' '}
+            {t('auth:termsPrefix')}{' '}
             <a
               href='/terms'
               className='underline underline-offset-4 hover:text-primary'
             >
-              Terms of Service
+              {t('auth:terms')}
             </a>{' '}
-            and{' '}
+            {t('auth:and')}{' '}
             <a
               href='/privacy'
               className='underline underline-offset-4 hover:text-primary'
             >
-              Privacy Policy
+              {t('auth:privacy')}
             </a>
             .
           </p>

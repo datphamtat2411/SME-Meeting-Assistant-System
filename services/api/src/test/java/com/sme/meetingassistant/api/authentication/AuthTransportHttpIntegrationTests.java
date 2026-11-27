@@ -12,6 +12,7 @@ import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import com.sme.meetingassistant.api.userorganization.entity.*;
 import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
 import com.sme.meetingassistant.api.userorganization.setup.AccountSetupPasswordHasher;
+import com.sme.meetingassistant.api.userorganization.setup.AccountSetupTokenCodec;
 import jakarta.servlet.http.Cookie;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -51,6 +52,7 @@ class AuthTransportHttpIntegrationTests {
     @Autowired UserRepository users;
     @Autowired AuthSessionRepository sessions;
     @Autowired AccountSetupPasswordHasher hasher;
+    @Autowired AccountSetupTokenCodec setupTokens;
     @Autowired SessionCsrfTokens csrfTokens;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     private UserEntity user;
@@ -122,6 +124,49 @@ class AuthTransportHttpIntegrationTests {
             .andExpect(status().isOk());
         mvc.perform(get("/api/v1/organizational-units")
             .cookie(cookie(login, AuthTransport.ACCESS))).andExpect(status().isOk());
+    }
+
+    @Test
+    void accountSetupCapabilityIsIndependentOfAnInvalidBrowserAccessCookie() throws Exception {
+        var login = webLogin();
+        Cookie access = cookie(login, AuthTransport.ACCESS);
+        Cookie csrf = cookie(login, AuthTransport.CSRF);
+        var created = mvc.perform(post("/api/v1/users")
+            .cookie(access, csrf).header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", csrf.getValue())
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json(Map.of("email", "setup-" + UUID.randomUUID() + "@example.com",
+                "displayName", "Invited User", "globalRole", "EMPLOYEE"))))
+            .andExpect(status().isCreated()).andReturn();
+        UUID invitedId = UUID.fromString(data(created).path("id").asText());
+        UUID tokenId = jdbc.queryForObject(
+            "SELECT id FROM account_setup_tokens WHERE user_id=?", UUID.class, invitedId);
+        String capability = setupTokens.issue(tokenId);
+        Cookie invalidAccess = new Cookie(AuthTransport.ACCESS, "invalid-jwt");
+        String password = "A new private activation password 2026!";
+
+        mvc.perform(post("/api/v1/auth/account-setup").cookie(invalidAccess)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json(Map.of("token", "invalid-capability", "password", password))))
+            .andExpect(status().isUnprocessableEntity());
+        assertThat(users.findById(invitedId).orElseThrow().getAccountStatus())
+            .isEqualTo(AccountStatus.PENDING_SETUP);
+
+        mvc.perform(post("/api/v1/auth/account-setup").cookie(invalidAccess)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json(Map.of("token", capability, "password", password))))
+            .andExpect(status().isOk());
+        assertThat(users.findById(invitedId).orElseThrow().getAccountStatus())
+            .isEqualTo(AccountStatus.ACTIVE);
+
+        mvc.perform(post("/api/v1/auth/account-setup").cookie(invalidAccess)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json(Map.of("token", capability, "password", password))))
+            .andExpect(status().isUnprocessableEntity());
+        mvc.perform(get("/api/v1/auth/me").cookie(invalidAccess))
+            .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/auth/me").cookie(access))
+            .andExpect(status().isOk());
     }
 
     @Test
@@ -205,6 +250,13 @@ class AuthTransportHttpIntegrationTests {
             .contentType(MediaType.APPLICATION_JSON).content(loginBody))
             .andExpect(status().isForbidden());
         assertThat(sessions.countByUserIdAndStatus(user.getId(), AuthSessionStatus.ACTIVE)).isZero();
+    }
+
+    @Test
+    void loopbackAliasOriginIsNotTrustedByTheCanonicalHttpTransport() throws Exception {
+        mvc.perform(get("/api/v1/auth/csrf")
+            .header(HttpHeaders.ORIGIN, "http://127.0.0.1:5173"))
+            .andExpect(status().isForbidden());
     }
 
     @Test

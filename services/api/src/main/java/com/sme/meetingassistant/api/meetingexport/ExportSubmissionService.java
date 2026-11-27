@@ -2,6 +2,7 @@ package com.sme.meetingassistant.api.meetingexport;
 
 import com.sme.meetingassistant.api.meetingminutes.MinutesSnapshot;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,6 +35,12 @@ public class ExportSubmissionService {
         this.budget = budget;
     }
 
+    @Transactional(readOnly = true)
+    public Optional<ExportRecord> recover(UUID meetingId, ExportFormat format, String key) {
+        return intent.recover(meetingId, format, key)
+                .filter(record -> intakes.find(record.id()).isPresent());
+    }
+
     @Transactional
     public ExportRecord submit(UUID meetingId, ExportFormat format, String key,
             MinutesSnapshot snapshot) {
@@ -45,11 +52,10 @@ public class ExportSubmissionService {
         budget.verifyNewIntent(record.requestedByUserId());
         if (snapshot == null || snapshot.meeting() == null
                 || !meetingId.equals(snapshot.meeting().id())
-                || !"COMPLETE".equals(snapshot.completeness())
-                || snapshot.proposalsIncluded()) {
+                 || !snapshot.hasUsableContent()) {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.CONFLICT,
-                    "Only complete approved minutes may be exported");
+                     "No usable minutes content is available to export");
         }
         byte[] intakeBytes = codec.encode(record, snapshot);
         String digest = ExportSnapshotCodec.sha256(intakeBytes);

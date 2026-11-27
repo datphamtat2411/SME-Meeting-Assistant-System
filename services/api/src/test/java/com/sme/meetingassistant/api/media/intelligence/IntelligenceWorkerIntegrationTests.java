@@ -457,7 +457,7 @@ class IntelligenceWorkerIntegrationTests {
         when(capability.canDispatch(anyString())).thenReturn(true);recovery.expireAbandonedStages();recovery.expireAbandonedStages();
         assertThat(count("processing_intelligence_dispatches")).isEqualTo(1);
         var c=command("GENERATING_SUMMARY");var o=owner(c,worker.claim(job,c,PEER));worker.fail(job,new IntelligenceCommands.Fail(UUID.randomUUID(),o,"INFERENCE","CONFIGURATION"),PEER);
-        recovery.expireAbandonedStages();assertThat(count("processing_intelligence_dispatches")).isEqualTo(1);
+        recovery.expireAbandonedStages();assertThat(count("processing_intelligence_dispatches")).isEqualTo(2);
     }
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})

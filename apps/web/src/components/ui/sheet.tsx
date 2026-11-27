@@ -1,7 +1,9 @@
 import * as React from 'react'
 import * as SheetPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
+import { usePortalContainer } from '@/context/workspace-visibility-boundary'
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot='sheet' {...props} />
@@ -22,7 +24,14 @@ function SheetClose({
 function SheetPortal({
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Portal>) {
-  return <SheetPrimitive.Portal data-slot='sheet-portal' {...props} />
+  const container = usePortalContainer()
+  return (
+    <SheetPrimitive.Portal
+      data-slot='sheet-portal'
+      {...props}
+      container={container ?? props.container}
+    />
+  )
 }
 
 function SheetOverlay({
@@ -49,6 +58,7 @@ function SheetContent({
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: 'top' | 'right' | 'bottom' | 'left'
 }) {
+  const { t } = useUiTranslation()
   return (
     <SheetPortal>
       <SheetOverlay />
@@ -71,7 +81,7 @@ function SheetContent({
         {children}
         <SheetPrimitive.Close className='absolute inset-e-4 top-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary'>
           <XIcon className='size-4' />
-          <span className='sr-only'>Close</span>
+          <span className='sr-only'>{t('close')}</span>
         </SheetPrimitive.Close>
       </SheetPrimitive.Content>
     </SheetPortal>

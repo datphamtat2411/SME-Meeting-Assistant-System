@@ -6,6 +6,7 @@ import {
   LogOut,
   UserRound,
 } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import useDialogState from '@/hooks/use-dialog-state'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -48,6 +49,7 @@ export function UserMenu({ user, variant = 'header' }: UserMenuProps) {
 }
 
 function HeaderUserMenu({ user }: { user: UserPresentation }) {
+  const { t } = useUiTranslation()
   const [open, setOpen] = useDialogState()
 
   return (
@@ -58,7 +60,7 @@ function HeaderUserMenu({ user }: { user: UserPresentation }) {
             variant='ghost'
             size='icon'
             className='relative size-8 rounded-full'
-            aria-label='Open user menu'
+            aria-label={t('userMenu')}
           >
             <UserAvatar user={user} />
           </Button>
@@ -75,6 +77,7 @@ function HeaderUserMenu({ user }: { user: UserPresentation }) {
 
 function SidebarUserMenu({ user }: { user: UserPresentation }) {
   const { isMobile } = useSidebar()
+  const { t } = useUiTranslation()
   const [open, setOpen] = useDialogState()
 
   return (
@@ -85,7 +88,7 @@ function SidebarUserMenu({ user }: { user: UserPresentation }) {
             <DropdownMenuTrigger asChild>
               <SidebarMenuButton
                 size='lg'
-                aria-label='Open user menu'
+                aria-label={t('userMenu')}
                 className='data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground'
               >
                 <UserAvatar user={user} rounded />
@@ -117,6 +120,7 @@ function UserMenuContent({
   user: UserPresentation
   onSignOut: () => void
 }) {
+  const { t } = useUiTranslation()
   return (
     <>
       <DropdownMenuLabel className='p-0 font-normal'>
@@ -130,26 +134,26 @@ function UserMenuContent({
         <DropdownMenuItem asChild>
           <Link to='/settings'>
             <UserRound />
-            Profile
+            {t('navigation:profile')}
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link to='/settings/account'>
             <BadgeCheck />
-            Account
+            {t('navigation:account')}
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link to='/settings/notifications'>
             <Bell />
-            Notifications
+            {t('navigation:notifications')}
           </Link>
         </DropdownMenuItem>
       </DropdownMenuGroup>
       <DropdownMenuSeparator />
       <DropdownMenuItem variant='destructive' onClick={onSignOut}>
         <LogOut />
-        Sign out
+        {t('signOut')}
       </DropdownMenuItem>
     </>
   )

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import logging
 import re
 import time
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from sme_meeting_ai.rag.retrieval_contracts import (
 from .context import AssistantSettings, ContextBudgetError, build_grounding_context
 from .contracts import (
     AnswerClaim,
+    AnswerSupport,
     AssistantAnswer,
     AssistantAnswerStatus,
     AssistantDiagnostics,
@@ -38,13 +40,16 @@ from .contracts import (
     AssistantFailureCategory,
     AssistantRequest,
     Citation,
-    ContextualizedQuestion,
+    CanonicalContextItem,
     ConversationMessage,
+    EvidenceContextItem,
     GeneratedAnswer,
     GenerationResult,
     GroundingContext,
 )
 from .errors import AssistantProviderError, FinalVerificationError
+
+LOG = logging.getLogger(__name__)
 
 
 class RetrievalCapability(Protocol):
@@ -54,20 +59,11 @@ class RetrievalCapability(Protocol):
 class GenerationCapability(Protocol):
     async def generate(self, context: GroundingContext, *, deadline: float) -> GenerationResult: ...
 
-    async def contextualize(
-        self,
-        question: str,
-        conversation: Sequence[ConversationMessage],
-        *,
-        deadline: float,
-    ) -> ContextualizedQuestion: ...
-
-
 class FinalVerifier(Protocol):
     def verify(
         self,
         scope: AuthorizedRetrievalScope,
-        evidence: Sequence[RetrievalEvidence],
+        evidence: Sequence[RetrievalEvidence | CanonicalContextItem | EvidenceContextItem],
         *,
         now: datetime,
     ) -> None: ...
@@ -110,13 +106,16 @@ def _scope_current(scope: AuthorizedRetrievalScope, now: datetime) -> bool:
     return scope.authority == "CORE_APPROVED" and issued <= current < expires
 
 
-def _source_key(evidence: RetrievalEvidence) -> tuple[str, str, str, int]:
-    identity = evidence.provenance.source_identity
-    return identity.source_type, identity.source_id, identity.meeting_id, evidence.provenance.source_revision.number
+def _source(evidence):
+    if isinstance(evidence, RetrievalEvidence):
+        return evidence.provenance
+    if isinstance(evidence, CanonicalContextItem):
+        return evidence.reference
+    return evidence
 
 
-def _evidence_in_scope(request: AssistantRequest, evidence: RetrievalEvidence) -> bool:
-    identity = evidence.provenance.source_identity
+def _evidence_in_scope(request: AssistantRequest, evidence) -> bool:
+    identity = _source(evidence).source_identity
     scope = request.authorized_scope
     filters = request.user_filters
     if identity.meeting_id not in scope.allowed_meeting_ids:
@@ -145,7 +144,7 @@ class TrustedFinalVerifier:
     def verify(
         self,
         scope: AuthorizedRetrievalScope,
-        evidence: Sequence[RetrievalEvidence],
+        evidence: Sequence[RetrievalEvidence | CanonicalContextItem | EvidenceContextItem],
         *,
         now: datetime,
     ) -> None:
@@ -165,20 +164,23 @@ class TrustedFinalVerifier:
             or not _scope_current(scope, now)
         ):
             raise FinalVerificationError("INVALID_AUTHORIZATION")
+        if not evidence:
+            return  # Authorization-only verification before sending dialogue to a model.
         if self.source_provider is None:
             raise FinalVerificationError("SOURCE_VERIFICATION_UNAVAILABLE")
 
         requests: list[SourceVerificationRequest] = []
-        seen: set[tuple[str, str, str, int]] = set()
+        seen = set()
         for item in evidence:
-            key = _source_key(item)
+            source = _source(item)
+            key = source.source_identity, source.source_revision
             if key in seen:
                 continue
             seen.add(key)
             requests.append(
                 SourceVerificationRequest(
-                    sourceIdentity=item.provenance.source_identity,
-                    sourceRevision=item.provenance.source_revision,
+                    sourceIdentity=source.source_identity,
+                    sourceRevision=source.source_revision,
                 )
             )
         try:
@@ -193,36 +195,37 @@ class TrustedFinalVerifier:
             raise FinalVerificationError("SOURCE_VERIFICATION_UNAVAILABLE") from None
         record_map = {}
         for record in records:
-            key = (
-                record.source_identity.source_type,
-                record.source_identity.source_id,
-                record.source_identity.meeting_id,
-                record.source_revision.number,
-            )
+            key = record.source_identity, record.source_revision
             if key in record_map:
                 raise FinalVerificationError("SOURCE_VERIFICATION_UNAVAILABLE")
             record_map[key] = record
         for item in evidence:
-            record = record_map.get(_source_key(item))
+            source = _source(item)
+            record = record_map.get((source.source_identity, source.source_revision))
             if record is None or record.status != "CURRENT" or not (
                 record.eligible and record.available and record.visible
             ):
                 raise FinalVerificationError("SOURCE_INVALIDATED")
-            if (
-                record.source_identity != item.provenance.source_identity
-                or record.source_revision != item.provenance.source_revision
-            ):
-                raise FinalVerificationError("SOURCE_INVALIDATED")
 
 
-_CONTEXT_REFERENCES = (
-    re.compile(r"\b(vậy|đó|này|phần đó|việc đó|quyết định này|cuộc họp trước|so với)\b", re.IGNORECASE),
-    re.compile(r"\b(that|this|it|those|the previous meeting|compared with)\b", re.IGNORECASE),
+_MEETING = re.compile(r"\b(cuộc họp|buổi họp|meeting|participants|người tham dự)\b", re.I)
+_GENERAL = re.compile(
+    r"(?:xin\s+chào|chào(?:\s+bạn)?|hello|hi|hey|cảm ơn|thanks)[!.?\s]*$|"
+    r"(?:bạn (?:có thể làm gì|giúp được gì)|what can you do|how can you help)[!.?\s]*$",
+    re.I,
 )
+_DEFINITION = re.compile(r"[A-Z][A-Z0-9-]{1,15}\s+là gì[?.!\s]*$|(?i:what (?:is|are)) [A-Z][A-Z0-9-]{1,15}[?.!\s]*$")
+_FOLLOW_UP = re.compile(
+    r"\b(vậy|đó|ấy|rõ hơn|là sao|ý là|that|it|those|elaborate|explain more)\b", re.I,
+)
+_OVERVIEW = re.compile(r"tóm\s+tắt|tổng\s+hợp|chủ\s+đề|nói\s+về|thảo\s+luận|"
+                       r"summar|overview|main topics|discuss|about|problems", re.I)
 
 
-def question_requires_context(question: str) -> bool:
-    return any(pattern.search(question) for pattern in _CONTEXT_REFERENCES)
+def _general_question(question: str) -> bool:
+    return not _MEETING.search(question) and not _FOLLOW_UP.search(question) and bool(
+        _GENERAL.fullmatch(question) or _DEFINITION.fullmatch(question)
+    )
 
 
 def _failure(
@@ -258,43 +261,6 @@ def _failure(
                 message=_message(category),
             ),
         ),
-    )
-
-
-def _insufficient(
-    request: AssistantRequest,
-    *,
-    retrieval_status: RetrievalStatus | None,
-    category: AssistantFailureCategory | None = None,
-    evidence_count: int = 0,
-    contextualized: bool = False,
-    conversation_messages_used: int = 0,
-) -> AssistantAnswer:
-    failures = () if category is None else (
-        AssistantFailure(
-            category=category,
-            code=category.value,
-            retryable=False,
-            message=_message(category),
-        ),
-    )
-    return AssistantAnswer(
-        requestId=request.request_id,
-        status=AssistantAnswerStatus.INSUFFICIENT_EVIDENCE,
-        answer=(
-            "Chưa có đủ bằng chứng cuộc họp đã được xác minh trong phạm vi được phép để trả lời câu hỏi này."
-            if category is None or category is not AssistantFailureCategory.INSUFFICIENT_CONTEXT
-            else "Chưa đủ ngữ cảnh an toàn để xác định câu hỏi tiếp theo. Vui lòng nêu rõ nội dung cần hỏi."
-        ),
-        scopeId=request.authorized_scope.scope_id,
-        scopeVersion=request.authorized_scope.scope_version,
-        diagnostics=AssistantDiagnostics(
-            retrievalStatus=retrieval_status,
-            evidenceCount=evidence_count,
-            conversationMessagesUsed=conversation_messages_used,
-            contextualized=contextualized,
-        ),
-        failures=failures,
     )
 
 
@@ -366,171 +332,95 @@ class AssistantOrchestrator:
         if time.monotonic() >= deadline:
             return _failure(request.request_id, AssistantFailureCategory.REQUEST_TIMEOUT)
 
+        scope = request.authorized_scope
+        if not scope.allowed_meeting_ids:
+            return _failure(request.request_id, AssistantFailureCategory.INVALID_AUTHORIZATION)
+        try:
+            question = prepare_query(request.question, max_characters=self.config.max_question_characters).normalized_query
+        except ValueError:
+            return _failure(request.request_id, AssistantFailureCategory.INVALID_REQUEST)
+        if failure := await self._verify(request, (), deadline):
+            return failure
+
         current_messages = tuple(
-            message
-            for message in request.conversation_context
-            if message.scope_id == request.authorized_scope.scope_id
-            and message.scope_version == request.authorized_scope.scope_version
+            msg for msg in request.conversation_context
+            if msg.scope_id == scope.scope_id and msg.scope_version == scope.scope_version
         )
-        contextualized = False
-        query = request.question
-        if question_requires_context(request.question):
-            if not current_messages:
-                return _insufficient(
-                    request,
-                    retrieval_status=None,
-                    category=AssistantFailureCategory.INSUFFICIENT_CONTEXT,
-                )
-            contextualizer = getattr(self.generator, "contextualize", None)
-            if not callable(contextualizer):
-                return _insufficient(
-                    request,
-                    retrieval_status=None,
-                    category=AssistantFailureCategory.INSUFFICIENT_CONTEXT,
-                    conversation_messages_used=len(current_messages),
-                )
+        previous_question = next(
+            (msg.content for msg in reversed(current_messages) if msg.role.value == "USER"), None
+        )
+        follows = bool(_FOLLOW_UP.search(question))
+        general = _general_question(question) or (
+            follows and previous_question is not None and _general_question(previous_question)
+            and not _MEETING.search(question)
+        )
+        overview = bool(_MEETING.search(question) and _OVERVIEW.search(question))
+        query = f"{question} {previous_question[:800]}" if follows and previous_question and not general else question
+        if len(query) > self.config.max_question_characters:
+            query = question
+        canonical = () if general else tuple(
+            item for item in request.canonical_context if _evidence_in_scope(request, item)
+        )
+        status = None
+        limitation = None
+        evidence = ()
+        if canonical and (failure := await self._verify(request, canonical, deadline)):
+            if failure.failures[0].category is not AssistantFailureCategory.SOURCE_INVALIDATED:
+                return failure
+            canonical = ()
+            limitation = "SOURCE_INVALIDATED"
+        has_meeting_content = any(item.reference.source_identity.source_type != "MEETING" for item in canonical)
+        if not general and not (overview and has_meeting_content):
             try:
-                contextualized_value = await _within_deadline(
-                    _call(
-                        contextualizer,
-                        request.question,
-                        current_messages,
-                        deadline=deadline,
-                    ),
-                    deadline,
+                retrieval_request = RetrievalRequest(
+                    contractVersion="1.0", query=query, authorizedScope=scope, userFilters=request.user_filters,
                 )
-                contextualized_result = (
-                    contextualized_value
-                    if isinstance(contextualized_value, ContextualizedQuestion)
-                    else ContextualizedQuestion.model_validate(contextualized_value)
-                )
-                if re.search(r"\bE[1-8]\b", contextualized_result.standalone_question):
-                    raise ValueError
-                query = prepare_query(
-                    contextualized_result.standalone_question,
-                    max_characters=self.config.max_question_characters,
-                ).normalized_query
-                contextualized = True
-            except asyncio.TimeoutError:
-                return _failure(request.request_id, AssistantFailureCategory.PROVIDER_TIMEOUT, retryable=True)
+                retrieval_deadline = min(deadline, time.monotonic() + self.config.request_timeout_seconds / 3, time.monotonic() + 10)
+                result = _as_retrieval_result(await _within_deadline(
+                    _call(self.retrieval.retrieve, retrieval_request), retrieval_deadline
+                ))
             except asyncio.CancelledError:
                 raise
-            except AssistantProviderError as error:
-                category = {
-                    "TIMEOUT": AssistantFailureCategory.PROVIDER_TIMEOUT,
-                    "MALFORMED_OUTPUT": AssistantFailureCategory.INVALID_GENERATED_RESPONSE,
-                    "INCOMPLETE_OUTPUT": AssistantFailureCategory.INVALID_GENERATED_RESPONSE,
-                    "REFUSAL": AssistantFailureCategory.INVALID_GENERATED_RESPONSE,
-                    "CONTEXT_BUDGET": AssistantFailureCategory.CONTEXT_BUDGET_EXHAUSTED,
-                    "INFERENCE_DISABLED": AssistantFailureCategory.FEATURE_UNAVAILABLE,
-                }.get(error.category, AssistantFailureCategory.PROVIDER_UNAVAILABLE)
-                return _failure(
-                    request.request_id,
-                    category,
-                    retryable=error.retryable,
-                )
             except Exception:
-                return _insufficient(
-                    request,
-                    retrieval_status=None,
-                    category=AssistantFailureCategory.INSUFFICIENT_CONTEXT,
-                    conversation_messages_used=len(current_messages),
-                )
-        else:
-            try:
-                query = prepare_query(
-                    request.question,
-                    max_characters=self.config.max_question_characters,
-                ).normalized_query
-            except Exception:
-                return _failure(request.request_id, AssistantFailureCategory.INVALID_REQUEST)
-
-        retrieval_request = RetrievalRequest(
-            contractVersion="1.0",
-            query=query,
-            authorizedScope=request.authorized_scope,
-            userFilters=request.user_filters,
-        )
-        try:
-            retrieval_value = await _within_deadline(
-                _call(self.retrieval.retrieve, retrieval_request), deadline
-            )
-            retrieval_result = _as_retrieval_result(retrieval_value)
-        except asyncio.TimeoutError:
-            return _failure(request.request_id, AssistantFailureCategory.RETRIEVAL_FAILURE, retryable=True)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return _failure(request.request_id, AssistantFailureCategory.RETRIEVAL_FAILURE, retryable=True)
-
-        status = retrieval_result.status
-        if status in {RetrievalStatus.INSUFFICIENT_EVIDENCE, RetrievalStatus.EMPTY_AUTHORIZATION}:
-            return _insufficient(
-                request,
-                retrieval_status=status,
-                evidence_count=len(retrieval_result.evidence),
-                contextualized=contextualized,
-                conversation_messages_used=len(current_messages),
-            )
-        if status is RetrievalStatus.INVALID_AUTHORIZATION:
-            authorization_failure = retrieval_result.failures[0].code if retrieval_result.failures else ""
-            if authorization_failure == "AUTHORIZATION_PROVIDER_UNAVAILABLE":
-                return _failure(
-                    request.request_id,
-                    AssistantFailureCategory.AUTHORIZATION_UNAVAILABLE,
-                    retryable=True,
-                    retrieval_status=status,
-                )
-            return _failure(request.request_id, AssistantFailureCategory.INVALID_AUTHORIZATION, retrieval_status=status)
-        if status is RetrievalStatus.SOURCE_VERIFICATION_UNAVAILABLE:
-            return _failure(
-                request.request_id,
-                AssistantFailureCategory.SOURCE_VERIFICATION_UNAVAILABLE,
-                retryable=True,
-                retrieval_status=status,
-            )
-        if status is RetrievalStatus.INDEX_MODEL_INCOMPATIBLE:
-            return _failure(
-                request.request_id,
-                AssistantFailureCategory.MODEL_INDEX_INCOMPATIBLE,
-                retrieval_status=status,
-            )
-        if status is RetrievalStatus.INVALID_QUESTION:
-            return _failure(request.request_id, AssistantFailureCategory.INVALID_REQUEST, retrieval_status=status)
-        if status is not RetrievalStatus.EVIDENCE_AVAILABLE:
-            return _failure(
-                request.request_id,
-                AssistantFailureCategory.RETRIEVAL_FAILURE,
-                retryable=True,
-                retrieval_status=status,
-            )
-        if not retrieval_result.authorization_verified:
-            return _failure(
-                request.request_id,
-                AssistantFailureCategory.INVALID_AUTHORIZATION,
-                retrieval_status=status,
-            )
-        if retrieval_result.scope_id != request.authorized_scope.scope_id or retrieval_result.scope_version != request.authorized_scope.scope_version:
-            return _failure(request.request_id, AssistantFailureCategory.RETRIEVAL_FAILURE, retrieval_status=status)
-        if retrieval_result.source_verification_status != "AUTHORITATIVELY_VERIFIED":
-            return _failure(
-                request.request_id,
-                AssistantFailureCategory.SOURCE_VERIFICATION_UNAVAILABLE,
-                retryable=True,
-                retrieval_status=status,
-            )
-        if not retrieval_result.evidence or any(
-            item.verification_status != "AUTHORITATIVELY_VERIFIED"
-            or not _evidence_in_scope(request, item)
-            for item in retrieval_result.evidence
-        ):
-            return _failure(request.request_id, AssistantFailureCategory.RETRIEVAL_FAILURE, retrieval_status=status)
+                status, limitation = RetrievalStatus.RETRIEVAL_FAILURE, "RETRIEVAL_UNAVAILABLE"
+            else:
+                status = result.status
+                if status is RetrievalStatus.INVALID_AUTHORIZATION:
+                    unavailable = any(f.code == "AUTHORIZATION_PROVIDER_UNAVAILABLE" for f in result.failures)
+                    return _failure(request.request_id, (
+                        AssistantFailureCategory.AUTHORIZATION_UNAVAILABLE if unavailable
+                        else AssistantFailureCategory.INVALID_AUTHORIZATION
+                    ), retryable=unavailable, retrieval_status=status)
+                if status is RetrievalStatus.SOURCE_VERIFICATION_UNAVAILABLE:
+                    return _failure(request.request_id, AssistantFailureCategory.SOURCE_VERIFICATION_UNAVAILABLE,
+                                    retryable=True, retrieval_status=status)
+                if status is RetrievalStatus.INVALID_QUESTION:
+                    return _failure(request.request_id, AssistantFailureCategory.INVALID_REQUEST, retrieval_status=status)
+                if result.evidence:
+                    if (not result.authorization_verified or result.scope_id != scope.scope_id
+                            or result.scope_version != scope.scope_version
+                            or result.source_verification_status != "AUTHORITATIVELY_VERIFIED"
+                            or any(item.verification_status != "AUTHORITATIVELY_VERIFIED"
+                                   or not _evidence_in_scope(request, item) for item in result.evidence)):
+                        return _failure(request.request_id, AssistantFailureCategory.RETRIEVAL_FAILURE,
+                                        retrieval_status=status)
+                    evidence = result.evidence
+                if result.failures:
+                    limitation = result.failures[0].code
+                elif not evidence and limitation is None:
+                    limitation = ("NO_RELEVANT_INDEXED_EVIDENCE" if has_meeting_content
+                                  else "NO_MEETING_CONTENT_AVAILABLE")
+        if limitation and limitation not in {"NO_RELEVANT_INDEXED_EVIDENCE", "NO_MEETING_CONTENT_AVAILABLE"}:
+            LOG.warning("assistant.retrieval.degraded request_id=%s code=%s", request.request_id, limitation)
 
         try:
             context = build_grounding_context(
-                question=query,
+                question=question,
                 conversation=current_messages,
-                evidence=retrieval_result.evidence,
+                evidence=evidence,
+                canonical=canonical,
+                canonical_first=overview,
+                limitation=limitation,
                 config=self.config,
             )
         except ContextBudgetError:
@@ -538,9 +428,9 @@ class AssistantOrchestrator:
                 request.request_id,
                 AssistantFailureCategory.CONTEXT_BUDGET_EXHAUSTED,
                 retrieval_status=status,
-                evidence_count=len(retrieval_result.evidence),
+                evidence_count=len(evidence),
                 conversation_messages_used=len(current_messages),
-                contextualized=contextualized,
+                contextualized=query != question,
             )
         except (ValidationError, TypeError, ValueError):
             return _failure(request.request_id, AssistantFailureCategory.INVALID_GENERATED_RESPONSE)
@@ -611,41 +501,22 @@ class AssistantOrchestrator:
                 evidence_count=len(context.evidence),
                 estimated_input_tokens=context.estimated_input_tokens,
             )
-        try:
-            await _within_deadline(
-                _call(
-                    self.final_verifier.verify,
-                    request.authorized_scope,
-                    retrieval_result.evidence,
-                    now=self.clock().astimezone(timezone.utc),
-                ),
-                deadline,
-            )
-        except asyncio.TimeoutError:
-            return _failure(request.request_id, AssistantFailureCategory.SOURCE_VERIFICATION_UNAVAILABLE, retryable=True)
-        except asyncio.CancelledError:
-            raise
-        except FinalVerificationError as error:
-            category = {
-                "INVALID_AUTHORIZATION": AssistantFailureCategory.INVALID_AUTHORIZATION,
-                "AUTHORIZATION_UNAVAILABLE": AssistantFailureCategory.AUTHORIZATION_UNAVAILABLE,
-                "SOURCE_VERIFICATION_UNAVAILABLE": AssistantFailureCategory.SOURCE_VERIFICATION_UNAVAILABLE,
-                "SOURCE_INVALIDATED": AssistantFailureCategory.SOURCE_INVALIDATED,
-            }.get(error.category, AssistantFailureCategory.SOURCE_VERIFICATION_UNAVAILABLE)
-            return _failure(request.request_id, category, retryable=category in {
-                AssistantFailureCategory.AUTHORIZATION_UNAVAILABLE,
-                AssistantFailureCategory.SOURCE_VERIFICATION_UNAVAILABLE,
-            })
-        except Exception:
-            return _failure(request.request_id, AssistantFailureCategory.SOURCE_VERIFICATION_UNAVAILABLE, retryable=True)
+        if failure := await self._verify(request, context.evidence, deadline):
+            return failure
 
-        # Only citation-validated answer units may contribute user-visible text.
         answer_text = "\n\n".join(claim.text for claim in claims)
         if len(answer_text) > self.config.max_answer_characters:
             return _failure(request.request_id, AssistantFailureCategory.INVALID_GENERATED_RESPONSE)
+        answer_status = AssistantAnswerStatus(generated.answer.status.value)
+        if answer_status is AssistantAnswerStatus.GROUNDED and (
+            context.context_limitation
+            or any(c.quality_class != "ACCEPTED" for c in citations)
+            or any(claim.support is AnswerSupport.CONFLICTED for claim in claims)
+        ):
+            answer_status = AssistantAnswerStatus.PARTIAL
         return AssistantAnswer(
             requestId=request.request_id,
-            status=AssistantAnswerStatus(generated.answer.status.value),
+            status=answer_status,
             answer=answer_text,
             claims=tuple(claims),
             citations=tuple(citations),
@@ -655,12 +526,35 @@ class AssistantOrchestrator:
             diagnostics=AssistantDiagnostics(
                 retrievalStatus=status,
                 evidenceCount=len(context.evidence),
-                conversationMessagesUsed=len(current_messages),
-                contextualized=contextualized,
+                conversationMessagesUsed=len(context.conversation),
+                contextualized=query != question,
                 estimatedInputTokens=context.estimated_input_tokens,
                 generationAttempts=generated.provenance.attempts,
+                contextLimitation=context.context_limitation,
+                sourceDependencies=tuple(dict.fromkeys(item.source_references[0] for item in context.evidence)),
             ),
         )
+
+    async def _verify(self, request: AssistantRequest, evidence, deadline: float) -> AssistantAnswer | None:
+        unavailable = (AssistantFailureCategory.SOURCE_VERIFICATION_UNAVAILABLE if evidence
+                       else AssistantFailureCategory.AUTHORIZATION_UNAVAILABLE)
+        try:
+            await _within_deadline(_call(
+                self.final_verifier.verify, request.authorized_scope, evidence,
+                now=self.clock().astimezone(timezone.utc),
+            ), deadline)
+        except asyncio.CancelledError:
+            raise
+        except FinalVerificationError as error:
+            category = AssistantFailureCategory.__members__.get(error.category, unavailable)
+        except Exception:
+            category = unavailable
+        else:
+            return None
+        return _failure(request.request_id, category, retryable=category in {
+            AssistantFailureCategory.AUTHORIZATION_UNAVAILABLE,
+            AssistantFailureCategory.SOURCE_VERIFICATION_UNAVAILABLE,
+        })
 
     @staticmethod
     def _validate_and_map(generated: GeneratedAnswer, context: GroundingContext) -> tuple[tuple[AnswerClaim, ...], tuple[Citation, ...]]:
@@ -738,5 +632,4 @@ __all__ = [
     "GenerationCapability",
     "RetrievalCapability",
     "TrustedFinalVerifier",
-    "question_requires_context",
 ]

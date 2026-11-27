@@ -82,7 +82,10 @@ public class AccessSecurityConfiguration {
             .anyRequest().authenticated());
         BearerTokenResolver resolver = request -> {
             String route = request.getRequestURI();
-            if (route.equals("/api/v1/auth/csrf")
+            // Initial setup is authorized exclusively by its single-use capability.
+            // An unrelated stale browser JWT must not preempt that controller.
+            if (("POST".equals(request.getMethod()) && route.equals("/api/v1/auth/account-setup"))
+                    || route.equals("/api/v1/auth/csrf")
                     || route.equals("/api/v1/auth/password-recovery")
                     || route.equals("/api/v1/auth/password-reset")
                     || route.equals("/api/v1/auth/login") || route.equals("/api/v1/auth/refresh")

@@ -8,6 +8,7 @@ import {
   RECOVERY_CHANNEL_NAME,
   RECOVERY_MARKER,
   RECOVERY_REPLAY_SAFE_MARKER,
+  SESSION_REVALIDATION_PROBE_MARKER,
   type RecoveryBroadcast,
   type RecoveryLockManager,
   type RecoveryRequestConfig,
@@ -204,50 +205,82 @@ describe('request recovery coordinator', () => {
     }
   })
 
-  it('serializes simulated tabs through Web Locks and probes before the second refresh', async () => {
-    let active = false
-    let refreshCalls = 0
-    let probeCalls = 0
-    const queue: Array<() => void> = []
-    const locks: RecoveryLockManager = {
-      request: async (_name, _options, callback) => {
-        if (active) await new Promise<void>((resolve) => queue.push(resolve))
-        active = true
-        try {
-          return await callback({})
-        } finally {
-          active = false
-          queue.shift()?.()
+  it.each([false, true])(
+    'serializes simulated tabs through Web Locks (mandatory verification: %s)',
+    async (mandatoryVerification) => {
+      let active = false
+      let refreshCalls = 0
+      let probeCalls = 0
+      const queue: Array<() => void> = []
+      const locks: RecoveryLockManager = {
+        request: async (_name, _options, callback) => {
+          if (active) await new Promise<void>((resolve) => queue.push(resolve))
+          active = true
+          try {
+            return await callback({})
+          } finally {
+            active = false
+            queue.shift()?.()
+          }
+        },
+      }
+      let renewed = false
+      const request = async (config: RecoveryRequestConfig) => {
+        if (config[RECOVERY_DISABLED_MARKER] && config.url === '/auth/me') {
+          probeCalls += 1
+          if (renewed) return response({ userId: 'existing' })
+          throw unauthorized(config)
         }
-      },
-    }
-    let renewed = false
-    const request = async (config: RecoveryRequestConfig) => {
-      if (config[RECOVERY_DISABLED_MARKER] && config.url === '/auth/me') {
-        probeCalls += 1
-        if (renewed) return response({ userId: 'existing' })
-        throw unauthorized(config)
+        if (config.url === '/auth/refresh') {
+          refreshCalls += 1
+          renewed = true
+          return response({ sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' })
+        }
+        throw new Error('unexpected request')
       }
-      if (config.url === '/auth/refresh') {
-        refreshCalls += 1
-        renewed = true
-        return response({ sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' })
-      }
-      throw new Error('unexpected request')
-    }
-    const firstTab = coordinatorFor(request, { locks }).coordinator
-    const secondTab = coordinatorFor(request, { locks }).coordinator
+      const firstTab = coordinatorFor(request, { locks }).coordinator
+      const secondTab = coordinatorFor(request, { locks }).coordinator
 
-    await expect(
-      Promise.all([
-        firstTab.recover(unauthorized({ method: 'GET', url: '/one' })),
-        secondTab.recover(unauthorized({ method: 'GET', url: '/two' })),
+      const firstBarrier = mandatoryVerification
+        ? firstTab.beginSessionRevalidation()
+        : undefined
+      const secondBarrier = mandatoryVerification
+        ? secondTab.beginSessionRevalidation()
+        : undefined
+      const probe = (url: string): RecoveryRequestConfig =>
+        mandatoryVerification
+          ? {
+              method: 'GET',
+              url: '/auth/me',
+              [SESSION_REVALIDATION_PROBE_MARKER]: true,
+            }
+          : { method: 'GET', url }
+      const actions = await Promise.all([
+        firstTab.recover(unauthorized(probe('/one'))),
+        secondTab.recover(unauthorized(probe('/two'))),
       ])
-    ).resolves.toHaveLength(2)
+      expect(actions.every((action) => action.type === 'retry')).toBe(true)
 
-    expect(refreshCalls).toBe(1)
-    expect(probeCalls).toBe(2)
-  })
+      expect(refreshCalls).toBe(1)
+      expect(probeCalls).toBe(2)
+      if (firstBarrier && secondBarrier) {
+        expect(
+          firstTab.finishSessionRevalidation(
+            firstBarrier.generation,
+            'verified'
+          )
+        ).toBe(true)
+        expect(
+          secondTab.finishSessionRevalidation(
+            secondBarrier.generation,
+            'verified'
+          )
+        ).toBe(true)
+        expect(firstTab.isSessionRevalidationRequired()).toBe(false)
+        expect(secondTab.isSessionRevalidationRequired()).toBe(false)
+      }
+    }
+  )
 
   it.each([
     ['forbidden', { status: 403, kind: 'http' as const }, 'forbidden'],

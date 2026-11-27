@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils'
+import { LanguageSwitcher } from '@/components/language-switcher'
 import { Search } from '@/components/search'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { UserMenu } from './user-menu'
@@ -12,6 +13,7 @@ export function HeaderActions({ className }: { className?: string }) {
       )}
     >
       <Search className='min-w-0 flex-1 sm:flex-none' />
+      <LanguageSwitcher />
       <ThemeSwitch />
       <UserMenu />
     </div>

@@ -275,13 +275,13 @@ public class MediaRepository {
             List.of("GENERATING_SUMMARY"));
     }
 
-    public void insertReviewedIntelligenceJob(UUID jobId, Job origin, UUID actor, UUID reviewId) {
+    public void insertTranscriptIntelligenceJob(UUID jobId, Job origin, UUID actor, List<String> stages) {
         insertDerivedIntelligenceJob(jobId, origin.meetingId(), origin.sourceMediaId(), actor, origin.id(),
-            UUID.randomUUID(), IntelligenceWorkerCapability.ORDER);
+            UUID.randomUUID(), stages);
         jdbc.update("""
             INSERT INTO processing_mi_regenerations(processing_job_id,meeting_id,origin_job_id,origin_review_id)
             VALUES (?,?,?,?)
-            """, jobId, origin.meetingId(), origin.id(), reviewId);
+            """, jobId, origin.meetingId(), origin.id(), null);
     }
 
     private void insertDerivedIntelligenceJob(UUID jobId, UUID meetingId, UUID mediaId, UUID actorId,
@@ -318,73 +318,6 @@ public class MediaRepository {
             MediaRepository::jobRow,id).stream().findFirst();
     }
 
-    public boolean transcriptReviewRequired(UUID jobId) {
-        return Boolean.TRUE.equals(jdbc.queryForObject(
-            "SELECT transcript_review_required FROM processing_jobs WHERE id=?",
-            Boolean.class, jobId));
-    }
-
-    public boolean hasAdmittedTranscriptReview(UUID jobId) {
-        return Boolean.TRUE.equals(jdbc.queryForObject("""
-            SELECT EXISTS(
-                SELECT 1 FROM processing_job_transcript_reviews
-                WHERE processing_job_id=? AND admitted_at IS NOT NULL)
-            """, Boolean.class, jobId));
-    }
-
-    public boolean hasAdmittedTranscriptReview(UUID jobId, UUID transcriptId, long contentRevision) {
-        return Boolean.TRUE.equals(jdbc.queryForObject("""
-            SELECT EXISTS(
-                SELECT 1 FROM processing_job_transcript_reviews
-                WHERE processing_job_id=? AND transcript_id=? AND content_revision=?
-                  AND admitted_at IS NOT NULL)
-            """, Boolean.class, jobId, transcriptId, contentRevision));
-    }
-
-    /**
-     * The finalization transaction calls this after canonical transcript
-     * publication and finalization-stage success. The job lock prevents a
-     * review admission from racing the transition.
-     */
-    public boolean awaitTranscriptReview(UUID jobId, UUID meetingId, UUID mediaId) {
-        List<ReviewGateState> states = jdbc.query("""
-            SELECT j.status,j.transcript_review_required,j.meeting_id,j.source_media_id,
-                   EXISTS(
-                     SELECT 1 FROM processing_stage_runs s
-                     WHERE s.processing_job_id=j.id AND s.stage_code='FINALIZING_TRANSCRIPT'
-                       AND s.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
-                       AND s.attempt_number=(
-                         SELECT MAX(x.attempt_number) FROM processing_stage_runs x
-                         WHERE x.processing_job_id=s.processing_job_id
-                           AND x.stage_code=s.stage_code)
-                   ) AS finalized
-            FROM processing_jobs j WHERE j.id=? FOR UPDATE
-            """, (rs, row) -> new ReviewGateState(rs.getString("status"),
-                rs.getBoolean("transcript_review_required"),
-                rs.getObject("meeting_id", UUID.class), rs.getObject("source_media_id", UUID.class),
-                rs.getBoolean("finalized")), jobId);
-        if (states.size() != 1) throw new ProcessingLifecycleConflictException(
-            "Processing job does not exist.");
-        ReviewGateState state = states.getFirst();
-        if (!state.reviewRequired() || !"RUNNING".equals(state.status())) return false;
-        if (!meetingId.equals(state.meetingId()) || !mediaId.equals(state.mediaId())
-                || !state.finalized()) {
-            throw new ProcessingLifecycleConflictException(
-                "Transcript review gate does not match the finalized processing job.");
-        }
-        int changed = jdbc.update("""
-            UPDATE processing_jobs SET status='WAITING_FOR_REVIEW',
-              current_stage='TRANSCRIPT_REVIEW',
-              warning_summary=concat_ws(' ',warning_summary,
-                'Transcript review is required before Meeting Intelligence admission.'),
-              completed_at=NULL, updated_at=CURRENT_TIMESTAMP, version=version+1
-            WHERE id=? AND status='RUNNING' AND transcript_review_required
-            """, jobId);
-        if (changed != 1) throw new ProcessingLifecycleConflictException(
-            "Processing job changed before transcript review could begin.");
-        return true;
-    }
-
     public Optional<TranscriptReview> transcriptReview(UUID reviewId) {
         return jdbc.query("""
             SELECT id,processing_job_id,meeting_id,transcript_id,content_revision,
@@ -392,14 +325,6 @@ public class MediaRepository {
                    acknowledged_at,admitted_by_user_id,admitted_at
             FROM processing_job_transcript_reviews WHERE id=?
             """, MediaRepository::transcriptReviewRow, reviewId).stream().findFirst();
-    }
-
-    public Optional<UUID> admittedReview(UUID jobId, UUID meetingId, UUID transcriptId, long revision, String digest) {
-        return jdbc.query("""
-            SELECT id FROM processing_job_transcript_reviews WHERE processing_job_id=? AND meeting_id=?
-              AND transcript_id=? AND content_revision=? AND correction_sha256=? AND admitted_at IS NOT NULL
-            """, (rs, row) -> rs.getObject(1, UUID.class), jobId, meetingId, transcriptId, revision, digest)
-            .stream().findFirst();
     }
 
     public TranscriptReview insertTranscriptReview(UUID reviewId, UUID jobId, UUID meetingId,
@@ -431,27 +356,13 @@ public class MediaRepository {
             new ProcessingLifecycleConflictException("Transcript review was not persisted."));
     }
 
-    /**
-     * Marks one validated review as the durable MI admission proof and releases
-     * the job. The caller holds the Meeting lock and then the Job lock.
-     */
-    public boolean admitTranscriptReview(UUID jobId, UUID reviewId, UUID actorId) {
-        int reviewChanged = jdbc.update("""
+    /** Legacy explicit review receipt; this operation does not change processing state. */
+    public void admitTranscriptReview(UUID jobId, UUID reviewId, UUID actorId) {
+        jdbc.update("""
             UPDATE processing_job_transcript_reviews
             SET admitted_by_user_id=?, admitted_at=CURRENT_TIMESTAMP
             WHERE id=? AND processing_job_id=? AND admitted_at IS NULL
             """, actorId, reviewId, jobId);
-        if (reviewChanged == 0) {
-            return hasAdmittedTranscriptReview(jobId);
-        }
-        int jobChanged = jdbc.update("""
-            UPDATE processing_jobs SET status='RUNNING',current_stage=NULL,
-              completed_at=NULL,updated_at=CURRENT_TIMESTAMP,version=version+1
-            WHERE id=? AND status='WAITING_FOR_REVIEW' AND transcript_review_required
-            """, jobId);
-        if (jobChanged != 1) throw new ProcessingLifecycleConflictException(
-            "Processing job is no longer waiting for transcript review.");
-        return true;
     }
 
     public List<Job> listJobs(UUID meetingId) {
@@ -700,10 +611,12 @@ public class MediaRepository {
         }
         if ("CONTEXTUAL_CORRECTION".equals(current.stageCode())) {
             boolean validProof = metricsJson != null && Boolean.TRUE.equals(this.jdbc.queryForObject("""
-                SELECT CAST(? AS jsonb)->>'contextScope' = 'WHOLE_MEETING'
+                SELECT (CAST(? AS jsonb)->>'contextScope' = 'WHOLE_MEETING'
+                    OR (CAST(? AS jsonb)->>'contextScope' = 'RECONCILED_FALLBACK'
+                        AND ?='SUCCEEDED_WITH_WARNING' AND ?='CORRECTION_RECONCILED_FALLBACK'))
                   AND CAST(? AS jsonb)->>'outputSha256' ~ '^[0-9a-f]{64}$'
                   AND length(btrim(COALESCE(CAST(? AS jsonb)->>'promptVersion',''))) BETWEEN 1 AND 80
-                """, Boolean.class, metricsJson, metricsJson, metricsJson));
+                """, Boolean.class, metricsJson, metricsJson, outcome, errorCode, metricsJson, metricsJson));
             if (!validProof) {
                 throw new ProcessingLifecycleConflictException(
                     "Contextual correction requires whole-meeting evidence, output digest and prompt version.");
@@ -748,6 +661,7 @@ public class MediaRepository {
             recordDiarizationWarning(jobId);
             return;
         }
+        if (IntelligenceWorkerCapability.ORDER.contains(current.stageCode())) return;
         int changed = this.jdbc.update("""
             UPDATE processing_jobs SET status = 'FAILED', current_stage = ?, retryable = ?,
               error_code = ?, error_summary = ?, completed_at = CURRENT_TIMESTAMP,
@@ -780,25 +694,26 @@ public class MediaRepository {
     }
 
     public List<String> derivedIntelligencePlan(UUID jobId) {
-        return Boolean.TRUE.equals(jdbc.queryForObject("""
+        boolean fullRegeneration = Boolean.TRUE.equals(jdbc.queryForObject("""
             SELECT EXISTS (SELECT 1 FROM processing_mi_regenerations g
-              JOIN processing_job_transcript_reviews r ON r.id=g.origin_review_id
               JOIN processing_jobs j ON j.id=g.processing_job_id AND j.reprocess_of_job_id=g.origin_job_id
               JOIN meeting_intelligence_source_snapshots s ON s.processing_job_id=j.id
                 AND s.meeting_id=g.meeting_id AND s.source_media_id=j.source_media_id
-                AND s.transcript_id=r.transcript_id AND s.content_revision=r.content_revision
-              WHERE g.processing_job_id=? AND r.admitted_at IS NOT NULL)
-            """, Boolean.class, jobId)) ? IntelligenceWorkerCapability.ORDER : List.of("GENERATING_SUMMARY");
+              WHERE g.processing_job_id=?)
+            """, Boolean.class, jobId));
+        return fullRegeneration ? latestIntelligenceStages(jobId).stream()
+            .map(IntelligenceStageCompletion::stageCode).toList() : List.of("GENERATING_SUMMARY");
+    }
+
+    public boolean isTranscriptIntelligenceRegeneration(UUID jobId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS(SELECT 1 FROM processing_mi_regenerations WHERE processing_job_id=?)
+            """, Boolean.class, jobId));
     }
 
     public boolean isDiarizationPlanned(UUID jobId) {
         return Boolean.TRUE.equals(jdbc.queryForObject(
             "SELECT diarization_planned FROM processing_jobs WHERE id=?", Boolean.class, jobId));
-    }
-
-    public boolean diarizationBeforeReview(UUID jobId) {
-        return Boolean.TRUE.equals(jdbc.queryForObject(
-            "SELECT diarization_before_review FROM processing_jobs WHERE id=?", Boolean.class, jobId));
     }
 
     public boolean terminalDiarization(UUID jobId) {
@@ -925,7 +840,7 @@ public class MediaRepository {
     @Transactional
     public void reconcileDiarizationBeforeReview(int limit, int claimTimeoutSeconds) {
         var jobs = jdbc.query("""
-            SELECT j.id FROM processing_jobs j WHERE j.status='RUNNING' AND j.diarization_before_review
+            SELECT j.id FROM processing_jobs j WHERE j.status='RUNNING' AND j.diarization_planned
               AND EXISTS(SELECT 1 FROM processing_diarization_dispatches d
                 JOIN outbox_events e ON e.id=d.event_id
                 JOIN processing_stage_runs s ON s.id=d.stage_run_id AND s.status='PENDING'
@@ -947,17 +862,28 @@ public class MediaRepository {
         }
     }
 
-    public List<UUID> terminalDiarizationAwaitingReview(int limit) {
+    public List<UUID> diarizationRecoveryCandidates(int limit) {
         return jdbc.query("""
-            SELECT j.id FROM processing_jobs j WHERE j.status='RUNNING' AND j.diarization_before_review
-              AND NOT EXISTS(SELECT 1 FROM processing_job_transcript_reviews r
-                WHERE r.processing_job_id=j.id AND r.admitted_at IS NOT NULL)
+            SELECT j.id FROM processing_jobs j WHERE j.status='RUNNING' AND j.diarization_planned
+              AND EXISTS(SELECT 1 FROM processing_stage_runs f WHERE f.processing_job_id=j.id
+                  AND f.stage_code='FINALIZING_TRANSCRIPT' AND f.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING'))
               AND EXISTS(SELECT 1 FROM processing_stage_runs s WHERE s.processing_job_id=j.id
-                AND s.stage_code='DIARIZING' AND s.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING','FAILED')
+                AND s.stage_code='DIARIZING' AND s.status='PENDING'
+                AND NOT EXISTS(SELECT 1 FROM processing_diarization_dispatches d WHERE d.stage_run_id=s.id)
                 AND s.attempt_number=(SELECT MAX(a.attempt_number) FROM processing_stage_runs a
                   WHERE a.processing_job_id=j.id AND a.stage_code='DIARIZING'))
             ORDER BY j.updated_at,j.id LIMIT ?
             """, (rs, row) -> rs.getObject(1, UUID.class), limit);
+    }
+
+    public boolean diarizationNeedsDispatch(UUID jobId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS(SELECT 1 FROM processing_stage_runs s JOIN processing_jobs j ON j.id=s.processing_job_id
+              WHERE j.id=? AND j.diarization_planned AND s.stage_code='DIARIZING' AND s.status='PENDING'
+                AND s.attempt_number=(SELECT max(attempt_number) FROM processing_stage_runs
+                    WHERE processing_job_id=j.id AND stage_code='DIARIZING')
+                AND NOT EXISTS(SELECT 1 FROM processing_diarization_dispatches d WHERE d.stage_run_id=s.id))
+            """, Boolean.class, jobId));
     }
 
     /** Recovery completes only jobs whose optional failure was the last unresolved work. */
@@ -979,9 +905,7 @@ public class MediaRepository {
     /** Same job, new attempt and intent; never admit transcription/correction work. */
     public boolean retryDiarizationAndOutbox(Job job, DiarizationSource source, int maxRetries) {
         String status = lockJobStatus(job.id());
-        boolean eligibleStatus = diarizationBeforeReview(job.id())
-            ? "WAITING_FOR_REVIEW".equals(status) && !hasAdmittedTranscriptReview(job.id())
-            : List.of("RUNNING", "COMPLETED_WITH_WARNINGS").contains(status);
+        boolean eligibleStatus = List.of("RUNNING", "COMPLETED_WITH_WARNINGS").contains(status);
         if (!eligibleStatus
                 || !isDiarizationPlanned(job.id()) || source == null || !source.current()
                 || !hasRetryableFailedStage(job.id(), "DIARIZING")) return false;
@@ -1042,9 +966,6 @@ public class MediaRepository {
         if (List.of("COMPLETED", "COMPLETED_WITH_WARNINGS").contains(status)) return;
         if (!"RUNNING".equals(status)) {
             throw new ProcessingLifecycleConflictException("Only a running processing job can complete.");
-        }
-        if (transcriptReviewRequired(jobId) && !hasAdmittedTranscriptReview(jobId)) {
-            throw new ProcessingLifecycleConflictException("Processing cannot complete before transcript review.");
         }
         List<StageCompletion> stages = this.jdbc.query("""
             SELECT s.id, s.stage_code, s.status
@@ -1126,7 +1047,9 @@ public class MediaRepository {
         return latestAttempt(jobId, "CONTEXTUAL_CORRECTION").stream()
             .anyMatch(attempt -> isSuccessful(attempt.status()) && Boolean.TRUE.equals(
                 this.jdbc.queryForObject("""
-                    SELECT metrics->>'contextScope'='WHOLE_MEETING'
+                    SELECT (metrics->>'contextScope'='WHOLE_MEETING'
+                        OR (metrics->>'contextScope'='RECONCILED_FALLBACK' AND status='SUCCEEDED_WITH_WARNING'
+                            AND error_code='CORRECTION_RECONCILED_FALLBACK'))
                       AND metrics->>'outputSha256' ~ '^[0-9a-f]{64}$'
                     FROM processing_stage_runs WHERE id=?
                     """, Boolean.class, attempt.id())));
@@ -1178,7 +1101,6 @@ public class MediaRepository {
         var job=findJob(jobId).orElseThrow();
         if(!List.of("PENDING","QUEUED","RUNNING").contains(job.status()) || hasRunningStage(jobId)
             || findMedia(job.sourceMediaId()).filter(m->"AVAILABLE".equals(m.status())).isEmpty()) return false;
-        if (job.transcriptReviewRequired() && !hasAdmittedTranscriptReview(jobId)) return false;
         if(isDerivedIntelligenceJob(jobId)) {
             var stages=latestIntelligenceStages(jobId);
             return stages.stream().map(IntelligenceStageCompletion::stageCode).toList().equals(derivedIntelligencePlan(jobId));
@@ -1195,8 +1117,43 @@ public class MediaRepository {
               WHERE j.id=? AND s.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
                 WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)
               AND s.status NOT IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
-              AND NOT (j.diarization_planned AND s.stage_code='DIARIZING' AND s.status='FAILED'))
+               AND NOT (s.status='FAILED' AND (j.diarization_planned AND s.stage_code='DIARIZING'
+                 OR s.stage_code IN ('GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS'))))
             """,Boolean.class,jobId));
+    }
+
+    /** Terminalize after every independent stage has had a chance to run. */
+    public void retireStaleIntelligence(UUID jobId) {
+        jdbc.update("""
+            UPDATE processing_stage_runs s SET status='FAILED',retryable=FALSE,
+                error_code='INTELLIGENCE_SOURCE_STALE', error_summary='Transcript revision was superseded.',
+                completed_at=CURRENT_TIMESTAMP
+            FROM meeting_intelligence_source_snapshots x JOIN processing_jobs j ON j.id=x.processing_job_id
+            WHERE j.id=? AND s.processing_job_id=j.id AND s.status='PENDING'
+              AND s.stage_code IN ('GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS')
+              AND (j.job_type='OFFLINE_MEETING_PROCESSING'
+                   OR EXISTS(SELECT 1 FROM processing_mi_regenerations g WHERE g.processing_job_id=j.id))
+              AND NOT EXISTS(SELECT 1 FROM transcripts t WHERE t.meeting_id=j.meeting_id AND t.is_current
+                  AND t.id=x.transcript_id AND t.content_revision=x.content_revision)
+            """, jobId);
+    }
+
+    public boolean finishFailedIntelligence(UUID jobId) {
+        return jdbc.update("""
+            WITH failure AS (
+              SELECT s.stage_code,s.error_code,s.retryable FROM processing_stage_runs s
+              WHERE s.processing_job_id=? AND s.status='FAILED'
+                AND s.stage_code IN ('GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS')
+                AND s.attempt_number=(SELECT max(x.attempt_number) FROM processing_stage_runs x
+                      WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)
+              ORDER BY s.retryable DESC,s.stage_code LIMIT 1
+            )
+            UPDATE processing_jobs j SET status='FAILED',current_stage=f.stage_code,retryable=f.retryable,
+                error_code=f.error_code,error_summary='Some meeting intelligence could not be generated.',
+                warning_summary='The transcript and completed results remain available.',
+                completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP,version=j.version+1
+            FROM failure f WHERE j.id=? AND j.status IN ('PENDING','QUEUED','RUNNING')
+            """, jobId, jobId) == 1;
     }
 
     /** Caller owns the Job lock; intent and immutable envelope commit together. */
@@ -1253,11 +1210,6 @@ public class MediaRepository {
                 RETURNING s.id,s.stage_code,d.event_id
                 """,(r,n)->new Object[]{r.getObject("id",UUID.class),r.getString("stage_code"),r.getObject("event_id",UUID.class)},pendingTimeoutSeconds,job);
             if(failed.isEmpty()) continue;
-            jdbc.update("""
-                UPDATE processing_jobs SET status='FAILED',current_stage=?,retryable=TRUE,error_code='INTELLIGENCE_DISPATCH_FAILED',
-                  error_summary='Meeting Intelligence dispatch was not confirmed.',completed_at=CURRENT_TIMESTAMP,
-                  updated_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=?
-                """,failed.getFirst()[1],job);
             for(var f:failed) IntelligenceOperationLog.record("DISPATCH_FAILED",job,(UUID)f[0],(UUID)f[2]);
         }
     }
@@ -1270,7 +1222,8 @@ public class MediaRepository {
               AND NOT EXISTS(SELECT 1 FROM processing_stage_runs s WHERE s.processing_job_id=j.id
                 AND s.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
                   WHERE x.processing_job_id=j.id AND x.stage_code=s.stage_code)
-                AND (s.status='FAILED' AND NOT(j.diarization_planned AND s.stage_code='DIARIZING')
+                 AND (s.status='FAILED' AND NOT(j.diarization_planned AND s.stage_code='DIARIZING')
+                      AND s.stage_code NOT IN ('GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS')
                   OR s.stage_code='DIARIZING' AND s.status='PENDING'))
               AND (j.job_type='DERIVED_STAGE_PROCESSING' OR EXISTS(SELECT 1 FROM processing_stage_runs f
                 WHERE f.processing_job_id=j.id AND f.stage_code='FINALIZING_TRANSCRIPT' AND f.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')))
@@ -1283,10 +1236,12 @@ public class MediaRepository {
                 AND NOT EXISTS(SELECT 1 FROM processing_stage_runs p WHERE p.processing_job_id=j.id
                   AND p.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
                     WHERE x.processing_job_id=j.id AND x.stage_code=p.stage_code)
-                  AND p.status NOT IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
+                   AND p.status NOT IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING','FAILED')
                   AND array_position(ARRAY['GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS'],p.stage_code::text)
                     <array_position(ARRAY['GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS'],s.stage_code::text)))
-                OR NOT EXISTS(SELECT 1 FROM processing_stage_runs s WHERE s.processing_job_id=j.id AND s.status IN ('PENDING','RUNNING')))
+                 OR NOT EXISTS(SELECT 1 FROM processing_stage_runs s WHERE s.processing_job_id=j.id
+                   AND s.status IN ('PENDING','RUNNING') AND s.attempt_number=(SELECT max(x.attempt_number)
+                     FROM processing_stage_runs x WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)))
             ORDER BY j.updated_at,j.id LIMIT ?
             """,(r,n)->r.getObject(1,UUID.class),"{"+String.join(",",enabledStages)+"}",limit);
     }
@@ -1420,6 +1375,10 @@ public class MediaRepository {
             if (onlyDiarization) {
                 recordDiarizationWarning(jobId);
                 failed++;
+                continue;
+            }
+            if (expired.stream().allMatch(id -> IntelligenceWorkerCapability.ORDER.contains(stageIdentity(id).stageCode()))) {
+                failed += expired.size();
                 continue;
             }
             this.jdbc.update("""

@@ -1,4 +1,5 @@
 import { useCanGoBack, useNavigate, useRouter } from '@tanstack/react-router'
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { Button } from '../ui/button'
 import { AuthenticatedLayout } from './authenticated-layout'
@@ -47,22 +48,23 @@ export function ErrorRecoveryActions({
   retry,
   className,
 }: ErrorRecoveryActionsProps) {
+  const { t } = useUiTranslation()
   const navigate = useNavigate()
   const { history } = useRouter()
   const canGoBack = useCanGoBack()
 
   return (
     <div className={cn('mt-6 flex flex-wrap justify-center gap-4', className)}>
-      {retry && <Button onClick={retry}>Retry</Button>}
+      {retry && <Button onClick={retry}>{t('retry')}</Button>}
       <Button
         variant='outline'
         disabled={!canGoBack}
         onClick={() => history.go(-1)}
       >
-        Go Back
+        {t('goBack')}
       </Button>
       <Button onClick={() => void navigate({ to: '/' })}>
-        Go to Dashboard
+        {t('goDashboard')}
       </Button>
     </div>
   )

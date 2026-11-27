@@ -3,14 +3,20 @@ name: PI-06 Operational Readiness
 on:
   push:
     branches:
+      - pre-integration-develop
       - 'api/**'
     paths:
+      # Integration evidence must be verified on the same SHA.
+      - 'apps/web/**'
+      - 'apps/mobile/**'
+      - 'docs/integration/**'
       - 'services/api/**'
       - 'services/ai/tests/pi05_live_contract.py'
       - 'infra/local/secure-integration/**'
       - '.github/workflows/pi06-operational-readiness.yml'
   pull_request:
     branches:
+      - pre-integration-develop
       - develop
       - 'api/**'
   workflow_dispatch:

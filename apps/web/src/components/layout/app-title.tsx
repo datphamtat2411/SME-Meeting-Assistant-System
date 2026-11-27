@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { Menu, Video, X } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import {
   SidebarMenu,
@@ -9,6 +10,7 @@ import {
 import { Button } from '../ui/button'
 
 export function AppTitle() {
+  const { t } = useUiTranslation()
   const { setOpenMobile } = useSidebar()
   return (
     <SidebarMenu>
@@ -16,7 +18,7 @@ export function AppTitle() {
         <div className='flex min-w-0 items-center gap-0'>
           <Link
             to='/'
-            aria-label='SME Meeting Assistant home'
+            aria-label={t('home')}
             onClick={() => setOpenMobile(false)}
             className='flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 text-start text-sm outline-hidden hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring'
           >
@@ -25,7 +27,7 @@ export function AppTitle() {
             </span>
             <span className='grid min-w-0 text-sm leading-tight group-data-[collapsible=icon]:hidden'>
               <span className='truncate font-bold'>SME Meeting Assistant</span>
-              <span className='truncate text-xs'>AI Meeting Workspace</span>
+              <span className='truncate text-xs'>{t('workspace')}</span>
             </span>
           </Link>
           <ToggleSidebar />
@@ -40,6 +42,7 @@ function ToggleSidebar({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
+  const { t } = useUiTranslation()
   const { toggleSidebar } = useSidebar()
 
   return (
@@ -60,7 +63,7 @@ function ToggleSidebar({
     >
       <X className='md:hidden' />
       <Menu className='max-md:hidden' />
-      <span className='sr-only'>Toggle Sidebar</span>
+      <span className='sr-only'>{t('toggleSidebar')}</span>
     </Button>
   )
 }

@@ -1,0 +1,60 @@
+# Cross-platform integration — Wave 01 decision baseline
+
+Status: Wave 01 foundation is assembled; Wave 02 (INT-03/04/05)
+implementation and review-follow-up automated verification are complete.
+All eight CI workflows passed at the exact verified baseline
+`1715c7c471a4c6c19b7dca4884bc4ac0fdf1f17d` (2026-11-27).
+Wave 03 (INT-06/07) implementation and targeted regression additions are
+recorded in [WAVE-03-RESULTS.md](WAVE-03-RESULTS.md) and the canonical
+[TRANSCRIPT-DECISION-CONTRACT.md](TRANSCRIPT-DECISION-CONTRACT.md). All eight workflows passed at
+`0a8332556819ba4a19a0d03f19d4d77ec8d623ab`. Wave 04 (INT-08/09/10) implementation is recorded in
+[WAVE-04-RESULTS.md](WAVE-04-RESULTS.md) and the shared
+[ASSISTANT-INTEGRATION-CONTRACT.md](ASSISTANT-INTEGRATION-CONTRACT.md).
+Wave 04 passed all eight workflows at `bada2ee6ea4bb18f9c87c8ff2b63c5ec4dfa5bf4`.
+Wave 05 (INT-11/12) implementation and verification boundaries are recorded in
+[WAVE-05-RESULTS.md](WAVE-05-RESULTS.md) and
+[DOWNSTREAM-PLATFORM-INTEGRATION-CONTRACT.md](DOWNSTREAM-PLATFORM-INTEGRATION-CONTRACT.md).
+Wave 05 final CI acceptance requires all eight workflows on the exact candidate SHA.
+Live cross-client and visual acceptance, and
+coordinated compatibility-route retirement, remain pending. See [WAVE-02-RESULTS.md](WAVE-02-RESULTS.md) for the original
+implementation baseline, corrective fixture commit, run links and exact
+verification scope. CI results must not be attributed to later commits. The integrated tree originates from a
+non-squashed two-parent merge on `pre-integration-develop`. The user authorized
+execution on `pre-integration-develop`, based on develop, Web first then
+Mobile. The source heads are pinned in BASELINE-INVENTORY.md. Do not alter
+source branches, develop, or main. No force-push. No shortcuts that conceal
+errors. Root-cause fixes, not weakened tests. See
+`docs/integration/INT-02-RESULTS.md` for commands and deferred gaps.
+
+## Native preflight evidence
+
+On 2026-11-27, `git merge-tree --write-tree HEAD feat/mobile-reintegration`
+completed against `HEAD=dba6e856f2b071c7e83a3b9655652e0e0a25c99f` and the pinned
+Mobile head `6a32ad343c3c41df39e5968d53c85d4ce6b7c5ba`. Git produced candidate
+tree `9aa544de7102d941c0ad2eb3409066a854f4f923` and nine textual conflicts:
+the API workflow, three Action Item files, three Assistant files, and two
+Decision files. `AssistantModels.java`, `DecisionController.java`,
+`DecisionService.java`, and the three listed integration tests auto-merged and
+were subject to semantic inspection. The conflicts were resolved in the
+working tree, verified, and assembled into the final two-parent merge without
+rewriting either source branch.
+
+## Decision policy
+Approved requirements outrank branch preferences (API-GEN-001/005/006, API-VER-002/003, API-NAME-005, API-ERR-002, ARCH-GEN-002/003/004, BR-GEN-002/003/006/008, BR-MTG-009/010, FEAT-GEN-003/008, SEC-BASE-003/005/007). Choose the stronger implementation for correctness, security, integrity, reliability and maintainability; tie-break in favor of Web presentation compatibility. Web integration-rush is the actual presentation baseline; main mock is reference only. Keep layouts, navigation, design system and workflows unless correctness requires changes. Prefer adapters, typed schemas and hooks. Preserve Mobile features; change transport models where needed. No new feature solely because it exists in mock; priority and global Assistant scope are separate requirement-gap decisions, not silently delivered or waived.
+
+## Contract decisions
+- Action items: keep Web public shape (isOfficial, meeting, assignee.active, boolean capabilities, evidence, transcriptId/contentRevision); preserve historical assignee identity; the v1 assignee wire projection is {id, displayName, active}; active is derived from the authoritative account status. No additional accountStatus wire field is introduced in this correction. Do not duplicate official or meeting fields. Compute all mutation capabilities from Mobile ActionItemLifecycle plus current rights, not duplicated client rules. Preserve existing canonical status, UTC overdue behavior, ETag/If-Match, idempotency, response envelope and error semantics. Read/manage rights remain separate. Restricted projections redact meeting title and evidence as well as other protected attribution; opaque ID is not permission. Reviewable means PROPOSED and current review-management authority, independent of whether CONFIRM is eligible. Compose official/reviewable, status, q, meetingId, assignee, overdue, page/size/sort before pagination/count; search only visible data. Canonical management discovery is management-targets. Both management-targets and the existing Mobile creation-meetings compatibility projection share one authorized query; the latter is transitional: both repository consumers are migrated; removal awaits deployed consumer inventory and compatibility approval. Management-targets adds an explicit restricted flag. Both accept optional q, matching visible titles or exact authorized UUIDs, with deterministic visible-title/UUID order and matching counts. Web labels restricted rows using only their opaque ID. management-capability is a distinct boolean admission hint, using the same rights expression globally. assignee-candidates is meeting-management-scoped, includes self and only active accounts, accepts exactly one of q or candidateId for search or exact identity recovery; users/meeting-candidates is the active-actor invite directory, excludes self, and is not a management authorization check. No new public aliases.
+- Assistant: retain Web conversation/turn/evidence DTOs, nullable pendingTurn, nextBeforeMessageId and read-only GET turns lookup by key header or ID. Keep Mobile optional Idempotency-Key for conversation creation and V67 owner-scoped request digest uniqueness; same normalized intent replay reauthorizes, does not charge twice, different intent conflicts. No new key in URL. Keep Web explicit POST recovery by durable ID; only expired PROCESSING lease may be reclaimed, no duplicate turn/message, active lease never reexecutes. Preserve Mobile admission transaction and locks, durable fencing, current source validation, sanitized failure, quota/Retry-After. Preserve Unicode code-point limit of 4096 after normalization, blank rejection, SHA-256 fingerprint. Use offset then limit consistently (prefer named internal parameters); offset page*size, lookahead size+1. Exclusive beforeMessageId anchor versus explicit page; stable timestamp/UUID order; scoped 404 invalid anchor. Return oldest ID as next anchor if more. Observation does not mutate or trigger inference. Terminal ASSISTANT_TURN_FAILED distinct from ASSISTANT_UNAVAILABLE. Web and Mobile use one canonical lookup route; retire branch-only alternative only after consumer migration and compatibility review.
+- Transcript/Decision: preserve Mobile segment ETag, reviewedTranscriptId/reviewedContentRevision checks, snapshot capture, source guard; retain Web Decision detail reader and consistent stale-sensitive ETag. Never retry stale mutation with unreviewed fresh ETag. Do not silently treat optional reviewed-source fields as proof of review.
+- Evidence/Minutes/Export: retain Web resolver and export capability/replay-only recovery; source readers use canonical artifacts with current authorization, freshness and redaction. Retain Web assignee display metadata. Dashboard derives canonical state. No protected preview in restricted projections or invented citations.
+- Auth/platform: keep Web account setup fix with stale access cookie, current cookie/CSRF policy and Mobile bearer credentials. Keep local HTTP-only dev policy, exact local origin; do not weaken production/security boundaries. Preserve independent recording/upload, scheduling and AI test changes.
+- DB/AI: preserve V67 unchanged; validate fresh/upgrade and no duplicate migration versions; Core owns business truth; preserve AI boundary and real integration tests. No redesign.
+
+## Compatibility boundary
+These choices consolidate competing integration-branch proposals, not permission to break a released v1 API. API-VER-002 requires explicit versioning for incompatible public changes; API-GEN-006 requires an approved requirement change for replacement of baseline endpoints. Confirm deployment/consumer inventory and any requirement changes before promotion; no silent changes to requirement docs. Web's source requirement edits must be reviewed as part of the merge. Existing global Assistant and priority requirement gaps remain visible and require scope review before product acceptance, irrespective of mock parity.
+
+## Contract sources (immutable refs)
+Web: ActionItemView/Controller/Service, AssistantModels/Controller/Service/Store, AssistantEvidenceResolver, docs/ASSISTANT-CONVERSATION-RELIABILITY.md and ASSISTANT-EVIDENCE-RESOLUTION.md. Mobile: ACTION_ITEM_MOBILE_CONTRACT_V1.md, docs/ASSISTANT-ADMISSION.md, ActionItemLifecycle, MeetingActionItemRightsSql, TranscriptSourceGuard, TranscriptSnapshotV1, TranscriptVersionTags, V67. Source paths and exact revisions in inventory. Consumer anchors: apps/web/src/features/action-items/action-api.ts, apps/web/src/features/assistant/assistant-api.ts; apps/mobile/lib/features/action_items/action_item_models.dart, apps/mobile/lib/features/assistant/assistant_repository.dart. The merged Action Item fields, nullability, mutations, errors and discovery semantics are specified in services/api/ACTION_ITEM_MOBILE_CONTRACT_V1.md. The merged Assistant wire DTOs, creation replay, status and recovery semantics are specified in services/api/docs/ASSISTANT-CONVERSATION-RELIABILITY.md, backed by AssistantModels and AssistantController; admission and evidence details remain in their respective package documents. Remaining detailed contract and consumer checks are enumerated in DEFERRED-INTEGRATION-ITEMS.md; do not infer permission from client state.
+
+## Wave 01 gate
+INT-01: baseline, decisions, conflict inventory, owners, source-level Web preservation policy. Visual baseline requires actual browser run and is not yet captured. INT-02: actual merge or equivalently verified Git-object merge with two-parent history, preserve independent changes, resolve conflicts without discarding valid behavior/tests, enable actual CI on target, compile and test-compile API, build Web, analyze Mobile, validate migrations and affected AI. No unfinished merge or broken security baseline may be called done. Record real verification logs and deferred known behavioral mismatches with owner. If necessary pull prerequisite reconciliation into INT-02, not fake a successful merge. Full E2E later. Final CI: after codebase completion, inspect all required workflows at exact SHA; one corrective pass for a red final CI batch, recheck and report; no skipped or suppressed failing tests.

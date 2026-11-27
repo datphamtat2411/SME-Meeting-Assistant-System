@@ -40,10 +40,23 @@ class IntelligenceContractValidationTests {
     }
 
     @Test
+    void reviewedDecisionSourceRevisionIsNonnegativeAndLegacyRequestsRemainValid() {
+        UUID transcriptId = UUID.randomUUID();
+        List<UUID> evidence = List.of(UUID.randomUUID());
+        assertThat(validator.validate(new CreateDecisionRequest(
+            "Manual decision.", evidence, transcriptId, -1L))).isNotEmpty();
+        assertThat(validator.validate(new CreateDecisionRequest(
+            "Manual decision.", evidence, transcriptId, 0L))).isEmpty();
+        assertThat(validator.validate(new CreateDecisionRequest(
+            "Manual decision.", evidence))).isEmpty();
+    }
+
+    @Test
     void mutationRecordsExposeOnlyAllowlistedFields() {
         assertThat(fields(EditSummaryRequest.class)).containsExactly("content");
         assertThat(fields(EditDecisionRequest.class)).containsExactly("content");
-        assertThat(fields(CreateDecisionRequest.class)).containsExactlyInAnyOrder("content", "evidenceSegmentIds");
+        assertThat(fields(CreateDecisionRequest.class)).containsExactlyInAnyOrder(
+            "content", "evidenceSegmentIds", "reviewedTranscriptId", "reviewedContentRevision");
     }
 
     @Test
@@ -54,6 +67,7 @@ class IntelligenceContractValidationTests {
             OffsetDateTime.now(), null, null, null, null, null);
         evidence.clear();
         assertThat(view.evidenceSegmentIds()).hasSize(1);
+        assertThat(view.etag()).startsWith("\"dec-").endsWith("\"");
     }
 
     private static Set<String> fields(Class<?> type) {

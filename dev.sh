@@ -31,6 +31,8 @@ POSTGRES_PROJECT="sme-meeting-local"
 SECURE_PROJECT="sme-meeting-secure-integration"
 DEPENDENCY_STATE="$RUNTIME_DIR/dependencies.json"
 DEPENDENCY_MODE="${SME_DEV_DEPENDENCY_MODE:-secure}"
+FULL_MODE=0
+COMMAND_ARGS=()
 
 ai_http_mode() {
   case "${SME_DEV_AI_HTTP_MODE:-managed}" in
@@ -79,32 +81,53 @@ worker_role() {
 }
 
 worker_enabled() {
-  [[ "${SME_DEV_START_WORKER:-0}" == "1" ]]
+  [[ "$FULL_MODE" == "1" || "${SME_DEV_START_WORKER:-0}" == "1" ]]
 }
 
 qdrant_enabled() {
-  [[ "${SME_DEV_START_QDRANT:-0}" == "1" ]] ||
+  [[ "$FULL_MODE" == "1" || "${SME_DEV_START_QDRANT:-0}" == "1" ]] ||
     { worker_enabled && [[ "$(worker_role)" == "knowledge-worker" ]]; }
 }
 
 render_ai_process() {
   local process="$1"
   local output="$2"
+  local enable_worker="${3:-0}"
   mkdir_state
+  local options=()
+  if [[ "$enable_worker" == "1" ]]; then
+    options+=(--enable-selected-worker)
+  fi
   "$PYTHON" "$AI_ENV_HELPER" \
     --config "$AI_ENV" \
     --process "$process" \
     --validate-files \
+    "${options[@]}" \
     --output "$output" >/dev/null
 }
 
 render_ai_environment() {
-    render_ai_process ai-http "$RUNTIME_DIR/ai-http.env"
-  if worker_enabled; then
+  render_ai_process ai-http "$RUNTIME_DIR/ai-http.env"
+  if [[ "$FULL_MODE" == "1" ]]; then
+    render_ai_process transcription-worker "$RUNTIME_DIR/transcription-worker.env" 1
+    render_ai_process mi-worker "$RUNTIME_DIR/mi-worker.env" 1
+    render_ai_process knowledge-worker "$RUNTIME_DIR/knowledge-worker.env" 1
+  elif worker_enabled; then
     local role
     role="$(worker_role)"
-    render_ai_process "$role" "$RUNTIME_DIR/${role}.env"
+    render_ai_process "$role" "$RUNTIME_DIR/${role}.env" 1
   fi
+}
+
+render_core_environment() {
+  mkdir_state
+  local options=(core --api-file "$API_ENV" --postgres-file "$POSTGRES_ENV" --output "$RUNTIME_DIR/core.env")
+  if [[ "$FULL_MODE" == "1" ]]; then
+    options+=(--full)
+  else
+    options+=(--safe-transport)
+  fi
+  env -u APP_ENVIRONMENT "$PYTHON" "$CORE_ENV_HELPER" "${options[@]}" >/dev/null
 }
 
 render_secure_environment() {
@@ -141,7 +164,7 @@ doctor() {
   require_file "$AI_ENV"
   require_file "$POSTGRES_ENV"
   require_file "$SECURE_ENV"
-  if [[ "${SME_DEV_CHECK_WEB:-0}" == "1" ]]; then
+  if [[ "$FULL_MODE" == "1" || "${SME_DEV_CHECK_WEB:-0}" == "1" ]]; then
     require_file "$WEB_ENV"
   fi
   [[ -x "$ROOT/services/api/mvnw" ]] || {
@@ -164,11 +187,23 @@ doctor() {
     echo "BLOCKED: curl is unavailable" >&2
     return 1
   }
+  command -v sha256sum >/dev/null || {
+    echo "BLOCKED: sha256sum is unavailable" >&2
+    return 1
+  }
+  if [[ "$FULL_MODE" == "1" ]]; then
+    command -v pnpm >/dev/null || {
+      echo "BLOCKED: pnpm is unavailable for full Web orchestration" >&2
+      return 1
+    }
+    [[ -f "$ROOT/apps/web/node_modules/vite/bin/vite.js" ]] || {
+      echo "BLOCKED: apps/web dependencies are not installed; run pnpm install in apps/web" >&2
+      return 1
+    }
+    "$PYTHON" "$CONFIG_HELPER" web --file "$WEB_ENV" >/dev/null
+  fi
 
-  "$PYTHON" "$CORE_ENV_HELPER" core \
-    --api-file "$API_ENV" \
-    --postgres-file "$POSTGRES_ENV" \
-    --check >/dev/null
+  render_core_environment
   render_ai_environment
   "$PYTHON" "$CONFIG_HELPER" paths \
     --file "$SECURE_ENV" --directory-key BROKER_TLS_DIR \
@@ -196,22 +231,58 @@ doctor() {
       tls.crt tls.key issuer-ca.crt >/dev/null
     compose_secure --profile knowledge config -q >/dev/null
   fi
+  if [[ "$FULL_MODE" == "1" ]]; then
+    local diarization_env="$RUNTIME_DIR/transcription-worker.env"
+    if ! grep -Fxq "APP_WORKER_DEAD_LETTER_ENABLED=true" "$RUNTIME_DIR/core.env"; then
+      echo "BLOCKED: full transcription capability requires the verified DLQ reconciliation gate" >&2
+      return 1
+    fi
+    if grep -Fxq "APP_MEDIA_PROCESSING_DIARIZATION_ENABLED=true" "$RUNTIME_DIR/core.env"; then
+      local diarization_setting
+      for diarization_setting in \
+        "APP_WORKER_DIARIZATION_ENABLED=true" \
+        "APP_WORKER_DIARIZATION_INFRASTRUCTURE_VERIFIED=true" \
+        "AI_DIARIZATION_ENABLED=true" \
+        "AI_DIARIZATION_WORKER_ENABLED=true" \
+        "AI_DIARIZATION_WORKER_PROVIDER_APPROVED=true" \
+        "AI_DIARIZATION_WORKER_PROJECTION_READY=true"
+      do
+        if ! grep -Fxq "$diarization_setting" "$RUNTIME_DIR/core.env" "$diarization_env"; then
+          echo "BLOCKED: enabled diarization requires ${diarization_setting}" >&2
+          return 1
+        fi
+      done
+      if ! grep -Eq '^APP_WORKER_DIARIZATION_STORAGE_ID=[^[:space:]]+$' "$RUNTIME_DIR/core.env"; then
+        echo "BLOCKED: enabled diarization requires a Core result storage alias" >&2
+        return 1
+      fi
+      echo "INFO: approved staged diarization is active; no workload or historical DLQ replay command is initiated automatically"
+    else
+      echo "INFO: diarization admission remains disabled; no diarization workload or historical DLQ replay command is initiated automatically"
+    fi
+  fi
   if [[ "$ai_mode" == "external" ]]; then
     echo "INFO: AI HTTP mode is external; dev.sh will not start or stop that process"
   fi
-  echo "PASS: canonical configuration, process mappings and Compose contracts are valid"
+  if [[ "$FULL_MODE" == "1" ]]; then
+    echo "PASS: full-mode canonical configuration, isolated process mappings and Compose contracts are valid"
+  else
+    echo "PASS: canonical configuration, process mappings and Compose contracts are valid"
+  fi
 }
 
 start_process() {
   local name="$1"
   local cwd="$2"
+  local fingerprint="$3"
   local log="$STATE_DIR/${name}.log"
-  shift 2
+  shift 3
   "$PYTHON" "$PROCESS_HELPER" start \
     --state-dir "$STATE_DIR" \
     --name "$name" \
     --cwd "$cwd" \
     --log "$log" \
+    --fingerprint "$fingerprint" \
     -- "$@" >/dev/null
 }
 
@@ -341,6 +412,28 @@ wait_owned_process() {
   return 1
 }
 
+wait_worker_readiness() {
+  local name="$1"
+  local marker="$2"
+  local log="$STATE_DIR/${name}.log"
+  local attempt
+  for attempt in $(seq 1 60); do
+    if grep -Fq "$marker" "$log" 2>/dev/null; then
+      return 0
+    fi
+    if ! "$PYTHON" "$PROCESS_HELPER" status \
+      --state-dir "$STATE_DIR" \
+      --name "$name" | grep -q '"running": true'
+    then
+      echo "ERROR: ${name} exited before broker readiness; inspect ${log}" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "ERROR: ${name} did not register its broker consumer; inspect ${log}" >&2
+  return 1
+}
+
 wait_core_readiness() {
   local attempt
   for attempt in $(seq 1 60); do
@@ -353,6 +446,46 @@ wait_core_readiness() {
   done
   echo "ERROR: Core liveness did not become ready; inspect ${STATE_DIR}/core.log" >&2
   return 1
+}
+
+wait_web_readiness() {
+  local attempt
+  for attempt in $(seq 1 60); do
+    if curl --fail --silent --show-error --max-time 2 \
+      http://localhost:5173/ >/dev/null 2>&1
+    then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "ERROR: Web did not become ready at http://localhost:5173; inspect ${STATE_DIR}/web.log" >&2
+  return 1
+}
+
+process_fingerprint() {
+  sha256sum "$@" | sha256sum | cut -d' ' -f1
+}
+
+worker_startup_marker() {
+  case "$1" in
+    transcription-worker) printf '%s\n' "worker.transcription.consuming" ;;
+    mi-worker) printf '%s\n' "worker.intelligence.consuming" ;;
+    knowledge-worker) printf '%s\n' "worker.knowledge_indexing.consuming" ;;
+    *) return 1 ;;
+  esac
+}
+
+start_web() {
+  local fingerprint
+  fingerprint="$(process_fingerprint \
+    "$WEB_ENV" \
+    "$ROOT/apps/web/package.json" \
+    "$ROOT/apps/web/pnpm-lock.yaml" \
+    "$ROOT/apps/web/vite.config.ts")"
+  start_process web "$ROOT/apps/web" "$fingerprint" \
+    pnpm run dev -- --host 127.0.0.1 --port 5173
+  wait_owned_process web
+  wait_web_readiness
 }
 
 wait_ai_readiness() {
@@ -368,11 +501,18 @@ wait_ai_readiness() {
     return 0
   fi
   local port
+  local attempts=60
+  if [[ "$FULL_MODE" == "1" ]]; then
+    # Full mode may initialize the local retrieval/assistant model before the
+    # listener binds; do not report a partial restart while that bounded startup
+    # is still progressing.
+    attempts=180
+  fi
   port="$("$PYTHON" "$READINESS_HELPER" port \
     --file "$RUNTIME_DIR/ai-http.env" \
     --name AI_HTTP_PORT)"
   if ! "$PYTHON" "$READINESS_HELPER" wait-listener \
-    --host 127.0.0.1 --port "$port" --timeout 60
+    --host 127.0.0.1 --port "$port" --timeout "$attempts"
   then
     echo "ERROR: AI HTTP listener did not become ready; inspect ${STATE_DIR}/ai-http.log" >&2
     return 1
@@ -384,31 +524,70 @@ up() {
   ai_mode="$(ai_http_mode)" || return 1
   doctor
   start_dependencies
+  local fingerprint
   if [[ "$ai_mode" == "external" ]]; then
     wait_ai_readiness
   else
-    start_process ai-http "$ROOT" bash "$ROOT/run-ai-http.sh"
+    fingerprint="$(process_fingerprint \
+      "$RUNTIME_DIR/ai-http.env" \
+      "$AI_ENV_HELPER" \
+      "$ROOT/run-ai-http.sh")"
+    start_process ai-http "$ROOT" "$fingerprint" \
+      bash "$ROOT/run-ai-http.sh" --runtime-env "$RUNTIME_DIR/ai-http.env"
     wait_owned_process ai-http
     wait_ai_readiness
   fi
-  start_process core "$ROOT" bash "$ROOT/run-core.sh"
+  fingerprint="$(process_fingerprint \
+    "$RUNTIME_DIR/core.env" \
+    "$CORE_ENV_HELPER" \
+    "$ROOT/run-core.sh" \
+    "$ROOT/services/api/src/main/resources/application.properties" \
+    "$ROOT/services/api/src/main/resources/application-secure-integration.properties")"
+  start_process core "$ROOT" "$fingerprint" \
+    bash "$ROOT/run-core.sh" --runtime-env "$RUNTIME_DIR/core.env"
   wait_owned_process core
   wait_core_readiness
-  if worker_enabled; then
-    local role
+  local role worker_env
+  if [[ "$FULL_MODE" == "1" ]]; then
+    for role in transcription-worker mi-worker knowledge-worker; do
+      worker_env="$RUNTIME_DIR/${role}.env"
+      fingerprint="$(process_fingerprint \
+        "$worker_env" \
+        "$AI_ENV_HELPER" \
+        "$ROOT/run-ai-worker.sh")"
+      start_process "$role" "$ROOT" "$fingerprint" \
+        bash "$ROOT/run-ai-worker.sh" "$role" --runtime-env "$worker_env"
+      wait_owned_process "$role"
+      wait_worker_readiness "$role" "$(worker_startup_marker "$role")"
+    done
+    start_web
+    echo "PASS: full local stack is ready at http://localhost:5173"
+    echo "INFO: no workload was admitted; diarization inference, paid inference, external email, and historical DLQ replay remain idle"
+  elif worker_enabled; then
     role="$(worker_role)"
-    start_process worker "$ROOT" bash "$ROOT/run-ai-worker.sh" "$role"
-    wait_owned_process worker
-  fi
-  if [[ "$ai_mode" == "external" ]]; then
-    echo "PASS: PostgreSQL, RabbitMQ, RustFS, external AI HTTP and Core are ready"
+    worker_env="$RUNTIME_DIR/${role}.env"
+    fingerprint="$(process_fingerprint \
+      "$worker_env" \
+      "$AI_ENV_HELPER" \
+      "$ROOT/run-ai-worker.sh")"
+    start_process "$role" "$ROOT" "$fingerprint" \
+      bash "$ROOT/run-ai-worker.sh" "$role" --runtime-env "$worker_env"
+    wait_owned_process "$role"
+    wait_worker_readiness "$role" "$(worker_startup_marker "$role")"
+    if [[ "$ai_mode" == "external" ]]; then
+      echo "PASS: PostgreSQL, RabbitMQ, RustFS, external AI HTTP, Core and ${role} are ready"
+    else
+      echo "PASS: PostgreSQL, RabbitMQ, RustFS, AI HTTP, Core and ${role} are ready"
+    fi
   else
-    echo "PASS: PostgreSQL, RabbitMQ, RustFS, AI HTTP and Core are ready"
-  fi
-  if ! worker_enabled; then
+    if [[ "$ai_mode" == "external" ]]; then
+      echo "PASS: PostgreSQL, RabbitMQ, RustFS, external AI HTTP and Core are ready"
+    else
+      echo "PASS: PostgreSQL, RabbitMQ, RustFS, AI HTTP and Core are ready"
+    fi
     echo "INFO: set SME_DEV_START_WORKER=1 to start the selected worker"
   fi
-  if ! qdrant_enabled; then
+  if [[ "$FULL_MODE" != "1" ]] && ! qdrant_enabled; then
     echo "INFO: Qdrant remains stopped until the Knowledge worker or SME_DEV_START_QDRANT=1 is selected"
   fi
 }
@@ -422,8 +601,15 @@ status() {
   else
     status_process ai-http
   fi
-  status_process core
-  status_process worker
+  local process
+  for process in core transcription-worker mi-worker knowledge-worker web; do
+    status_process "$process"
+  done
+  # Older invocations used the generic state name.  Report it during the
+  # migration window without allowing it to own or stop another role.
+  if [[ -f "$STATE_DIR/worker.json" ]]; then
+    status_process worker
+  fi
   if command -v docker >/dev/null && [[ -f "$POSTGRES_ENV" ]]; then
     compose_postgres ps --format '{{.Name}}\t{{.State}}' 2>/dev/null || true
   fi
@@ -437,23 +623,103 @@ smoke() {
   curl --fail --silent --show-error --max-time 5 \
     http://127.0.0.1:8080/actuator/health/liveness >/dev/null
   echo "PASS: Core liveness endpoint responded"
-  if [[ "${SME_DEV_SECURE_SMOKE:-0}" == "1" ]]; then
+  if [[ "$FULL_MODE" == "1" ]]; then
+    curl --fail --silent --show-error --max-time 5 \
+      http://localhost:5173/ >/dev/null
+    echo "PASS: Web responded at http://localhost:5173"
+  fi
+  if [[ "${SME_DEV_SECURE_SMOKE:-0}" == "1" || "$FULL_MODE" == "1" ]]; then
     require_file "$SECURE_ENV"
-    render_ai_process transcription-worker "$RUNTIME_DIR/transcription-worker.env"
+    render_ai_process transcription-worker "$RUNTIME_DIR/transcription-worker.env" 0
     "$PYTHON" "$CONFIG_HELPER" paths \
       --file "$SECURE_ENV" --directory-key WORKER_TLS_DIR \
       --allow-acl-uid 10001 \
       tls.crt tls.key core-server-ca.crt broker-ca.crt storage-ca.crt >/dev/null
+    local secure_services="rabbitmq,storage,storage-boundary"
+    local secure_volumes="broker_secure_data,storage_secure_data"
+    local secure_healthy="rabbitmq,storage"
+    if qdrant_enabled; then
+      secure_services="$secure_services,qdrant"
+      secure_volumes="$secure_volumes,qdrant_secure_data"
+      secure_healthy="$secure_healthy,qdrant"
+    fi
     if ! dependency_verify "$SECURE_PROJECT" \
-      "rabbitmq,storage,storage-boundary" \
-      "broker_secure_data,storage_secure_data" \
-      "rabbitmq,storage"
+      "$secure_services" \
+      "$secure_volumes" \
+      "$secure_healthy"
     then
       echo "BLOCKED: secure smoke dependencies are not ready" >&2
       return 1
     fi
-    compose_secure --profile checks run --rm --no-deps transport-health >/dev/null
-    echo "PASS: secure transport smoke completed"
+    local smoke_options=(--infrastructure)
+    if [[ "$FULL_MODE" == "1" ]]; then
+      smoke_options+=(--worker --public-url http://127.0.0.1:8080)
+    fi
+    local wrong_ca="${SME_DEV_SECURE_SMOKE_WRONG_CA_FILE:-}"
+    local wrong_cert="${SME_DEV_SECURE_SMOKE_WRONG_CLIENT_CERT:-}"
+    local wrong_key="${SME_DEV_SECURE_SMOKE_WRONG_CLIENT_KEY:-}"
+    local index option value
+    for ((index = 0; index < ${#COMMAND_ARGS[@]}; index++)); do
+      option="${COMMAND_ARGS[index]}"
+      case "$option" in
+        --wrong-ca|--wrong-client-cert|--wrong-client-key|--public-url)
+          ((index + 1 < ${#COMMAND_ARGS[@]})) || {
+            echo "BLOCKED: ${option} requires a path or URL" >&2
+            return 1
+          }
+          value="${COMMAND_ARGS[index + 1]}"
+          index=$((index + 1))
+          case "$option" in
+            --wrong-ca) wrong_ca="$value" ;;
+            --wrong-client-cert) wrong_cert="$value" ;;
+            --wrong-client-key) wrong_key="$value" ;;
+            --public-url)
+              smoke_options=(--infrastructure --worker --public-url "$value")
+              ;;
+          esac
+          ;;
+        *)
+          echo "Usage: ./dev.sh smoke [--full] [--wrong-ca FILE] [--wrong-client-cert FILE] [--wrong-client-key FILE] [--public-url URL]" >&2
+          return 2
+          ;;
+      esac
+    done
+    if [[ -n "$wrong_cert" && -z "$wrong_key" || -z "$wrong_cert" && -n "$wrong_key" ]]; then
+      echo "BLOCKED: wrong client certificate and key must be supplied together" >&2
+      return 1
+    fi
+    if [[ -n "$wrong_ca" ]]; then
+      smoke_options+=(--wrong-ca "$wrong_ca")
+    fi
+    if [[ -n "$wrong_cert" ]]; then
+      smoke_options+=(--wrong-client-cert "$wrong_cert" --wrong-client-key "$wrong_key")
+    fi
+    local smoke_status
+    if (
+      cd "$ROOT/services/ai"
+      exec uv run --locked python "$ROOT/infra/local/secure-integration/host_smoke.py" \
+        --ai-env "$RUNTIME_DIR/transcription-worker.env" \
+        --secure-env "$SECURE_ENV" \
+        -- \
+        "${smoke_options[@]}"
+    ); then
+      smoke_status=0
+    else
+      smoke_status=$?
+    fi
+    case "$smoke_status" in
+      0)
+        echo "PASS: secure transport smoke completed"
+        ;;
+      2)
+        echo "BLOCKED: secure transport smoke is partial; approved negative-test identities were not supplied" >&2
+        return 2
+        ;;
+      *)
+        echo "ERROR: secure transport smoke failed" >&2
+        return "$smoke_status"
+        ;;
+    esac
   fi
 }
 
@@ -484,7 +750,10 @@ down() {
   local ai_mode
   ai_mode="$(ai_http_mode)" || return 1
   local failure=0
-  stop_process worker || failure=1
+  local process
+  for process in transcription-worker mi-worker knowledge-worker web worker; do
+    stop_process "$process" || failure=1
+  done
   stop_process core || failure=1
   if [[ "$ai_mode" == "external" ]]; then
     echo "INFO: AI HTTP is externally managed; leaving it running"
@@ -526,22 +795,33 @@ down() {
   echo "PASS: owned development processes stopped; unrelated resources and volumes were preserved"
 }
 
+restart() {
+  down
+  up
+}
+
 logs() {
   local selected="${2:-all}"
   case "$selected" in
-    all|ai-http|core|worker)
+    all|ai-http|core|worker|transcription-worker|mi-worker|knowledge-worker|web)
       ;;
     postgres|rabbitmq|storage|storage-boundary|qdrant)
       ;;
     *)
-      echo "Usage: ./dev.sh logs [all|ai-http|core|worker|postgres|rabbitmq|storage|storage-boundary|qdrant]" >&2
-      return 2
-      ;;
+       echo "Usage: ./dev.sh logs [all|ai-http|core|transcription-worker|mi-worker|knowledge-worker|web|worker|postgres|rabbitmq|storage|storage-boundary|qdrant]" >&2
+       return 2
+       ;;
   esac
 
-  if [[ "$selected" == "all" || "$selected" == "ai-http" || "$selected" == "core" || "$selected" == "worker" ]]; then
+  if [[ "$selected" == "worker" ]]; then
+    selected="$(worker_role)"
+  fi
+
+  if [[ "$selected" == "all" || "$selected" == "ai-http" || "$selected" == "core" ||
+        "$selected" == "transcription-worker" || "$selected" == "mi-worker" ||
+        "$selected" == "knowledge-worker" || "$selected" == "web" ]]; then
     local process
-    for process in ai-http core worker; do
+    for process in ai-http core transcription-worker mi-worker knowledge-worker web; do
       if [[ "$selected" != "all" && "$selected" != "$process" ]]; then
         continue
       fi
@@ -577,13 +857,17 @@ logs() {
 
 usage() {
   cat <<'EOF'
-Usage: ./dev.sh doctor|up|status|smoke|e2e|admit|migrate|logs|down
+Usage: ./dev.sh doctor|up|status|smoke|restart|e2e|admit|migrate|logs|down [--full]
 
- up      Validate canonical files, start dependencies and ready Core/AI.
+ up      Validate canonical files, start dependencies and ready the selected stack.
+         Add --full for Qdrant, all three isolated workers, and Web on port 5173.
  doctor  Validate mappings and Compose interpolation without starting services.
-         Set SME_DEV_AI_HTTP_MODE=external to use an existing HTTPS/mTLS AI API.
- status  Show only owned process and PostgreSQL status.
-smoke   Check Core liveness; set SME_DEV_SECURE_SMOKE=1 for secure checks.
+          Add --full to validate the complete local stack and effective feature gates.
+          Set SME_DEV_AI_HTTP_MODE=external to use an existing HTTPS/mTLS AI API.
+ status  Show owned process and Compose dependency status.
+ smoke   Check Core liveness; --full also checks Web and secure transport.
+         Set SME_DEV_SECURE_SMOKE=1 for secure checks in legacy mode.
+ restart Stop only owned resources and start the selected mode again.
  e2e     Run an explicitly approved, already-running PI-05 environment only.
  admit   Perform the separate read-only fresh-project PI-05 admission check.
  migrate Inventory legacy dotenv files without changing or printing values.
@@ -592,15 +876,32 @@ smoke   Check Core liveness; set SME_DEV_SECURE_SMOKE=1 for secure checks.
 EOF
 }
 
-case "${1:-}" in
-  doctor) doctor ;;
-  up) up ;;
-  status) status ;;
+COMMAND="${1:-}"
+shift || true
+for argument in "$@"; do
+  case "$argument" in
+    --full)
+      FULL_MODE=1
+      ;;
+    --legacy)
+      FULL_MODE=0
+      ;;
+    *)
+      COMMAND_ARGS+=("$argument")
+      ;;
+  esac
+done
+
+case "$COMMAND" in
+  doctor) ((${#COMMAND_ARGS[@]} == 0)) || { usage; exit 2; }; doctor ;;
+  up) ((${#COMMAND_ARGS[@]} == 0)) || { usage; exit 2; }; up ;;
+  status) ((${#COMMAND_ARGS[@]} == 0)) || { usage; exit 2; }; status ;;
   smoke) smoke ;;
-  e2e) e2e ;;
-  admit) admit ;;
-  migrate) configuration_migration_check ;;
-  logs) logs "$@" ;;
-  down) down ;;
+  restart) ((${#COMMAND_ARGS[@]} == 0)) || { usage; exit 2; }; restart ;;
+  e2e) ((${#COMMAND_ARGS[@]} == 0)) || { usage; exit 2; }; e2e ;;
+  admit) ((${#COMMAND_ARGS[@]} == 0)) || { usage; exit 2; }; admit ;;
+  migrate) ((${#COMMAND_ARGS[@]} == 0)) || { usage; exit 2; }; configuration_migration_check ;;
+  logs) logs "$COMMAND" "${COMMAND_ARGS[@]}" ;;
+  down) ((${#COMMAND_ARGS[@]} == 0)) || { usage; exit 2; }; down ;;
   *) usage; exit 2 ;;
 esac

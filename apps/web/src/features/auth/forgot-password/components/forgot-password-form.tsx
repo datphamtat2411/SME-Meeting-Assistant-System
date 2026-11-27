@@ -1,11 +1,11 @@
-import { useState } from 'react'
 import { z } from 'zod'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useNavigate } from '@tanstack/react-router'
-import { ArrowRight, Loader2 } from 'lucide-react'
-import { toast } from 'sonner'
-import { sleep, cn } from '@/lib/utils'
+import { Loader2, Mail, MailCheck } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
+import { cn } from '@/lib/utils'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -16,63 +16,119 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { requestPasswordRecovery } from '../../account-flows-api'
+import { useAccountFlowSubmission } from '../../account-flows/use-account-flow-submission'
 
-const formSchema = z.object({
-  email: z.email({
-    error: (iss) => (iss.input === '' ? 'Please enter your email.' : undefined),
-  }),
+const recoverySchema = z.object({
+  email: z
+    .string()
+    .trim()
+    .min(1, featureValidationMessage('auth:organizationEmailRequired'))
+    .max(320, featureValidationMessage('auth:validEmail'))
+    .pipe(z.email({ error: featureValidationMessage('auth:validEmail') })),
 })
+
+type RecoveryFields = z.infer<typeof recoverySchema>
 
 export function ForgotPasswordForm({
   className,
   ...props
-}: React.HTMLAttributes<HTMLFormElement>) {
-  const navigate = useNavigate()
-  const [isLoading, setIsLoading] = useState(false)
-
-  const form = useForm<z.infer<typeof formSchema>>({
-    resolver: zodResolver(formSchema),
+}: React.ComponentProps<'form'>) {
+  const { t } = useUiTranslation()
+  const submission = useAccountFlowSubmission('recovery')
+  const form = useForm<RecoveryFields>({
+    resolver: zodResolver(recoverySchema),
     defaultValues: { email: '' },
   })
+  const email = useWatch({ control: form.control, name: 'email' })
 
-  function onSubmit(data: z.infer<typeof formSchema>) {
-    setIsLoading(true)
+  async function submit(data: RecoveryFields) {
+    const result = await submission.run(() =>
+      requestPasswordRecovery(data.email)
+    )
+    if (result === 'completed') form.reset()
+    else if (result?.field === 'email') {
+      form.setError('email', {
+        type: 'server',
+        message: featureValidationMessage(result.messageKey),
+      })
+    }
+  }
 
-    toast.promise(sleep(2000), {
-      loading: 'Sending email...',
-      success: () => {
-        setIsLoading(false)
-        form.reset()
-        navigate({ to: '/otp' })
-        return `Email sent to ${data.email}`
-      },
-      error: 'Error',
-    })
+  if (submission.state.type === 'completed') {
+    return (
+      <div className='grid gap-4'>
+        <div
+          role='status'
+          tabIndex={-1}
+          ref={(element) => element?.focus()}
+          className='grid justify-items-center gap-2 text-center'
+        >
+          <MailCheck className='size-8 text-primary' aria-hidden='true' />
+          <p className='font-medium'>{t('auth:checkInbox')}</p>
+          <p className='text-sm text-muted-foreground'>
+            {t('auth:neutralRecoveryResult')}
+          </p>
+        </div>
+        <Button
+          variant='outline'
+          onClick={() => {
+            form.reset()
+            submission.reset()
+          }}
+        >
+          {t('auth:useDifferentEmail')}
+        </Button>
+      </div>
+    )
   }
 
   return (
     <Form {...form}>
       <form
-        onSubmit={form.handleSubmit(onSubmit)}
-        className={cn('grid gap-2', className)}
         {...props}
+        noValidate
+        aria-busy={submission.pending}
+        className={cn('grid gap-3', className)}
+        onSubmit={(event) => void form.handleSubmit(submit)(event)}
       >
         <FormField
           control={form.control}
           name='email'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Email</FormLabel>
+              <FormLabel>{t('auth:organizationEmail')}</FormLabel>
               <FormControl>
-                <Input placeholder='name@example.com' {...field} />
+                <Input
+                  type='email'
+                  autoComplete='email'
+                  placeholder='name@company.com'
+                  disabled={submission.pending}
+                  {...field}
+                />
               </FormControl>
-              <FormMessage />
+              <FormMessage role='alert' />
             </FormItem>
           )}
         />
-        <Button className='mt-2' disabled={isLoading}>
-          Continue
-          {isLoading ? <Loader2 className='animate-spin' /> : <ArrowRight />}
+        {submission.failure && !submission.failure.field && (
+          <Alert variant='destructive'>
+            <AlertDescription>
+              {t(submission.failure.messageKey)}
+            </AlertDescription>
+          </Alert>
+        )}
+        <Button
+          type='submit'
+          className='mt-2'
+          disabled={submission.blocked || !email.trim()}
+        >
+          {submission.pending ? <Loader2 className='animate-spin' /> : <Mail />}
+          {submission.pending
+            ? t('auth:requesting')
+            : submission.failure?.kind === 'unavailable'
+              ? t('auth:tryAgain')
+              : t('auth:sendRecoveryLink')}
         </Button>
       </form>
     </Form>

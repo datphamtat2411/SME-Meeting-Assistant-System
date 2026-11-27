@@ -20,6 +20,7 @@ const csrfResponseSchema = z.object({
 export interface BootstrapCsrfOptions {
   force?: boolean
   allowDuringLogout?: boolean
+  timeout?: number
 }
 
 export async function bootstrapCsrf(
@@ -35,6 +36,7 @@ export async function bootstrapCsrf(
   const requestGeneration = getRequestRecoveryGeneration()
   const response = await coreApi.get<unknown>('/auth/csrf', {
     [RECOVERY_DISABLED_MARKER]: true,
+    timeout: options.timeout,
   } as RecoveryRequestConfig)
   if (
     !options.allowDuringLogout &&

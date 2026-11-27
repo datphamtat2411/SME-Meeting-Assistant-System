@@ -3,8 +3,13 @@ name: Diarization Full-Stack CI
 on:
   push:
     branches:
+      - pre-integration-develop
       - 'integration/**'
     paths:
+      # Integration evidence must be verified on the same SHA.
+      - 'apps/web/**'
+      - 'apps/mobile/**'
+      - 'docs/integration/**'
       - 'services/api/**'
       - 'services/ai/**'
       - 'infra/local/diarization-smoke/**'
@@ -13,6 +18,7 @@ on:
       - '.github/workflows/ai-ci.yml'
   pull_request:
     branches:
+      - pre-integration-develop
       - develop
     paths:
       - 'services/api/**'

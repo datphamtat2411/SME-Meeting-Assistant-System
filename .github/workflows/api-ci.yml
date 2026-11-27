@@ -3,12 +3,26 @@ name: API CI
 on:
   push:
     branches:
+      - pre-integration-develop
       - develop
+      - 'feat/mobile-reintegration'
       - 'api/**'
       - 'integration/**'
+      - 'web/module-meeting-intelligence'
+      - 'web/module-assistant-search'
+      - 'web/module-authentication-account-flows'
+      - 'web/module-dashboard-export'
+      # M05 contains an additive Core API reviewed-source contract.
+      - 'mobile/module-meeting-results'
+      # M06 Wave 01 extends the Core API Action Item contract.
+      - 'mobile/module-action-items'
+      # M07 Wave 01 corrects Core API Assistant history pagination.
+      - 'mobile/module-assistant'
   pull_request:
     branches:
+      - pre-integration-develop
       - develop
+      - 'feat/mobile-reintegration'
       - 'api/**'
   workflow_dispatch:
 

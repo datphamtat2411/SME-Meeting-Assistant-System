@@ -366,8 +366,8 @@ final class AssistantAdmissionGuard {
     }
 
     private static ResponseStatusException unavailable() {
-        return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
-            "Assistant admission is temporarily unavailable.");
+        return new AssistantDomainException(HttpStatus.SERVICE_UNAVAILABLE,
+            "ASSISTANT_UNAVAILABLE","Assistant admission is temporarily unavailable.");
     }
 
     enum Reason {

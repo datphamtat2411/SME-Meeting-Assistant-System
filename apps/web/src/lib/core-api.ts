@@ -12,10 +12,14 @@ import {
   AuthLifecycleStaleResponseError,
   createRequestRecoveryCoordinator,
   getRequestRecoveryGeneration,
+  getSessionRevalidationGeneration,
   isAuthLifecycleExemptRequest,
   isSuccessfulApiEnvelope,
   isRequestRecoveryBlocked,
+  isSessionRevalidationRequired,
   isStaleAuthLifecycleResponse,
+  requiresRevalidatedSession,
+  SESSION_REVALIDATION_GENERATION_MARKER,
   registerRequestRecoveryCoordinator,
   type RecoveryFailure,
   type RecoveryOutcome,
@@ -127,6 +131,26 @@ function applyRequestSecurity(config: InternalAxiosRequestConfig) {
   const mutableHeaders = headers as unknown as Record<string, unknown>
   const currentCsrfToken = getCsrfToken()
   const recoveryConfig = config as RecoveryRequestConfig
+
+  if (requiresRevalidatedSession(recoveryConfig)) {
+    const generation = recoveryConfig[SESSION_REVALIDATION_GENERATION_MARKER]
+    if (isSessionRevalidationRequired()) {
+      throw new CoreApiError({
+        message: 'Protected work is paused while the session is verified.',
+        code: 'SESSION_REVALIDATION_REQUIRED',
+        kind: 'http',
+        recoveryOutcome: 'unavailable',
+      })
+    }
+    if (
+      typeof generation === 'number' &&
+      generation < getSessionRevalidationGeneration()
+    ) {
+      throw new AuthLifecycleStaleResponseError()
+    }
+    recoveryConfig[SESSION_REVALIDATION_GENERATION_MARKER] =
+      generation ?? getSessionRevalidationGeneration()
+  }
 
   if (!isAuthLifecycleExemptRequest(recoveryConfig)) {
     const requestGeneration = recoveryConfig[AUTH_LIFECYCLE_GENERATION_MARKER]

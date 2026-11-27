@@ -3,8 +3,13 @@ name: PI-05 System Acceptance
 on:
   push:
     branches:
+      - pre-integration-develop
       - 'api/**'
     paths:
+      # Integration evidence must be verified on the same SHA.
+      - 'apps/web/**'
+      - 'apps/mobile/**'
+      - 'docs/integration/**'
       - 'services/api/**'
       - 'services/ai/**'
       - 'infra/**'
@@ -12,6 +17,7 @@ on:
       - '.github/workflows/pi05-system-acceptance.yml'
   pull_request:
     branches:
+      - pre-integration-develop
       - develop
       - 'api/**'
     paths:

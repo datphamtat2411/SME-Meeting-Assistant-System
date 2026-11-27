@@ -11,6 +11,7 @@ export { AuthLifecycleBlockedError } from '@/lib/request-recovery'
 
 export const AUTH_LIFECYCLE_CHANNEL_NAME = 'sme-auth-lifecycle'
 export const AUTH_LIFECYCLE_STORAGE_KEY = 'sme-auth-lifecycle-status'
+export const SESSION_REVALIDATION_STORAGE_KEY = 'sme-session-revalidation-event'
 
 export type AuthLifecycleState = 'idle' | 'pending' | 'uncertain' | 'confirmed'
 
@@ -79,6 +80,7 @@ export interface AuthLifecycleOptions {
   storageEventTarget?: AuthLifecycleStorageEventTarget | null
   onContainment?: (context: AuthLifecycleContainmentContext) => void
   onNavigate?: (redirect?: string) => void
+  onRevalidation?: () => void
 }
 
 export interface AuthLifecycleStartOptions {
@@ -104,8 +106,12 @@ export interface AuthLifecycleCoordinator {
   startLogout(options?: AuthLifecycleStartOptions): Promise<AuthLifecycleResult>
   retryLogout(options?: AuthLifecycleStartOptions): Promise<AuthLifecycleResult>
   receiveMessage(message: unknown): void
+  requestRevalidation(notifyLocal?: boolean): void
   configure(
-    options: Pick<AuthLifecycleOptions, 'onContainment' | 'onNavigate'>
+    options: Pick<
+      AuthLifecycleOptions,
+      'onContainment' | 'onNavigate' | 'onRevalidation'
+    >
   ): void
   resetAfterSignIn(): void
   dispose(): void
@@ -198,6 +204,8 @@ export function createAuthLifecycleCoordinator(
   const listeners = new Set<() => void>()
   let onContainment = options.onContainment
   let onNavigate = options.onNavigate
+  let onRevalidation = options.onRevalidation
+  const receivedRevalidations = new Set<string>()
   let state: AuthLifecycleState = 'idle'
   let operationId: string | undefined
   let generation = 0
@@ -401,7 +409,48 @@ export function createAuthLifecycleCoordinator(
     return promise
   }
 
+  function requestRevalidation(notifyLocal = true): void {
+    const message = {
+      sourceId,
+      operationId: createOpaqueId('revalidation'),
+      status: 'session-revalidation',
+    }
+    try {
+      broadcast?.postMessage(message)
+    } catch {
+      // Fall back to the existing storage-event transport.
+    }
+    try {
+      storage?.setItem(
+        SESSION_REVALIDATION_STORAGE_KEY,
+        JSON.stringify(message)
+      )
+      storage?.removeItem?.(SESSION_REVALIDATION_STORAGE_KEY)
+    } catch {
+      // Local verification does not depend on cross-tab communication.
+    }
+    if (notifyLocal) onRevalidation?.()
+  }
+
   function receiveMessage(value: unknown): void {
+    if (isRecord(value) && value.status === 'session-revalidation') {
+      if (
+        typeof value.sourceId !== 'string' ||
+        value.sourceId === sourceId ||
+        typeof value.operationId !== 'string' ||
+        receivedRevalidations.has(value.operationId)
+      ) {
+        return
+      }
+      receivedRevalidations.add(value.operationId)
+      if (receivedRevalidations.size > 128) {
+        const oldest = receivedRevalidations.values().next().value
+        if (oldest !== undefined) receivedRevalidations.delete(oldest)
+      }
+      onRevalidation?.()
+      return
+    }
+
     const message = parseMessage(value)
     if (!message || message.sourceId === sourceId) return
     if (message.generation < generation) return
@@ -447,7 +496,13 @@ export function createAuthLifecycleCoordinator(
     key: string | null
     newValue: string | null
   }) => {
-    if (event.key !== AUTH_LIFECYCLE_STORAGE_KEY || !event.newValue) return
+    if (
+      (event.key !== AUTH_LIFECYCLE_STORAGE_KEY &&
+        event.key !== SESSION_REVALIDATION_STORAGE_KEY) ||
+      !event.newValue
+    ) {
+      return
+    }
     try {
       receiveMessage(JSON.parse(event.newValue))
     } catch {
@@ -482,16 +537,19 @@ export function createAuthLifecycleCoordinator(
     },
 
     receiveMessage,
+    requestRevalidation,
 
     configure(handlers) {
       onContainment = handlers.onContainment
       onNavigate = handlers.onNavigate
+      onRevalidation = handlers.onRevalidation
       if (state === 'pending' || state === 'uncertain') {
         contain('reload', undefined)
       }
     },
 
     resetAfterSignIn() {
+      barrier = undefined
       state = 'idle'
       operationId = undefined
       generation += 1
@@ -542,12 +600,21 @@ export function retryAuthLifecycleLogout(
 }
 
 export function resetAuthLifecycleAfterSignIn(): void {
-  defaultCoordinator.resetAfterSignIn()
   resetRequestRecoveryState()
+  defaultCoordinator.resetAfterSignIn()
+  // Other tabs may be verifying a previous cookie context.
+  defaultCoordinator.requestRevalidation(false)
+}
+
+export function requestAuthLifecycleRevalidation(): void {
+  defaultCoordinator.requestRevalidation()
 }
 
 export function configureAuthLifecycle(
-  options: Pick<AuthLifecycleOptions, 'onContainment' | 'onNavigate'>
+  options: Pick<
+    AuthLifecycleOptions,
+    'onContainment' | 'onNavigate' | 'onRevalidation'
+  >
 ): void {
   defaultCoordinator.configure(options)
 }

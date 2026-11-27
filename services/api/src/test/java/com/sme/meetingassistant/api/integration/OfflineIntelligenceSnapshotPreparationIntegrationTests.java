@@ -12,7 +12,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -36,6 +38,8 @@ class OfflineIntelligenceSnapshotPreparationIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired ProcessingJobLifecycle media;
     @Autowired OfflineIntelligenceSnapshotPreparation preparation;
+    @Autowired com.sme.meetingassistant.api.transcript.repository.TranscriptRepository transcripts;
+    @Autowired tools.jackson.databind.ObjectMapper json;
     @Autowired com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultIngestion ingestion;
     @MockitoBean ObjectStorage objects;
 
@@ -153,6 +157,67 @@ class OfflineIntelligenceSnapshotPreparationIntegrationTests {
         assertThat(stageStatus(decision.stageRunId())).isEqualTo("RUNNING");
         assertThat(sourceCount()).isEqualTo(1);
         verify(objects,times(1)).putAcceptedIfAbsent(anyString(),any(Path.class),anyString());
+    }
+
+    @Test
+    void pinnedWorkerSnapshotUsesExactV1SchemaWithoutPublicConcurrencyTokens() throws Exception {
+        UUID segment=jdbc.queryForObject("SELECT id FROM transcript_segments WHERE transcript_id=?",
+            UUID.class,transcript);
+        UUID cluster=UUID.randomUUID(),coverage=UUID.randomUUID();
+        jdbc.update("INSERT INTO speaker_clusters(id,transcript_id,label) VALUES (?,?,'SPEAKER_00')",
+            cluster,transcript);
+        jdbc.update("UPDATE transcript_segments SET speaker_cluster_id=?,version=3 WHERE id=?",
+            cluster,segment);
+        jdbc.update("""
+            INSERT INTO transcript_coverage_regions(id,transcript_id,start_ms,end_ms,coverage_status)
+            VALUES (?,?,0,1200,'COVERED')
+            """,coverage,transcript);
+        UUID organizer=jdbc.queryForObject("SELECT organizer_user_id FROM meetings WHERE id=?",
+            UUID.class,meeting);
+        jdbc.update("""
+            INSERT INTO speaker_mappings(id,speaker_cluster_id,user_id,mapped_by_user_id)
+            VALUES (?,?,?,?)
+            """,UUID.randomUUID(),cluster,organizer,organizer);
+
+        // The public read projection must still expose the exact server-issued token.
+        var publicSegment=transcripts.current(meeting).orElseThrow().segments().getFirst();
+        assertThat(publicSegment.etag()).isEqualTo(
+            com.sme.meetingassistant.api.transcript.service.TranscriptVersionTags.segment(segment,3));
+        assertThat(json.readTree(json.writeValueAsBytes(publicSegment)).get("etag").asText())
+            .isEqualTo(publicSegment.etag());
+
+        preparation.prepare(job);
+        assertThat(blobs).hasSize(1);
+        Map<?,?> root=json.readValue(blobs.values().iterator().next(),Map.class);
+        assertThat(root.keySet()).isEqualTo(Set.of("schemaVersion","transcript","coverage","speakers"));
+        assertThat(root.get("schemaVersion")).isEqualTo("1.0");
+        Map<?,?> header=(Map<?,?>)root.get("transcript");
+        assertThat(header.keySet()).isEqualTo(Set.of("id","meetingId","sourceMediaId","processingJobId",
+            "versionNumber","languageCode","status","durationMs","finalizedAt","contentRevision","segments"));
+        assertThat(header.get("id")).isEqualTo(transcript.toString());
+        assertThat(header.get("contentRevision")).isEqualTo(2);
+        List<?> segments=(List<?>)header.get("segments");
+        assertThat(segments).hasSize(1);
+        Map<?,?> item=(Map<?,?>)segments.getFirst();
+        assertThat(item.keySet()).isEqualTo(Set.of("id","ordinal","startMs","endMs","text","qualityStatus",
+            "speakerClusterId","speakerLabel","version"));
+        assertThat(item.get("id")).isEqualTo(segment.toString());
+        assertThat(item.get("text")).isEqualTo(publicSegment.text());
+        assertThat(item.get("version")).isEqualTo(3);
+        assertThat(item.get("speakerClusterId")).isEqualTo(cluster.toString());
+        assertThat(item.get("speakerLabel")).isEqualTo("SPEAKER_00");
+        List<?> regions=(List<?>)root.get("coverage");
+        assertThat(regions).hasSize(1);
+        Map<?,?> region=(Map<?,?>)regions.getFirst();
+        assertThat(region.keySet()).isEqualTo(Set.of("id","startMs","endMs","coverageStatus","recovered","retryCount"));
+        assertThat(region.get("id")).isEqualTo(coverage.toString());
+        assertThat(region.get("coverageStatus")).isEqualTo("COVERED");
+        List<?> speakers=(List<?>)root.get("speakers");
+        assertThat(speakers).hasSize(1);
+        Map<?,?> speaker=(Map<?,?>)speakers.getFirst();
+        assertThat(speaker.keySet()).isEqualTo(Set.of("id","label","userId","displayName"));
+        assertThat(speaker.get("id")).isEqualTo(cluster.toString());
+        assertThat(speaker.get("userId")).isEqualTo(organizer.toString());
     }
 
     @Test

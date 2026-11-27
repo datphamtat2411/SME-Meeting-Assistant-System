@@ -1,3 +1,4 @@
+import { act } from 'react'
 import {
   createMemoryHistory,
   createRootRoute,
@@ -5,9 +6,11 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
+import { setUiLanguage } from '@/lib/i18n'
+import { UI_LANGUAGE_STORAGE_KEY } from '@/lib/i18n/language-preference'
 import { ThemeProvider } from '@/context/theme-provider'
 import { AuthenticatedRouteFallback } from '@/components/layout/authenticated-route-fallback'
 import { GeneralError } from './general-error'
@@ -38,7 +41,24 @@ function createTestRouter(
   })
 }
 
+afterEach(async () => {
+  await setUiLanguage('en')
+  localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY)
+})
+
 describe('error pages', () => {
+  it('localizes the not-found page without translating the route', async () => {
+    await setUiLanguage('en')
+    const router = createTestRouter(<NotFoundError />, '/missing-page')
+    const screen = await render(<RouterProvider router={router} />)
+    await act(async () => {
+      await setUiLanguage('vi')
+    })
+    await expect.element(screen.getByText('Không tìm thấy trang')).toBeVisible()
+    await expect.element(screen.getByText('/missing-page')).toBeVisible()
+    expect(router.history.location.pathname).toBe('/missing-page')
+  })
+
   it('uses the router reset callback and provides Dashboard recovery', async () => {
     const reset = vi.fn()
     const router = createTestRouter(<GeneralError reset={reset} />, '/broken')

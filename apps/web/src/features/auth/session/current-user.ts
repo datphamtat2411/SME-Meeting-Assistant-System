@@ -5,6 +5,7 @@ import {
   isSessionLossConfirmed,
   type RecoveryRequestConfig,
   RECOVERY_DISABLED_MARKER,
+  SESSION_REVALIDATION_PROBE_MARKER,
 } from '@/lib/request-recovery'
 import { getSafeRedirect } from '@/lib/safe-redirect'
 import {
@@ -44,6 +45,8 @@ export type SessionFailure = 'unauthenticated' | 'denied' | 'unavailable'
 
 export interface CurrentUserRequestOptions {
   recoveryDisabled?: boolean
+  revalidationProbe?: boolean
+  timeout?: number
   signal?: AbortSignal
 }
 
@@ -82,8 +85,11 @@ export async function fetchCurrentUser(
   const config: RecoveryRequestConfig = {
     withCredentials: true,
     signal: options.signal,
+    timeout: options.timeout,
   }
   if (options.recoveryDisabled) config[RECOVERY_DISABLED_MARKER] = true
+  if (options.revalidationProbe)
+    config[SESSION_REVALIDATION_PROBE_MARKER] = true
 
   const response = await coreApi.get<unknown>('/auth/me', {
     ...config,
@@ -152,5 +158,13 @@ export function getSafeSessionRedirect(redirect?: string): string {
   const safeRedirect = getSafeRedirect(redirect)
   const pathname = safeRedirect.split(/[?#]/, 1)[0]
 
-  return pathname === '/sign-in' ? '/' : safeRedirect
+  return [
+    '/sign-in',
+    '/account-setup',
+    '/sign-up',
+    '/otp',
+    '/reset-password',
+  ].includes(pathname)
+    ? '/'
+    : safeRedirect
 }

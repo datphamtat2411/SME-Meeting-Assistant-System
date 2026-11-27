@@ -108,6 +108,7 @@ public class MediaProcessingService {
         // Lock before inserting the FK-backed idempotency record; otherwise
         // two concurrent requests can deadlock while upgrading user row locks.
         this.repository.lockAdmissionUser(actor);
+        this.meetingAccess.requireLockedProcessingAllowed(meetingId, actor);
         UUID claimedId = claimIdempotency(actor, operation, idempotencyKey, fingerprint, mediaId);
         if (!claimedId.equals(mediaId)) {
             Media prior = media(claimedId);
@@ -352,8 +353,10 @@ public class MediaProcessingService {
         Media media = media(mediaId);
         if (!media.meetingId().equals(meetingId) || !"AVAILABLE".equals(media.status())) throw notFound();
         try {
-            return this.storage.createDownloadCapability(media.objectKey(), cappedTtl(
+            String capability = this.storage.createDownloadCapability(media.objectKey(), cappedTtl(
                 this.properties.getUpload().getDownloadUrlTtl(), Duration.ofMinutes(5)));
+            this.meetingAccess.requireReadable(meetingId, actor);
+            return capability;
         } catch (SdkException storageFailure) {
             throw storageUnavailable();
         }
@@ -386,9 +389,10 @@ public class MediaProcessingService {
         String fingerprint = fingerprint(mediaId + "\n" + reprocessOfJobId);
         Job job = new Job(UUID.randomUUID(), meetingId, mediaId, "OFFLINE_MEETING_PROCESSING", "PENDING", actor,
             null, 0, null, null, null, null, null, null,
-            OffsetDateTime.now(), OffsetDateTime.now(), reprocessOfJobId, false).withTranscriptReviewRequired();
+             OffsetDateTime.now(), OffsetDateTime.now(), reprocessOfJobId, false);
         // Every admission takes the same row lock before inserting idempotency.
         this.repository.lockAdmissionUser(actor);
+        this.meetingAccess.requireLockedProcessingAllowed(meetingId, actor);
         UUID claimedId = claimIdempotency(actor, operation, idempotencyKey, fingerprint, job.id());
         if (!claimedId.equals(job.id())) return toResponse(job(claimedId));
         this.workerCapability.requireAvailable();
@@ -465,6 +469,8 @@ public class MediaProcessingService {
         this.repository.lockAdmissionUser(actor);
         this.transcriptEvidence.lockTranscriptReview(jobId);
         target = this.repository.lockJobForOfflineSource(jobId).orElseThrow(MediaProcessingService::notFound);
+        // Initial authorization can become stale while waiting for a row lock.
+        this.meetingAccess.requireLockedProcessingAllowed(target.meetingId(), actor);
 
         UUID proposedReviewId = UUID.randomUUID();
         MediaRepository.IdempotencyClaim claim;
@@ -480,7 +486,7 @@ public class MediaProcessingService {
                 .orElseThrow(() -> conflict("The transcript review replay is unavailable."));
         }
 
-        requireReviewWaiting(target);
+        if (!"OFFLINE_MEETING_PROCESSING".equals(target.jobType())) throw staleReview();
         ProcessingTranscriptEvidence.Review current = currentReview(target, request, digest);
         TranscriptReview review = this.repository.insertTranscriptReview(proposedReviewId,
             target.id(), target.meetingId(), current.transcriptId(), current.contentRevision(),
@@ -507,6 +513,8 @@ public class MediaProcessingService {
         this.repository.lockAdmissionUser(actor);
         this.transcriptEvidence.lockTranscriptReview(jobId);
         target = this.repository.lockJobForOfflineSource(jobId).orElseThrow(MediaProcessingService::notFound);
+        // Initial authorization can become stale while waiting for a row lock.
+        this.meetingAccess.requireLockedProcessingAllowed(target.meetingId(), actor);
         MediaRepository.IdempotencyClaim claim;
         try {
             claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,
@@ -525,15 +533,10 @@ public class MediaProcessingService {
                 || !review.correctionDigest().equals(digest)) {
             throw staleReview();
         }
-        requireReviewWaiting(target);
         currentReview(target, request.transcriptId(), request.contentRevision(), digest);
-        if (this.lifecycle == null) {
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
-                "Meeting Intelligence admission is not installed.");
-        }
+        // Kept for existing clients that explicitly record a review.
+        // Processing and knowledge availability are independent of this receipt.
         this.repository.admitTranscriptReview(jobId, review.id(), actor);
-        if (!this.repository.diarizationBeforeReview(jobId)) this.lifecycle.dispatchPlannedDiarization(jobId);
-        this.lifecycle.advanceJob(jobId);
         return toResponse(job(jobId));
     }
 
@@ -562,6 +565,7 @@ public class MediaProcessingService {
         String operation = "PROCESSING_JOB_RETRY:" + jobId;
         String fingerprint = fingerprint(stageCode == null ? "JOB" : "STAGE\n" + stageCode);
         this.repository.lockAdmissionUser(actor);
+        this.meetingAccess.requireLockedProcessingAllowed(target.meetingId(), actor);
         MediaRepository.IdempotencyClaim claim;
         try {
             claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,
@@ -609,15 +613,13 @@ public class MediaProcessingService {
         int maxRetries = properties.getProcessing().getMaxRetries();
         if (maxRetries < 0) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
             "Processing retry policy is invalid.");
-        boolean preReview = repository.diarizationBeforeReview(target.id());
-        if (!(preReview ? "WAITING_FOR_REVIEW".equals(target.status())
-                : List.of("RUNNING", "COMPLETED_WITH_WARNINGS").contains(target.status()))
+        if (!List.of("RUNNING", "COMPLETED_WITH_WARNINGS").contains(target.status())
                 || target.retryCount() >= maxRetries
                 || !repository.hasRetryableFailedStage(target.id(), "DIARIZING")) {
             throw conflict("The requested diarization attempt is not eligible for retry.");
         }
         // A reopened job must respect the same meeting/user capacity as new admissions.
-        if (!preReview && !"RUNNING".equals(target.status())) {
+        if (!"RUNNING".equals(target.status())) {
             if (repository.activeJobsForMeeting(target.meetingId()) > 0)
                 throw conflict("Another processing job is already active for this meeting.");
             if (repository.activeJobsForUser(target.requestedBy()) >= positiveLimit(
@@ -656,14 +658,6 @@ public class MediaProcessingService {
                 "Upload a WAV, MP3, or M4A audio file with a matching media type.");
         }
         return format.contentType();
-    }
-
-    private static void requireReviewWaiting(Job target) {
-        if (!target.transcriptReviewRequired()
-                || !"OFFLINE_MEETING_PROCESSING".equals(target.jobType())
-                || !"WAITING_FOR_REVIEW".equals(target.status())) {
-            throw conflict("The processing job is not waiting for transcript review.");
-        }
     }
 
     private ProcessingTranscriptEvidence.Review currentReview(Job target,
@@ -724,7 +718,7 @@ public class MediaProcessingService {
         if (!"PENDING_UPLOAD".equals(media.status())) {
             return new MediaUploadIntentResponse(media.id(), media.status(), null, null, media.contentType());
         }
-        Duration ttl = cappedTtl(this.properties.getUpload().getUploadUrlTtl(), Duration.ofMinutes(30));
+        Duration ttl = cappedTtl(this.properties.getUpload().getUploadUrlTtl(), Duration.ofMinutes(15));
         String url;
         try {
             url = this.storage.createUploadCapability(media.objectKey(), media.contentType(),

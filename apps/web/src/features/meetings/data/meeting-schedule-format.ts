@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n'
+
 const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
 
 type MeetingScheduleValue = string | null | undefined
@@ -5,9 +7,11 @@ type MeetingScheduleValue = string | null | undefined
 export function formatMeetingSchedule(
   scheduledStartAt: MeetingScheduleValue,
   scheduledEndAt: MeetingScheduleValue,
-  timeZone = presentationTimeZone
+  timeZone = presentationTimeZone,
+  locale = 'en-US'
 ) {
-  if (!scheduledStartAt || !scheduledEndAt) return 'Unscheduled'
+  if (!scheduledStartAt || !scheduledEndAt)
+    return i18n.t('meetings:unscheduled')
 
   const startsAt = new Date(scheduledStartAt)
   const endsAt = new Date(scheduledEndAt)
@@ -15,21 +19,24 @@ export function formatMeetingSchedule(
     !Number.isFinite(startsAt.getTime()) ||
     !Number.isFinite(endsAt.getTime())
   ) {
-    return 'Unscheduled'
+    return i18n.t('meetings:unscheduled')
   }
 
-  const dateFormatter = new Intl.DateTimeFormat('en-US', {
+  const dateFormatter = new Intl.DateTimeFormat(locale, {
+    calendar: 'gregory',
     month: 'short',
     day: 'numeric',
     year: 'numeric',
     timeZone,
   })
-  const timeFormatter = new Intl.DateTimeFormat('en-US', {
+  const timeFormatter = new Intl.DateTimeFormat(locale, {
+    calendar: 'gregory',
     hour: 'numeric',
     minute: '2-digit',
     timeZone,
   })
-  const dateKeyFormatter = new Intl.DateTimeFormat('en-US', {
+  const dateKeyFormatter = new Intl.DateTimeFormat(locale, {
+    calendar: 'gregory',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',

@@ -1,6 +1,8 @@
 import React from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ChevronRight, Laptop, Moon, Sun } from 'lucide-react'
+import { commandSearchScore } from '@/lib/command-search'
+import { useUiTranslation } from '@/lib/i18n'
 import { useSearch } from '@/context/search-provider'
 import { useTheme } from '@/context/theme-provider'
 import {
@@ -12,10 +14,12 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command'
-import { navigationGroups } from './layout/data/navigation-data'
+import type { AuthContext } from '@/features/auth/session/current-user'
+import { getNavigationGroups } from './layout/data/navigation-data'
 import { ScrollArea } from './ui/scroll-area'
 
-export function CommandMenu() {
+export function CommandMenu({ identity }: { identity?: AuthContext | null }) {
+  const { t } = useUiTranslation()
   const navigate = useNavigate()
   const { setTheme } = useTheme()
   const { open, setOpen } = useSearch()
@@ -38,29 +42,40 @@ export function CommandMenu() {
     [setOpen]
   )
 
+  const label = (item: { title: string; titleKey?: string }) =>
+    item.titleKey ? t(item.titleKey) : item.title
+  const vietnameseLabel = (item: { title: string; titleKey?: string }) =>
+    item.titleKey ? t(item.titleKey, { lng: 'vi' }) : item.title
+
+  const keywords = (...items: { title: string; titleKey?: string }[]) =>
+    items.flatMap((item) => [item.title, vietnameseLabel(item)])
+
   return (
     <CommandDialog
-      title='Command menu'
-      description='Navigate to a page or choose an appearance command.'
+      title={t('commandTitle')}
+      description={t('commandDesc')}
+      filter={commandSearchScore}
       modal
       open={open}
       onOpenChange={setOpen}
     >
-      <CommandInput
-        ref={inputRef}
-        placeholder='Navigate to a page or command'
-      />
+      <CommandInput ref={inputRef} placeholder={t('commandPlaceholder')} />
       <CommandList>
         <ScrollArea type='hover' className='h-72 pe-1'>
-          <CommandEmpty>No matching pages or appearance commands.</CommandEmpty>
-          {navigationGroups.map((group) => (
-            <CommandGroup key={group.title} heading={group.title}>
+          <CommandEmpty>{t('commandEmpty')}</CommandEmpty>
+          {getNavigationGroups(identity).map((group) => (
+            <CommandGroup
+              key={group.titleKey ?? group.title}
+              heading={label(group)}
+              value={group.titleKey ?? group.title}
+            >
               {group.items.map((navItem) => {
                 if (navItem.url)
                   return (
                     <CommandItem
                       key={navItem.url}
                       value={`${group.title} ${navItem.title} ${navItem.url}`}
+                      keywords={keywords(group, navItem)}
                       onSelect={() => {
                         runCommand(() => navigate({ to: navItem.url }))
                       }}
@@ -68,14 +83,15 @@ export function CommandMenu() {
                       <div className='flex size-4 items-center justify-center'>
                         <ArrowRight className='size-2 text-muted-foreground/80' />
                       </div>
-                      {navItem.title}
+                      {label(navItem)}
                     </CommandItem>
                   )
 
                 return navItem.items?.map((subItem) => (
                   <CommandItem
-                    key={`${navItem.title}-${subItem.url}`}
+                    key={subItem.url}
                     value={`${group.title} ${navItem.title} ${subItem.title} ${subItem.url}`}
+                    keywords={keywords(group, navItem, subItem)}
                     onSelect={() => {
                       runCommand(() => navigate({ to: subItem.url }))
                     }}
@@ -83,34 +99,49 @@ export function CommandMenu() {
                     <div className='flex size-4 items-center justify-center'>
                       <ArrowRight className='size-2 text-muted-foreground/80' />
                     </div>
-                    {navItem.title} <ChevronRight aria-hidden='true' />{' '}
-                    {subItem.title}
+                    {label(navItem)} <ChevronRight aria-hidden='true' />{' '}
+                    {label(subItem)}
                   </CommandItem>
                 ))
               })}
             </CommandGroup>
           ))}
           <CommandSeparator />
-          <CommandGroup heading='Appearance'>
+          <CommandGroup heading={t('navigation:appearance')}>
             <CommandItem
               value='Appearance Light theme'
+              keywords={[
+                t('navigation:appearance', { lng: 'vi' }),
+                t('light', { lng: 'vi' }),
+                'light',
+              ]}
               onSelect={() => runCommand(() => setTheme('light'))}
             >
-              <Sun /> <span>Light</span>
+              <Sun /> <span>{t('light')}</span>
             </CommandItem>
             <CommandItem
               value='Appearance Dark theme'
+              keywords={[
+                t('navigation:appearance', { lng: 'vi' }),
+                t('dark', { lng: 'vi' }),
+                'dark',
+              ]}
               onSelect={() => runCommand(() => setTheme('dark'))}
             >
               <Moon className='scale-90' />
-              <span>Dark</span>
+              <span>{t('dark')}</span>
             </CommandItem>
             <CommandItem
               value='Appearance System theme'
+              keywords={[
+                t('navigation:appearance', { lng: 'vi' }),
+                t('system', { lng: 'vi' }),
+                'system',
+              ]}
               onSelect={() => runCommand(() => setTheme('system'))}
             >
               <Laptop />
-              <span>System</span>
+              <span>{t('system')}</span>
             </CommandItem>
           </CommandGroup>
         </ScrollArea>

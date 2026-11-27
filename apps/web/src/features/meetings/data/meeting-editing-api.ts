@@ -4,6 +4,7 @@ import {
   coreApi,
   type ApiResponseDataWithEtag,
 } from '@/lib/core-api'
+import { compareInstants } from '@/lib/regional-time'
 import { meetingViewSchema, type MeetingView } from './detail-api'
 
 const editableStatusSchema = z.enum(['DRAFT', 'SCHEDULED'])
@@ -68,13 +69,11 @@ function sameOffsetDateTime(
 ) {
   if (first === second) return true
   if (!first || !second) return false
-  const firstTime = Date.parse(first)
-  const secondTime = Date.parse(second)
-  return (
-    Number.isFinite(firstTime) &&
-    Number.isFinite(secondTime) &&
-    firstTime === secondTime
-  )
+  try {
+    return compareInstants(first, second) === 0
+  } catch {
+    return false
+  }
 }
 
 export function buildMeetingEditPayload(

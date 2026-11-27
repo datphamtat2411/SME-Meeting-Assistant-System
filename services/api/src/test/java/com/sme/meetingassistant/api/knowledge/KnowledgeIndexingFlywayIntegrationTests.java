@@ -8,9 +8,13 @@ import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.Statement;
+import java.util.Arrays;
+import java.util.List;
 import java.util.UUID;
+import java.util.stream.IntStream;
 import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationInfo;
 import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -112,7 +116,7 @@ class KnowledgeIndexingFlywayIntegrationTests {
 
             Flyway upgraded = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
                 .locations("classpath:db/migration").load();
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(13);
+            assertUpgradeToLatest(upgraded, 53);
             assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM information_schema.columns
                 WHERE table_schema=? AND table_name='knowledge_qdrant_write_permits'
@@ -178,8 +182,8 @@ class KnowledgeIndexingFlywayIntegrationTests {
                     id,run_id,finding_type,action,generation_id,detail)
                 VALUES (?,?,'ORPHANED_POINTS','MANUAL_REVIEW',?,'{}'::jsonb)
                 """.formatted(schema), findingId, validRun, "rag-t02-bge-m3-v1");
-            assertThat(Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
-                .locations("classpath:db/migration").load().migrate().migrationsExecuted).isEqualTo(8);
+            assertUpgradeToLatest(Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                .locations("classpath:db/migration").load(), 58);
             assertThat(jdbc.queryForObject("SELECT cursor_history_provenance FROM " + schema
                 + ".knowledge_reconciliation_runs WHERE id=?", String.class, validRun))
                 .isEqualTo("LEGACY_UNVERIFIED");
@@ -234,8 +238,8 @@ class KnowledgeIndexingFlywayIntegrationTests {
             jdbc.update("INSERT INTO " + schema + ".outbox_events(id,aggregate_type,aggregate_id,event_type,payload) VALUES (?,'KNOWLEDGE_SOURCE',?,'KNOWLEDGE_INDEXING_REQUESTED','{}'::jsonb)", event, source);
             jdbc.update("INSERT INTO " + schema + ".knowledge_indexing_work(event_id,meeting_id,source_type,source_id,source_revision,snapshot_id,snapshot_sha256,snapshot_size_bytes,index_generation_id,configuration_version,configuration_sha256,tokenizer_id) VALUES (?,?,'SUMMARY',?,7,?,?,?,'rag-t02-bge-m3-v1','rag-t02-bge-m3-v1',?,'bge-m3')",
                 event, meeting, source, snapshot, sha, payload.length, "b".repeat(64));
-            assertThat(Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
-                .locations("classpath:db/migration").load().migrate().migrationsExecuted).isEqualTo(11);
+            assertUpgradeToLatest(Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                .locations("classpath:db/migration").load(), 55);
             assertThat(jdbc.queryForObject("SELECT selection_epoch FROM " + schema + ".knowledge_source_snapshots WHERE id=?", Long.class, snapshot)).isZero();
             assertThat(jdbc.update("UPDATE " + schema + ".knowledge_indexing_work SET updated_at=CURRENT_TIMESTAMP WHERE event_id=?", event)).isEqualTo(1);
             assertThatThrownBy(() -> jdbc.update("UPDATE " + schema + ".knowledge_indexing_work SET source_revision=8 WHERE event_id=?", event))
@@ -349,8 +353,8 @@ class KnowledgeIndexingFlywayIntegrationTests {
                 }
             }
 
-            assertThat(Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
-                .locations("classpath:db/migration").load().migrate().migrationsExecuted).isEqualTo(10);
+            assertUpgradeToLatest(Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                .locations("classpath:db/migration").load(), 56);
             String permitBindingFunction = jdbc.queryForObject("""
                 SELECT pg_get_functiondef(p.oid)
                   FROM pg_proc p
@@ -395,5 +399,30 @@ class KnowledgeIndexingFlywayIntegrationTests {
         } finally {
             jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
         }
+    }
+
+    /**
+     * Exercise the entire current upgrade chain without coupling historical
+     * knowledge fixtures to the number of later, unrelated migrations.
+     * Every migration in the previously supported V66 chain must still be
+     * pending before the upgrade and every discovered pending migration must
+     * be applied successfully afterwards.
+     */
+    private static void assertUpgradeToLatest(Flyway flyway, int baselineVersion) {
+        assertThat(flyway.info().current().getVersion())
+            .isEqualTo(MigrationVersion.fromVersion(Integer.toString(baselineVersion)));
+        List<MigrationVersion> required = IntStream.rangeClosed(baselineVersion + 1, 66)
+            .mapToObj(version -> MigrationVersion.fromVersion(Integer.toString(version)))
+            .toList();
+        List<MigrationVersion> pending = Arrays.stream(flyway.info().pending())
+            .map(MigrationInfo::getVersion)
+            .toList();
+        assertThat(pending).containsAll(required);
+
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(pending.size());
+        assertThat(flyway.info().pending()).isEmpty();
+        assertThat(Arrays.stream(flyway.info().applied())
+            .map(MigrationInfo::getVersion).toList()).containsAll(pending);
+        flyway.validate();
     }
 }

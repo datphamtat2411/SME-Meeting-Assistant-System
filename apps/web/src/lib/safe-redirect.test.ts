@@ -24,6 +24,9 @@ describe('getSafeRedirect', () => {
     'ftp://external.example/file',
     'http://[invalid',
     '/\\external.example/steal',
+    '/%2f%2fevil.example/steal',
+    '/%5c%5cevil.example/steal',
+    '/%5cevil.example/steal',
     undefined,
   ])('falls back for unsafe redirect %s', (redirect) => {
     expect(getSafeRedirect(redirect)).toBe('/')

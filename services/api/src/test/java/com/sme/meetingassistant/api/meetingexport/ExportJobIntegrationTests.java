@@ -70,6 +70,16 @@ class ExportJobIntegrationTests {
         }
 
         @Override
+        public void putLegacySnapshotVerified(String key, byte[] bytes,
+                java.util.function.Predicate<byte[]> sameFrozenContent) {
+            byte[] original = objects.putIfAbsent(key, bytes.clone());
+            if (original != null && (original.length != bytes.length
+                    || (!Arrays.equals(original, bytes) && !sameFrozenContent.test(original)))) {
+                throw new IntegrityFailure("Immutable legacy snapshot collision");
+            }
+        }
+
+        @Override
         public byte[] readVerified(String key, String digest, int limit) {
             byte[] bytes = objects.get(key);
             if (bytes == null) {
@@ -92,9 +102,14 @@ class ExportJobIntegrationTests {
     @Autowired ObjectMapper json;
     @Autowired ExportJobProcessor worker;
     @Autowired ExportSubmissionService submissions;
+    @Autowired ExportIntentService intents;
     @Autowired ExportGenerationStateMachine state;
     @Autowired MeetingExportRepository records;
     @Autowired InMemoryExportStore storage;
+    @Autowired ExportIntakeRepository intakeRepository;
+    @Autowired ExportOperationalMetrics metrics;
+    @Autowired com.sme.meetingassistant.api.meetingexport.render.MarkdownMinutesRenderer markdown;
+    @Autowired com.sme.meetingassistant.api.meetingexport.render.PdfMinutesRenderer pdfRenderer;
 
     @BeforeEach
     void clear() {
@@ -152,6 +167,152 @@ class ExportJobIntegrationTests {
     }
 
     @Test
+    void versionedIntakeSurvivesReplayAndLegacyPendingWorkUsesOriginalRenderer() throws Exception {
+        UUID owner = user(), meeting = meeting(owner);
+        MinutesSnapshot base = snapshot(meeting, owner, "Nội dung có người phụ trách");
+        var action = new MinutesSnapshot.Action(UUID.randomUUID(), "Kiểm tra báo cáo", null,
+                "OPEN", "MANUAL", owner, null, 0L, base.assembledAt(), null, null);
+        var canonical = new MinutesSnapshot.CanonicalContent(1, "COMPLETE", base.meeting(),
+                base.summary(), List.of(), List.of(action), base.transcript(), List.of(), false);
+        String hash = ExportSnapshotCodec.sha256(json.writeValueAsBytes(canonical));
+        var source = new MinutesSnapshot(1, base.assembledAt(), hash, "COMPLETE", base.meeting(),
+                base.summary(), List.of(), List.of(action), base.transcript(), List.of(), false,
+                new MinutesSnapshot.DisplayMetadata(Map.of(owner, "Nguyễn Văn An")));
+        var renamed = new MinutesSnapshot(1, base.assembledAt(), hash, "COMPLETE", base.meeting(),
+                base.summary(), List.of(), List.of(action), base.transcript(), List.of(), false,
+                new MinutesSnapshot.DisplayMetadata(Map.of(owner, "Người đổi tên")));
+
+        // Reproduce an existing, still-pending intake as written by the old code.
+        ExportRecord legacy = as(owner, () -> intents.create(meeting, ExportFormat.MARKDOWN, "legacy"));
+        byte[] legacyBytes = json.writeValueAsBytes(new ExportSnapshotCodec.Envelope(
+                1, legacy.id(), meeting, owner, source));
+        String digest = ExportSnapshotCodec.sha256(legacyBytes);
+        String key = "exports/" + legacy.id() + "/intake/" + digest + ".json";
+        storage.putVerified(key, legacyBytes, "application/json", digest);
+        jdbc.update("""
+            INSERT INTO meeting_export_intakes(export_id,meeting_id,requested_by_user_id,
+                source_fingerprint,intake_sha256,object_key) VALUES(?,?,?,?,?,?)
+            """, legacy.id(), meeting, owner, hash, digest, key);
+        assertThat(worker.processNext()).isTrue();
+        var legacyReady = records.require(legacy.id());
+        assertThat(legacyReady.status()).isEqualTo(ExportStatus.READY);
+        assertThat(legacyReady.rendererVersion()).isEqualTo("markdown-v1");
+        assertThat(new String(storage.readVerified(legacyReady.objectKey(),
+                legacyReady.artifactSha256(), 8*1024*1024), java.nio.charset.StandardCharsets.UTF_8))
+                .doesNotContain("Nguyễn Văn An");
+
+        ExportRecord current = as(owner, () -> submissions.submit(meeting,
+                ExportFormat.MARKDOWN, "enriched", source));
+        assertThat(as(owner, () -> submissions.submit(meeting,
+                ExportFormat.MARKDOWN, "enriched", renamed)).id()).isEqualTo(current.id());
+        assertThat(worker.processNext()).isTrue();
+        var ready = records.require(current.id());
+        assertThat(ready.status()).isEqualTo(ExportStatus.READY);
+        assertThat(ready.rendererVersion()).isEqualTo("markdown-v2");
+        String intakeKey = jdbc.queryForObject("SELECT object_key FROM meeting_export_intakes WHERE export_id=?",
+                String.class, current.id());
+        assertThat(storage.objects.get(ready.snapshotObjectKey())).isEqualTo(
+                json.writeValueAsBytes(json.readTree(storage.objects.get(intakeKey)).path("snapshot")));
+        assertThat(ready.sourceFingerprint()).isEqualTo(hash);
+        assertThat(new String(storage.readVerified(ready.objectKey(), ready.artifactSha256(),
+                8*1024*1024), java.nio.charset.StandardCharsets.UTF_8))
+                .contains("Nguyễn Văn An").doesNotContain("Người đổi tên");
+    }
+
+    @Test
+    void multiAssigneeLegacyAndCurrentIntakesRecoverAfterWorkerReplacement() throws Exception {
+        UUID owner = user(), second = user(), meeting = meeting(owner);
+        MinutesSnapshot base = snapshot(meeting, owner, "Nội dung nhiều người phụ trách");
+        var actions = List.of(
+                new MinutesSnapshot.Action(UUID.randomUUID(), "Việc thứ nhất", null,
+                        "OPEN", "MANUAL", owner, null, 0L, base.assembledAt(), null, null),
+                new MinutesSnapshot.Action(UUID.randomUUID(), "Việc thứ hai", null,
+                        "OPEN", "MANUAL", second, null, 0L, base.assembledAt(), null, null));
+        var canonical = new MinutesSnapshot.CanonicalContent(1, "COMPLETE", base.meeting(),
+                base.summary(), List.of(), actions, base.transcript(), List.of(), false);
+        String hash = ExportSnapshotCodec.sha256(json.writeValueAsBytes(canonical));
+        var source = new MinutesSnapshot(1, base.assembledAt(), hash, "COMPLETE", base.meeting(),
+                base.summary(), List.of(), actions, base.transcript(), List.of(), false,
+                new MinutesSnapshot.DisplayMetadata(Map.of(owner, "Nguyễn Văn An", second, "Trần Thị Bình")));
+
+        for (int version : List.of(1, 2)) {
+            ExportRecord pending;
+            if (version == 1) {
+                pending = as(owner, () -> intents.create(meeting, ExportFormat.MARKDOWN, "restart-v1"));
+                byte[] frozen = json.writeValueAsBytes(new ExportSnapshotCodec.Envelope(
+                        1, pending.id(), meeting, owner, source));
+                String digest = ExportSnapshotCodec.sha256(frozen);
+                String key = "exports/" + pending.id() + "/intake/" + digest + ".json";
+                storage.putVerified(key, frozen, "application/json", digest);
+                jdbc.update("""
+                    INSERT INTO meeting_export_intakes(export_id,meeting_id,requested_by_user_id,
+                        source_fingerprint,intake_sha256,object_key) VALUES(?,?,?,?,?,?)
+                    """, pending.id(), meeting, owner, hash, digest, key);
+            } else {
+                pending = as(owner, () -> submissions.submit(meeting,
+                        ExportFormat.PDF, "restart-v2", source));
+            }
+            storage.failArtifact = true;
+            assertThat(worker.processNext()).isTrue();
+            var failed = records.require(pending.id());
+            assertThat(failed.status()).isEqualTo(ExportStatus.FAILED);
+            assertThat(failed.lastErrorCode()).isEqualTo("EXPORT_STORAGE_UNAVAILABLE");
+            String snapshotKey = failed.snapshotObjectKey();
+            assertThat(snapshotKey).isNotNull();
+            byte[] firstBytes = storage.objects.get(snapshotKey).clone();
+
+            if (version == 1) {
+                // Explicitly reproduce a different JVM's unordered-map serialization;
+                // merely creating a second instance in this JVM cannot change its salt.
+                var node = (tools.jackson.databind.node.ObjectNode) json.readTree(firstBytes);
+                var metadata = (tools.jackson.databind.node.ObjectNode) node.path("displayMetadata");
+                var entries = new java.util.ArrayList<>(
+                        metadata.path("assigneeDisplayNames").properties());
+                java.util.Collections.reverse(entries);
+                var reversed = json.createObjectNode();
+                for (var entry : entries) reversed.set(entry.getKey(), entry.getValue());
+                metadata.set("assigneeDisplayNames", reversed);
+                byte[] previousJvmBytes = json.writeValueAsBytes(node);
+                assertThat(Arrays.equals(previousJvmBytes, firstBytes)).isFalse();
+                storage.objects.put(snapshotKey, previousJvmBytes);
+                firstBytes = previousJvmBytes;
+            }
+
+            storage.failArtifact = false;
+            awaitRetryEligibility(pending.id());
+            var replacement = new ExportJobProcessor(state, intakeRepository, storage,
+                    new ExportSnapshotCodec(json), markdown, pdfRenderer, jdbc, metrics, 30, 2, 1);
+            try {
+                replacement.reconcile();
+                assertThat(records.require(pending.id()).status()).isEqualTo(ExportStatus.PENDING);
+                assertThat(replacement.processNext()).isTrue();
+            } finally {
+                replacement.close();
+            }
+            var ready = records.require(pending.id());
+            assertThat(ready.status()).isEqualTo(ExportStatus.READY);
+            assertThat(ready.generationAttempt()).isEqualTo(2);
+            assertThat(ready.snapshotObjectKey()).isEqualTo(snapshotKey);
+            assertThat(storage.objects.get(snapshotKey)).isEqualTo(firstBytes);
+            assertThat(ready.sourceFingerprint()).isEqualTo(hash);
+            byte[] artifact = storage.readVerified(ready.objectKey(), ready.artifactSha256(), 32*1024*1024);
+            if (version == 1) {
+                assertThat(ready.rendererVersion()).isEqualTo("markdown-v1");
+                assertThat(new String(artifact, java.nio.charset.StandardCharsets.UTF_8))
+                        .contains("- **Người phụ trách (ID):** " + owner.toString().replace("-", "\\-"),
+                                "- **Người phụ trách (ID):** " + second.toString().replace("-", "\\-"))
+                        .doesNotContain("Nguyễn Văn An", "Trần Thị Bình");
+            } else {
+                assertThat(ready.rendererVersion()).isEqualTo("pdf-v2-markdown-v2-dejavu-2.29");
+                try (var parsed = Loader.loadPDF(artifact)) {
+                    assertThat(new PDFTextStripper().getText(parsed))
+                            .contains("Nguyễn Văn An", "Trần Thị Bình");
+                }
+            }
+        }
+    }
+
+    @Test
     void idempotentReplayRetainsOriginalVerifiedSourceNotLatestChangedMeeting() {
         UUID owner=user(), meeting=meeting(owner);
         MinutesSnapshot original=snapshot(meeting,owner,"Nội dung gốc");
@@ -202,6 +363,8 @@ class ExportJobIntegrationTests {
         assertThat(failed.status()).isEqualTo(ExportStatus.FAILED);
         assertThat(failed.generationAttempt()).isEqualTo(1);
         assertThat(failed.lastErrorCode()).isEqualTo("EXPORT_STORAGE_UNAVAILABLE");
+        assertThat(records.requireStatus(pending.id(), 2).retryEligible()).isTrue();
+        assertThat(records.requireStatus(pending.id(), 1).retryEligible()).isFalse();
         assertThat(failed.readyAt()).isNull();
         assertThat(failed.objectKey()).isNull();
 
@@ -209,6 +372,7 @@ class ExportJobIntegrationTests {
         awaitRetryEligibility(pending.id());
         worker.reconcile();
         assertThat(records.require(pending.id()).status()).isEqualTo(ExportStatus.PENDING);
+        assertThat(records.requireStatus(pending.id(), 2).retryEligible()).isFalse();
         assertThat(worker.processNext()).isTrue();
         ExportRecord ready=records.require(pending.id());
         assertThat(ready.status()).isEqualTo(ExportStatus.READY);
@@ -270,6 +434,7 @@ class ExportJobIntegrationTests {
         ExportRecord failed=records.require(pending.id());
         assertThat(failed.status()).isEqualTo(ExportStatus.FAILED);
         assertThat(failed.lastErrorCode()).isEqualTo("EXPORT_STORAGE_INTEGRITY");
+        assertThat(records.requireStatus(pending.id(), 2).retryEligible()).isFalse();
         worker.reconcile();
         assertThat(records.require(pending.id()).status()).isEqualTo(ExportStatus.FAILED);
     }

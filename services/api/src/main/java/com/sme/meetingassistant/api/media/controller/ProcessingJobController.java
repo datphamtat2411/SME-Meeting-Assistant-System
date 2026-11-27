@@ -2,7 +2,7 @@ package com.sme.meetingassistant.api.media.controller;
 
 import com.sme.meetingassistant.api.common.ApiResponse;
 import com.sme.meetingassistant.api.common.ApiResponseFactory;
-import com.sme.meetingassistant.api.integration.ReviewedIntelligenceRegeneration;
+import com.sme.meetingassistant.api.integration.TranscriptIntelligenceRegeneration;
 import com.sme.meetingassistant.api.media.dto.CreateProcessingJobRequest;
 import com.sme.meetingassistant.api.media.dto.ProcessingJobResponse;
 import com.sme.meetingassistant.api.media.dto.RetryProcessingJobRequest;
@@ -29,15 +29,17 @@ import org.springframework.web.bind.annotation.RestController;
 public class ProcessingJobController {
     private final MediaProcessingService service;
     private final ApiResponseFactory responses;
-    private final ReviewedIntelligenceRegeneration regeneration;
+    private final TranscriptIntelligenceRegeneration regeneration;
 
     public ProcessingJobController(MediaProcessingService service, ApiResponseFactory responses,
-            ReviewedIntelligenceRegeneration regeneration) {
+            TranscriptIntelligenceRegeneration regeneration) {
         this.service = service;
         this.responses = responses;
         this.regeneration = regeneration;
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable processing operation accepted", useReturnTypeSchema = true)
     @PostMapping("/meetings/{meetingId}/processing-jobs")
     public ResponseEntity<ApiResponse<ProcessingJobResponse>> create(@PathVariable UUID meetingId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
@@ -59,6 +61,8 @@ public class ProcessingJobController {
         return this.responses.success(this.service.getJob(jobId));
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable processing operation accepted", useReturnTypeSchema = true)
     @PostMapping("/processing-jobs/{jobId}/retry")
     public ResponseEntity<ApiResponse<ProcessingJobResponse>> retry(@PathVariable UUID jobId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
@@ -77,7 +81,10 @@ public class ProcessingJobController {
         return this.responses.success(this.service.acknowledgeTranscriptReview(jobId, request, idempotencyKey));
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable processing operation accepted", useReturnTypeSchema = true)
     @PostMapping("/processing-jobs/{jobId}/meeting-intelligence/admit")
+    @Deprecated
     public ResponseEntity<ApiResponse<ProcessingJobResponse>> admitMeetingIntelligence(
             @PathVariable UUID jobId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
@@ -85,9 +92,11 @@ public class ProcessingJobController {
         ProcessingJobResponse job = this.service.admitMeetingIntelligence(jobId, request, idempotencyKey);
         return ResponseEntity.status(HttpStatus.ACCEPTED)
             .location(URI.create("/api/v1/processing-jobs/" + job.id()))
-            .body(this.responses.success("Meeting Intelligence admission accepted.", job));
+            .body(this.responses.success("Transcript review receipt recorded.", job));
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
+            description = "Durable processing operation accepted", useReturnTypeSchema = true)
     @PostMapping("/processing-jobs/{jobId}/meeting-intelligence/regenerate")
     public ResponseEntity<ApiResponse<ProcessingJobResponse>> regenerateMeetingIntelligence(
             @PathVariable UUID jobId, @RequestHeader("Idempotency-Key") String idempotencyKey,

@@ -9,6 +9,7 @@ import java.util.UUID;
 /** Meeting Intelligence-owned read port: current Summary and confirmed Decisions only. */
 public interface IntelligenceMinutesSource {
     CurrentMinutesIntelligence currentApproved(UUID meetingId);
+    List<DecisionView> currentProposals(UUID meetingId);
 
     record CurrentMinutesIntelligence(Optional<SummaryView> summary,
             List<DecisionView> confirmedDecisions) {

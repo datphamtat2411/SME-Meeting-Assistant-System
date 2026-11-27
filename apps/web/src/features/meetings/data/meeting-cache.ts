@@ -1,12 +1,65 @@
-import type { QueryClient } from '@tanstack/react-query'
+import type { InfiniteData, QueryClient } from '@tanstack/react-query'
+import { compareInstants } from '@/lib/regional-time'
+import { invalidateMeetingArtifacts } from '../intelligence/query-invalidation'
 import type { MeetingDetailResponse, MeetingView } from './detail-api'
 import type { MeetingListResponse } from './list-api'
 
 export const meetingListQueryKey = ['meetings', 'list'] as const
 export const roomAvailabilityQueryKey = ['rooms', 'availability'] as const
+export type MeetingListCacheData =
+  | MeetingListResponse
+  | InfiniteData<MeetingListResponse>
 
 export function meetingDetailQueryKey(meetingId: string) {
   return ['meetings', 'detail', meetingId] as const
+}
+
+function updateMeetingListPage(
+  page: MeetingListResponse,
+  meeting: MeetingView
+): MeetingListResponse {
+  let changed = false
+  const meetings = page.meetings.map((listMeeting) => {
+    if (listMeeting.id !== meeting.id) return listMeeting
+
+    changed = true
+    return {
+      ...listMeeting,
+      title: meeting.title,
+      description: meeting.description,
+      organizerUserId: meeting.organizerUserId,
+      roomId: meeting.roomId,
+      scheduledStartAt: meeting.scheduledStartAt,
+      scheduledEndAt: meeting.scheduledEndAt,
+      status: meeting.status,
+      startedAt: meeting.startedAt,
+      endedAt: meeting.endedAt,
+      cancelledAt: meeting.cancelledAt,
+      createdAt: meeting.createdAt,
+      updatedAt: meeting.updatedAt,
+    }
+  })
+
+  return changed ? { ...page, meetings } : page
+}
+
+export function updateMeetingListCacheData(
+  cachedData: MeetingListCacheData | undefined,
+  meeting: MeetingView
+): MeetingListCacheData | undefined {
+  if (!cachedData) return cachedData
+
+  if ('pages' in cachedData) {
+    let changed = false
+    const pages = cachedData.pages.map((page) => {
+      const updated = updateMeetingListPage(page, meeting)
+      if (updated !== page) changed = true
+      return updated
+    })
+    return changed ? { ...cachedData, pages } : cachedData
+  }
+
+  return updateMeetingListPage(cachedData, meeting)
 }
 
 export function sameMeetingInstant(
@@ -15,13 +68,11 @@ export function sameMeetingInstant(
 ) {
   if (first === second) return true
   if (!first || !second) return false
-  const firstTime = Date.parse(first)
-  const secondTime = Date.parse(second)
-  return (
-    Number.isFinite(firstTime) &&
-    Number.isFinite(secondTime) &&
-    firstTime === secondTime
-  )
+  try {
+    return compareInstants(first, second) === 0
+  } catch {
+    return false
+  }
 }
 
 export function affectsRoomAvailability(
@@ -64,35 +115,9 @@ export function synchronizeMeetingCaches(
   } = {}
 ) {
   queryClient.setQueryData(meetingDetailQueryKey(detail.meeting.id), detail)
-  queryClient.setQueriesData<MeetingListResponse>(
+  queryClient.setQueriesData<MeetingListCacheData>(
     { queryKey: meetingListQueryKey },
-    (cachedList) => {
-      if (!cachedList) return cachedList
-
-      let changed = false
-      const meetings = cachedList.meetings.map((listMeeting) => {
-        if (listMeeting.id !== detail.meeting.id) return listMeeting
-
-        changed = true
-        return {
-          ...listMeeting,
-          title: detail.meeting.title,
-          description: detail.meeting.description,
-          organizerUserId: detail.meeting.organizerUserId,
-          roomId: detail.meeting.roomId,
-          scheduledStartAt: detail.meeting.scheduledStartAt,
-          scheduledEndAt: detail.meeting.scheduledEndAt,
-          status: detail.meeting.status,
-          startedAt: detail.meeting.startedAt,
-          endedAt: detail.meeting.endedAt,
-          cancelledAt: detail.meeting.cancelledAt,
-          createdAt: detail.meeting.createdAt,
-          updatedAt: detail.meeting.updatedAt,
-        }
-      })
-
-      return changed ? { ...cachedList, meetings } : cachedList
-    }
+    (cachedData) => updateMeetingListCacheData(cachedData, detail.meeting)
   )
 
   if (options.invalidateDetail) {
@@ -105,6 +130,9 @@ export function synchronizeMeetingCaches(
     void queryClient.invalidateQueries(detailQuery)
   }
   void queryClient.invalidateQueries({ queryKey: meetingListQueryKey })
+  invalidateMeetingArtifacts(queryClient, detail.meeting.id, {
+    intelligence: 'none',
+  })
   if (
     options.invalidateRoomAvailability ||
     affectsRoomAvailability(previousMeeting, detail.meeting)

@@ -5,6 +5,14 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CalendarDays, Check, LoaderCircle } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
+import { parseCivilDate, compareInstants } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -48,7 +56,6 @@ import { type MeetingParticipantCandidate } from '../data/meeting-candidates-api
 import {
   buildCreateMeetingPayload,
   buildScheduleCheckPayload,
-  canonicalizeLocalDateTime,
   checkMeetingSchedule,
   classifyMeetingMutationError,
   createMeetingFromIntent,
@@ -64,81 +71,124 @@ import {
 import {
   getScheduleValues,
   getSchedulingFingerprint,
+  resolveScheduleEndpoint,
+  scheduleEndpointError,
   type ScheduleValues,
 } from '../data/meeting-scheduling-utils'
-import { roomAvailabilityQueryOptions } from '../data/room-availability-api'
 import { MeetingParticipantLookup } from './meeting-participant-lookup'
 import {
   MeetingRoomLookup,
   MeetingScheduleFields,
-  RoomAvailabilityNotice,
   SchedulePreviewNotice,
 } from './meeting-scheduling-controls'
+import { SelectedRoomSchedulePreview } from './selected-room-schedule-preview'
+
+function isValidLocalDateKey(value: unknown): value is string {
+  return typeof value === 'string' && Boolean(parseCivilDate(value))
+}
 
 const meetingFormSchema = z
   .object({
-    title: z.string().trim().min(1, 'Title is required.').max(255),
+    title: z
+      .string()
+      .trim()
+      .min(1, featureValidationMessage('meetings:create_titleRequired'))
+      .max(255),
     description: z.string(),
     date: z.string(),
     endDate: z.string(),
     startTime: z.string(),
     endTime: z.string(),
+    scheduleTimezone: z.string(),
+    startOccurrence: z.string(),
+    endOccurrence: z.string(),
+    fallbackRequired: z.boolean(),
+    fallbackAcknowledged: z.boolean(),
     roomId: z.string(),
     participantIds: z.array(z.string()),
+    dateOnlyPrefill: z.boolean(),
   })
   .superRefine((values, context) => {
+    const hasDateOnlyPrefill =
+      values.dateOnlyPrefill &&
+      !values.startTime &&
+      !values.endTime &&
+      isValidLocalDateKey(values.date) &&
+      values.endDate === values.date
     const hasScheduleInput = Boolean(
       values.date || values.endDate || values.startTime || values.endTime
     )
-    if (!hasScheduleInput) return
+    if (!hasScheduleInput || hasDateOnlyPrefill) return
 
     if (!values.date) {
       context.addIssue({
         code: 'custom',
         path: ['date'],
-        message: 'Date is required when scheduling details are entered.',
+        message: featureValidationMessage('meetings:create_dateRequired'),
       })
     }
     if (!values.startTime) {
       context.addIssue({
         code: 'custom',
         path: ['startTime'],
-        message: 'Start time is required when scheduling details are entered.',
+        message: featureValidationMessage('meetings:create_startRequired'),
       })
     }
     if (!values.endTime) {
       context.addIssue({
         code: 'custom',
         path: ['endTime'],
-        message: 'End time is required when scheduling details are entered.',
+        message: featureValidationMessage('meetings:create_endRequired'),
       })
     }
     if (!values.date || !values.startTime || !values.endTime) return
 
-    const start = canonicalizeLocalDateTime(values.date, values.startTime)
-    const end = canonicalizeLocalDateTime(
-      values.endDate || values.date,
-      values.endTime
+    const start = resolveScheduleEndpoint(
+      values.date,
+      values.startTime,
+      values.scheduleTimezone,
+      values.startOccurrence
     )
+    const end = resolveScheduleEndpoint(
+      values.endDate || values.date,
+      values.endTime,
+      values.scheduleTimezone,
+      values.endOccurrence
+    )
+    if (values.fallbackRequired && !values.fallbackAcknowledged) {
+      context.addIssue({
+        code: 'custom',
+        path: ['fallbackAcknowledged'],
+        message: featureValidationMessage('meetings:create_confirmZone'),
+      })
+    }
     if (!start) {
       context.addIssue({
         code: 'custom',
         path: ['startTime'],
-        message: 'Enter a valid start time.',
+        message: scheduleEndpointError(
+          values.date,
+          values.startTime,
+          values.scheduleTimezone
+        ),
       })
     }
     if (!end) {
       context.addIssue({
         code: 'custom',
         path: ['endTime'],
-        message: 'Enter a valid end time.',
+        message: scheduleEndpointError(
+          values.endDate || values.date,
+          values.endTime,
+          values.scheduleTimezone
+        ),
       })
     }
-    if (start && end && new Date(start).getTime() >= new Date(end).getTime()) {
+    if (start && end && compareInstants(start, end) >= 0) {
       context.addIssue({
         code: 'custom',
         path: ['endTime'],
-        message: 'End time must be after start time.',
+        message: featureValidationMessage('meetings:create_endAfterStart'),
       })
     }
   })
@@ -183,6 +233,7 @@ type SchedulingCandidate = Readonly<{
 export type MeetingCreationDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
+  initialScheduleDate?: string
   onCommitted?: (meeting: CommittedMeeting) => void
 }
 
@@ -193,15 +244,24 @@ const initialFormValues: MeetingFormValues = {
   endDate: '',
   startTime: '',
   endTime: '',
+  scheduleTimezone: '',
+  startOccurrence: '',
+  endOccurrence: '',
+  fallbackRequired: false,
+  fallbackAcknowledged: false,
   roomId: '',
   participantIds: [],
+  dateOnlyPrefill: false,
 }
 
 export function MeetingCreationDialog({
   open,
   onOpenChange,
+  initialScheduleDate,
   onCommitted,
 }: MeetingCreationDialogProps) {
+  const { t } = useUiTranslation()
+  const regional = useRegionalPresentation()
   const queryClient = useQueryClient()
   const form = useForm<MeetingFormValues>({
     resolver: zodResolver(meetingFormSchema),
@@ -218,12 +278,15 @@ export function MeetingCreationDialog({
   >(null)
   const [pendingScheduleCandidate, setPendingScheduleCandidate] =
     useState<SchedulingCandidate | null>(null)
+  const [pendingDraftScheduleRetry, setPendingDraftScheduleRetry] =
+    useState(false)
   const [showWarningDetails, setShowWarningDetails] = useState(false)
   const [draftRecovery, setDraftRecovery] = useState<DraftRecovery | null>(null)
   const [creationIntent, setCreationIntent] =
     useState<MeetingCreationIntent | null>(null)
+  const invokingElement = useRef<HTMLElement | null>(null)
   const idempotencyKey = useRef<string | null>(null)
-  const wasOpen = useRef(open)
+  const wasOpen = useRef(false)
   const operationInFlight = useRef(false)
   const resetOnClose = useRef(false)
   const notifiedTransitions = useRef(new Set<string>())
@@ -247,27 +310,43 @@ export function MeetingCreationDialog({
     control: form.control,
     name: 'participantIds',
   })
-  const schedule = getScheduleValues({ date, endDate, startTime, endTime })
-  const currentScheduleFingerprint = getSchedulingFingerprint({
-    title,
-    description,
+  const scheduleTimezone = useWatch({
+    control: form.control,
+    name: 'scheduleTimezone',
+  })
+  const startOccurrence = useWatch({
+    control: form.control,
+    name: 'startOccurrence',
+  })
+  const endOccurrence = useWatch({
+    control: form.control,
+    name: 'endOccurrence',
+  })
+  const schedule = getScheduleValues({
     date,
     endDate,
     startTime,
     endTime,
-    roomId,
-    participantIds,
+    scheduleTimezone,
+    startOccurrence,
+    endOccurrence,
   })
-  const participantCount = 1 + (participantIds?.length ?? 0)
-  const availabilityQuery = useQuery({
-    ...roomAvailabilityQueryOptions({
-      start: schedule?.start ?? '',
-      end: schedule?.end ?? '',
-      participantCount,
-    }),
-    enabled: open && Boolean(schedule),
-  })
-
+  const currentScheduleFingerprint = getSchedulingFingerprint(
+    {
+      title,
+      description,
+      date,
+      endDate,
+      startTime,
+      endTime,
+      scheduleTimezone,
+      startOccurrence,
+      endOccurrence,
+      roomId,
+      participantIds,
+    },
+    schedule
+  )
   const [roomLookupOpen, setRoomLookupOpen] = useState(false)
   const [roomLookupSearch, setRoomLookupSearch] = useState('')
   const [roomLookupPage, setRoomLookupPage] = useState(1)
@@ -295,9 +374,6 @@ export function MeetingCreationDialog({
     .filter((candidate): candidate is MeetingParticipantCandidate =>
       Boolean(candidate)
     )
-  const roomSignal = availabilityQuery.data?.rooms.find(
-    (room) => room.id === roomId
-  )
   const busy = isBusyPhase(phase)
   const workflowLocked = Boolean(creationIntent || draftRecovery) || busy
   const organizerUnavailable = open && !currentUser
@@ -322,7 +398,37 @@ export function MeetingCreationDialog({
   )
 
   useEffect(() => {
-    if (!open && wasOpen.current) {
+    if (open && !wasOpen.current) {
+      if (!form.getValues('scheduleTimezone')) {
+        if (regional.status === 'loading') return
+        form.setValue('scheduleTimezone', regional.timezone)
+        form.setValue(
+          'fallbackRequired',
+          regional.status === 'unavailable' || regional.timezoneFallback
+        )
+      }
+      if (
+        isValidLocalDateKey(initialScheduleDate) &&
+        phase === 'idle' &&
+        !creationIntent &&
+        !draftRecovery &&
+        !pendingScheduleCandidate &&
+        !operationInFlight.current
+      ) {
+        form.setValue('date', initialScheduleDate, {
+          shouldDirty: false,
+          shouldValidate: false,
+        })
+        form.setValue('endDate', initialScheduleDate, {
+          shouldDirty: false,
+          shouldValidate: false,
+        })
+        form.setValue('dateOnlyPrefill', true, {
+          shouldDirty: false,
+          shouldValidate: false,
+        })
+      }
+    } else if (!open && wasOpen.current) {
       if (resetOnClose.current || !retainWorkflowOnClose) {
         form.reset(initialFormValues)
         setPhase('idle')
@@ -332,6 +438,7 @@ export function MeetingCreationDialog({
         setScheduleCheck(null)
         setScheduleCheckFingerprint(null)
         setPendingScheduleCandidate(null)
+        setPendingDraftScheduleRetry(false)
         setShowWarningDetails(false)
         setDraftRecovery(null)
         setCreationIntent(null)
@@ -345,7 +452,19 @@ export function MeetingCreationDialog({
       }
     }
     wasOpen.current = open
-  }, [form, open, retainWorkflowOnClose])
+  }, [
+    creationIntent,
+    draftRecovery,
+    form,
+    initialScheduleDate,
+    open,
+    pendingScheduleCandidate,
+    phase,
+    regional.status,
+    regional.timezone,
+    regional.timezoneFallback,
+    retainWorkflowOnClose,
+  ])
 
   useEffect(() => {
     if (!isUnresolvedPhase(phase) && !creationIntent) return
@@ -431,15 +550,17 @@ export function MeetingCreationDialog({
   const setScheduleRequiredErrors = () => {
     form.setError('date', {
       type: 'manual',
-      message: 'A complete date and time interval is required to schedule.',
+      message: featureValidationMessage('meetings:create_fullInterval'),
     })
     form.setError('startTime', {
       type: 'manual',
-      message: 'Start time is required to schedule.',
+      message: featureValidationMessage(
+        'meetings:create_scheduleStartRequired'
+      ),
     })
     form.setError('endTime', {
       type: 'manual',
-      message: 'End time is required to schedule.',
+      message: featureValidationMessage('meetings:create_scheduleEndRequired'),
     })
   }
 
@@ -500,6 +621,9 @@ export function MeetingCreationDialog({
     setDraftRecovery(null)
     setPhase('scheduled_confirmed')
     setFlow(null)
+    setPendingDraftScheduleRetry(false)
+    setScheduleCheck(null)
+    setScheduleCheckFingerprint(null)
     operationInFlight.current = false
     resetOnClose.current = true
     handleOpenChange(false)
@@ -541,7 +665,7 @@ export function MeetingCreationDialog({
         })
         if (isDraftStatusRefresh(reason)) {
           setErrorMessage(
-            'The existing meeting is still DRAFT. Its current opaque ETag is ready for a safe schedule retry.'
+            featureValidationMessage('meetings:create_draftReady')
           )
         } else {
           setFailure(reason, 'Scheduling')
@@ -552,7 +676,7 @@ export function MeetingCreationDialog({
       }
       setDraftRecovery({ ...recovery, status: 'uncertain' })
       setErrorMessage(
-        'The draft status could not be confirmed as schedulable. Review the meeting before retrying.'
+        featureValidationMessage('meetings:create_draftUnconfirmed')
       )
       setPhase('schedule_uncertain')
       setFlow('schedule')
@@ -561,10 +685,10 @@ export function MeetingCreationDialog({
       const detailApiError = normalizeCoreApiError(detailError)
       setErrorMessage(
         detailApiError.status === 401
-          ? 'Your session could not be confirmed. The created draft is preserved; sign in again before retrying.'
+          ? featureValidationMessage('meetings:create_draftSession')
           : detailApiError.status === 403
-            ? 'You are no longer authorized to verify this draft. No new meeting was created.'
-            : 'The schedule result and current draft version could not be confirmed. The draft is preserved; refresh its status before retrying.'
+            ? featureValidationMessage('meetings:create_draftForbidden')
+            : featureValidationMessage('meetings:create_draftRefresh')
       )
       setPhase('schedule_uncertain')
       setFlow('schedule')
@@ -600,6 +724,7 @@ export function MeetingCreationDialog({
     recovery: DraftRecovery,
     intent?: MeetingCreationIntent
   ) => {
+    setPendingDraftScheduleRetry(false)
     const kind = classifyMeetingMutationError(error)
     if (
       kind === 'network' ||
@@ -619,7 +744,7 @@ export function MeetingCreationDialog({
     operationInFlight.current = false
   }
 
-  const scheduleExistingDraft = async () => {
+  const scheduleExistingDraft = async (afterWarningReview = false) => {
     if (
       !draftRecovery ||
       draftRecovery.status !== 'draft' ||
@@ -627,6 +752,18 @@ export function MeetingCreationDialog({
       operationInFlight.current
     )
       return
+    if (
+      afterWarningReview &&
+      (phase !== 'awaiting_warning_review' ||
+        !pendingDraftScheduleRetry ||
+        !scheduleCheck ||
+        schedulePreviewStale ||
+        !scheduleCheckFingerprint ||
+        scheduleCheckFingerprint !== currentScheduleFingerprint)
+    ) {
+      return
+    }
+    if (!afterWarningReview && phase === 'awaiting_warning_review') return
     if (creationIntent && !intentActorMatchesCurrentSession(creationIntent)) {
       setDraftRecovery({ ...draftRecovery, status: 'uncertain' })
       setErrorMessage(formatSessionChangedMessage())
@@ -634,6 +771,69 @@ export function MeetingCreationDialog({
       setFlow('schedule')
       return
     }
+
+    if (!afterWarningReview) {
+      if (
+        !creationIntent ||
+        creationIntent.flow !== 'schedule' ||
+        JSON.stringify(
+          buildCreateMeetingPayload(toCreateMeetingInput(form.getValues()))
+        ) !== creationIntent.serializedPayload
+      ) {
+        setErrorMessage(
+          featureValidationMessage('meetings:create_intentFrozen')
+        )
+        return
+      }
+
+      operationInFlight.current = true
+      setErrorMessage(null)
+      setFlow('schedule')
+      setScheduleCheck(null)
+      setScheduleCheckFingerprint(currentScheduleFingerprint)
+      setPendingScheduleCandidate(null)
+      setPendingDraftScheduleRetry(false)
+      setPhase('checking')
+      try {
+        const preview = await checkMeetingSchedule(
+          buildScheduleCheckPayload({
+            roomId: creationIntent.payload.roomId,
+            start: draftRecovery.schedule.start,
+            end: draftRecovery.schedule.end,
+            participantUserIds: [...creationIntent.participantUserIds],
+          })
+        )
+        setScheduleCheck(preview)
+        if (
+          !preview.previewOnly ||
+          !preview.canSchedule ||
+          preview.roomConflict
+        ) {
+          setErrorMessage(
+            preview.roomConflict
+              ? featureValidationMessage('meetings:create_draftRoomConflict')
+              : featureValidationMessage('meetings:create_draftPreviewRejected')
+          )
+          setPhase('draft_confirmed')
+          operationInFlight.current = false
+          return
+        }
+        if (preview.warnings.length > 0) {
+          setPendingDraftScheduleRetry(true)
+          setPhase('awaiting_warning_review')
+          operationInFlight.current = false
+          return
+        }
+      } catch (error) {
+        setScheduleCheckFingerprint(null)
+        setPendingDraftScheduleRetry(false)
+        setFailure(error, 'Checking the meeting schedule')
+        setFlow('schedule')
+        return
+      }
+    }
+
+    setPendingDraftScheduleRetry(false)
     operationInFlight.current = true
     setErrorMessage(null)
     setFlow('schedule')
@@ -823,6 +1023,7 @@ export function MeetingCreationDialog({
 
   const saveDraft = async (values: MeetingFormValues) => {
     if (
+      !values.scheduleTimezone ||
       busy ||
       draftRecovery ||
       creationIntent ||
@@ -856,6 +1057,7 @@ export function MeetingCreationDialog({
 
   const createAndSchedule = async (values: MeetingFormValues) => {
     if (
+      !values.scheduleTimezone ||
       busy ||
       draftRecovery ||
       creationIntent ||
@@ -893,7 +1095,7 @@ export function MeetingCreationDialog({
       setScheduleCheck(preview)
       if (!preview.previewOnly) {
         setErrorMessage(
-          'The schedule preview was not marked as advisory. No meeting was created.'
+          featureValidationMessage('meetings:create_invalidPreview')
         )
         setPhase('idle')
         setFlow(null)
@@ -905,8 +1107,8 @@ export function MeetingCreationDialog({
       if (!preview.canSchedule || preview.roomConflict) {
         setErrorMessage(
           preview.roomConflict
-            ? 'The selected room is no longer available for this interval. No meeting was created.'
-            : 'The Core API did not approve this schedule preview. No meeting was created.'
+            ? featureValidationMessage('meetings:create_createRoomConflict')
+            : featureValidationMessage('meetings:create_createPreviewRejected')
         )
         setPhase('idle')
         setFlow(null)
@@ -937,12 +1139,23 @@ export function MeetingCreationDialog({
   const confirmScheduleWarnings = () => {
     if (
       phase !== 'awaiting_warning_review' ||
-      !pendingScheduleCandidate ||
       !scheduleCheck ||
-      currentScheduleFingerprint !== pendingScheduleCandidate.fingerprint ||
+      !scheduleCheckFingerprint ||
+      currentScheduleFingerprint !== scheduleCheckFingerprint ||
       operationInFlight.current
     )
       return
+
+    if (pendingDraftScheduleRetry) {
+      void scheduleExistingDraft(true)
+      return
+    }
+    if (
+      !pendingScheduleCandidate ||
+      currentScheduleFingerprint !== pendingScheduleCandidate.fingerprint
+    ) {
+      return
+    }
     operationInFlight.current = true
     void submitScheduleCreation(pendingScheduleCandidate)
   }
@@ -960,13 +1173,24 @@ export function MeetingCreationDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent
+        className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'
+        onOpenAutoFocus={() => {
+          const activeElement = document.activeElement
+          invokingElement.current =
+            activeElement instanceof HTMLElement ? activeElement : null
+        }}
+        onCloseAutoFocus={(event) => {
+          const trigger = invokingElement.current
+          invokingElement.current = null
+          if (!trigger?.isConnected) return
+          event.preventDefault()
+          trigger.focus()
+        }}
+      >
         <DialogHeader>
-          <DialogTitle>New Meeting</DialogTitle>
-          <DialogDescription>
-            Save a Core API draft now, or preview and schedule it as a separate
-            authoritative operation.
-          </DialogDescription>
+          <DialogTitle>{t('meetings:create_newTitle')}</DialogTitle>
+          <DialogDescription>{t('meetings:create_newHint')}</DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
@@ -976,9 +1200,12 @@ export function MeetingCreationDialog({
               name='title'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Title</FormLabel>
+                  <FormLabel>{t('meetings:create_title')}</FormLabel>
                   <FormControl>
-                    <Input {...field} placeholder='e.g. Weekly product sync' />
+                    <Input
+                      {...field}
+                      placeholder={t('meetings:create_titleExample')}
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -990,11 +1217,11 @@ export function MeetingCreationDialog({
               name='description'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Description</FormLabel>
+                  <FormLabel>{t('meetings:create_description')}</FormLabel>
                   <FormControl>
                     <Textarea
                       {...field}
-                      placeholder='What should the team accomplish?'
+                      placeholder={t('meetings:create_descriptionExample')}
                       rows={3}
                     />
                   </FormControl>
@@ -1003,14 +1230,22 @@ export function MeetingCreationDialog({
               )}
             />
 
-            <MeetingScheduleFields />
+            <MeetingScheduleFields
+              onDateInputChange={() => {
+                if (!form.getValues('dateOnlyPrefill')) return
+                form.setValue('dateOnlyPrefill', false, {
+                  shouldDirty: false,
+                  shouldValidate: true,
+                })
+              }}
+            />
 
             <FormField
               control={form.control}
               name='roomId'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Meeting room</FormLabel>
+                  <FormLabel>{t('meetings:create_room')}</FormLabel>
                   <MeetingRoomLookup
                     value={field.value}
                     onChange={field.onChange}
@@ -1036,8 +1271,7 @@ export function MeetingCreationDialog({
                     selectedUnavailable={roomUnavailable}
                   />
                   <FormDescription>
-                    Room availability is an advisory snapshot. Core API rechecks
-                    the reservation when scheduling.
+                    {t('meetings:create_roomHint')}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -1049,7 +1283,7 @@ export function MeetingCreationDialog({
               name='participantIds'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Participants</FormLabel>
+                  <FormLabel>{t('meetings:create_participants')}</FormLabel>
                   <MeetingParticipantLookup
                     value={field.value}
                     onToggle={handleParticipantToggle}
@@ -1059,8 +1293,7 @@ export function MeetingCreationDialog({
                     }
                   />
                   <FormDescription>
-                    Search active users by name or email. The authenticated
-                    organizer is not an invitee option.
+                    {t('meetings:create_participantsHint')}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -1069,41 +1302,50 @@ export function MeetingCreationDialog({
 
             <div className='flex items-center gap-2 text-sm text-muted-foreground'>
               <CalendarDays className='size-4' />
-              Organizer:{' '}
+              {t('meetings:create_organizer')}{' '}
               <span className='font-medium text-foreground'>
                 {currentUserQuery.isPending
-                  ? 'Loading authorized organizer...'
-                  : (currentUser?.displayName ?? 'Organizer unavailable')}
+                  ? t('meetings:create_loadingOrganizer')
+                  : (currentUser?.displayName ??
+                    t('meetings:create_organizerUnavailable'))}
               </span>
             </div>
 
             {currentUserQuery.isError && (
               <Alert variant='destructive'>
                 <AlertCircle />
-                <AlertTitle>Organizer could not be verified</AlertTitle>
+                <AlertTitle>
+                  {t('meetings:create_organizerUnverified')}
+                </AlertTitle>
                 <AlertDescription>
-                  <p>
-                    The authenticated organizer is required. No organizer ID
-                    will be supplied by the browser.
-                  </p>
+                  <p>{t('meetings:create_organizerHint')}</p>
                   <Button
                     type='button'
                     variant='outline'
                     size='sm'
                     onClick={() => void currentUserQuery.refetch()}
                   >
-                    Try again
+                    {t('meetings:create_retry')}
                   </Button>
                 </AlertDescription>
               </Alert>
             )}
 
-            {schedule && (
-              <RoomAvailabilityNotice
-                query={availabilityQuery}
-                room={roomSignal}
-              />
-            )}
+            {open &&
+              !workflowLocked &&
+              phase !== 'awaiting_warning_review' &&
+              schedule &&
+              roomId && (
+                <SelectedRoomSchedulePreview
+                  input={{
+                    roomId,
+                    start: schedule.start,
+                    end: schedule.end,
+                    participantUserIds: participantIds ?? [],
+                  }}
+                  roomName={selectedRoom?.name}
+                />
+              )}
 
             {visibleScheduleCheck && (
               <SchedulePreviewNotice
@@ -1125,27 +1367,28 @@ export function MeetingCreationDialog({
             {errorMessage && (
               <Alert variant='destructive'>
                 <AlertCircle />
-                <AlertTitle>Meeting operation did not complete</AlertTitle>
-                <AlertDescription>{errorMessage}</AlertDescription>
+                <AlertTitle>{t('meetings:create_operationFailed')}</AlertTitle>
+                <AlertDescription>
+                  {localizedValidationMessage(errorMessage, t)}
+                </AlertDescription>
               </Alert>
             )}
 
             {outcome === 'draft' && (
               <Alert>
                 <Check />
-                <AlertTitle>Draft created</AlertTitle>
+                <AlertTitle>{t('meetings:create_draftCreated')}</AlertTitle>
                 <AlertDescription>
-                  Core API committed this meeting as DRAFT. It was not
-                  scheduled.
+                  {t('meetings:create_draftCreatedHint')}
                 </AlertDescription>
               </Alert>
             )}
             {outcome === 'scheduled' && (
               <Alert>
                 <Check />
-                <AlertTitle>Meeting scheduled</AlertTitle>
+                <AlertTitle>{t('meetings:create_scheduled')}</AlertTitle>
                 <AlertDescription>
-                  Core API returned the committed SCHEDULED status.
+                  {t('meetings:create_scheduledHint')}
                 </AlertDescription>
               </Alert>
             )}
@@ -1164,7 +1407,7 @@ export function MeetingCreationDialog({
         <DialogFooter>
           <DialogClose asChild>
             <Button type='button' variant='outline' disabled={busy}>
-              Close
+              {t('meetings:create_close')}
             </Button>
           </DialogClose>
           <Button
@@ -1172,6 +1415,7 @@ export function MeetingCreationDialog({
             variant='secondary'
             onClick={handleSaveDraftClick}
             disabled={
+              !scheduleTimezone ||
               workflowLocked ||
               warningReviewPending ||
               organizerUnavailable ||
@@ -1181,12 +1425,15 @@ export function MeetingCreationDialog({
             {flow === 'draft' && busy ? (
               <LoaderCircle className='animate-spin' />
             ) : null}
-            {flow === 'draft' && busy ? 'Saving...' : 'Save Draft'}
+            {flow === 'draft' && busy
+              ? t('meetings:create_saving')
+              : t('meetings:create_saveDraft')}
           </Button>
           <Button
             type='button'
             onClick={handleCreateAndScheduleClick}
             disabled={
+              !scheduleTimezone ||
               workflowLocked ||
               warningReviewPending ||
               organizerUnavailable ||
@@ -1197,12 +1444,12 @@ export function MeetingCreationDialog({
               <LoaderCircle className='animate-spin' />
             ) : null}
             {phase === 'checking'
-              ? 'Checking...'
+              ? t('meetings:create_checking')
               : phase === 'creating' && flow === 'schedule'
-                ? 'Creating...'
+                ? t('meetings:create_creating')
                 : phase === 'scheduling'
-                  ? 'Scheduling...'
-                  : 'Create & Schedule'}
+                  ? t('meetings:create_scheduling')
+                  : t('meetings:create_createSchedule')}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1219,17 +1466,14 @@ function CreationRecoveryNotice({
   busy: boolean
   onRetry: () => void
 }) {
+  const { t } = useUiTranslation()
   const replaySafe = isMeetingCreationIntentReplaySafe(intent)
   return (
     <Alert variant='destructive'>
       <AlertCircle />
-      <AlertTitle>Creation outcome unknown</AlertTitle>
+      <AlertTitle>{t('meetings:create_outcomeUnknown')}</AlertTitle>
       <AlertDescription>
-        <p>
-          Core API may have committed this meeting, but its creation response
-          was not authoritative. The original request and Idempotency-Key are
-          frozen; form changes cannot change the recovery request.
-        </p>
+        <p>{t('meetings:create_uncertainHint')}</p>
         {replaySafe ? (
           <Button
             type='button'
@@ -1238,14 +1482,10 @@ function CreationRecoveryNotice({
             onClick={onRetry}
             disabled={busy}
           >
-            Retry creation
+            {t('meetings:create_retryCreation')}
           </Button>
         ) : (
-          <p>
-            Core API&apos;s duplicate-protection window may have expired. This
-            intent cannot be replayed safely from this session. Verify the
-            meeting list or existing meeting before starting another meeting.
-          </p>
+          <p>{t('meetings:create_duplicateWindow')}</p>
         )}
       </AlertDescription>
     </Alert>
@@ -1263,6 +1503,7 @@ function DraftRecoveryNotice({
   onRetry: () => void
   onRefresh: () => void
 }) {
+  const { t } = useUiTranslation()
   return (
     <Alert
       variant={recovery.status === 'scheduled' ? 'default' : 'destructive'}
@@ -1270,21 +1511,19 @@ function DraftRecoveryNotice({
       {recovery.status === 'scheduled' ? <Check /> : <AlertCircle />}
       <AlertTitle>
         {recovery.status === 'draft'
-          ? 'Draft created, not scheduled'
+          ? t('meetings:create_draftNotScheduled')
           : recovery.status === 'scheduled'
-            ? 'Meeting is now scheduled'
-            : 'Schedule result unknown'}
+            ? t('meetings:create_nowScheduled')
+            : t('meetings:create_scheduleUnknown')}
       </AlertTitle>
       <AlertDescription>
         <p>
-          Existing meeting{' '}
-          <span className='font-mono text-xs'>{recovery.meetingId}</span> is
-          preserved.{' '}
+          {t('meetings:create_existingPreserved', { id: recovery.meetingId })}{' '}
           {recovery.status === 'draft'
-            ? 'Retrying uses its current opaque ETag and will not create another meeting.'
+            ? t('meetings:create_retryUsesEtag')
             : recovery.status === 'scheduled'
-              ? 'The latest GET reports SCHEDULED, but the original schedule request outcome could not be independently confirmed.'
-              : 'Its current lifecycle and ETag could not be verified; do not assume it was scheduled.'}
+              ? t('meetings:create_getScheduled')
+              : t('meetings:create_statusUnknown')}
         </p>
         <div className='flex flex-wrap gap-2'>
           {recovery.status === 'draft' ? (
@@ -1295,7 +1534,7 @@ function DraftRecoveryNotice({
               onClick={onRetry}
               disabled={busy}
             >
-              Retry schedule
+              {t('meetings:create_retrySchedule')}
             </Button>
           ) : recovery.status === 'uncertain' ? (
             <Button
@@ -1305,12 +1544,14 @@ function DraftRecoveryNotice({
               onClick={onRefresh}
               disabled={busy}
             >
-              Refresh draft status
+              {t('meetings:create_refreshDraft')}
             </Button>
           ) : null}
           <Button asChild type='button' variant='ghost' size='sm'>
             <a href={`/meetings/${encodeURIComponent(recovery.meetingId)}`}>
-              View {recovery.status === 'scheduled' ? 'meeting' : 'draft'}
+              {recovery.status === 'scheduled'
+                ? t('meetings:create_viewMeeting')
+                : t('meetings:create_viewDraft')}
             </a>
           </Button>
         </div>
@@ -1325,37 +1566,86 @@ function formatMutationError(
   kind: MeetingMutationErrorKind
 ) {
   if (kind === 'unauthenticated') {
-    return 'Your session is no longer authenticated. The request was not retried automatically.'
+    return featureValidationMessage('meetings:create_unauthenticated')
   }
   if (kind === 'forbidden') {
-    return `You are not authorized to ${operation.toLowerCase()}. No local success was recorded.`
+    return featureValidationMessage(
+      (
+        {
+          Scheduling: 'meetings:create_error_forbidden_scheduling',
+          'Checking the meeting schedule':
+            'meetings:create_error_forbidden_checking',
+          'Creating the meeting': 'meetings:create_error_forbidden_creating',
+          'Retrying the meeting creation':
+            'meetings:create_error_forbidden_retrying',
+          'Saving the draft': 'meetings:create_error_forbidden_saving',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:create_error_forbidden_generic'
+    )
   }
   if (kind === 'idempotency_conflict') {
-    return 'The Idempotency-Key is already bound to a different meeting creation intent. It was not replaced or retried as a room conflict.'
+    return featureValidationMessage('meetings:create_idempotencyConflict')
   }
   if (kind === 'conflict') {
     return (
-      error.message ||
-      'The room or meeting intent conflicts with current Core API state.'
+      requestErrorFormMessage(error) ||
+      featureValidationMessage('meetings:create_stateConflict')
     )
   }
   if (kind === 'precondition') {
-    return 'The draft changed before scheduling. Its current version must be refreshed before retrying.'
+    return featureValidationMessage('meetings:create_precondition')
   }
   if (kind === 'validation') {
     return (
-      error.message ||
-      'Core API rejected the meeting details. Review the highlighted fields.'
+      requestErrorFormMessage(error) ||
+      featureValidationMessage('meetings:create_validation')
     )
   }
   if (kind === 'network') {
-    return `The Core API could not be reached while ${operation.toLowerCase()}. Retry the same intent; no duplicate key will be generated.`
+    return featureValidationMessage(
+      (
+        {
+          Scheduling: 'meetings:create_error_network_scheduling',
+          'Checking the meeting schedule':
+            'meetings:create_error_network_checking',
+          'Creating the meeting': 'meetings:create_error_network_creating',
+          'Retrying the meeting creation':
+            'meetings:create_error_network_retrying',
+          'Saving the draft': 'meetings:create_error_network_saving',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:create_error_network_generic'
+    )
   }
   if (kind === 'temporary') {
-    return `Core API temporarily failed while ${operation.toLowerCase()}. Retry the same intent after checking the current status.`
+    return featureValidationMessage(
+      (
+        {
+          Scheduling: 'meetings:create_error_temporary_scheduling',
+          'Checking the meeting schedule':
+            'meetings:create_error_temporary_checking',
+          'Creating the meeting': 'meetings:create_error_temporary_creating',
+          'Retrying the meeting creation':
+            'meetings:create_error_temporary_retrying',
+          'Saving the draft': 'meetings:create_error_temporary_saving',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:create_error_temporary_generic'
+    )
   }
   return (
-    error.message || `Core API could not complete ${operation.toLowerCase()}.`
+    requestErrorFormMessage(error) ||
+    featureValidationMessage(
+      (
+        {
+          Scheduling: 'meetings:create_error_fallback_scheduling',
+          'Checking the meeting schedule':
+            'meetings:create_error_fallback_checking',
+          'Creating the meeting': 'meetings:create_error_fallback_creating',
+          'Retrying the meeting creation':
+            'meetings:create_error_fallback_retrying',
+          'Saving the draft': 'meetings:create_error_fallback_saving',
+        } as Record<string, string>
+      )[operation] ?? 'meetings:create_error_fallback_generic'
+    )
   )
 }
 
@@ -1386,7 +1676,7 @@ function createSchedulingCandidate(
     ...(participantUserIds ? { participantUserIds } : {}),
   }) as ReturnType<typeof buildCreateMeetingPayload>
   return Object.freeze({
-    fingerprint: getSchedulingFingerprint(values),
+    fingerprint: getSchedulingFingerprint(values, schedule),
     payload: frozenPayload,
     schedule: Object.freeze({ ...schedule }),
   })
@@ -1427,15 +1717,15 @@ function isUnresolvedPhase(phase: SubmissionPhase) {
 }
 
 function formatCreationUncertainMessage() {
-  return 'The creation outcome is unknown. The meeting may already exist. Retry creation to replay the exact same request and Idempotency-Key; do not start a different meeting.'
+  return featureValidationMessage('meetings:create_uncertain')
 }
 
 function formatCreationExpiredMessage() {
-  return 'The Core API idempotency retention window may have expired. The original creation cannot be replayed safely from this session, so no second request was sent.'
+  return featureValidationMessage('meetings:create_expired')
 }
 
 function formatSessionChangedMessage() {
-  return 'The authenticated account changed while this meeting operation was unresolved. No recovery request was sent under the new account; sign back in as the original organizer to continue safely.'
+  return featureValidationMessage('meetings:create_accountChanged')
 }
 
 function isDraftStatusRefresh(reason: unknown): reason is Error {

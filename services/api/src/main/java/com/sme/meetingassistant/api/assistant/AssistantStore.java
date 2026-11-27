@@ -22,10 +22,11 @@ class AssistantStore {
                         OffsetDateTime createdAt,OffsetDateTime updatedAt) {
         ConversationView view(){return new ConversationView(id,meetingId,title,status,createdAt,updatedAt);}
     }
+    record Creation(Conversation conversation,String requestDigest){}
     record Turn(UUID id,UUID conversationId,String fingerprint,String key,UUID userMessageId,
                 UUID assistantMessageId,String state,UUID token,OffsetDateTime expiresAt,String scopeVersion){}
     record Message(UUID id,UUID conversationId,String role,String content,String answerStatus,
-                   String claimsJson,OffsetDateTime createdAt){}
+                    String claimsJson,String diagnosticsJson,OffsetDateTime createdAt){}
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
@@ -46,7 +47,7 @@ class AssistantStore {
     private static Message message(ResultSet rs,int row) throws SQLException {
         return new Message(rs.getObject("id",UUID.class),rs.getObject("conversation_id",UUID.class),
             rs.getString("role"),rs.getString("content"),rs.getString("answer_status"),
-            rs.getString("answer_claims"),rs.getObject("created_at",OffsetDateTime.class));
+             rs.getString("answer_claims"),rs.getString("answer_diagnostics"),rs.getObject("created_at",OffsetDateTime.class));
     }
     Conversation require(UUID id,UUID actor,boolean lock) {
         List<Conversation> rows=jdbc.query("""
@@ -63,10 +64,21 @@ class AssistantStore {
         if(rows.isEmpty())throw new ResponseStatusException(HttpStatus.NOT_FOUND);
     }
     Conversation create(UUID id,UUID owner,UUID meeting,String title) {
+        return create(id,owner,meeting,title,null,null);
+    }
+    Conversation create(UUID id,UUID owner,UUID meeting,String title,String keyDigest,String requestDigest) {
         jdbc.update("""
-            INSERT INTO assistant_conversations(id,user_id,meeting_id,title,status)
-            VALUES (?,?,?,?,'ACTIVE')""",id,owner,meeting,title);
+            INSERT INTO assistant_conversations(id,user_id,meeting_id,title,status,
+                creation_key_digest,creation_request_digest)
+            VALUES (?,?,?,?,'ACTIVE',?,?)""",id,owner,meeting,title,keyDigest,requestDigest);
         return require(id,owner,false);
+    }
+    Creation findCreation(UUID owner,String keyDigest){
+        return jdbc.query("""
+            SELECT id,user_id,meeting_id,title,status,created_at,updated_at,creation_request_digest
+              FROM assistant_conversations WHERE user_id=? AND creation_key_digest=?
+            """,(rs,i)->new Creation(conversation(rs,i),rs.getString("creation_request_digest")),
+            owner,keyDigest).stream().findFirst().orElse(null);
     }
     List<ConversationView> list(UUID actor,int page,int size) {
         return jdbc.query("""
@@ -85,11 +97,32 @@ class AssistantStore {
                FROM assistant_turns WHERE conversation_id=? AND idempotency_key=? FOR UPDATE
             """,AssistantStore::turn,conversation,key).stream().findFirst().orElse(null);
     }
+    Turn readTurn(UUID conversation,String key) {
+        return jdbc.query("""
+             SELECT id,conversation_id,request_sha256,idempotency_key,user_message_id,
+                    assistant_message_id,state,claim_token,claim_expires_at,scope_version
+               FROM assistant_turns WHERE conversation_id=? AND idempotency_key=?
+            """,AssistantStore::turn,conversation,key).stream().findFirst().orElse(null);
+    }
     Turn active(UUID conversation) {
         return jdbc.query("""
              SELECT id,conversation_id,request_sha256,idempotency_key,user_message_id,
                     assistant_message_id,state,claim_token,claim_expires_at,scope_version
                FROM assistant_turns WHERE conversation_id=? AND state='PROCESSING' FOR UPDATE
+            """,AssistantStore::turn,conversation).stream().findFirst().orElse(null);
+    }
+    Turn observeByKey(UUID conversation,String key) {
+        return jdbc.query("""
+             SELECT id,conversation_id,request_sha256,idempotency_key,user_message_id,
+                    assistant_message_id,state,claim_token,claim_expires_at,scope_version
+               FROM assistant_turns WHERE conversation_id=? AND idempotency_key=?
+            """,AssistantStore::turn,conversation,key).stream().findFirst().orElse(null);
+    }
+    Turn observePending(UUID conversation) {
+        return jdbc.query("""
+             SELECT id,conversation_id,request_sha256,idempotency_key,user_message_id,
+                    assistant_message_id,state,claim_token,claim_expires_at,scope_version
+               FROM assistant_turns WHERE conversation_id=? AND state='PROCESSING'
             """,AssistantStore::turn,conversation).stream().findFirst().orElse(null);
     }
     Turn findById(UUID id){
@@ -177,16 +210,34 @@ class AssistantStore {
     Message answer(UUID messageId) {
         if(messageId==null)return null;
         return jdbc.query("""
-            SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,created_at
+             SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,
+                    answer_diagnostics::text AS answer_diagnostics,created_at
               FROM assistant_messages WHERE id=?
             """,AssistantStore::message,messageId).stream().findFirst().orElse(null);
     }
-    List<Message> messages(UUID conversation,int page,int size){
+    List<Message> messages(UUID conversation,int offset,int limit){
         List<Message> reversed=jdbc.query("""
-            SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,created_at
+             SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,
+                    answer_diagnostics::text AS answer_diagnostics,created_at
               FROM assistant_messages WHERE conversation_id=?
              ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?
-            """,AssistantStore::message,conversation,size,page*size);
+            """,AssistantStore::message,conversation,limit,offset);
+        Collections.reverse(reversed);
+        return reversed;
+    }
+    List<Message> messagesBefore(UUID conversation,UUID anchorId,int limit) {
+        List<OffsetDateTime> anchors=jdbc.query("""
+            SELECT created_at FROM assistant_messages WHERE conversation_id=? AND id=?
+        """,(rs,i)->rs.getObject(1,OffsetDateTime.class),conversation,anchorId);
+        if(anchors.isEmpty())
+            throw new AssistantDomainException(HttpStatus.NOT_FOUND,"ASSISTANT_HISTORY_ANCHOR_NOT_FOUND",
+                "Assistant history anchor was not found.");
+        List<Message> reversed=jdbc.query("""
+             SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,
+                    answer_diagnostics::text AS answer_diagnostics,created_at
+              FROM assistant_messages WHERE conversation_id=? AND (created_at,id)<(?,?)
+             ORDER BY created_at DESC,id DESC LIMIT ?
+            """,AssistantStore::message,conversation,anchors.getFirst(),anchorId,limit);
         Collections.reverse(reversed);
         return reversed;
     }
@@ -194,11 +245,11 @@ class AssistantStore {
     List<Message> context(UUID conversation,UUID currentTurn) {
         return jdbc.query("""
             SELECT m.id,m.conversation_id,m.role,m.content,m.answer_status,
-                   m.answer_claims::text AS answer_claims,m.created_at
+                    m.answer_claims::text AS answer_claims,m.answer_diagnostics::text AS answer_diagnostics,m.created_at
               FROM assistant_turns t JOIN assistant_messages m
                 ON m.id IN (t.user_message_id,t.assistant_message_id)
              WHERE t.conversation_id=? AND t.state='COMPLETED' AND t.id<>?
-             ORDER BY m.created_at DESC,m.id DESC LIMIT 12
+             ORDER BY m.created_at DESC,m.id DESC LIMIT 6
             """,AssistantStore::message,conversation,currentTurn);
     }
     List<CitationView> citations(UUID messageId){

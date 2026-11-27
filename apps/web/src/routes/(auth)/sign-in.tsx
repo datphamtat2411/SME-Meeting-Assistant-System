@@ -13,6 +13,7 @@ import {
 } from '@/features/auth/session/current-user'
 import { LogoutStatus } from '@/features/auth/session/logout-status'
 import { SessionGate } from '@/features/auth/session/session-gate'
+import { waitForSessionRevalidation } from '@/features/auth/session/session-revalidation'
 import { SignIn } from '@/features/auth/sign-in'
 
 const searchSchema = z.object({
@@ -21,7 +22,10 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute('/(auth)/sign-in')({
   beforeLoad: async ({ context, search }) => {
-    if (isAuthLifecycleBlocking()) return
+    const revalidation = await waitForSessionRevalidation()
+    if (isAuthLifecycleBlocking() || revalidation === 'unauthenticated') return
+    // Explicit sign-in can establish a new context when verification is blocked.
+    if (revalidation === 'denied' || revalidation === 'unavailable') return
 
     let currentUser
 

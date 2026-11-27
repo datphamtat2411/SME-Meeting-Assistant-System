@@ -62,6 +62,7 @@ if TYPE_CHECKING:
         ReconciliationChunkOutcome,
         ReconciliationFlag,
         ReconciliationProvenance,
+        TranscriptReconciliation,
     )
     from sme_meeting_ai.transcription.recovery import (
         RecoveryAttempt,
@@ -231,6 +232,12 @@ class OfflineTranscriptionOutcome:
     evidence: OfflineTranscriptionEvidence
     warnings: tuple[OfflineTranscriptionWarning, ...]
     provenance: OfflineTranscriptionProvenance
+    # The reconciled candidate contains transcript text and is therefore never
+    # part of public evidence. It is retained only for the narrowly-scoped
+    # correction-failure fallback consumed by the worker.
+    _fallback_reconciliation: "TranscriptReconciliation | None" = field(
+        default=None, repr=False, compare=False,
+    )
 
     def __post_init__(self) -> None:
         if self.status is OfflineTranscriptionStatus.FAILED:
@@ -435,6 +442,7 @@ class OfflineTranscriptionPipeline:
         plan = asr = coverage = recovery = reconciliation = result = failure = quality_summary = None
         # These are the only candidate-bearing locals; none enters public output.
         baseline = recovered = reconciled = preprocessing_result = None
+        fallback_reconciliation = None
         strategy = execution = None
         cancellation = None
         try:
@@ -576,6 +584,10 @@ class OfflineTranscriptionPipeline:
                                                self._settings)
             _require(isinstance(corrected, TranscriptCorrectionOutcome))
             if corrected.status is TranscriptCorrectionStatus.FAILED:
+                # A failed correction is the only condition under which the
+                # validated reconciled text may cross to the worker. The
+                # public evidence remains text-free.
+                fallback_reconciliation = reconciled
                 raise _Stopped(OfflineTranscriptionFailure(
                     stage, corrected.failure.category.value.upper(), corrected.failure.attempts, corrected.failure.reason,
                 ))
@@ -639,4 +651,5 @@ class OfflineTranscriptionPipeline:
         )
         return OfflineTranscriptionOutcome(
             status, tuple(completed), result, failure, evidence, published_warnings, provenance,
+            fallback_reconciliation,
         )

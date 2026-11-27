@@ -3,13 +3,19 @@ name: PI Integration CI
 on:
   push:
     branches:
+      - pre-integration-develop
       - 'api/**'
     paths:
+      # Integration evidence must be verified on the same SHA.
+      - 'apps/web/**'
+      - 'apps/mobile/**'
+      - 'docs/integration/**'
       - 'services/api/**'
       - 'requirement-docs/**'
       - '.github/workflows/pi-integration-ci.yml'
   pull_request:
     branches:
+      - pre-integration-develop
       - develop
       - 'api/**'
     paths:

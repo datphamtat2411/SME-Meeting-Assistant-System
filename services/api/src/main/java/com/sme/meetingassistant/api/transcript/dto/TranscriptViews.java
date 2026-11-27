@@ -1,5 +1,6 @@
 package com.sme.meetingassistant.api.transcript.dto;
 
+import com.sme.meetingassistant.api.transcript.service.TranscriptVersionTags;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -10,11 +11,25 @@ public final class TranscriptViews {
             int versionNumber, String languageCode, String status, Long durationMs,
             OffsetDateTime finalizedAt, long contentRevision, List<SegmentView> segments) {}
     public record SegmentView(UUID id, int ordinal, long startMs, long endMs, String text,
-            String qualityStatus, UUID speakerClusterId, String speakerLabel, long version) {}
+            String qualityStatus, UUID speakerClusterId, String speakerLabel, long version,
+            String etag) {
+        /** Compatibility constructor for internal callers predating item ETags. */
+        public SegmentView(UUID id, int ordinal, long startMs, long endMs, String text,
+                String qualityStatus, UUID speakerClusterId, String speakerLabel, long version) {
+            this(id, ordinal, startMs, endMs, text, qualityStatus, speakerClusterId,
+                speakerLabel, version, TranscriptVersionTags.segment(id, version));
+        }
+    }
     public record CoverageView(UUID id, long startMs, long endMs, String coverageStatus,
             boolean recovered, int retryCount) {}
     public record SpeakerView(UUID id, String label, UUID userId, String displayName) {}
     public record CorrectionView(UUID id, String text, String qualityStatus, long version,
-            UUID correctedByUserId, OffsetDateTime correctedAt) {}
+            UUID correctedByUserId, OffsetDateTime correctedAt, String etag) {
+        public CorrectionView(UUID id, String text, String qualityStatus, long version,
+                UUID correctedByUserId, OffsetDateTime correctedAt) {
+            this(id, text, qualityStatus, version, correctedByUserId, correctedAt,
+                TranscriptVersionTags.segment(id, version));
+        }
+    }
     public record SpeakerMappingView(UUID speakerClusterId, UUID userId, String displayName) {}
 }

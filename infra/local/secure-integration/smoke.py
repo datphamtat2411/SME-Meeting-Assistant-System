@@ -98,7 +98,8 @@ def worker(settings, public_url, wrong_cert=None, wrong_key=None):
     path = ("/internal/v1/worker/processing-jobs/11111111-1111-4111-8111-111111111111"
             "/transcription/deliveries/22222222-2222-4222-8222-222222222222")
     spoof = {"X-Service-Identity": "urn:sme:service:ai-worker", "X-Forwarded-Proto": "https",
-             "X-Forwarded-Client-Cert": "URI=urn:sme:service:ai-worker", "Authorization": "Bearer forged"}
+             "X-Forwarded-Client-Cert": "URI=urn:sme:service:ai-worker",
+             "Authorization": "Bearer forged", "X-Request-Id": "secure-transport-smoke-worker"}
     with httpx.Client(verify=tls, trust_env=False, timeout=5) as client:
         result = client.get(settings.core_api_base_url + path, headers=spoof)
         if result.status_code != 404:

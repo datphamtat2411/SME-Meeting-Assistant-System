@@ -9,9 +9,11 @@ There is one canonical dotenv file per logical module:
 | PostgreSQL bootstrap | `infra/local/postgres/.env` |
 | Secure integration bootstrap | `infra/local/secure-integration/.env` |
 | PI-05 orchestration metadata | `infra/local/pi05-isolated/.env` |
-| Web | `apps/web/.env` |
+| Web | `apps/web/.env.local` |
 
-Copy each adjacent `.env.example` once and keep the local files untracked.
+Copy each adjacent `.env.example` once to the module's canonical local file and
+keep the local files untracked. Vite's active Web local override is
+`apps/web/.env.local`.
 Launchers parse literal `KEY=VALUE` entries; they do not execute dotenv files.
 Core receives `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD` only as a launch-time
 mapping from PostgreSQL bootstrap settings. AI launchers map only the selected
@@ -38,3 +40,18 @@ after approved run inputs and certificates exist.
 
 Never place database, broker, storage, AI provider, or private-key values in
 `apps/web/.env`; Vite exposes `VITE_*` values to the browser bundle.
+
+## Progressive meeting intelligence
+
+The existing intelligence stage, budget, and private worker settings still
+control which stages run. Transcript edits enqueue derived-only work; the Core
+scheduler polls pending revisions using `app.media.intelligence.refresh-poll-ms`
+(default `10000`). `APP_MEDIA_INTELLIGENCE_REGENERATION_ENABLED` controls the
+explicit regeneration endpoint, independent of automatic edit synchronization.
+
+Assistant generation still requires configured provider access and the existing
+private Core–AI operation grants, including source verification. Its HTTP
+process can serve conversation and current canonical context while retrieval
+dependencies recover. For a rollout that should add previously excluded
+uncertain segments to existing indexed meetings, reconcile/rebuild through the
+existing knowledge generation administration rather than dropping the collection.

@@ -1349,6 +1349,12 @@ Transcript corrections, access revocation, deletion/retention actions, or source
 
 ### ARCH-RAG-008 — Stale index is detectable
 
+Canonical availability is independent of index availability. Core provides a
+bounded, permission-scoped set of current excerpts and records to the existing
+private Assistant operation. AI verifies those revisions before and after use.
+The HTTP Assistant can start its trust and generation providers before loading
+optional embedding, vector search and reranking dependencies.
+
 Indexed chunks SHOULD include source-version metadata so the system can identify when Qdrant content does not correspond to the current canonical artifact revision.
 
 ### ARCH-RAG-009 — RAG answers are evidence-based derived output

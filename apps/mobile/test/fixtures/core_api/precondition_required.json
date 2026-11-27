@@ -1,0 +1,10 @@
+{
+  "success": false,
+  "code": "PRECONDITION_REQUIRED",
+  "message": "A request precondition is required.",
+  "data": null,
+  "meta": {
+    "requestId": "77777777-7777-4777-8777-777777777777",
+    "timestamp": "2026-11-23T12:06:00Z"
+  }
+}

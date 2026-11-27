@@ -1,6 +1,9 @@
 import { AxiosError } from 'axios'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { CoreApiError } from './core-api'
 import { handleServerError } from './handle-server-error'
+import { i18n, setUiLanguage } from './i18n'
+import { UI_LANGUAGE_STORAGE_KEY } from './i18n/language-preference'
 
 const toastError = vi.hoisted(() => vi.fn())
 
@@ -12,6 +15,11 @@ vi.mock('sonner', () => ({
 
 beforeEach(() => {
   vi.mocked(toastError).mockClear()
+})
+
+afterEach(async () => {
+  await setUiLanguage('en')
+  localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY)
 })
 
 describe('handleServerError', () => {
@@ -39,7 +47,7 @@ describe('handleServerError', () => {
     expect(toastError).toHaveBeenCalledWith('Validation failed')
   })
 
-  it('falls back to the generic message when Axios response has no data.title', () => {
+  it('uses a safe server category when Axios response has no data.title', () => {
     const error = new AxiosError('Request failed')
     error.response = {
       status: 500,
@@ -48,8 +56,45 @@ describe('handleServerError', () => {
 
     handleServerError(error)
 
-    expect(toastError).toHaveBeenCalledWith('Something went wrong!')
+    expect(toastError).toHaveBeenCalledWith(i18n.t('errors:internal'))
   })
+
+  it.each([
+    [401, 'errors:authRequired'],
+    [403, 'errors:forbidden'],
+    [404, 'errors:notFound'],
+    [502, 'errors:serviceUnavailable'],
+    [503, 'errors:serviceUnavailable'],
+    [504, 'errors:gatewayTimeout'],
+    [599, 'errors:internal'],
+  ] as const)(
+    'does not disclose diagnostic titles or messages for HTTP %s',
+    async (status, key) => {
+      const diagnostic = 'Private upstream or account detail'
+      const error = new AxiosError(diagnostic)
+      error.response = {
+        status,
+        data: { title: diagnostic, message: diagnostic },
+      } as AxiosError['response']
+      const coreError = new CoreApiError({
+        status,
+        message: diagnostic,
+        kind: status >= 500 ? 'server' : 'http',
+      })
+
+      for (const language of ['en', 'vi'] as const) {
+        await setUiLanguage(language)
+        handleServerError(error)
+        handleServerError(coreError)
+        expect(toastError).toHaveBeenNthCalledWith(
+          language === 'en' ? 1 : 3,
+          i18n.t(key)
+        )
+        expect(toastError).toHaveBeenLastCalledWith(i18n.t(key))
+      }
+      expect(toastError).not.toHaveBeenCalledWith(diagnostic)
+    }
+  )
 
   it('falls back to the generic message when Axios data.title is an empty string', () => {
     const error = new AxiosError('Bad request')

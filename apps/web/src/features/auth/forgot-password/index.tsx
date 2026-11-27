@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import { useUiTranslation } from '@/lib/i18n'
 import {
   Card,
   CardContent,
@@ -11,31 +12,29 @@ import { AuthLayout } from '../auth-layout'
 import { ForgotPasswordForm } from './components/forgot-password-form'
 
 export function ForgotPassword() {
+  const { t } = useUiTranslation()
   return (
     <AuthLayout>
       <Card className='max-w-sm gap-4 sm:min-w-sm'>
         <CardHeader>
           <CardTitle className='text-lg tracking-tight'>
-            Forgot Password
+            {t('auth:forgotPasswordTitle')}
           </CardTitle>
           <CardDescription>
-            Enter your registered email and <br /> we will send you a link to
-            reset your password.
+            {t('auth:forgotPasswordDescription')}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <ForgotPasswordForm />
         </CardContent>
         <CardFooter>
-          <p className='mx-auto px-8 text-center text-sm text-balance text-muted-foreground'>
-            Don't have an account?{' '}
+          <p className='mx-auto text-center text-sm text-muted-foreground'>
             <Link
-              to='/sign-up'
+              to='/sign-in'
               className='underline underline-offset-4 hover:text-primary'
             >
-              Sign up
+              {t('auth:returnToSignIn')}
             </Link>
-            .
           </p>
         </CardFooter>
       </Card>

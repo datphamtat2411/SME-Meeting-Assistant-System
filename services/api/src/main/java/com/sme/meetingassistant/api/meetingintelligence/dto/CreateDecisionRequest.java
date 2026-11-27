@@ -1,5 +1,6 @@
 package com.sme.meetingassistant.api.meetingintelligence.dto;
 
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -9,5 +10,11 @@ import java.util.UUID;
 /** Manual creation only; official status, actor and timestamps are server-assigned. */
 public record CreateDecisionRequest(
     @NotBlank @Size(max = 5_000) String content,
-    @Size(max = 50) List<@NotNull UUID> evidenceSegmentIds
-) { }
+    @Size(max = 50) List<@NotNull UUID> evidenceSegmentIds,
+    UUID reviewedTranscriptId,
+    @Min(0) Long reviewedContentRevision
+) {
+    public CreateDecisionRequest(String content, List<UUID> evidenceSegmentIds) {
+        this(content, evidenceSegmentIds, null, null);
+    }
+}

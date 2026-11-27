@@ -27,6 +27,14 @@ public class MeetingExportRepository {
         artifact_sha256,artifact_size_bytes,row_version
         """;
 
+    // Shared by worker reconciliation and the public status projection. Backoff
+    // determines when an eligible failure can be requeued, not whether it is final.
+    static final String RETRY_ELIGIBLE = """
+        e.status='FAILED' AND e.generation_attempt < ?
+          AND e.last_error_code IN ('EXPORT_STORAGE_UNAVAILABLE','EXPORT_LEASE_EXPIRED')
+          AND EXISTS (SELECT 1 FROM meeting_export_intakes i WHERE i.export_id=e.id)
+        """;
+
     private final JdbcTemplate jdbc;
     private final int retentionHours;
 
@@ -93,6 +101,39 @@ public class MeetingExportRepository {
         return require(exportId);
     }
 
+    /**
+     * Recovery is lookup-only. A missing/expired receipt is not permission to
+     * enqueue again. Use the same actor, meeting and request digest as admission.
+     */
+    @Transactional(propagation = Propagation.MANDATORY, readOnly = true)
+    public Optional<ExportRecord> recover(UUID actorId, UUID meetingId,
+            ExportFormat format, String rawKey) {
+        String keyDigest = ExportDigests.keyDigest(meetingId, rawKey);
+        String requestDigest = ExportDigests.requestDigest(meetingId, format);
+        List<Receipt> receipts = jdbc.query("""
+            SELECT request_digest,export_id FROM meeting_export_idempotency
+             WHERE actor_user_id=? AND meeting_id=? AND key_digest=?
+               AND expires_at>clock_timestamp()
+            """, (rs, ignored) -> new Receipt(rs.getString(1).trim(),
+                    rs.getObject(2, UUID.class)), actorId, meetingId, keyDigest);
+        if (receipts.isEmpty()) return Optional.empty();
+        if (receipts.size() != 1) throw new IllegalStateException("Duplicate export receipt");
+        Receipt receipt = receipts.getFirst();
+        if (!requestDigest.equals(receipt.requestDigest())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Idempotency-Key belongs to a different export intent");
+        }
+        if (receipt.exportId() == null) {
+            throw new IllegalStateException("Incomplete committed export receipt");
+        }
+        ExportRecord record = require(receipt.exportId());
+        if (!actorId.equals(record.requestedByUserId())
+                || !meetingId.equals(record.meetingId()) || format != record.format()) {
+            throw new IllegalStateException("Export receipt identity mismatch");
+        }
+        return Optional.of(record);
+    }
+
     /** One DB-clock bounded cleanup pass; caller supplies the transaction. */
     @Transactional(propagation = Propagation.MANDATORY)
     public int deleteExpiredIdempotencyReceipts(int limit) {
@@ -124,6 +165,19 @@ public class MeetingExportRepository {
     @Transactional(readOnly = true)
     public ExportRecord require(UUID id) {
         return find(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+    }
+
+    public record StatusObservation(ExportRecord record, boolean retryEligible) { }
+
+    /** Read the generation state and its retry disposition in one DB snapshot. */
+    @Transactional(readOnly = true)
+    public StatusObservation requireStatus(UUID id, int maxAttempts) {
+        return jdbc.query("SELECT " + COLUMNS + ", COALESCE((" + RETRY_ELIGIBLE
+                + "), false) AS retry_eligible FROM meeting_exports e WHERE e.id=?",
+                (rs, row) -> new StatusObservation(map(rs, row),
+                        rs.getBoolean("retry_eligible")), maxAttempts, id)
+                .stream().findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
     }
 
     static ExportRecord map(ResultSet rs, int row) throws SQLException {

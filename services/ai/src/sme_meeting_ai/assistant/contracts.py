@@ -49,6 +49,7 @@ def _tuple_fields(values: object, *names: str) -> object:
 class AssistantAnswerStatus(StrEnum):
     GROUNDED = "GROUNDED"
     PARTIAL = "PARTIAL"
+    CONVERSATIONAL = "CONVERSATIONAL"
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
     FAILED = "FAILED"
 
@@ -76,12 +77,20 @@ class AssistantFailureCategory(StrEnum):
 class GeneratedAnswerStatus(StrEnum):
     GROUNDED = "GROUNDED"
     PARTIAL = "PARTIAL"
+    CONVERSATIONAL = "CONVERSATIONAL"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
 
 
 class AnswerSupport(StrEnum):
     SUPPORTED = "SUPPORTED"
     UNSUPPORTED = "UNSUPPORTED"
     CONFLICTED = "CONFLICTED"
+    GENERAL = "GENERAL"
+    INFERRED = "INFERRED"
+
+    @property
+    def requires_evidence(self) -> bool:
+        return self in {self.SUPPORTED, self.CONFLICTED, self.INFERRED}
 
 
 class ConversationRole(StrEnum):
@@ -103,6 +112,16 @@ class ConversationMessage(StrictModel):
         return ConversationRole(value) if isinstance(value, str) else value
 
 
+class CanonicalContextItem(StrictModel):
+    """Bounded Core projection; verified again before it receives a prompt handle."""
+
+    reference: CanonicalSourceReference
+    authority_class: AuthorityClass = Field(alias="authorityClass")
+    quality_class: QualityClass = Field(alias="qualityClass")
+    source_status: str = Field(alias="sourceStatus", min_length=1, max_length=64)
+    text: SafeText = Field(min_length=1, max_length=2400)
+
+
 class AssistantRequest(StrictModel):
     contract_version: Literal[ASSISTANT_CONTRACT_VERSION] = Field(alias="contractVersion")
     request_id: str = Field(
@@ -116,6 +135,9 @@ class AssistantRequest(StrictModel):
     user_filters: RetrievalFilters = Field(default_factory=RetrievalFilters, alias="userFilters")
     conversation_context: tuple[ConversationMessage, ...] = Field(
         default=(), alias="conversationContext", max_length=ASSISTANT_MAX_CONVERSATION_MESSAGES
+    )
+    canonical_context: tuple[CanonicalContextItem, ...] = Field(
+        default=(), alias="canonicalContext", max_length=8
     )
 
     @model_validator(mode="before")
@@ -146,7 +168,8 @@ class AssistantRequest(StrictModel):
                     "sourceTypes",
                     "source_types",
                 )
-        return _tuple_fields(result, "conversationContext", "conversation_context")
+        return _tuple_fields(result, "conversationContext", "conversation_context",
+                             "canonicalContext", "canonical_context")
 
     @model_validator(mode="after")
     def validate_turn_bound(self) -> Self:
@@ -211,10 +234,8 @@ class AnswerUnit(StrictModel):
             raise ValueError("Answer evidence handles must be unique")
         if any(re.fullmatch(EVIDENCE_HANDLE_PATTERN, handle) is None for handle in self.evidence_handles):
             raise ValueError("Answer evidence handle is malformed")
-        if self.support is AnswerSupport.UNSUPPORTED and self.evidence_handles:
-            raise ValueError("Unsupported answer units cannot cite evidence")
-        if self.support is not AnswerSupport.UNSUPPORTED and not self.evidence_handles:
-            raise ValueError("Supported answer units require evidence")
+        if self.support.requires_evidence != bool(self.evidence_handles):
+            raise ValueError("Evidence handles must match the unit's support")
         if self.support is AnswerSupport.CONFLICTED and len(self.evidence_handles) < 2:
             raise ValueError("Conflicted answer units require representative evidence")
         return self
@@ -241,14 +262,18 @@ class GeneratedAnswer(StrictModel):
     @model_validator(mode="after")
     def validate_answer_status(self) -> Self:
         supports = {unit.support for unit in self.answer_units}
-        if AnswerSupport.SUPPORTED not in supports and AnswerSupport.CONFLICTED not in supports:
-            raise ValueError("Generated answer must contain a supported unit")
-        if self.status is GeneratedAnswerStatus.GROUNDED and AnswerSupport.UNSUPPORTED in supports:
-            raise ValueError("Grounded answer cannot contain unsupported units")
-        if self.status is GeneratedAnswerStatus.PARTIAL and not (
-            AnswerSupport.UNSUPPORTED in supports or AnswerSupport.CONFLICTED in supports
+        if self.status is GeneratedAnswerStatus.CONVERSATIONAL and supports != {AnswerSupport.GENERAL}:
+            raise ValueError("Conversation may contain only general units")
+        if self.status is GeneratedAnswerStatus.INSUFFICIENT_EVIDENCE and (
+            AnswerSupport.UNSUPPORTED not in supports or any(s.requires_evidence for s in supports)
         ):
-            raise ValueError("Partial answer must identify an unsupported or conflicted aspect")
+            raise ValueError("Insufficiency must identify missing information without claims of fact")
+        if self.status is GeneratedAnswerStatus.GROUNDED and supports - {
+            AnswerSupport.SUPPORTED, AnswerSupport.CONFLICTED
+        }:
+            raise ValueError("Grounded answers may contain only supported or conflicting facts")
+        if self.status is GeneratedAnswerStatus.PARTIAL and not any(s.requires_evidence for s in supports):
+            raise ValueError("Partial answers require some meeting evidence")
         if self.conflict_detected and AnswerSupport.CONFLICTED not in supports:
             raise ValueError("Conflict indicator requires a conflicted answer unit")
         return self
@@ -265,10 +290,10 @@ class EvidenceContextItem(StrictModel):
     handle: str = Field(pattern=CONTEXT_EVIDENCE_HANDLE_PATTERN)
     rank: int = Field(ge=1, le=8)
     chunk_id: str = Field(alias="chunkId", min_length=1, max_length=128)
-    snapshot_id: Uuid = Field(alias="snapshotId")
+    snapshot_id: Uuid | None = Field(default=None, alias="snapshotId")
     source_identity: CanonicalSourceIdentity = Field(alias="sourceIdentity")
     source_revision: SourceRevision = Field(alias="sourceRevision")
-    source_type: Literal["TRANSCRIPT", "DECISION", "SUMMARY", "ACTION_ITEM"] = Field(alias="sourceType")
+    source_type: Literal["TRANSCRIPT", "DECISION", "SUMMARY", "ACTION_ITEM", "MEETING"] = Field(alias="sourceType")
     authority_class: AuthorityClass = Field(alias="authorityClass")
     quality_class: QualityClass = Field(alias="qualityClass")
     source_status: str = Field(alias="sourceStatus", min_length=1, max_length=64)
@@ -306,7 +331,8 @@ class EvidenceContextItem(StrictModel):
 class GroundingContext(StrictModel):
     question: SafeText = Field(min_length=1, max_length=ASSISTANT_QUERY_MAX_CHARACTERS)
     conversation: tuple[ConversationMessage, ...] = Field(default=(), max_length=6)
-    evidence: tuple[EvidenceContextItem, ...] = Field(min_length=1, max_length=8)
+    evidence: tuple[EvidenceContextItem, ...] = Field(default=(), max_length=8)
+    context_limitation: str | None = Field(default=None, alias="contextLimitation", max_length=96)
     estimated_input_tokens: int = Field(alias="estimatedInputTokens", ge=1)
     max_input_tokens: int = Field(alias="maxInputTokens", ge=1)
     max_output_tokens: int = Field(alias="maxOutputTokens", ge=1)
@@ -376,10 +402,8 @@ class AnswerClaim(StrictModel):
             raise ValueError("Claim citations must be unique")
         if any(re.fullmatch(r"^C[1-9][0-9]{0,2}$", citation) is None for citation in self.citation_ids):
             raise ValueError("Claim citation identifier is malformed")
-        if self.support is AnswerSupport.UNSUPPORTED and self.citation_ids:
-            raise ValueError("Unsupported claim cannot cite evidence")
-        if self.support is not AnswerSupport.UNSUPPORTED and not self.citation_ids:
-            raise ValueError("Supported claim requires citations")
+        if self.support.requires_evidence != bool(self.citation_ids):
+            raise ValueError("Citations must match the claim's support")
         return self
 
 
@@ -402,6 +426,13 @@ class AssistantDiagnostics(StrictModel):
     contextualized: bool = False
     estimated_input_tokens: int | None = Field(default=None, ge=0, alias="estimatedInputTokens")
     generation_attempts: int = Field(default=0, ge=0, le=3, alias="generationAttempts")
+    context_limitation: str | None = Field(default=None, alias="contextLimitation", max_length=96)
+    source_dependencies: tuple[CanonicalSourceReference, ...] = Field(default=(), alias="sourceDependencies", max_length=8)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_json_arrays(cls, values: object) -> object:
+        return _tuple_fields(values, "sourceDependencies", "source_dependencies")
 
 
 class AssistantAnswer(StrictModel):
@@ -440,7 +471,7 @@ class AssistantAnswer(StrictModel):
         known_citations = set(citation_ids)
         if any(citation not in known_citations for claim in self.claims for citation in claim.citation_ids):
             raise ValueError("Answer claim references an unknown citation")
-        if self.status in {AssistantAnswerStatus.GROUNDED, AssistantAnswerStatus.PARTIAL}:
+        if self.status is not AssistantAnswerStatus.FAILED and self.model_provenance is not None:
             if (
                 not self.answer
                 or not self.claims
@@ -449,10 +480,17 @@ class AssistantAnswer(StrictModel):
                 or self.scope_id is None
             ):
                 raise ValueError("Successful Assistant answers require claims and provenance")
-            if self.status is AssistantAnswerStatus.GROUNDED and any(
-                claim.support is AnswerSupport.UNSUPPORTED for claim in self.claims
-            ):
-                raise ValueError("Grounded Assistant answers cannot contain unsupported claims")
+            GeneratedAnswer(
+                status=self.status.value,
+                answerUnits=tuple(AnswerUnit(
+                    text=claim.text, support=claim.support,
+                    evidenceHandles=tuple(f"E{i}" for i, _ in enumerate(claim.citation_ids, 1)),
+                ) for claim in self.claims),
+            )
+            if self.answer != "\n\n".join(claim.text for claim in self.claims):
+                raise ValueError("Answer text must match its validated units")
+            if known_citations != {citation for claim in self.claims for citation in claim.citation_ids}:
+                raise ValueError("Answer has unreferenced citations")
         elif self.status is AssistantAnswerStatus.INSUFFICIENT_EVIDENCE:
             if (
                 not self.answer
@@ -465,6 +503,8 @@ class AssistantAnswer(StrictModel):
         elif self.status is AssistantAnswerStatus.FAILED:
             if self.answer is not None or self.claims or self.citations or not self.failures:
                 raise ValueError("Failed Assistant responses cannot contain an answer")
+        else:
+            raise ValueError("Generated replies require model provenance")
         return self
 
 

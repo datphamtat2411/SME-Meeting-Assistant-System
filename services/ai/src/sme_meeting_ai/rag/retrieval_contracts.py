@@ -119,12 +119,12 @@ class RetrievalCandidate(StrictModel):
         if self.index_generation.tokenizer_id != self.embedding_compatibility.tokenizer_id:
             raise ValueError("Candidate tokenizer does not match embedding compatibility")
         expected_authority = {
-            "TRANSCRIPT": "PRIMARY_TRANSCRIPT",
-            "DECISION": "CONFIRMED_DECISION",
-            "SUMMARY": "SECONDARY_APPROVED_SUMMARY",
-            "ACTION_ITEM": "OFFICIAL_ACTION_ITEM",
+            "TRANSCRIPT": {"PRIMARY_TRANSCRIPT"},
+            "DECISION": {"CONFIRMED_DECISION"},
+            "SUMMARY": {"SECONDARY_APPROVED_SUMMARY", "PROVISIONAL_SUMMARY"},
+            "ACTION_ITEM": {"OFFICIAL_ACTION_ITEM"},
         }[self.provenance.source_type]
-        if self.provenance.authority_class != expected_authority:
+        if self.provenance.authority_class not in expected_authority:
             raise ValueError("Candidate source authority is incompatible with its source type")
         return self
 
@@ -192,7 +192,7 @@ class RetrievalEvidence(StrictModel):
     provenance: ChunkProvenance
     source_verification: SourceVerification = Field(alias="sourceVerification")
     rrf_score: float = Field(alias="rrfScore")
-    reranker_score: float = Field(alias="rerankerScore")
+    reranker_score: float | None = Field(alias="rerankerScore")
     reranker_input_truncated: bool = Field(alias="rerankerInputTruncated")
     verification_status: Literal["AUTHORITATIVELY_VERIFIED"] = Field(
         default="AUTHORITATIVELY_VERIFIED", alias="verificationStatus"
@@ -204,7 +204,9 @@ class RetrievalEvidence(StrictModel):
             raise ValueError("Evidence point and chunk identities must match")
         if self.source_verification.status != "CURRENT":
             raise ValueError("Evidence must refer to a current source")
-        if not math.isfinite(self.rrf_score) or not math.isfinite(self.reranker_score):
+        if not math.isfinite(self.rrf_score) or (
+            self.reranker_score is not None and not math.isfinite(self.reranker_score)
+        ):
             raise ValueError("Evidence scores must be finite")
         if self.source_verification.source_identity != self.provenance.source_identity:
             raise ValueError("Evidence source verification identity mismatch")

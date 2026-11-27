@@ -86,6 +86,24 @@ def test_raw_and_failed_outcomes_never_serialize(workflow):
             map_result(value, h.settings, **binding(h))
 
 
+def test_correction_failure_can_publish_only_reconciled_evidence(workflow):
+    h = workflow()
+    h.source = replace(h.source, source_id=str(uuid4()))
+
+    def unavailable(request):
+        raise RuntimeError("controlled provider outage")
+
+    h.correction_callback = unavailable
+    outcome = pipeline(h).run(h.source)
+    result = validate_result_bytes(map_result(outcome, h.settings, **binding(h)))
+    assert result.correctionProof.contextScope == "RECONCILED_FALLBACK"
+    assert result.pipelineStatus == "COMPLETED_WITH_WARNINGS"
+    assert [segment.text for segment in result.segments] == [
+        segment.text for segment in outcome._fallback_reconciliation.segments
+    ]
+    assert all(not hasattr(segment, "text") for segment in outcome.evidence.reconciliation.segments)
+    assert {model.role for model in result.provenance.models} == {"ASR"}
+
 @pytest.mark.parametrize("mutation", ["unknown", "digest", "empty", "unicode", "status", "timing", "warning", "provenance"])
 def test_result_validation_fails_closed(workflow, mutation):
     h = workflow()

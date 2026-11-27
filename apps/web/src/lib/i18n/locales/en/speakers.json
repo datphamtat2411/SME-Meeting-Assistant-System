@@ -1,0 +1,15 @@
+{
+  "notAuthorized": "Speaker mapping is no longer authorized.",
+  "reloadTranscript": "Reload the canonical transcript before changing speaker mapping.",
+  "mapped": "Speaker identity updated",
+  "mapFailed": "Unable to map speaker",
+  "title": "Speaker identification",
+  "description": "Speaker labels are AI-derived until mapped to an eligible user by a reviewer.",
+  "empty": "No speakers detected",
+  "unconfirmed": "Identity not confirmed",
+  "map": "Map",
+  "unmap": "Unmap",
+  "searchLabel": "Search eligible users",
+  "searchPlaceholder": "Search name or email (2+ characters)",
+  "search": "Search"
+}

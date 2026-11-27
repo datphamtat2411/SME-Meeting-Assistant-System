@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   createMemoryHistory,
   createRootRoute,
@@ -13,14 +15,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
 import { getCookie } from '@/lib/cookies'
+import { CoreApiError, coreApi } from '@/lib/core-api'
+import {
+  beginRequestRecoveryLogout,
+  resetRequestRecoveryState,
+} from '@/lib/request-recovery'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
 import { navigationGroups } from '@/components/layout/data/navigation-data'
 import type { NavItem } from '@/components/layout/types'
+import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import { AccountForm } from './account/account-form'
 import { AppearanceForm } from './appearance/appearance-form'
 import { SidebarNav } from './components/sidebar-nav'
 import { NotificationsForm } from './notifications/notifications-form'
+import { preferencesQueryKey } from './preferences-api'
+import { profileQueryKey } from './profile/profile-api'
 import { ProfileForm } from './profile/profile-form'
 
 const showSubmittedData = vi.hoisted(() => vi.fn())
@@ -68,10 +78,53 @@ function createSettingsRouter(initialPath: string) {
   })
 }
 
+const profile = {
+  id: '11111111-1111-4111-8111-111111111111',
+  email: 'employee@example.com',
+  displayName: 'Employee One',
+  globalRole: 'EMPLOYEE' as const,
+  accountStatus: 'ACTIVE' as const,
+  primaryOrgUnitId: null,
+}
+
+const preferences = {
+  timezone: 'Asia/Ho_Chi_Minh',
+  locale: 'vi-VN',
+  meetingEmailEnabled: true,
+  actionItemEmailEnabled: false,
+}
+
+function mockSettingsReads() {
+  vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+    data: profile,
+    etag: '"profile-v1"',
+    meta: {},
+  })
+  return vi.spyOn(coreApi, 'get').mockImplementation((url) => {
+    if (url === '/me/preferences') return Promise.resolve(preferences) as never
+    return Promise.reject(new Error('Unexpected GET: ' + url)) as never
+  })
+}
+
+async function renderApiSettings(children: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, staleTime: 10_000 },
+      mutations: { retry: false },
+    },
+  })
+  const screen = await render(
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  )
+  return { screen, queryClient }
+}
+
 describe('settings navigation and cleanup', () => {
   beforeEach(() => {
     clearCookies()
+    vi.restoreAllMocks()
     vi.clearAllMocks()
+    resetRequestRecoveryState()
   })
 
   it('exposes supported settings destinations without legacy template routes', () => {
@@ -133,30 +186,39 @@ describe('settings navigation and cleanup', () => {
     )
   })
 
-  it('replaces fixture settings forms with truthful unavailable states', async () => {
-    const rootRoute = createRootRoute({
-      component: () => (
-        <>
-          <ProfileForm />
-          <AccountForm />
-          <NotificationsForm />
-        </>
-      ),
-    })
-    const route = createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/',
-      component: () => null,
-    })
-    const router = createRouter({
-      routeTree: rootRoute.addChildren([route]),
-      history: createMemoryHistory({ initialEntries: ['/'] }),
-    })
-    const screen = await render(<RouterProvider router={router} />)
+  it('loads profile and preferences from the Core API instead of fixture fields', async () => {
+    const get = mockSettingsReads()
+    const { screen } = await renderApiSettings(
+      <>
+        <ProfileForm />
+        <AccountForm />
+        <NotificationsForm />
+      </>
+    )
 
     await expect
-      .element(screen.getByText(/not available in this workspace/i).first())
-      .toBeInTheDocument()
+      .element(screen.getByRole('textbox', { name: 'Display name' }))
+      .toHaveValue('Employee One')
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Organization email' }))
+      .toHaveValue('employee@example.com')
+    await expect
+      .element(screen.getByRole('combobox', { name: 'Time zone' }))
+      .toHaveTextContent('Asia/Ho Chi Minh')
+    await expect
+      .element(screen.getByRole('combobox', { name: 'Regional format' }))
+      .toHaveTextContent('vi-VN')
+    await expect
+      .element(screen.getByRole('switch', { name: 'Meeting emails' }))
+      .toHaveAttribute('aria-checked', 'true')
+    await expect
+      .element(screen.getByRole('switch', { name: 'Action item emails' }))
+      .toHaveAttribute('aria-checked', 'false')
+    expect(coreApi.getWithMetaAndEtag).toHaveBeenCalledWith(
+      '/me/profile',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
+    expect(get.mock.calls.map(([url]) => url)).toContain('/me/preferences')
     await expect.element(screen.getByText('Username')).not.toBeInTheDocument()
     await expect
       .element(screen.getByText('Date of birth'))
@@ -164,6 +226,476 @@ describe('settings navigation and cleanup', () => {
     await expect
       .element(screen.getByText('Marketing emails'))
       .not.toBeInTheDocument()
+  })
+
+  it('saves profile changes through the API and invalidates identity data', async () => {
+    mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patchWithMetaAndEtag')
+    patch.mockImplementation((url, value) => {
+      if (url === '/me/profile') {
+        return Promise.resolve({
+          data: {
+            ...profile,
+            displayName: (value as { displayName: string }).displayName,
+          },
+          etag: '"profile-v2"',
+          meta: {},
+        }) as never
+      }
+      return Promise.reject(new Error('Unexpected PATCH: ' + url)) as never
+    })
+    const { screen, queryClient } = await renderApiSettings(<ProfileForm />)
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const name = screen.getByRole('textbox', { name: 'Display name' })
+    const save = screen.getByRole('button', { name: 'Save profile' })
+
+    await expect.element(name).toHaveValue(profile.displayName)
+    await expect.element(save).toBeDisabled()
+    await userEvent.fill(name, 'Updated Employee')
+    await expect.element(save).toBeEnabled()
+    await userEvent.click(save)
+
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenCalledWith(
+        '/me/profile',
+        { displayName: 'Updated Employee' },
+        { headers: { 'If-Match': '"profile-v1"' } }
+      )
+    )
+    await vi.waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: currentUserQueryKey,
+      })
+    )
+    expect(showSubmittedData).not.toHaveBeenCalled()
+  })
+
+  it('preserves a dirty profile and requires review after a stale update', async () => {
+    const read = vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: profile,
+      etag: '"profile-v1"',
+      meta: {},
+    })
+    const latest = { ...profile, displayName: 'Changed elsewhere' }
+    const patch = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockImplementationOnce(async () => {
+        read.mockResolvedValue({
+          data: latest,
+          etag: '"profile-v2"',
+          meta: {},
+        })
+        throw new CoreApiError({
+          message: 'Stale profile',
+          status: 412,
+          kind: 'http',
+        })
+      })
+      .mockResolvedValueOnce({
+        data: { ...profile, displayName: 'My draft' },
+        etag: '"profile-v3"',
+        meta: {},
+      })
+    const { screen } = await renderApiSettings(<ProfileForm />)
+    const name = screen.getByRole('textbox', { name: 'Display name' })
+    const save = screen.getByRole('button', { name: 'Save profile' })
+    await expect.element(name).toHaveValue(profile.displayName)
+    await userEvent.fill(name, 'My draft')
+    await userEvent.click(save)
+    await expect.element(name).toHaveValue('My draft')
+    await expect
+      .element(screen.getByText('Latest retrieved name: Changed elsewhere'))
+      .toBeVisible()
+    await expect.element(save).toBeDisabled()
+    expect(patch).toHaveBeenCalledTimes(1)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Keep my draft against this version' })
+    )
+    await expect.element(save).toBeEnabled()
+    await userEvent.click(save)
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenLastCalledWith(
+        '/me/profile',
+        { displayName: 'My draft' },
+        { headers: { 'If-Match': '"profile-v2"' } }
+      )
+    )
+  })
+
+  it('persists account preferences and notification switches through the API', async () => {
+    const get = mockSettingsReads()
+    let saved = { ...preferences }
+    get.mockImplementation(() => Promise.resolve(saved) as never)
+    const patch = vi.spyOn(coreApi, 'patch')
+    patch.mockImplementation((url, value) => {
+      if (url === '/me/preferences') {
+        saved = { ...saved, ...(value as object) }
+        return Promise.resolve(saved) as never
+      }
+      return Promise.reject(new Error('Unexpected PATCH: ' + url)) as never
+    })
+    const { screen, queryClient } = await renderApiSettings(
+      <>
+        <AccountForm />
+        <NotificationsForm />
+      </>
+    )
+    const locale = screen.getByRole('combobox', { name: 'Regional format' })
+
+    await expect.element(locale).toHaveTextContent('vi-VN')
+    await userEvent.click(locale)
+    await userEvent.click(screen.getByRole('option', { name: /en-US/ }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save preferences' })
+    )
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/me/preferences', {
+        locale: 'en-US',
+      })
+    )
+    await vi.waitFor(() =>
+      expect(queryClient.getQueryData(['me', 'preferences'])).toMatchObject({
+        locale: 'en-US',
+      })
+    )
+
+    const actionEmails = screen.getByRole('switch', {
+      name: 'Action item emails',
+    })
+    await expect.element(actionEmails).toHaveAttribute('aria-checked', 'false')
+    await userEvent.click(actionEmails)
+    await expect.element(actionEmails).toHaveAttribute('aria-checked', 'true')
+    expect(patch).toHaveBeenCalledTimes(1)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save notifications' })
+    )
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/me/preferences', {
+        actionItemEmailEnabled: true,
+      })
+    )
+    await expect.element(actionEmails).toHaveAttribute('aria-checked', 'true')
+    expect(showSubmittedData).not.toHaveBeenCalled()
+  })
+
+  it('discards notification drafts and sends only deliberately changed flags', async () => {
+    const get = mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patch').mockImplementation(async () => {
+      const saved = { ...preferences, meetingEmailEnabled: false }
+      get.mockResolvedValue(saved)
+      return saved as never
+    })
+    const { screen } = await renderApiSettings(<NotificationsForm />)
+    const meeting = screen.getByRole('switch', { name: 'Meeting emails' })
+    const save = screen.getByRole('button', { name: 'Save notifications' })
+    const discard = screen.getByRole('button', { name: 'Discard' })
+
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'true')
+    await expect.element(save).toBeDisabled()
+    await userEvent.click(meeting)
+    await expect.element(save).toBeEnabled()
+    await userEvent.click(discard)
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'true')
+    await expect.element(save).toBeDisabled()
+    expect(patch).not.toHaveBeenCalled()
+
+    await userEvent.click(meeting)
+    await userEvent.click(save)
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/me/preferences', {
+        meetingEmailEnabled: false,
+      })
+    )
+    await expect.element(save).toBeDisabled()
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'false')
+    await expect
+      .element(screen.getByText('Account and security emails'))
+      .toBeVisible()
+  })
+
+  it('reconciles notification drafts with confirmed preference changes', async () => {
+    mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patch')
+    const { screen, queryClient } = await renderApiSettings(
+      <NotificationsForm />
+    )
+    const meeting = screen.getByRole('switch', { name: 'Meeting emails' })
+    const action = screen.getByRole('switch', { name: 'Action item emails' })
+    const save = screen.getByRole('button', { name: 'Save notifications' })
+
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'true')
+    await userEvent.click(meeting)
+    queryClient.setQueryData(preferencesQueryKey, {
+      ...preferences,
+      actionItemEmailEnabled: true,
+      locale: 'en-US',
+    })
+    await expect.element(action).toHaveAttribute('aria-checked', 'true')
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'false')
+    await expect.element(save).toBeEnabled()
+
+    queryClient.setQueryData(preferencesQueryKey, {
+      ...preferences,
+      meetingEmailEnabled: false,
+      actionItemEmailEnabled: true,
+    })
+    await expect.element(save).toBeDisabled()
+    queryClient.setQueryData(preferencesQueryKey, preferences)
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'true')
+    await expect.element(save).toBeDisabled()
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('reconciles an uncertain notification write without replaying it', async () => {
+    const get = mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patch').mockImplementation(async () => {
+      get.mockResolvedValue({ ...preferences, meetingEmailEnabled: false })
+      throw new CoreApiError({ message: 'Connection lost', kind: 'network' })
+    })
+    const { screen } = await renderApiSettings(<NotificationsForm />)
+    const meeting = screen.getByRole('switch', { name: 'Meeting emails' })
+    const save = screen.getByRole('button', { name: 'Save notifications' })
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'true')
+    await userEvent.click(meeting)
+    await userEvent.click(save)
+    const refresh = screen.getByRole('button', {
+      name: 'Refresh saved preferences',
+    })
+    await expect.element(refresh).toBeEnabled()
+    await expect.element(save).toBeDisabled()
+    await userEvent.click(refresh)
+    await expect.element(refresh).not.toBeInTheDocument()
+    await expect.element(meeting).toHaveAttribute('aria-checked', 'false')
+    await expect.element(save).toBeDisabled()
+    expect(patch).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves the reviewed ETag when a dirty profile is refreshed', async () => {
+    mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patchWithMetaAndEtag')
+    const { screen, queryClient } = await renderApiSettings(<ProfileForm />)
+    const name = screen.getByRole('textbox', { name: 'Display name' })
+    const save = screen.getByRole('button', { name: 'Save profile' })
+
+    await expect.element(name).toHaveValue(profile.displayName)
+    await userEvent.fill(name, 'My draft')
+    queryClient.setQueryData(profileQueryKey, {
+      profile: { ...profile, displayName: 'Remote edit' },
+      etag: '"profile-v2"',
+    })
+    await expect.element(name).toHaveValue('My draft')
+    await expect.element(save).toBeDisabled()
+    await expect
+      .element(screen.getByText('Latest retrieved name: Remote edit'))
+      .toBeVisible()
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it.each([428, 503])(
+    'requires review after a profile update returns %i',
+    async (status) => {
+      mockSettingsReads()
+      const patch = vi.spyOn(coreApi, 'patchWithMetaAndEtag').mockRejectedValue(
+        new CoreApiError({
+          message: 'Update could not be confirmed',
+          status,
+          kind: status === 503 ? 'server' : 'http',
+        })
+      )
+      const { screen } = await renderApiSettings(<ProfileForm />)
+      const name = screen.getByRole('textbox', { name: 'Display name' })
+      const save = screen.getByRole('button', { name: 'Save profile' })
+
+      await expect.element(name).toHaveValue(profile.displayName)
+      await userEvent.fill(name, 'Unconfirmed draft')
+      await userEvent.click(save)
+      await expect
+        .element(
+          screen.getByRole('button', {
+            name: 'Keep my draft against this version',
+          })
+        )
+        .toBeEnabled()
+      await expect.element(name).toHaveValue('Unconfirmed draft')
+      await expect.element(save).toBeDisabled()
+      expect(patch).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('clears a converged Account draft and follows later server updates', async () => {
+    mockSettingsReads()
+    const { screen, queryClient } = await renderApiSettings(<AccountForm />)
+    const locale = screen.getByRole('combobox', { name: 'Regional format' })
+    const save = screen.getByRole('button', { name: 'Save preferences' })
+
+    await expect.element(locale).toHaveTextContent('vi-VN')
+    await userEvent.click(locale)
+    await userEvent.click(screen.getByRole('option', { name: /en-US/ }))
+    await expect.element(save).toBeEnabled()
+    queryClient.setQueryData(preferencesQueryKey, {
+      ...preferences,
+      locale: 'en-US',
+      timezone: 'Asia/Tokyo',
+    })
+    await expect.element(save).toBeDisabled()
+    await expect
+      .element(screen.getByRole('combobox', { name: 'Time zone' }))
+      .toHaveTextContent('Asia/Tokyo')
+
+    queryClient.setQueryData(preferencesQueryKey, {
+      ...preferences,
+      locale: 'ja-JP',
+      timezone: 'Asia/Tokyo',
+    })
+    await expect.element(locale).toHaveTextContent('ja-JP')
+    await expect.element(save).toBeDisabled()
+  })
+
+  it('clears a timezone using the keyboard-accessible regional picker', async () => {
+    const get = mockSettingsReads()
+    const saved = { ...preferences, timezone: null }
+    const patch = vi.spyOn(coreApi, 'patch').mockImplementation(async () => {
+      get.mockResolvedValue(saved)
+      return saved as never
+    })
+    const { screen } = await renderApiSettings(<AccountForm />)
+    const timezone = screen.getByRole('combobox', { name: 'Time zone' })
+    await expect.element(timezone).toHaveTextContent('Asia/Ho Chi Minh')
+    await userEvent.click(timezone)
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Time zone options' }))
+      .toBeVisible()
+    const search = screen.getByRole('combobox', { name: 'Search time zone' })
+    await userEvent.fill(search, 'browser default')
+    await expect
+      .element(screen.getByRole('option', { name: 'Use browser default' }))
+      .toBeVisible()
+    await userEvent.keyboard('{Enter}')
+    await expect.element(timezone).toHaveTextContent('Use browser default')
+    await expect.element(timezone).toHaveFocus()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save preferences' })
+    )
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/me/preferences', { timezone: null })
+    )
+  })
+
+  it('reconciles an uncertain Account save without replaying it', async () => {
+    const get = mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patch').mockImplementation(async () => {
+      get.mockResolvedValue({ ...preferences, locale: 'en-US' })
+      throw new CoreApiError({ message: 'Connection lost', kind: 'network' })
+    })
+    const { screen } = await renderApiSettings(<AccountForm />)
+    const locale = screen.getByRole('combobox', { name: 'Regional format' })
+    const save = screen.getByRole('button', { name: 'Save preferences' })
+    await expect.element(locale).toHaveTextContent('vi-VN')
+    await userEvent.click(locale)
+    await userEvent.click(screen.getByRole('option', { name: /en-US/ }))
+    await userEvent.click(save)
+    const refresh = screen.getByRole('button', {
+      name: 'Refresh saved preferences',
+    })
+    await expect.element(refresh).toBeEnabled()
+    await expect.element(save).toBeDisabled()
+    await userEvent.click(refresh)
+    await expect.element(refresh).not.toBeInTheDocument()
+    await expect.element(locale).toHaveTextContent('en-US')
+    await expect.element(save).toBeDisabled()
+    expect(patch).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not begin profile recovery reads after a session boundary', async () => {
+    mockSettingsReads()
+    const get = vi.mocked(coreApi.getWithMetaAndEtag)
+    vi.spyOn(coreApi, 'patchWithMetaAndEtag').mockRejectedValue(
+      new CoreApiError({ message: 'Stale profile', status: 412, kind: 'http' })
+    )
+    const { screen, queryClient } = await renderApiSettings(<ProfileForm />)
+    const name = screen.getByRole('textbox', { name: 'Display name' })
+    const save = screen.getByRole('button', { name: 'Save profile' })
+    await expect.element(name).toHaveValue(profile.displayName)
+    const cancel = queryClient.cancelQueries.bind(queryClient)
+    const cancellation = vi
+      .spyOn(queryClient, 'cancelQueries')
+      .mockImplementationOnce(cancel)
+      .mockImplementationOnce(async (filters, options) => {
+        await cancel(filters, options)
+        beginRequestRecoveryLogout()
+        resetRequestRecoveryState()
+      })
+
+    await userEvent.fill(name, 'My draft')
+    await userEvent.click(save)
+    await vi.waitFor(() => expect(cancellation).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(queryClient.isMutating()).toBe(0))
+    expect(get).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not begin Account recovery reads after a session boundary', async () => {
+    const get = mockSettingsReads()
+    vi.spyOn(coreApi, 'patch').mockRejectedValue(
+      new CoreApiError({ message: 'Connection lost', kind: 'network' })
+    )
+    const { screen, queryClient } = await renderApiSettings(<AccountForm />)
+    const locale = screen.getByRole('combobox', { name: 'Regional format' })
+    await expect.element(locale).toHaveTextContent('vi-VN')
+    await userEvent.click(locale)
+    await userEvent.click(screen.getByRole('option', { name: /en-US/ }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save preferences' })
+    )
+    const refresh = screen.getByRole('button', {
+      name: 'Refresh saved preferences',
+    })
+    await expect.element(refresh).toBeEnabled()
+    const readsBeforeRecovery = get.mock.calls.length
+    const cancel = queryClient.cancelQueries.bind(queryClient)
+    const cancellation = vi
+      .spyOn(queryClient, 'cancelQueries')
+      .mockImplementationOnce(async (filters, options) => {
+        await cancel(filters, options)
+        beginRequestRecoveryLogout()
+        resetRequestRecoveryState()
+      })
+
+    await userEvent.click(refresh)
+    await vi.waitFor(() => expect(cancellation).toHaveBeenCalledTimes(1))
+    await expect.element(refresh).toBeEnabled()
+    expect(get).toHaveBeenCalledTimes(readsBeforeRecovery)
+  })
+
+  it('shows an API failure and supports a real retry instead of hiding it', async () => {
+    const get = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockRejectedValueOnce(
+        new CoreApiError({
+          message: 'Profile service unavailable',
+          status: 503,
+          code: 'SERVICE_UNAVAILABLE',
+          kind: 'server',
+        })
+      )
+      .mockResolvedValueOnce({ data: profile, etag: '"profile-v1"', meta: {} })
+    const { screen } = await renderApiSettings(<ProfileForm />)
+
+    await expect
+      .element(screen.getByRole('alert'))
+      .toHaveTextContent(
+        'The service is temporarily unavailable. Please try again later.'
+      )
+    await expect
+      .element(screen.getByText('Profile service unavailable'))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Display name' }))
+      .not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Display name' }))
+      .toHaveValue(profile.displayName)
+    expect(get).toHaveBeenCalledTimes(2)
   })
 
   it('preserves local Appearance preferences without generic submission messaging', async () => {

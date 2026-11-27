@@ -327,16 +327,59 @@ def test_uncertainty_metadata_cannot_append_ungrounded_user_visible_facts():
     assert "Ban lãnh đạo đã phê duyệt ngân sách mới" not in result.answer
 
 
-def test_insufficient_retrieval_never_invokes_generation():
+def _uncited_generation(status="CONVERSATIONAL", support="GENERAL"):
+    return GenerationResult(
+        answer={
+            "status": status,
+            "answerUnits": ({"text": "Tôi có thể giúp bạn tìm hiểu thêm.", "support": support},),
+        },
+        provenance=_generation().provenance,
+    )
+
+
+def test_insufficient_retrieval_still_invokes_generation():
     scope = _scope(str(uuid4()))
     retrieval = FakeRetrieval(_retrieval_result(scope), scope)
-    generator = FakeGenerator(_generation())
+    generator = FakeGenerator(_uncited_generation("INSUFFICIENT_EVIDENCE", "UNSUPPORTED"))
 
     result = asyncio.run(_orchestrator(retrieval, generator).answer(_request(scope)))
 
     assert result.status is AssistantAnswerStatus.INSUFFICIENT_EVIDENCE
-    assert generator.calls == []
+    assert len(generator.calls) == 1
+    assert generator.calls[0][0].evidence == ()
     assert result.citations == ()
+
+
+@pytest.mark.parametrize("question", ("Xin chào.", "Bạn có thể làm gì?", "RAG là gì?"))
+def test_general_turn_does_not_require_retrieval(question):
+    scope = _scope(str(uuid4()))
+    retrieval = FakeRetrieval(_retrieval_result(scope), scope)
+    generator = FakeGenerator(_uncited_generation())
+
+    result = asyncio.run(_orchestrator(retrieval, generator).answer(_request(scope, question)))
+
+    assert result.status is AssistantAnswerStatus.CONVERSATIONAL
+    assert result.citations == ()
+    assert len(generator.calls) == 1
+    assert retrieval.calls == []
+
+
+@pytest.mark.parametrize("question", (
+    "Cuộc họp này nói về vấn đề gì?", "Cuộc họp này này nói về gì?",
+    "Tóm tắt cuộc họp này.", "Viết email tổng hợp nội dung cuộc họp.",
+    "Ai phụ trách phần frontend?", "Theo mày nên ưu tiên làm gì?",
+))
+def test_first_turn_uses_selected_meeting(question):
+    evidence = _evidence("Minh phụ trách frontend; mục tiêu là cải thiện màn hình họp.")
+    scope = _scope(evidence.provenance.meeting_id)
+    retrieval = FakeRetrieval(_retrieval_result(scope, (evidence,)), scope, (evidence,))
+    generator = FakeGenerator(_generation())
+
+    result = asyncio.run(_orchestrator(retrieval, generator).answer(_request(scope, question)))
+
+    assert result.status is AssistantAnswerStatus.GROUNDED
+    assert generator.calls[0][0].question == question
+    assert result.citations[0].source_identity == evidence.provenance.source_identity
 
 
 def test_generation_failure_returns_failed_response_without_answer_content():
@@ -427,12 +470,15 @@ def test_conflicting_answer_preserves_representative_citations():
 
     result = asyncio.run(_orchestrator(retrieval, FakeGenerator(generated)).answer(_request(scope)))
 
-    assert result.status is AssistantAnswerStatus.GROUNDED
+    assert result.status is AssistantAnswerStatus.PARTIAL
     assert result.claims[0].support.value == "CONFLICTED"
     assert result.claims[0].citation_ids == ("C1", "C2")
 
 
-def test_follow_up_uses_only_scope_matching_dialogue_and_retrieves_rewritten_question():
+@pytest.mark.parametrize("question", (
+    "Deadline của công việc đó là khi nào?", "Là sao ba?", "Giải thích rõ hơn.",
+))
+def test_follow_up_uses_scope_matching_dialogue_without_an_extra_inference_call(question):
     evidence = _evidence("Deadline là thứ Sáu.")
     scope = _scope(evidence.provenance.meeting_id)
     retrieval = FakeRetrieval(_retrieval_result(scope, (evidence,)), scope, (evidence,))
@@ -454,21 +500,22 @@ def test_follow_up_uses_only_scope_matching_dialogue_and_retrieves_rewritten_que
 
     result = asyncio.run(
         _orchestrator(retrieval, generator).answer(
-            _request(scope, question="Vậy deadline của việc đó là khi nào?", context=context)
+            _request(scope, question=question, context=context)
         )
     )
 
     assert result.status is AssistantAnswerStatus.GROUNDED
-    assert generator.contextualization_calls
-    assert retrieval.calls[0].query == "Deadline của kế hoạch phát hành là khi nào?"
+    assert generator.contextualization_calls == []
+    assert retrieval.calls[0].query == f"{question} Kế hoạch phát hành là gì?"
+    assert generator.calls[0][0].conversation
 
 
 def test_scope_changed_dialogue_is_not_reused_for_follow_up():
     evidence = _evidence("Deadline là thứ Sáu.")
     scope = _scope(evidence.provenance.meeting_id)
     other_scope = _scope(scope.allowed_meeting_ids[0])
-    retrieval = FakeRetrieval(_retrieval_result(scope, (evidence,)), scope, (evidence,))
-    generator = FakeGenerator(_generation())
+    retrieval = FakeRetrieval(_retrieval_result(scope), scope)
+    generator = FakeGenerator(_uncited_generation("INSUFFICIENT_EVIDENCE", "UNSUPPORTED"))
     context = (
         {
             "role": "ASSISTANT",
@@ -485,9 +532,101 @@ def test_scope_changed_dialogue_is_not_reused_for_follow_up():
     )
 
     assert result.status is AssistantAnswerStatus.INSUFFICIENT_EVIDENCE
-    assert result.failures[0].category is AssistantFailureCategory.INSUFFICIENT_CONTEXT
-    assert retrieval.calls == []
+    assert not generator.calls[0][0].conversation
+    assert "Kế hoạch cũ" not in retrieval.calls[0].query
+
+
+def test_expired_scope_never_sends_protected_dialogue_to_contextualizer():
+    evidence = _evidence("Kế hoạch phát hành vào thứ Sáu.")
+    scope = _scope(evidence.provenance.meeting_id).model_copy(
+        update={"expires_at": "2026-11-09T11:59:59Z"}
+    )
+    retrieval = FakeRetrieval(_retrieval_result(scope, (evidence,)), scope, (evidence,))
+    generator = FakeGenerator(_generation())
+    context = (
+        {
+            "role": "ASSISTANT",
+            "content": "Nội dung cuộc họp cần bảo vệ.",
+            "scopeId": scope.scope_id,
+            "scopeVersion": scope.scope_version,
+        },
+    )
+
+    result = asyncio.run(
+        _orchestrator(retrieval, generator).answer(
+            _request(scope, question="Vậy deadline của việc đó là khi nào?", context=context)
+        )
+    )
+
+    assert result.status is AssistantAnswerStatus.FAILED
+    assert result.failures[0].category is AssistantFailureCategory.INVALID_AUTHORIZATION
+    assert generator.contextualization_calls == []
     assert generator.calls == []
+    assert retrieval.calls == []
+
+
+def test_empty_scope_never_sends_dialogue_to_contextualizer():
+    scope = _scope()
+    retrieval = FakeRetrieval(_retrieval_result(scope), scope)
+    generator = FakeGenerator(_generation())
+    context = (
+        {
+            "role": "ASSISTANT",
+            "content": "Nội dung không được phép.",
+            "scopeId": scope.scope_id,
+            "scopeVersion": scope.scope_version,
+        },
+    )
+    result = asyncio.run(
+        _orchestrator(retrieval, generator).answer(
+            _request(scope, question="Vậy deadline là khi nào?", context=context)
+        )
+    )
+
+    assert result.status is AssistantAnswerStatus.FAILED
+    assert result.failures[0].category is AssistantFailureCategory.INVALID_AUTHORIZATION
+    assert generator.contextualization_calls == []
+    assert generator.calls == []
+    assert retrieval.calls == []
+
+
+def test_out_of_scope_evidence_never_reaches_generation():
+    evidence = _evidence("Kế hoạch mật thuộc cuộc họp khác.")
+    scope = _scope(str(uuid4()))
+    retrieval = FakeRetrieval(_retrieval_result(scope, (evidence,)), scope, (evidence,))
+    generator = FakeGenerator(_generation())
+
+    result = asyncio.run(_orchestrator(retrieval, generator).answer(_request(scope)))
+
+    assert result.status is AssistantAnswerStatus.FAILED
+    assert result.failures[0].category is AssistantFailureCategory.RETRIEVAL_FAILURE
+    assert generator.calls == []
+
+
+def test_qdrant_outage_uses_verified_warned_canonical_transcript():
+    evidence = _evidence("Minh phụ trách frontend.")
+    scope = _scope(evidence.provenance.meeting_id)
+    retrieval = FakeRetrieval(_retrieval_result(scope).model_copy(update={
+        "status": RetrievalStatus.RETRIEVAL_FAILURE,
+    }), scope, (evidence,))
+    generator = FakeGenerator(_generation())
+    canonical = {
+        "reference": evidence.provenance.source_references[0],
+        "authorityClass": "PRIMARY_TRANSCRIPT",
+        "qualityClass": "WARNING",
+        "sourceStatus": "READY_WITH_WARNINGS",
+        "text": evidence.display_text,
+    }
+    request = _request(scope, "Ai phụ trách frontend?").model_dump()
+    request["canonical_context"] = (canonical,)
+
+    result = asyncio.run(_orchestrator(retrieval, generator).answer(AssistantRequest.model_validate(request)))
+
+    assert result.status is AssistantAnswerStatus.PARTIAL
+    assert result.diagnostics.retrieval_status is RetrievalStatus.RETRIEVAL_FAILURE
+    assert generator.calls[0][0].evidence[0].text == evidence.display_text
+    assert result.citations[0].retrieval_chunk_id.startswith("canonical:")
+    assert result.citations[0].quality_class == "WARNING"
 
 
 def test_final_source_invalidation_fails_closed_after_generation():
