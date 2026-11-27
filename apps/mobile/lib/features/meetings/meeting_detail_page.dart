@@ -11,6 +11,7 @@ import 'package:sme_meeting_assistant/features/meetings/meeting_detail_controlle
 import 'package:sme_meeting_assistant/features/meetings/meeting_edit_sheet.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_participants.dart';
+import 'package:sme_meeting_assistant/features/recording/processing_manager.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_timeline_panel.dart';
 import 'package:sme_meeting_assistant/features/recording/recording_page.dart';
 import 'package:sme_meeting_assistant/features/results/results_panel.dart';
@@ -38,6 +39,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
     with WidgetsBindingObserver {
   late MeetingDetailController _controller;
   int _tab = 0;
+  TranscriptReviewHandoff? _reviewHandoff;
   bool _openingAssistant = false;
   bool _assistantOriginVisible = false;
   bool _foreground = true;
@@ -88,6 +90,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
       return;
     }
     _assistantIntentGeneration++;
+    _reviewHandoff = null;
     _controller.dispose();
     _createController();
   }
@@ -657,6 +660,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                         processingRepository: widget.dependencies.processing,
                         recordingCoordinator: widget.dependencies.recording,
                         submissionCoordinator: widget.dependencies.submissions,
+                        onReviewRequested: _openTranscriptReview,
                         processingManager:
                             widget.dependencies.processingManager,
                       ),
@@ -699,6 +703,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                         processingManager:
                             widget.dependencies.processingManager,
                         canRetry: mediaCapabilities.canRetryProcessing,
+                        onReviewRequested: _openTranscriptReview,
                         capabilities: mediaCapabilities,
                       ),
                     },
@@ -711,6 +716,33 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
 
   String _failureMessage(Object? error) =>
       error is ApiFailure ? error.message : 'Đã xảy ra lỗi không mong muốn.';
+
+  void _openTranscriptReview(TranscriptReviewHandoff handoff) {
+    if (!mounted ||
+        !_controller.ownsSession ||
+        handoff.meetingId != widget.meetingId ||
+        handoff.sourceMediaId == null) {
+      return;
+    }
+    setState(() {
+      _assistantIntentGeneration++;
+      _reviewHandoff = handoff;
+      _tab = 1;
+    });
+  }
+
+  void _reviewAdmitted(TranscriptReviewHandoff handoff) {
+    if (!mounted ||
+        !_controller.ownsSession ||
+        _tab != 1 ||
+        !identical(_reviewHandoff, handoff)) {
+      return;
+    }
+    setState(() {
+      _reviewHandoff = null;
+      _tab = 4;
+    });
+  }
 
   Widget _resultsPanel(MeetingDetailState state, MeetingSnapshot snapshot) {
     final capabilities = MeetingCapabilityPolicy.evaluate(
@@ -736,7 +768,11 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
     return ResultsPanel(
       workspace: workspace,
       dependencies: widget.dependencies,
-      initialSection: widget.initialResultsSection ?? ResultsSection.summary,
+      initialSection: _reviewHandoff == null
+          ? widget.initialResultsSection ?? ResultsSection.summary
+          : ResultsSection.transcript,
+      reviewHandoff: _reviewHandoff,
+      onReviewAdmitted: _reviewAdmitted,
     );
   }
 }

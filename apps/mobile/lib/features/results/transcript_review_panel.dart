@@ -5,13 +5,22 @@ import '../../core/command_actions.dart';
 import '../../core/date_labels.dart';
 import '../../core/meeting_models.dart';
 import '../../core/widgets.dart';
+import '../recording/processing_manager.dart';
+import 'transcript_admission_panel.dart';
 import 'results_workspace_controller.dart';
 import 'results_presentation.dart';
 import 'results_models.dart';
 
 class TranscriptReviewPanel extends StatefulWidget {
-  const TranscriptReviewPanel({super.key, required this.workspace});
+  const TranscriptReviewPanel({
+    super.key,
+    required this.workspace,
+    this.reviewHandoff,
+    this.onReviewAdmitted,
+  });
   final ResultsWorkspaceController workspace;
+  final TranscriptReviewHandoff? reviewHandoff;
+  final ValueChanged<TranscriptReviewHandoff>? onReviewAdmitted;
 
   @override
   State<TranscriptReviewPanel> createState() => _TranscriptReviewPanelState();
@@ -339,10 +348,20 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
       final resource = widget.workspace.transcript;
       final transcript = resource.hasData ? resource.data : null;
       if (transcript == null) {
-        return resultsResourceMessage(
-          resource,
-          label: 'Transcript',
-          onRetry: () => widget.workspace.loadTranscript(force: true),
+        return Column(
+          children: [
+            if (widget.reviewHandoff != null)
+              TranscriptAdmissionPanel(
+                workspace: widget.workspace,
+                handoff: widget.reviewHandoff!,
+                onAdmitted: widget.onReviewAdmitted,
+              ),
+            resultsResourceMessage(
+              resource,
+              label: 'Transcript',
+              onRetry: () => widget.workspace.loadTranscript(force: true),
+            ),
+          ],
         );
       }
       final projection = TranscriptReviewProjection(
@@ -473,6 +492,12 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                             () => widget.workspace.loadTranscript(force: true),
                           ),
                           _coverageOverview(projection),
+                          if (widget.reviewHandoff != null)
+                            TranscriptAdmissionPanel(
+                              workspace: widget.workspace,
+                              handoff: widget.reviewHandoff!,
+                              onAdmitted: widget.onReviewAdmitted,
+                            ),
                           if (transcript.segments.isEmpty)
                             const MessagePanel(
                               title: 'Transcript trống theo dữ liệu chuẩn',

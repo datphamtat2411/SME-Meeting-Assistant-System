@@ -29,6 +29,7 @@ class RecordingPage extends StatefulWidget {
     required this.recordingCoordinator,
     required this.submissionCoordinator,
     required this.processingManager,
+    this.onReviewRequested,
   });
 
   final ApiClient api;
@@ -45,6 +46,7 @@ class RecordingPage extends StatefulWidget {
   final RecordingCoordinator recordingCoordinator;
   final SubmissionCoordinator submissionCoordinator;
   final ProcessingManager processingManager;
+  final ValueChanged<TranscriptReviewHandoff>? onReviewRequested;
 
   @override
   State<RecordingPage> createState() => _RecordingPageState();
@@ -554,9 +556,9 @@ class _RecordingPageState extends State<RecordingPage> {
                       : () => _confirmReprocess(job),
                   child: const Text('Xử lý lại'),
                 ),
-              if (handoff != null)
+              if (handoff != null && widget.onReviewRequested != null)
                 OutlinedButton(
-                  onPressed: () => _showReviewUnavailable(handoff),
+                  onPressed: () => widget.onReviewRequested!(handoff),
                   child: const Text('Mở duyệt bản ghi'),
                 ),
             ],
@@ -617,16 +619,6 @@ class _RecordingPageState extends State<RecordingPage> {
     if (mounted && confirmed == true) {
       await controller.reprocess(job, sourceMediaId: source);
     }
-  }
-
-  void _showReviewUnavailable(TranscriptReviewHandoff handoff) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Bản ghi sẵn sàng để duyệt; màn hình duyệt chưa khả dụng.',
-        ),
-      ),
-    );
   }
 
   String _assetState(LocalMediaAsset asset) => switch (asset.lifecycle) {
