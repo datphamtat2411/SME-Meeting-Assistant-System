@@ -30,6 +30,19 @@ PI-06 passed; Mobile formatting reported a line-wrap difference, corrected
 using the formatter output. No failing assertion was removed or bypassed.
 Do not attribute intermediate CI results to a later SHA.
 
+## Observed final Wave 04 verification
+
+All eight workflows passed on `bada2ee6ea4bb18f9c87c8ff2b63c5ec4dfa5bf4`:
+[API](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45953990402),
+[Web](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45953990398),
+[Mobile](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45953990369),
+[AI](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45953990441),
+[Diarization](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45953990521),
+[PI Integration](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45953990379),
+[PI-05](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45953990504),
+[PI-06](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45953990473).
+These are the Wave 05 entry baseline, not proof for a subsequent SHA.
+
 ## Final acceptance
 
 All eight workflows must pass on the exact final candidate SHA: API, Web,

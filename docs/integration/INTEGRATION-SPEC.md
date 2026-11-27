@@ -10,8 +10,12 @@ recorded in [WAVE-03-RESULTS.md](WAVE-03-RESULTS.md) and the canonical
 `0a8332556819ba4a19a0d03f19d4d77ec8d623ab`. Wave 04 (INT-08/09/10) implementation is recorded in
 [WAVE-04-RESULTS.md](WAVE-04-RESULTS.md) and the shared
 [ASSISTANT-INTEGRATION-CONTRACT.md](ASSISTANT-INTEGRATION-CONTRACT.md).
-Wave 04 final CI acceptance is determined by the eight workflow runs on the
-exact final candidate SHA. Live cross-client and visual acceptance, and
+Wave 04 passed all eight workflows at `bada2ee6ea4bb18f9c87c8ff2b63c5ec4dfa5bf4`.
+Wave 05 (INT-11/12) implementation and verification boundaries are recorded in
+[WAVE-05-RESULTS.md](WAVE-05-RESULTS.md) and
+[DOWNSTREAM-PLATFORM-INTEGRATION-CONTRACT.md](DOWNSTREAM-PLATFORM-INTEGRATION-CONTRACT.md).
+Wave 05 final CI acceptance requires all eight workflows on the exact candidate SHA.
+Live cross-client and visual acceptance, and
 coordinated compatibility-route retirement, remain pending. See [WAVE-02-RESULTS.md](WAVE-02-RESULTS.md) for the original
 implementation baseline, corrective fixture commit, run links and exact
 verification scope. CI results must not be attributed to later commits. The integrated tree originates from a
