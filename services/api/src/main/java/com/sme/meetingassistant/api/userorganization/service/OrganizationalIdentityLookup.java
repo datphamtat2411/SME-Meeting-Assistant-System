@@ -21,8 +21,8 @@ public class OrganizationalIdentityLookup {
     private final UserRepository users;
     public OrganizationalIdentityLookup(UserRepository users) { this.users = users; }
     public boolean isActive(UUID id) {
-        return id != null && users.findById(id)
-            .filter(user -> user.getAccountStatus() == AccountStatus.ACTIVE).isPresent();
+        // Query current persisted eligibility, not a previously managed UserEntity.
+        return id != null && users.existsByIdAndAccountStatus(id, AccountStatus.ACTIVE);
     }
     public Optional<UUID> activePrimaryOrgUnitId(UUID id) {
         if (id == null) return Optional.empty();

@@ -85,6 +85,9 @@ public class ActionItemService {
 
         if (idempotencyKey != null) {
             UUID prior = idempotency.claimOrReplay(actorId, idempotencyKey, request);
+            // The claim can wait for another transaction. Reauthorize after that wait.
+            meetingAccess.requireManageActionItems(request.meetingId(), actorId);
+            requireActiveAssignee(request.assigneeUserId());
             if (prior != null) {
                 ActionItemView item = byId(prior);
                 if (!request.meetingId().equals(item.meetingId()) ||

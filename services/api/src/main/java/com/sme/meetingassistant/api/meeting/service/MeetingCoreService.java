@@ -451,6 +451,7 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     public void requireCurrentActiveActor(UUID actorId) {
         UUID currentActor = authorization.requireActiveActor().getId();
         if (!currentActor.equals(actorId)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        if (!users.isActive(actorId)) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     }
 
     @Override
