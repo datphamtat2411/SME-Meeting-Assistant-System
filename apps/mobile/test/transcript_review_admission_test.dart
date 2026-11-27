@@ -220,10 +220,7 @@ void main() {
         () => handoff.evaluate().isNotEmpty,
         reason: 'waiting job to offer review',
       );
-      await Scrollable.ensureVisible(
-        tester.element(handoff),
-        alignment: 0.5,
-      );
+      await Scrollable.ensureVisible(tester.element(handoff), alignment: 0.5);
       await tester.pump();
       expect(handoff.hitTestable(), findsOneWidget);
       await tester.tap(handoff);
@@ -273,10 +270,7 @@ void main() {
         () => handoff.evaluate().isNotEmpty,
         reason: 'waiting job after leaving review',
       );
-      await Scrollable.ensureVisible(
-        tester.element(handoff),
-        alignment: 0.5,
-      );
+      await Scrollable.ensureVisible(tester.element(handoff), alignment: 0.5);
       await tester.pump();
       expect(handoff.hitTestable(), findsOneWidget);
       await tester.tap(handoff);
@@ -288,10 +282,7 @@ void main() {
         reason: 'restored receipt',
       );
       expect(calls, ['acknowledge']);
-      await Scrollable.ensureVisible(
-        tester.element(admit),
-        alignment: 0.5,
-      );
+      await Scrollable.ensureVisible(tester.element(admit), alignment: 0.5);
       await tester.pump();
       expect(admit.hitTestable(), findsOneWidget);
       await tester.tap(admit);
