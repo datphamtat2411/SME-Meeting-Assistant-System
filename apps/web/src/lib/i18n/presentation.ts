@@ -198,13 +198,20 @@ export function lengthValidationMessage(
   return `validation.${kind}:${count}`
 }
 
-export function featureValidationMessage(key: string) {
-  return `validation.key:${key}`
+type PresentationValues = Record<string, string | number>
+
+export function featureValidationMessage(
+  key: string,
+  values?: PresentationValues
+) {
+  return values
+    ? `validation.params:${JSON.stringify([key, values])}`
+    : `validation.key:${key}`
 }
 
 export function localizedValidationMessage(
   message: string,
-  translate: (key: string, options?: { count: number }) => string = (
+  translate: (key: string, options?: { count: number } | { replace: PresentationValues }) => string = (
     key,
     options
   ) => i18n.t(key, options)
@@ -217,6 +224,31 @@ export function localizedValidationMessage(
   if (message.startsWith('validation.key:')) {
     const key = message.slice('validation.key:'.length)
     if (i18n.exists(key, { lng: 'en' })) return translate(key)
+  }
+
+  if (message.startsWith('validation.params:')) {
+    try {
+      const decoded: unknown = JSON.parse(message.slice('validation.params:'.length))
+      if (
+        Array.isArray(decoded) &&
+        decoded.length === 2 &&
+        typeof decoded[0] === 'string' &&
+        i18n.exists(decoded[0], { lng: 'en' }) &&
+        decoded[1] !== null &&
+        typeof decoded[1] === 'object' &&
+        !Array.isArray(decoded[1]) &&
+        Object.entries(decoded[1]).every(
+          ([name, value]) =>
+            /^[a-zA-Z][a-zA-Z0-9_]*$/.test(name) &&
+            (typeof value === 'string' ||
+              (typeof value === 'number' && Number.isFinite(value)))
+        )
+      ) {
+        return translate(decoded[0], { replace: decoded[1] as PresentationValues })
+      }
+    } catch {
+      // Malformed markers are displayed as ordinary text, not interpreted.
+    }
   }
 
   const match = /^validation\.(minLength|maxLength):(0|[1-9]\d*)$/.exec(message)

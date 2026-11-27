@@ -1,3 +1,5 @@
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import { featureValidationMessage, localizedValidationMessage } from '@/lib/i18n/presentation'
 import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle, UserRound } from 'lucide-react'
 import { toast } from 'sonner'
@@ -86,6 +88,7 @@ export function MeetingParticipantManagement({
   participants,
   onReconciled,
 }: MeetingParticipantManagementProps) {
+  const { t } = useUiTranslation()
   const { active, removed } = classifyParticipantMemberships(participants)
   const canManageSnapshot = canManageMeetingParticipants(meeting, currentUserId)
   const activeUserIds = active.map((participant) => participant.userId)
@@ -187,12 +190,12 @@ export function MeetingParticipantManagement({
         setFeedback(null)
         clearOperationIntent(operation)
         if (operation.type === 'add') {
-          toast.success('Participant added', {
-            description: `${operation.displayName} is now an active meeting participant.`,
+          toast.success(i18n.t('meetings:participant_added'), {
+            description: i18n.t('meetings:participant_addedHint', { name: operation.displayName }),
           })
         } else {
-          toast.success('Participant removed', {
-            description: `${operation.displayName} is no longer an active meeting participant.`,
+          toast.success(i18n.t('meetings:participant_removed'), {
+            description: i18n.t('meetings:participant_removedHint', { name: operation.displayName }),
           })
         }
         return true
@@ -201,7 +204,7 @@ export function MeetingParticipantManagement({
       if (outcome === 'review') {
         setFailure(
           reviewMessage ??
-            'Review the latest participant state before retrying.'
+            featureValidationMessage('meetings:participant_review')
         )
         return true
       }
@@ -332,7 +335,7 @@ export function MeetingParticipantManagement({
     if (kind === 'precondition') {
       await refreshForReview(
         operation,
-        'The meeting changed on the server. The latest participant list and ETag are ready for review; no mutation was retried.',
+        featureValidationMessage('meetings:participant_preconditionReview'),
         generation
       )
       return
@@ -417,10 +420,9 @@ export function MeetingParticipantManagement({
       {canManage && (
         <div className='space-y-3 border-b pb-5'>
           <div>
-            <p className='text-sm font-semibold'>Add participant</p>
+            <p className='text-sm font-semibold'>{t('meetings:participant_add')}</p>
             <p className='mt-1 text-xs text-muted-foreground'>
-              Search active eligible users. Historical memberships may be added
-              again as a new membership.
+              {t('meetings:participant_addHint')}
             </p>
           </div>
           <MeetingParticipantLookup
@@ -444,10 +446,10 @@ export function MeetingParticipantManagement({
               <LoaderCircle className='animate-spin' />
             )}
             {phase === 'mutating'
-              ? 'Adding participant...'
+              ? t('meetings:participant_adding')
               : phase === 'reconciling'
-                ? 'Refreshing participant state...'
-                : 'Add participant'}
+                ? t('meetings:participant_refreshing')
+                : t('meetings:participant_add')}
           </Button>
         </div>
       )}
@@ -456,13 +458,13 @@ export function MeetingParticipantManagement({
         <Alert variant={feedback.variant}>
           <AlertTitle>
             {phase === 'version_unverified'
-              ? 'Participant version needs verification'
+              ? t('meetings:participant_verifyVersion')
               : feedback.variant === 'default'
-                ? 'Participant state refreshed'
-                : 'Participant operation did not complete'}
+                ? t('meetings:participant_refreshed')
+                : t('meetings:participant_failed')}
           </AlertTitle>
           <AlertDescription>
-            {feedback.message}
+            {localizedValidationMessage(feedback.message, t)}
             {phase === 'version_unverified' &&
               pendingReconciliation &&
               !authorizationBlocked && (
@@ -472,7 +474,7 @@ export function MeetingParticipantManagement({
                   size='sm'
                   onClick={retryRefresh}
                 >
-                  Retry refresh
+                  {t('meetings:participant_retry')}
                 </Button>
               )}
           </AlertDescription>
@@ -480,7 +482,7 @@ export function MeetingParticipantManagement({
       )}
 
       <div className='space-y-4'>
-        <p className='text-sm font-semibold'>Active participants</p>
+        <p className='text-sm font-semibold'>{t('meetings:participant_active')}</p>
         {active.length ? (
           active.map((participant) => (
             <ParticipantMembership
@@ -493,7 +495,7 @@ export function MeetingParticipantManagement({
           ))
         ) : (
           <p className='text-sm text-muted-foreground'>
-            No active participants are listed.
+            {t('meetings:participant_none')}
           </p>
         )}
       </div>
@@ -501,9 +503,9 @@ export function MeetingParticipantManagement({
       {removed.length > 0 && (
         <div className='space-y-4 border-t pt-5'>
           <div>
-            <p className='text-sm font-semibold'>Removed membership history</p>
+            <p className='text-sm font-semibold'>{t('meetings:participant_history')}</p>
             <p className='mt-1 text-xs text-muted-foreground'>
-              Historical memberships remain visible with their removal metadata.
+              {t('meetings:participant_historyHint')}
             </p>
           </div>
           {removed.map((participant) => (
@@ -519,21 +521,14 @@ export function MeetingParticipantManagement({
       <ConfirmDialog
         open={confirmationOpen && canManage}
         onOpenChange={setConfirmationOpen}
-        title='Remove participant?'
+        title={t('meetings:participant_removeQuestion')}
         desc={
           <p>
-            Remove{' '}
-            <span className='font-medium'>
-              {removeTarget
-                ? participantDisplayName(removeTarget)
-                : 'this participant'}
-            </span>{' '}
-            from the active meeting membership? This creates a historical
-            removal record and can be added again later.
+            {t('meetings:participant_removeHint', { name: removeTarget ? participantDisplayName(removeTarget) : t('meetings:participant_this') })}
           </p>
         }
-        confirmText='Remove participant'
-        cancelBtnText='Keep participant'
+        confirmText={t('meetings:participant_remove')}
+        cancelBtnText={t('meetings:participant_keep')}
         destructive
         isLoading={pending}
         handleConfirm={confirmRemoveParticipant}
@@ -555,6 +550,7 @@ function ParticipantMembership({
   disabled?: boolean
   onRemove?: () => void
 }) {
+  const { t } = useUiTranslation()
   const displayName = participantDisplayName(participant)
 
   return (
@@ -570,25 +566,25 @@ function ParticipantMembership({
               type='button'
               variant='ghost'
               size='sm'
-              aria-label={`Remove ${displayName}`}
+              aria-label={t('meetings:participant_removeName', { name: displayName })}
               onClick={onRemove}
               disabled={disabled}
             >
-              Remove
+              {t('meetings:participant_removeButton')}
             </Button>
           )}
         </div>
         <p className='text-xs text-muted-foreground'>
           {participant.displayName?.trim()
-            ? 'Name provided by Core API'
-            : 'Name unavailable'}
+            ? t('meetings:participant_nameProvided')
+            : t('meetings:participant_nameUnavailable')}
         </p>
         <p className='text-xs text-muted-foreground'>
-          Added <RegionalTimestamp value={participant.addedAt} />
+          {t('meetings:participant_addedAt')} <RegionalTimestamp value={participant.addedAt} />
         </p>
         {historical && participant.removedAt && (
           <p className='text-xs text-muted-foreground'>
-            Removed <RegionalTimestamp value={participant.removedAt} />
+            {t('meetings:participant_removedAt')} <RegionalTimestamp value={participant.removedAt} />
           </p>
         )}
       </div>
@@ -597,7 +593,7 @@ function ParticipantMembership({
 }
 
 function participantDisplayName(participant: ParticipantView) {
-  return participant.displayName?.trim() || 'Name unavailable'
+  return participant.displayName?.trim() || i18n.t('meetings:participant_nameUnavailable')
 }
 
 function formatMutationFailure(
@@ -606,23 +602,23 @@ function formatMutationFailure(
 ) {
   switch (kind) {
     case 'duplicate':
-      return 'This participant already has an active membership. Review the participant list before retrying.'
+      return featureValidationMessage('meetings:participant_duplicate')
     case 'invalid_candidate':
-      return 'Core API rejected this participant because the account is not an active eligible candidate.'
+      return featureValidationMessage('meetings:participant_invalidCandidate')
     case 'not_found':
       return operation.type === 'remove'
-        ? 'The participant no longer has an active membership. Review the latest participant list.'
-        : 'The meeting or participant could not be found. Review the latest meeting state.'
+        ? featureValidationMessage('meetings:participant_missingMembership')
+        : featureValidationMessage('meetings:participant_missing')
     case 'terminal':
-      return 'Participant membership changes are no longer allowed for this meeting lifecycle.'
+      return featureValidationMessage('meetings:participant_terminal')
     case 'unauthenticated':
-      return 'Your session is no longer authenticated. The participant intent was preserved and was not retried.'
+      return featureValidationMessage('meetings:participant_unauthenticated')
     case 'forbidden':
-      return 'You are no longer authorized to change this meeting. No local success was recorded.'
+      return featureValidationMessage('meetings:participant_forbidden')
     case 'precondition':
-      return 'The meeting changed on the server. Review the refreshed participant list before retrying.'
+      return featureValidationMessage('meetings:participant_precondition')
     default:
-      return 'Core API could not complete the participant operation. Review the latest participant list before retrying.'
+      return featureValidationMessage('meetings:participant_fallback')
   }
 }
 
@@ -642,7 +638,7 @@ function formatConflictFailure(
     return formatMutationFailure(operation, 'not_found')
   }
   if (operation.type === 'remove' && kind === 'not_found') {
-    return `The removal request could not find the membership, but the refreshed participant list still shows ${operation.displayName} as active. No mutation was retried.`
+    return featureValidationMessage('meetings:participant_removeMismatch', { name: operation.displayName })
   }
   return formatMutationFailure(operation, kind)
 }
@@ -651,19 +647,15 @@ function formatConfirmedStateMismatch(
   operation: PendingParticipantOperation,
   active: boolean
 ) {
-  const operationLabel = operation.type === 'add' ? 'add' : 'remove'
-  const currentState = active ? 'currently active' : 'no longer active'
-  return `The original ${operationLabel} request succeeded, but a subsequent membership change means ${operation.displayName} is ${currentState}. The latest participant state is authoritative; no follow-up mutation was sent.`
+  return featureValidationMessage(`meetings:participant_mismatch_${operation.type}_${active ? 'active' : 'removed'}`, { name: operation.displayName })
 }
 
 function formatAmbiguousObserved(operation: PendingParticipantOperation) {
-  const state = operation.type === 'add' ? 'active' : 'removed'
-  return `Latest participant state has been refreshed. The requested membership state is now ${state}, but the original request outcome could not be confirmed.`
+  return featureValidationMessage(`meetings:participant_observed_${operation.type}`)
 }
 
 function formatAmbiguousNotObserved(operation: PendingParticipantOperation) {
-  const state = operation.type === 'add' ? 'active' : 'removed'
-  return `The requested membership state was not found in the refreshed participant list; the participant is not ${state}. The original request outcome could not be confirmed; review the latest state before taking a new action.`
+  return featureValidationMessage(`meetings:participant_notObserved_${operation.type}`)
 }
 
 function formatRefreshFailure(
@@ -672,13 +664,13 @@ function formatRefreshFailure(
 ) {
   const normalized = normalizeCoreApiError(error)
   if (normalized.status === 401) {
-    return 'Your session could not be confirmed while refreshing participant state. The latest meeting version could not be verified and no mutation was retried.'
+    return featureValidationMessage('meetings:participant_refreshUnauthenticated')
   }
   if (normalized.status === 403) {
-    return 'You are no longer authorized to refresh this meeting. The latest meeting version could not be verified; no mutation was retried.'
+    return featureValidationMessage('meetings:participant_refreshForbidden')
   }
   if (normalized.isNetworkError || normalized.isServerError) {
-    return `The latest meeting version could not be verified because participant state could not be loaded. The ${operation.type === 'add' ? 'selection' : 'removal intent'} was preserved; retry refresh without repeating the mutation.`
+    return featureValidationMessage(`meetings:participant_refreshNetwork_${operation.type}`)
   }
-  return `The latest meeting version could not be verified and participant state was unavailable. The ${operation.type === 'add' ? 'selection' : 'removal intent'} was preserved; retry refresh without repeating the mutation.`
+  return featureValidationMessage(`meetings:participant_refreshOther_${operation.type}`)
 }
