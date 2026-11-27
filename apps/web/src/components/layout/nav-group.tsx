@@ -35,10 +35,14 @@ import {
   type NavGroup as NavGroupProps,
 } from './types'
 
-export function NavGroup({ title, items }: NavGroupProps) {
+export function NavGroup({
+  title,
+  items,
+  activeGroups = navigationGroups,
+}: NavGroupProps & { activeGroups?: readonly NavGroupProps[] }) {
   const { state, isMobile } = useSidebar()
   const pathname = useLocation({ select: (location) => location.pathname })
-  const activeUrl = getActiveNavigationUrl(pathname, navigationGroups)
+  const activeUrl = getActiveNavigationUrl(pathname, activeGroups)
   return (
     <SidebarGroup>
       <SidebarGroupLabel>{title}</SidebarGroupLabel>

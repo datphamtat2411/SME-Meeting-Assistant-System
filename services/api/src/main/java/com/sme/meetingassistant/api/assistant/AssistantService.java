@@ -9,6 +9,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
 import java.util.regex.Pattern;
+import java.util.function.Supplier;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.env.Environment;
 import org.springframework.dao.DataAccessException;
@@ -30,6 +31,7 @@ public final class AssistantService {
     private final OrganizationalAuthorizationService identity;
     private final AssistantSourceVerifier sources;
     private final AssistantAnswerValidator answers;
+    private final AssistantEvidenceResolver evidenceResolver;
     private final ObjectProvider<AssistantAiGateway> gateway;
     private final ObjectMapper json;
     private final TransactionTemplate tx;
@@ -37,10 +39,11 @@ public final class AssistantService {
 
     AssistantService(AssistantStore store,AssistantAdmissionGuard admission,MeetingMediaAccess access,
             OrganizationalAuthorizationService identity,AssistantSourceVerifier sources,
-            ObjectProvider<AssistantAiGateway> gateway,ObjectMapper json,
+            AssistantEvidenceResolver evidenceResolver,ObjectProvider<AssistantAiGateway> gateway,ObjectMapper json,
             PlatformTransactionManager transactions,Environment env) {
         this.store=store;this.admission=admission;this.access=access;this.identity=identity;this.sources=sources;
-        this.answers=new AssistantAnswerValidator(sources);this.gateway=gateway;this.json=json;
+        this.answers=new AssistantAnswerValidator(sources);this.evidenceResolver=evidenceResolver;
+        this.gateway=gateway;this.json=json;
         this.tx=new TransactionTemplate(transactions);
         this.enabled=env.getProperty("app.assistant.enabled",Boolean.class,false);
         if(enabled && gateway.getIfAvailable()==null)
@@ -48,10 +51,23 @@ public final class AssistantService {
     }
 
     private void requireEnabled(){
-        if(!enabled)throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
-            "Assistant capability is disabled");
+        if(!enabled)throw new AssistantDomainException(HttpStatus.SERVICE_UNAVAILABLE,
+            "ASSISTANT_UNAVAILABLE","Assistant capability is disabled.");
     }
     private UUID actor(){return identity.requireActiveActor().getId();}
+
+    private <T> T readWithAvailability(Supplier<T> operation){
+        try {
+            return operation.get();
+        } catch (DataAccessException|TransactionException unavailable) {
+            throw admission.databaseUnavailable();
+        }
+    }
+
+    private static AssistantDomainException unavailable(){
+        return new AssistantDomainException(HttpStatus.SERVICE_UNAVAILABLE,
+            "ASSISTANT_UNAVAILABLE","Assistant state is temporarily unavailable.");
+    }
 
     ConversationView create(CreateConversation input) {
         requireEnabled();
@@ -86,24 +102,131 @@ public final class AssistantService {
     }
 
     List<ConversationView> list(int page,int size){
-        requireEnabled();UUID user=actor();validatePage(page,size);
-        return store.list(user,page,size);
+        requireEnabled();validatePage(page,size);
+        return readWithAvailability(()->store.list(actor(),page,size));
     }
 
+
     ConversationDetail detail(UUID id,int page,int size){
-        requireEnabled();UUID user=actor();validatePage(page,size);
+        return detail(id,page,size,null);
+    }
+
+    ConversationDetail detail(UUID id,Integer page,int size,UUID beforeMessageId){
+        requireEnabled();
+        return readWithAvailability(()->readDetail(id,page,size,beforeMessageId));
+    }
+
+    private ConversationDetail readDetail(UUID id,Integer page,int size,UUID beforeMessageId){
+        UUID user=actor();
+        if(page!=null&&beforeMessageId!=null)
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+        int requestedPage=page==null?0:page;
+        validatePage(requestedPage,size);
         var conversation=store.require(id,user,false);
         access.requireReadable(conversation.meetingId(),user);
-        List<AssistantStore.Message> messages=store.messages(id,page,size+1);
+        List<AssistantStore.Message> messages=beforeMessageId==null
+            ?store.messages(id,requestedPage*size,size+1)
+            :store.messagesBefore(id,beforeMessageId,size+1);
         boolean hasMore=messages.size()>size;
         if(hasMore)messages=messages.subList(messages.size()-size,messages.size());
         List<MessageView> views=new ArrayList<>();
         for(var message:messages)views.add(view(message,conversation.meetingId()));
+        UUID next=hasMore?messages.getFirst().id():null;
+        var pending=store.observePending(id);
+        TurnStatusView pendingView=pending==null?null:statusView(conversation,pending);
         access.requireReadable(conversation.meetingId(),user);
-        return new ConversationDetail(conversation.view(),List.copyOf(views),page,size,hasMore);
+        return new ConversationDetail(conversation.view(),List.copyOf(views),requestedPage,size,hasMore,next,pendingView);
+    }
+
+    MessageEvidence evidence(UUID conversationId,UUID messageId){
+        requireEnabled();
+        return readWithAvailability(()->tx.execute(status->{
+            UUID user=actor();
+            var conversation=store.require(conversationId,user,false);
+            UUID meeting=conversation.meetingId();
+            access.requireReadable(meeting,user);
+            // Serialize with source changes using the existing evidence lock.
+            store.lockMeetingForEvidence(meeting);
+            access.requireReadable(meeting,user);
+            var message=store.answer(messageId);
+            if(message==null||!conversationId.equals(message.conversationId())||!"ASSISTANT".equals(message.role()))
+                throw new AssistantDomainException(HttpStatus.NOT_FOUND,"ASSISTANT_MESSAGE_NOT_FOUND",
+                    "Assistant message was not found.");
+            List<CitationView> citations=store.citations(messageId);
+            boolean grounded="GROUNDED".equals(message.answerStatus())||"PARTIAL".equals(message.answerStatus());
+            if(citations.size()>64||grounded==citations.isEmpty())
+                throw AssistantEvidenceResolver.stale();
+            List<EvidenceView> evidence=evidenceResolver.resolve(meeting,user,citations);
+            access.requireReadable(meeting,user);
+            return new MessageEvidence(conversationId,messageId,meeting,evidence);
+        }));
+    }
+
+    TurnStatusView observe(UUID conversationId,UUID turnId,String key){
+        requireEnabled();
+        return readWithAvailability(()->readTurnStatus(conversationId,turnId,key));
+    }
+
+    private TurnStatusView readTurnStatus(UUID conversationId,UUID turnId,String key){
+        UUID user=actor();
+        var conversation=store.require(conversationId,user,false);
+        access.requireReadable(conversation.meetingId(),user);
+        if(turnId==null&&(key==null||!KEY.matcher(key).matches()))
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+        var turn=turnId==null?store.observeByKey(conversationId,key):store.findById(turnId);
+        if(turn==null||!conversationId.equals(turn.conversationId()))
+            throw turnNotFound();
+        TurnStatusView result=statusView(conversation,turn);
+        access.requireReadable(conversation.meetingId(),user);
+        return result;
+    }
+
+    private TurnStatusView statusView(AssistantStore.Conversation conversation,AssistantStore.Turn turn){
+        String state=turn.state();
+        if("PROCESSING".equals(state))
+            return new TurnStatusView(conversation.id(),turn.id(),state,
+                store.live(turn)?"ACTIVE":"EXPIRED",turn.userMessageId(),null,null);
+        var message=store.answer(turn.assistantMessageId());
+        if(message==null||!conversation.id().equals(message.conversationId()))
+            throw unavailable();
+        if("COMPLETED".equals(state)&&!"VISIBLE".equals(view(message,conversation.meetingId()).visibility()))
+            state="STALE_SOURCE";
+        return new TurnStatusView(conversation.id(),turn.id(),state,null,turn.userMessageId(),
+            message.id(),message.answerStatus());
+    }
+
+    /**
+     * Explicit recovery uses the persisted question and key, never browser state.
+     * The reservation transaction must still find this exact durable turn.
+     */
+    TurnOutcome recover(UUID conversationId,UUID turnId){
+        requireEnabled();
+        return readWithAvailability(()->{
+            UUID user=actor();
+            var conversation=store.require(conversationId,user,false);
+            access.requireReadable(conversation.meetingId(),user);
+            var turn=store.findById(turnId);
+            if(turn==null||!conversationId.equals(turn.conversationId()))
+                throw turnNotFound();
+            var question=store.answer(turn.userMessageId());
+            if(question==null||!conversationId.equals(question.conversationId())
+                ||!"USER".equals(question.role())||question.content()==null
+                ||!turn.fingerprint().equals(WorkerJson.sha256(question.content().getBytes(StandardCharsets.UTF_8))))
+                throw unavailable();
+            return submit(conversationId,turn.key(),new Ask(question.content()),turnId);
+        });
+    }
+
+    private static AssistantDomainException turnNotFound(){
+        return new AssistantDomainException(HttpStatus.NOT_FOUND,"ASSISTANT_TURN_NOT_FOUND",
+            "Assistant turn was not found.");
     }
 
     TurnOutcome submit(UUID conversationId,String idempotencyKey,Ask input){
+        return submit(conversationId,idempotencyKey,input,null);
+    }
+
+    private TurnOutcome submit(UUID conversationId,String idempotencyKey,Ask input,UUID expectedTurnId){
         requireEnabled();
         UUID user;
         try {
@@ -112,11 +235,11 @@ public final class AssistantService {
             throw admission.databaseUnavailable();
         }
         if(input==null||input.question()==null||input.question().isBlank()
-            ||input.question().codePointCount(0,input.question().length())>4096
             ||idempotencyKey==null||!KEY.matcher(idempotencyKey).matches())
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         String question=input.question().trim();
-        if(question.isEmpty())throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+        if(question.isBlank()||question.codePointCount(0,question.length())>4096)
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         String fingerprint=WorkerJson.sha256(question.getBytes(StandardCharsets.UTF_8));
         AssistantStore.Conversation conversation;
         try {
@@ -129,15 +252,17 @@ public final class AssistantService {
         long admissionStarted=System.nanoTime();
         try {
             admitted=tx.execute(s->reserve(conversationId,user,idempotencyKey,question,fingerprint,
-                conversation.meetingId()));
+                conversation.meetingId(),expectedTurnId));
         } catch (DataAccessException|TransactionException unavailable) {
             throw admission.databaseUnavailable();
         } finally {
             admission.latency("ASK",System.nanoTime()-admissionStarted);
         }
         if(!admitted.execute()) {
-            access.requireReadable(conversation.meetingId(),user);
-            return outcome(admitted.turn(),conversation.meetingId());
+            return readWithAvailability(()->{
+                access.requireReadable(conversation.meetingId(),user);
+                return outcome(admitted.turn(),conversation.meetingId());
+            });
         }
 
         ValidatedAnswer reply;
@@ -186,11 +311,15 @@ public final class AssistantService {
             markFailed(conversationId,user,admitted.turn());
             throw revoked;
         } catch(AssistantStore.StaleTurn stale) {
+            // Another owner may already have finalized the turn. Read the
+            // canonical outcome; never return the obsolete inference result.
+        } catch(DataAccessException|TransactionException unavailable) {
+            throw admission.databaseUnavailable();
+        }
+        return readWithAvailability(()->{
             access.requireReadable(conversation.meetingId(),user);
             return outcome(store.findById(admitted.turn().id()),conversation.meetingId());
-        }
-        access.requireReadable(conversation.meetingId(),user);
-        return outcome(store.findById(admitted.turn().id()),conversation.meetingId());
+        });
     }
 
     private void markFailed(UUID conversationId,UUID user,AssistantStore.Turn requested) {
@@ -205,7 +334,7 @@ public final class AssistantService {
     }
 
     private Admission reserve(UUID conversationId,UUID user,String key,String question,
-            String fingerprint,UUID expectedMeeting){
+            String fingerprint,UUID expectedMeeting,UUID expectedTurnId){
         // The transaction-local timeout covers the conversation row and every
         // later advisory lock without changing the pooled session.
         admission.configureLockWaitTimeout();
@@ -214,11 +343,15 @@ public final class AssistantService {
         if(!conversation.meetingId().equals(expectedMeeting))
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         access.requireReadable(conversation.meetingId(),user);
-        if(!"ACTIVE".equals(conversation.status()))throw new ResponseStatusException(HttpStatus.CONFLICT);
+        if(!"ACTIVE".equals(conversation.status()))throw new AssistantDomainException(HttpStatus.CONFLICT,
+            "ASSISTANT_CONVERSATION_INACTIVE","Assistant conversation is inactive.");
         AssistantStore.Turn prior=store.findTurn(conversationId,key);
+        if(expectedTurnId!=null&&(prior==null||!expectedTurnId.equals(prior.id())))
+            throw turnNotFound(); // recovery can never insert a replacement turn
         if(prior!=null){
             if(!prior.fingerprint().equals(fingerprint))
-                throw new ResponseStatusException(HttpStatus.CONFLICT,"Idempotency key reused with different question");
+                throw new AssistantDomainException(HttpStatus.CONFLICT,"ASSISTANT_IDEMPOTENCY_CONFLICT",
+                    "Idempotency key reused with different question.");
             if(!"PROCESSING".equals(prior.state())){
                 admission.replay();
                 return new Admission(prior,false);
@@ -237,8 +370,8 @@ public final class AssistantService {
         }
         AssistantStore.Turn busy=store.active(conversationId);
         if(busy!=null){
-            if(store.live(busy))throw new ResponseStatusException(HttpStatus.CONFLICT,
-                "A previous Assistant turn is still processing");
+            if(store.live(busy))throw new AssistantDomainException(HttpStatus.CONFLICT,
+                "ASSISTANT_TURN_IN_PROGRESS","A previous Assistant turn is still processing.");
             store.expire(busy);
             admission.leaseExpired();
         }
@@ -254,12 +387,12 @@ public final class AssistantService {
     }
 
     private TurnOutcome outcome(AssistantStore.Turn turn,UUID meeting){
-        if(turn==null)throw new ResponseStatusException(HttpStatus.CONFLICT);
+        if(turn==null)throw unavailable();
         if("PROCESSING".equals(turn.state()))
             return new TurnOutcome(202,new TurnView(turn.id(),"PROCESSING",turn.userMessageId(),
                 null,null,null,List.of(),List.of()));
         AssistantStore.Message msg=store.answer(turn.assistantMessageId());
-        if(msg==null)throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE);
+        if(msg==null)throw unavailable();
         if("FAILED".equals(turn.state()))
             return new TurnOutcome(503,new TurnView(turn.id(),"FAILED",turn.userMessageId(),
                 msg.id(),"FAILED",null,List.of(),List.of()));

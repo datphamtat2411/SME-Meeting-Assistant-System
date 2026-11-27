@@ -20,4 +20,16 @@ Applies to `apps/web/`. These rules **extend** the repository-root `AGENTS.md`; 
 - Represent loading, empty, denied, failed, partial, and asynchronous states truthfully. Keep meeting execution state separate from media/upload and AI-processing state; distinguish AI proposals from confirmed records.
 - Do not infer API DTOs, security permissions, or new backend behavior from the mock. Resolve specifics from the relevant global requirements, approved contracts, current code, and Task Specification; surface unresolved conflicts rather than inventing a contract.
 
+## Local Development Transport Policy
+
+Follow the shared policy in the repository-root `AGENTS.md`: ordinary local
+development and testing is HTTP-only at `http://localhost:5173`, with the
+same-origin `/api/v1` proxy targeting `http://127.0.0.1:8080`. Vite must use a
+fixed port and fail on conflicts instead of selecting a fallback. Do not add
+local HTTPS listeners, certificate workflows, or TLS proxies during ordinary
+feature development. Preserve production HTTPS/security boundaries and all
+authentication, authorization, CSRF, cookie, storage-privacy, and
+signed-capability controls. Production HTTPS deployment is not a prerequisite
+for local functional acceptance.
+
 Package context lives in `docs/`. Read only the documents selected by the active task/plan, as required by root `AGENTS.md`.

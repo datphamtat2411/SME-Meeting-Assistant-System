@@ -6,6 +6,7 @@ import com.sme.meetingassistant.api.meeting.service.MeetingMediaAccess;
 import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -25,33 +26,37 @@ public class ExportStatusController {
     private final AuthenticatedUserId actor;
     private final ApiResponseFactory responses;
     private final ExportFreshnessService freshness;
+    private final int maxAttempts;
 
     public ExportStatusController(MeetingExportRepository records,
             MeetingMediaAccess access, AuthenticatedUserId actor,
-            ApiResponseFactory responses, ExportFreshnessService freshness) {
+            ApiResponseFactory responses, ExportFreshnessService freshness,
+            @Value("${app.exports.worker.max-attempts:3}") int maxAttempts) {
         this.records = records;
         this.access = access;
         this.actor = actor;
         this.responses = responses;
         this.freshness = freshness;
+        this.maxAttempts = maxAttempts;
     }
 
     public record StatusView(UUID exportId, UUID meetingId, ExportFormat format,
             ExportStatus status, int attemptCount, OffsetDateTime createdAt,
             OffsetDateTime readyAt, String safeErrorCode,
             ExportFreshnessService.Freshness freshness,
-            OffsetDateTime freshnessCheckedAt) { }
+            OffsetDateTime freshnessCheckedAt, boolean retryEligible) { }
 
     @Operation(summary="Read current authorized status of a durable export")
     @GetMapping("/{exportId}")
     public ResponseEntity<ApiResponse<StatusView>> get(@PathVariable UUID exportId) {
-        ExportRecord record = records.require(exportId);
+        var observation = records.requireStatus(exportId, maxAttempts);
+        ExportRecord record = observation.record();
         access.requireReadable(record.meetingId(), actor.requireUserId());
         var evidence = freshness.evaluate(record);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(responses.success(new StatusView(record.id(),record.meetingId(),
                         record.format(),record.status(),record.generationAttempt(),
                         record.createdAt(),record.readyAt(),record.lastErrorCode(),
-                        evidence.freshness(),evidence.checkedAt())));
+                        evidence.freshness(),evidence.checkedAt(),observation.retryEligible())));
     }
 }

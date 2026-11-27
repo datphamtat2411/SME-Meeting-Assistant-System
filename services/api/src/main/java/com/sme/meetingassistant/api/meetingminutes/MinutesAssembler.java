@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -100,11 +101,19 @@ public class MinutesAssembler {
 
         List<MinutesSnapshot.Decision> decisions = mi.confirmedDecisions().stream()
             .map(MinutesAssembler::decision).toList();
-        List<MinutesSnapshot.Action> official = actions.officialForMeeting(meetingId).stream()
+        var officialSource = actions.officialForMeeting(meetingId);
+        List<MinutesSnapshot.Action> official = officialSource.stream()
             .map(a -> new MinutesSnapshot.Action(
                     a.id(), a.title(), a.details(), a.status().name(), a.sourceType(),
                     a.assigneeUserId(), a.dueDate(), a.version(), a.createdAt(),
                     a.confirmedByUserId(), a.confirmedAt())).toList();
+        Map<UUID, String> assigneeDisplayNames = officialSource.stream()
+                .filter(a -> a.assignee() != null
+                        && a.assignee().displayName() != null
+                        && !a.assignee().displayName().isBlank())
+                .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        a -> a.assignee().id(), a -> a.assignee().displayName(),
+                        (first, ignored) -> first));
 
         LinkedHashSet<String> warnings = new LinkedHashSet<>();
         if ("NOT_AVAILABLE".equals(transcript.availability())) warnings.add("TRANSCRIPT_NOT_AVAILABLE");
@@ -145,7 +154,8 @@ public class MinutesAssembler {
         OffsetDateTime assembledAt = clock.instant().atOffset(ZoneOffset.UTC);
         return new MinutesSnapshot(SCHEMA_VERSION, assembledAt, fingerprint,
                 completeness, meeting, summary, decisions, official, transcript,
-                warningCodes, false);
+                warningCodes, false,
+                new MinutesSnapshot.DisplayMetadata(assigneeDisplayNames));
     }
 
     private static MinutesSnapshot.Decision decision(DecisionView d) {

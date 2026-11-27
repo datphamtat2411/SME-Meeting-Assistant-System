@@ -1,0 +1,781 @@
+import { useEffect, useState } from 'react'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import type { FieldErrors } from '@/lib/core-api'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  Form,
+  FormControl,
+  FormDescription,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import type {
+  RoomCreatePayload,
+  RoomCreationReconciliation,
+  RoomPatchPayload,
+  RoomSnapshot,
+} from './room-api'
+import {
+  buildRoomCreatePayload,
+  buildRoomPatchPayload,
+  NoRoomChangesError,
+  roomFormSchema,
+  roomFormValuesFromRoom,
+  type RoomFormValues,
+} from './room-form'
+import type {
+  RoomConflictChoices,
+  RoomEditReconciliation,
+  RoomEditableField,
+} from './room-reconciliation'
+
+export type RoomEditorSession =
+  | {
+      operationId: number
+      contextKey: string
+      mode: 'create'
+      status: 'ready'
+    }
+  | {
+      operationId: number
+      contextKey: string
+      mode: 'edit'
+      roomId: string
+      status: 'loading' | 'error' | 'ready'
+      snapshot?: RoomSnapshot
+      initialValues?: RoomFormValues
+      loadError?: string
+    }
+
+export interface RoomOperationFeedback {
+  outcome: 'rejected' | 'precondition' | 'uncertain' | 'unknown'
+  message: string
+  fieldErrors?: FieldErrors
+  creationReconciliation?: RoomCreationReconciliation
+  latestSnapshot?: RoomSnapshot
+  editReconciliation?: RoomEditReconciliation
+  originalSnapshot?: RoomSnapshot
+  submittedPatch?: RoomPatchPayload
+  submittedCreationPayload?: RoomCreatePayload
+  latestMatchesRequest?: boolean
+  reconciliationError?: string
+  reconciliationLoading?: boolean
+}
+
+export type RoomEditorSubmit =
+  | {
+      operationId: number
+      contextKey: string
+      mode: 'create'
+      payload: RoomCreatePayload
+    }
+  | {
+      operationId: number
+      contextKey: string
+      mode: 'edit'
+      snapshot: RoomSnapshot
+      payload: RoomPatchPayload
+    }
+
+const blankValues: RoomFormValues = {
+  code: '',
+  name: '',
+  location: '',
+  capacity: '',
+  notes: '',
+}
+
+function roomDisplayValues(room: RoomSnapshot['room']) {
+  return [
+    ['Code', room.code],
+    ['Name', room.name],
+    ['Location', room.location ?? 'Not set'],
+    ['Capacity', room.capacity === null ? 'Not set' : String(room.capacity)],
+    ['Notes', room.notes ?? 'Not set'],
+  ] as const
+}
+
+function displayRoomFieldValue(value: string | number | null) {
+  return value === null ? 'Not set' : String(value)
+}
+
+function displayRoomFieldLabel(field: RoomEditableField) {
+  return field[0].toUpperCase() + field.slice(1)
+}
+
+function RoomConflictResolution({
+  reconciliation,
+  operationId,
+  authorizationVerified,
+  onResolve,
+}: {
+  reconciliation: RoomEditReconciliation
+  operationId: number
+  authorizationVerified: boolean
+  onResolve: (operationId: number, choices: RoomConflictChoices) => void
+}) {
+  const [conflictChoices, setConflictChoices] = useState<RoomConflictChoices>(
+    {}
+  )
+  const unresolvedConflict = reconciliation.conflicts.some(
+    (field) => conflictChoices[field] === undefined
+  )
+
+  return (
+    <div className='space-y-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3'>
+      <div>
+        <p className='font-medium'>Review conflicting fields</p>
+        <p className='text-muted-foreground'>
+          Choose the current server value or retain your intended value for each
+          conflict.
+        </p>
+      </div>
+      {reconciliation.conflicts.map((field) => {
+        const comparison = reconciliation.fields[field]
+        return (
+          <fieldset key={field} className='space-y-2 rounded-md border p-3'>
+            <legend className='px-1 font-medium'>
+              {displayRoomFieldLabel(field)}
+            </legend>
+            <label className='flex items-start gap-2'>
+              <input
+                type='radio'
+                name={`room-conflict-${field}`}
+                checked={conflictChoices[field] === 'server'}
+                onChange={() =>
+                  setConflictChoices((current) => ({
+                    ...current,
+                    [field]: 'server',
+                  }))
+                }
+              />
+              <span>
+                <span className='block text-xs text-muted-foreground'>
+                  Server value
+                </span>
+                <span className='block break-words'>
+                  {displayRoomFieldValue(comparison.latest)}
+                </span>
+              </span>
+            </label>
+            <label className='flex items-start gap-2'>
+              <input
+                type='radio'
+                name={`room-conflict-${field}`}
+                checked={conflictChoices[field] === 'intent'}
+                onChange={() =>
+                  setConflictChoices((current) => ({
+                    ...current,
+                    [field]: 'intent',
+                  }))
+                }
+              />
+              <span>
+                <span className='block text-xs text-muted-foreground'>
+                  Your intended value
+                </span>
+                <span className='block break-words'>
+                  {displayRoomFieldValue(comparison.intended ?? null)}
+                </span>
+              </span>
+            </label>
+          </fieldset>
+        )
+      })}
+      <Button
+        type='button'
+        variant='secondary'
+        size='sm'
+        disabled={!authorizationVerified || unresolvedConflict}
+        onClick={() => onResolve(operationId, conflictChoices)}
+      >
+        Resolve conflicts and continue
+      </Button>
+    </div>
+  )
+}
+
+export function RoomEditorDialog({
+  session,
+  saving,
+  authorizationVerified,
+  authorizationMessage,
+  onRetryAuthorization,
+  feedback,
+  onClose,
+  onRetrySnapshot,
+  onLoadLatest,
+  onReviewLatest,
+  onRestartFromLatest,
+  onReviewDirectory,
+  onReviewCreationDraft,
+  onResolveEditReconciliation,
+  onRetryCreationVerification,
+  onSubmit,
+}: {
+  session: RoomEditorSession | null
+  saving: boolean
+  authorizationVerified: boolean
+  authorizationMessage: string
+  onRetryAuthorization: () => void
+  feedback: RoomOperationFeedback | null
+  onClose: () => void
+  onRetrySnapshot: (roomId: string, operationId: number) => void
+  onLoadLatest: (roomId: string) => Promise<RoomSnapshot>
+  onReviewLatest: (snapshot: RoomSnapshot, operationId: number) => void
+  onRestartFromLatest: (snapshot: RoomSnapshot, operationId: number) => void
+  onReviewDirectory: () => void
+  onReviewCreationDraft: (operationId: number) => void
+  onResolveEditReconciliation: (
+    operationId: number,
+    choices: RoomConflictChoices
+  ) => void
+  onRetryCreationVerification: (operationId: number) => void
+  onSubmit: (input: RoomEditorSubmit) => void
+}) {
+  const [recoverySnapshot, setRecoverySnapshot] = useState<RoomSnapshot | null>(
+    null
+  )
+  const [recoveryError, setRecoveryError] = useState<string | null>(null)
+  const [recoveryLoading, setRecoveryLoading] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
+  const initialValues =
+    session?.mode === 'edit' && session.status === 'ready' && session.snapshot
+      ? (session.initialValues ?? roomFormValuesFromRoom(session.snapshot.room))
+      : blankValues
+  const form = useForm<RoomFormValues>({
+    resolver: zodResolver(roomFormSchema),
+    defaultValues: initialValues,
+    mode: 'onSubmit',
+  })
+
+  useEffect(() => {
+    if (!feedback?.fieldErrors) return
+    const supportedFields = new Set([
+      'code',
+      'name',
+      'location',
+      'capacity',
+      'notes',
+    ])
+    for (const [field, messages] of Object.entries(feedback.fieldErrors)) {
+      if (!supportedFields.has(field) || messages.length === 0) continue
+      form.setError(field as keyof RoomFormValues, {
+        type: 'server',
+        message: messages[0],
+      })
+    }
+  }, [feedback?.fieldErrors, form])
+
+  async function reloadLatest(roomId: string) {
+    setRecoveryLoading(true)
+    setRecoveryError(null)
+    try {
+      const latest = await onLoadLatest(roomId)
+      setRecoverySnapshot(latest)
+      if (session?.mode === 'edit') {
+        onReviewLatest(latest, session.operationId)
+      }
+    } catch (error) {
+      setRecoveryError(
+        error instanceof Error
+          ? error.message
+          : 'The latest room state could not be loaded.'
+      )
+    } finally {
+      setRecoveryLoading(false)
+    }
+  }
+
+  async function submit(values: RoomFormValues) {
+    if (!session || session.status !== 'ready') return
+    setLocalError(null)
+    try {
+      if (session.mode === 'create') {
+        onSubmit({
+          operationId: session.operationId,
+          contextKey: session.contextKey,
+          mode: 'create',
+          payload: buildRoomCreatePayload(values),
+        })
+        return
+      }
+      if (!session.snapshot) return
+      onSubmit({
+        operationId: session.operationId,
+        contextKey: session.contextKey,
+        mode: 'edit',
+        snapshot: session.snapshot,
+        payload: buildRoomPatchPayload(session.snapshot.room, values),
+      })
+    } catch (error) {
+      setLocalError(
+        error instanceof NoRoomChangesError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : 'Room values are invalid.'
+      )
+    }
+  }
+
+  const open = session !== null
+  const editing = session?.mode === 'edit'
+  const sessionRoom =
+    session?.mode === 'edit' ? session.snapshot?.room : undefined
+  const isRecoveryRequired =
+    feedback?.outcome === 'precondition' ||
+    feedback?.outcome === 'uncertain' ||
+    feedback?.outcome === 'unknown'
+  const currentRecoverySnapshot = recoverySnapshot ?? feedback?.latestSnapshot
+  const reconciliation = feedback?.editReconciliation
+  const conflictFields = reconciliation?.conflicts ?? []
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen && !saving) onClose()
+      }}
+    >
+      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+        {!authorizationVerified && session && (
+          <div
+            role='alert'
+            className='flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm'
+          >
+            <span>{authorizationMessage}</span>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={onRetryAuthorization}
+            >
+              Retry verification
+            </Button>
+          </div>
+        )}
+        {session?.mode === 'edit' && session.status === 'loading' ? (
+          <>
+            <DialogHeader>
+              <DialogTitle>Loading current room</DialogTitle>
+              <DialogDescription>
+                Retrieving the authoritative room state and concurrency token
+                before opening the editor.
+              </DialogDescription>
+            </DialogHeader>
+            <div
+              role='status'
+              className='py-8 text-center text-sm text-muted-foreground'
+            >
+              Loading room details…
+            </div>
+            <DialogFooter>
+              <Button variant='outline' disabled={saving} onClick={onClose}>
+                Cancel
+              </Button>
+            </DialogFooter>
+          </>
+        ) : session?.mode === 'edit' && session.status === 'error' ? (
+          <>
+            <DialogHeader>
+              <DialogTitle>Room details could not be loaded</DialogTitle>
+              <DialogDescription>
+                No edit session was opened because a reviewed authoritative
+                snapshot is required.
+              </DialogDescription>
+            </DialogHeader>
+            <div
+              role='alert'
+              className='rounded-md border border-destructive/30 p-3 text-sm'
+            >
+              {session.loadError ?? 'The room detail request failed.'}
+            </div>
+            <DialogFooter>
+              <Button variant='outline' onClick={onClose}>
+                Close
+              </Button>
+              <Button
+                disabled={!authorizationVerified}
+                onClick={() =>
+                  onRetrySnapshot(session.roomId, session.operationId)
+                }
+              >
+                Retry room details
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>
+                {editing ? 'Edit room metadata' : 'Add room'}
+              </DialogTitle>
+              <DialogDescription>
+                {editing
+                  ? 'Room code and lifecycle status are immutable in this metadata edit.'
+                  : 'Create a canonical room record. Blank optional values are saved as unset.'}
+              </DialogDescription>
+            </DialogHeader>
+            {isRecoveryRequired && feedback && (
+              <div
+                role='alert'
+                className='space-y-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm'
+              >
+                <p>{feedback.message}</p>
+                {session?.mode === 'edit' && (
+                  <>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      disabled={recoveryLoading || !authorizationVerified}
+                      onClick={() => void reloadLatest(session.roomId)}
+                    >
+                      {recoveryLoading
+                        ? 'Loading latest room…'
+                        : 'Reload latest for review'}
+                    </Button>
+                    {(recoveryError || feedback.reconciliationError) && (
+                      <div className='space-y-2'>
+                        <p role='alert' className='text-destructive'>
+                          {recoveryError ?? feedback.reconciliationError}
+                        </p>
+                        <Button
+                          type='button'
+                          variant='outline'
+                          size='sm'
+                          disabled={recoveryLoading || !authorizationVerified}
+                          onClick={() => void reloadLatest(session.roomId)}
+                        >
+                          Retry latest room
+                        </Button>
+                      </div>
+                    )}
+                    {currentRecoverySnapshot && (
+                      <div className='space-y-3 rounded-md border bg-background p-3'>
+                        <div>
+                          <p className='font-medium'>
+                            Latest authoritative state ·{' '}
+                            {currentRecoverySnapshot.room.status === 'ACTIVE'
+                              ? 'Active'
+                              : 'Inactive'}
+                          </p>
+                          <p className='text-muted-foreground'>
+                            {feedback.latestMatchesRequest === true
+                              ? 'The latest metadata matches the submitted changes. The request may have succeeded; no second request was sent.'
+                              : feedback.latestMatchesRequest === false
+                                ? 'The latest room state differs from the submitted changes. Keep your draft only after reviewing this version.'
+                                : 'Review this version before starting another edit.'}
+                          </p>
+                        </div>
+                        <dl className='grid gap-2 sm:grid-cols-2'>
+                          {roomDisplayValues(currentRecoverySnapshot.room).map(
+                            ([label, value]) => (
+                              <div key={label} className='min-w-0'>
+                                <dt className='text-xs text-muted-foreground'>
+                                  {label}
+                                </dt>
+                                <dd className='font-medium break-words'>
+                                  {value}
+                                </dd>
+                              </div>
+                            )
+                          )}
+                        </dl>
+                        {reconciliation && conflictFields.length > 0 && (
+                          <RoomConflictResolution
+                            key={reconciliation.latest.etag}
+                            reconciliation={reconciliation}
+                            operationId={session.operationId}
+                            authorizationVerified={authorizationVerified}
+                            onResolve={onResolveEditReconciliation}
+                          />
+                        )}
+                        {currentRecoverySnapshot.room.status === 'ACTIVE' ? (
+                          <div className='flex flex-wrap gap-2'>
+                            {reconciliation && conflictFields.length === 0 && (
+                              <Button
+                                type='button'
+                                variant='secondary'
+                                size='sm'
+                                disabled={!authorizationVerified}
+                                onClick={() =>
+                                  onResolveEditReconciliation(
+                                    session.operationId,
+                                    {}
+                                  )
+                                }
+                              >
+                                Keep intended changes and continue
+                              </Button>
+                            )}
+                            <Button
+                              type='button'
+                              variant='outline'
+                              size='sm'
+                              disabled={!authorizationVerified}
+                              onClick={() =>
+                                onRestartFromLatest(
+                                  currentRecoverySnapshot,
+                                  session.operationId
+                                )
+                              }
+                            >
+                              Discard my edits and restart from latest
+                            </Button>
+                          </div>
+                        ) : (
+                          <p className='text-destructive'>
+                            This room is inactive and cannot be edited.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+                {session?.mode === 'create' && (
+                  <div className='flex flex-wrap gap-2'>
+                    {feedback.reconciliationError && (
+                      <Button
+                        type='button'
+                        variant='secondary'
+                        size='sm'
+                        disabled={
+                          !authorizationVerified ||
+                          feedback.reconciliationLoading === true
+                        }
+                        onClick={() =>
+                          onRetryCreationVerification(session.operationId)
+                        }
+                      >
+                        {feedback.reconciliationLoading
+                          ? 'Verifying room…'
+                          : 'Retry verification'}
+                      </Button>
+                    )}
+                    {feedback.creationReconciliation?.status ===
+                      'not-found' && (
+                      <Button
+                        type='button'
+                        variant='secondary'
+                        size='sm'
+                        onClick={() =>
+                          onReviewCreationDraft(session.operationId)
+                        }
+                      >
+                        Review creation draft
+                      </Button>
+                    )}
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={onReviewDirectory}
+                    >
+                      Close and review directory
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+            {feedback?.creationReconciliation?.status === 'found' && (
+              <div
+                role='status'
+                className='space-y-2 rounded-md border bg-muted/40 p-3 text-sm'
+              >
+                <p>
+                  Room code {feedback.creationReconciliation.room.code} already
+                  exists.{' '}
+                  {feedback.creationReconciliation.metadataMatches
+                    ? 'Its metadata matches the submitted request; the request may have succeeded, but the server outcome cannot be attributed.'
+                    : 'Its metadata differs from the submitted request; review the existing record before deciding what to do.'}
+                </p>
+                <dl className='grid gap-2 sm:grid-cols-2'>
+                  {roomDisplayValues(feedback.creationReconciliation.room).map(
+                    ([label, value]) => (
+                      <div key={label} className='min-w-0'>
+                        <dt className='text-xs text-muted-foreground'>
+                          {label}
+                        </dt>
+                        <dd className='font-medium break-words'>{value}</dd>
+                      </div>
+                    )
+                  )}
+                </dl>
+              </div>
+            )}
+            {sessionRoom && (
+              <div className='rounded-md border bg-muted/40 px-3 py-2 text-sm'>
+                <span className='text-muted-foreground'>Room identity: </span>
+                <span className='font-mono font-medium'>
+                  {sessionRoom.code}
+                </span>
+                <span className='mx-2 text-muted-foreground'>·</span>
+                <span className='font-medium'>{sessionRoom.name}</span>
+              </div>
+            )}
+            <Form {...form}>
+              <form
+                id='room-editor-form'
+                onSubmit={form.handleSubmit(submit)}
+                className='space-y-4'
+              >
+                <FormField
+                  control={form.control}
+                  name='code'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Room code</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          readOnly={editing}
+                          maxLength={64}
+                          autoComplete='off'
+                          disabled={saving || isRecoveryRequired}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {editing
+                          ? 'Room codes cannot be changed after creation.'
+                          : 'Codes are normalized to uppercase by the Core API.'}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='name'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Name</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          maxLength={160}
+                          autoComplete='off'
+                          disabled={saving || isRecoveryRequired}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <div className='grid gap-4 sm:grid-cols-2'>
+                  <FormField
+                    control={form.control}
+                    name='location'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Location</FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            maxLength={255}
+                            autoComplete='off'
+                            disabled={saving || isRecoveryRequired}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          Optional. Leave blank to clear existing metadata.
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name='capacity'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Capacity</FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            type='text'
+                            inputMode='numeric'
+                            autoComplete='off'
+                            disabled={saving || isRecoveryRequired}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          Optional positive whole number.
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+                <FormField
+                  control={form.control}
+                  name='notes'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Notes</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          {...field}
+                          rows={4}
+                          disabled={saving || isRecoveryRequired}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        Optional room notes. No client-side length limit is
+                        imposed.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                {(localError ||
+                  (session?.status === 'ready' &&
+                    feedback?.outcome === 'rejected')) && (
+                  <p role='alert' className='text-sm text-destructive'>
+                    {localError ?? feedback?.message}
+                  </p>
+                )}
+              </form>
+            </Form>
+            <DialogFooter className='flex-col-reverse gap-2 sm:flex-row'>
+              <Button
+                type='button'
+                variant='outline'
+                onClick={onClose}
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+              <Button
+                type='submit'
+                form='room-editor-form'
+                disabled={
+                  saving ||
+                  !authorizationVerified ||
+                  session?.status !== 'ready' ||
+                  isRecoveryRequired
+                }
+              >
+                {saving ? 'Saving…' : editing ? 'Save room' : 'Create room'}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}

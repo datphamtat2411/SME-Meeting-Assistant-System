@@ -4,10 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
+import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { canonicalizeLocalDateTime } from '../data/meeting-creation-api'
 import { MeetingCreationDialog } from './meeting-creation-dialog'
 
@@ -92,36 +94,71 @@ function ControlledMeetingDialog() {
   )
 }
 
+function ContextualMeetingDialog({
+  initialScheduleDate = '2026-11-17',
+  onCommitted,
+}: {
+  initialScheduleDate?: string
+  onCommitted?: (meeting: {
+    meetingId: string
+    status: 'DRAFT' | 'SCHEDULED'
+  }) => void
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button type='button' onClick={() => setOpen(true)}>
+        Open contextual meeting
+      </button>
+      <MeetingCreationDialog
+        open={open}
+        onOpenChange={setOpen}
+        initialScheduleDate={initialScheduleDate}
+        onCommitted={onCommitted}
+      />
+    </>
+  )
+}
+
 function createQueryClient() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
+  })
+  queryClient.setQueryDefaults(preferencesQueryKey, { staleTime: Infinity })
+  queryClient.setQueryData(preferencesQueryKey, {
+    timezone: null,
+    locale: null,
+    meetingEmailEnabled: true,
+    actionItemEmailEnabled: true,
   })
   queryClient.setQueryData(currentUserQueryKey, currentUser)
   return queryClient
 }
 
 function mockRoomQueries() {
-  vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) => {
-    if (url === '/rooms/availability') {
-      return {
-        data: [],
-        meta: {
-          pagination: { ...pagination, totalElements: 0, totalPages: 0 },
-        },
+  return vi
+    .spyOn(coreApi, 'getWithMeta')
+    .mockImplementation(async (url, config) => {
+      if (url === '/rooms/availability') {
+        return {
+          data: [],
+          meta: {
+            pagination: { ...pagination, totalElements: 0, totalPages: 0 },
+          },
+        }
       }
-    }
-    if (url === '/users/meeting-candidates') {
-      const query = String(config?.params?.q ?? '')
+      if (url === '/users/meeting-candidates') {
+        const query = String(config?.params?.q ?? '')
+        return {
+          data: query.includes('second') ? [secondCandidate] : [candidate],
+          meta: { pagination },
+        }
+      }
       return {
-        data: query.includes('second') ? [secondCandidate] : [candidate],
+        data: [{ id: 'room-1', name: 'Boardroom', location: 'HQ' }],
         meta: { pagination },
       }
-    }
-    return {
-      data: [{ id: 'room-1', name: 'Boardroom', location: 'HQ' }],
-      meta: { pagination },
-    }
-  })
+    })
 }
 
 describe('MeetingCreationDialog', () => {
@@ -138,11 +175,13 @@ describe('MeetingCreationDialog', () => {
     const onCommitted = vi.fn()
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog
-          open
-          onOpenChange={onOpenChange}
-          onCommitted={onCommitted}
-        />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog
+            open
+            onOpenChange={onOpenChange}
+            onCommitted={onCommitted}
+          />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -171,6 +210,137 @@ describe('MeetingCreationDialog', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
+  it('prefills only local dates on a fresh contextual open and preserves edited dates', async () => {
+    mockRoomQueries()
+    const queryClient = createQueryClient()
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <RegionalPresentationProvider>
+          <ContextualMeetingDialog />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open contextual meeting' })
+    )
+    await expect
+      .element(screen.getByLabelText('Date', { exact: true }))
+      .toHaveValue('2026-11-17')
+    await expect
+      .element(screen.getByLabelText('End date'))
+      .toHaveValue('2026-11-17')
+    await expect.element(screen.getByLabelText('Start time')).toHaveValue('')
+    await expect.element(screen.getByLabelText('End time')).toHaveValue('')
+
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-11-19'
+    )
+    await screen.rerender(
+      <QueryClientProvider client={queryClient}>
+        <RegionalPresentationProvider>
+          <ContextualMeetingDialog initialScheduleDate='2026-11-18' />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+    await expect
+      .element(screen.getByLabelText('Date', { exact: true }))
+      .toHaveValue('2026-11-19')
+  })
+
+  it('keeps date-only prefill out of draft payloads and requires a full schedule interval', async () => {
+    mockRoomQueries()
+    const createSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValue({ data: draftMeeting, meta: {}, etag: 'draft-etag' })
+    const postSpy = vi.spyOn(coreApi, 'post')
+    const onCommitted = vi.fn()
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
+          <ContextualMeetingDialog onCommitted={onCommitted} />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open contextual meeting' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Contextual draft'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save Draft' }))
+    await expect
+      .element(screen.getByRole('button', { name: 'Open contextual meeting' }))
+      .toBeInTheDocument()
+    expect(onCommitted).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'DRAFT', meetingId: 'meeting-1' })
+    )
+    expect(createSpy).toHaveBeenCalledWith(
+      '/meetings',
+      { title: 'Contextual draft' },
+      expect.anything()
+    )
+    expect(createSpy.mock.calls[0]?.[1]).not.toHaveProperty('scheduledStartAt')
+    expect(createSpy.mock.calls[0]?.[1]).not.toHaveProperty('scheduledEndAt')
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open contextual meeting' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Incomplete schedule'
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+    await expect
+      .element(
+        screen.getByText(
+          'A complete date and time interval is required to schedule.'
+        )
+      )
+      .toBeInTheDocument()
+    expect(postSpy).not.toHaveBeenCalled()
+    expect(createSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores an invalid contextual local date and preserves ordinary dialog defaults', async () => {
+    mockRoomQueries()
+    function InvalidContextDialog() {
+      const [open, setOpen] = useState(false)
+      return (
+        <>
+          <button type='button' onClick={() => setOpen(true)}>
+            Open without a valid date
+          </button>
+          <MeetingCreationDialog
+            open={open}
+            onOpenChange={setOpen}
+            initialScheduleDate='2026-02-30'
+          />
+        </>
+      )
+    }
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
+          <InvalidContextDialog />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open without a valid date' })
+    )
+    await expect
+      .element(screen.getByLabelText('Date', { exact: true }))
+      .toHaveValue('')
+    await expect.element(screen.getByLabelText('End date')).toHaveValue('')
+  })
+
   it('selects returned candidates, preserves them across searches, and submits their IDs', async () => {
     mockRoomQueries()
     const createSpy = vi
@@ -178,7 +348,9 @@ describe('MeetingCreationDialog', () => {
       .mockResolvedValue({ data: draftMeeting, meta: {}, etag: 'draft-etag' })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -216,6 +388,81 @@ describe('MeetingCreationDialog', () => {
     )
   })
 
+  it('previews the selected room and proposed participants without creating a meeting', async () => {
+    const getSpy = mockRoomQueries()
+    const checkSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: {
+        roomId: 'room-1',
+        active: true,
+        available: true,
+        capacity: 2,
+        participantCount: 3,
+        capacityExceeded: true,
+      },
+      warnings: [
+        { code: 'CAPACITY_ADVISORY_EXCEEDED', userId: null },
+        { code: 'PARTICIPANT_OVERLAP', userId: 'user-2' },
+      ],
+    })
+    const createSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
+    await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
+    await userEvent.fill(screen.getByLabelText('End time'), '10:00')
+    await userEvent.click(
+      screen.getByRole('combobox', { name: 'Meeting room' })
+    )
+    await userEvent.click(screen.getByRole('option', { name: /Boardroom/ }))
+    await userEvent.click(
+      screen.getByRole('combobox', { name: 'Participants' })
+    )
+    await userEvent.fill(
+      screen.getByPlaceholder('Search active participants...'),
+      'candidate'
+    )
+    await userEvent.click(
+      screen.getByRole('option', { name: /Candidate User/ })
+    )
+
+    await expect
+      .element(screen.getByText(/Boardroom appears available/i))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Room capacity advisory.'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Participant schedule overlap warning.'))
+      .toBeInTheDocument()
+    expect(checkSpy).toHaveBeenCalledWith(
+      '/meeting-schedule-checks',
+      expect.objectContaining({
+        roomId: 'room-1',
+        start: expect.any(String),
+        end: expect.any(String),
+        participantUserIds: ['user-2'],
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
+    expect(checkSpy.mock.calls[0]?.[1]).not.toHaveProperty('meetingId')
+    expect(
+      getSpy.mock.calls.some(([url]) => url === '/rooms/availability')
+    ).toBe(false)
+    expect(createSpy).not.toHaveBeenCalled()
+  })
+
   it('previews before one create, schedules with the returned ETag, and reports committed status', async () => {
     mockRoomQueries()
     const postSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
@@ -241,11 +488,13 @@ describe('MeetingCreationDialog', () => {
     const onCommitted = vi.fn()
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog
-          open
-          onOpenChange={onOpenChange}
-          onCommitted={onCommitted}
-        />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog
+            open
+            onOpenChange={onOpenChange}
+            onCommitted={onCommitted}
+          />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -282,6 +531,99 @@ describe('MeetingCreationDialog', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
+  it('pins the editor timezone and requires an explicit DST occurrence before scheduling', async () => {
+    mockRoomQueries()
+    const queryClient = createQueryClient()
+    const preferences = {
+      timezone: 'America/New_York',
+      locale: 'en-US',
+      meetingEmailEnabled: true,
+      actionItemEmailEnabled: true,
+    }
+    queryClient.setQueryData(preferencesQueryKey, preferences)
+    const start = '2026-11-01T06:30:00.000Z'
+    const end = '2026-11-01T07:30:00.000Z'
+    const draft = {
+      ...draftMeeting,
+      scheduledStartAt: start,
+      scheduledEndAt: end,
+    }
+    const postSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValueOnce({ data: draft, meta: {}, etag: 'draft-etag' })
+      .mockResolvedValueOnce({
+        data: { ...draft, status: 'SCHEDULED' as const },
+        meta: {},
+        etag: 'scheduled-etag',
+      })
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'DST meeting'
+    )
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-11-01'
+    )
+    await userEvent.fill(screen.getByLabelText('Start time'), '01:30')
+    await userEvent.fill(screen.getByLabelText('End time'), '02:30')
+    await expect
+      .element(screen.getByLabelText('Start time UTC offset'))
+      .toHaveValue('')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+    expect(postSpy).not.toHaveBeenCalled()
+    expect(previewSpy).not.toHaveBeenCalled()
+
+    queryClient.setQueryData(preferencesQueryKey, {
+      ...preferences,
+      timezone: 'Asia/Tokyo',
+    })
+    await expect
+      .element(screen.getByText(/This editor retains America\/New_York/))
+      .toBeInTheDocument()
+    await userEvent.selectOptions(
+      screen.getByLabelText('Start time UTC offset'),
+      '2026-11-01T06:30:00Z'
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+    await expect
+      .element(screen.getByText('Meeting scheduled'))
+      .toBeInTheDocument()
+
+    expect(previewSpy).toHaveBeenCalledWith(
+      '/meeting-schedule-checks',
+      expect.objectContaining({ start, end }),
+      undefined
+    )
+    expect(postSpy).toHaveBeenCalledTimes(2)
+    expect(postSpy.mock.calls[0]?.[1]).toMatchObject({
+      scheduledStartAt: start,
+      scheduledEndAt: end,
+    })
+    expect(postSpy.mock.calls[1]?.[1]).toEqual({
+      scheduledStartAt: start,
+      scheduledEndAt: end,
+    })
+  })
+
   it('keeps the created draft and retries scheduling without a second create', async () => {
     mockRoomQueries()
     const postSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
@@ -304,7 +646,7 @@ describe('MeetingCreationDialog', () => {
         meta: {},
         etag: 'scheduled-etag',
       })
-    vi.spyOn(coreApi, 'post').mockResolvedValue({
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
       previewOnly: true,
       canSchedule: true,
       roomConflict: false,
@@ -313,7 +655,9 @@ describe('MeetingCreationDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -344,8 +688,87 @@ describe('MeetingCreationDialog', () => {
     await expect
       .element(screen.getByText('Meeting scheduled'))
       .toBeInTheDocument()
+    expect(previewSpy).toHaveBeenCalledTimes(2)
+    expect(previewSpy.mock.calls[1]?.[1]).not.toHaveProperty('meetingId')
     expect(
       postSpy.mock.calls.filter(([url]) => url === '/meetings')
+    ).toHaveLength(1)
+  })
+
+  it('rechecks a recovered draft and blocks retry when the room has since conflicted', async () => {
+    mockRoomQueries()
+    const mutationSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
+    mutationSpy
+      .mockResolvedValueOnce({
+        data: scheduledDraft,
+        meta: {},
+        etag: 'draft-etag',
+      })
+      .mockRejectedValueOnce(
+        new CoreApiError({
+          status: 409,
+          message: 'Room conflict',
+          kind: 'http',
+        })
+      )
+    const previewSpy = vi.spyOn(coreApi, 'post')
+    previewSpy
+      .mockResolvedValueOnce({
+        previewOnly: true,
+        canSchedule: true,
+        roomConflict: false,
+        room: null,
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        previewOnly: true,
+        canSchedule: false,
+        roomConflict: true,
+        room: null,
+        warnings: [],
+      })
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Recovered conflict'
+    )
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
+    await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
+    await userEvent.fill(screen.getByLabelText('End time'), '10:00')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+    await expect
+      .element(screen.getByText('Draft created, not scheduled'))
+      .toBeInTheDocument()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retry schedule' })
+    )
+
+    await expect
+      .element(
+        screen.getByText(
+          'The selected room is no longer available for this interval. The existing draft was preserved.'
+        )
+      )
+      .toBeInTheDocument()
+    expect(previewSpy).toHaveBeenCalledTimes(2)
+    expect(previewSpy.mock.calls[1]?.[1]).not.toHaveProperty('meetingId')
+    expect(
+      mutationSpy.mock.calls.filter(([url]) =>
+        url.includes('/meetings/meeting-1/schedule')
+      )
     ).toHaveLength(1)
   })
 
@@ -367,7 +790,9 @@ describe('MeetingCreationDialog', () => {
       })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <ControlledMeetingDialog />
+        <RegionalPresentationProvider>
+          <ControlledMeetingDialog />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -451,7 +876,9 @@ describe('MeetingCreationDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -502,7 +929,9 @@ describe('MeetingCreationDialog', () => {
       })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -534,7 +963,9 @@ describe('MeetingCreationDialog', () => {
     )
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -568,7 +999,9 @@ describe('MeetingCreationDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -603,7 +1036,9 @@ describe('MeetingCreationDialog', () => {
     )
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -642,7 +1077,9 @@ describe('MeetingCreationDialog', () => {
       .mockReturnValueOnce(pending)
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -692,7 +1129,9 @@ describe('MeetingCreationDialog', () => {
       })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -745,7 +1184,7 @@ describe('MeetingCreationDialog', () => {
         meta: {},
         etag: 'scheduled-etag',
       })
-    vi.spyOn(coreApi, 'post').mockResolvedValue({
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
       previewOnly: true,
       canSchedule: true,
       roomConflict: false,
@@ -757,7 +1196,9 @@ describe('MeetingCreationDialog', () => {
       .mockResolvedValue({ data: scheduledDraft, meta: {}, etag: 'fresh-etag' })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -787,6 +1228,8 @@ describe('MeetingCreationDialog', () => {
     await expect
       .element(screen.getByText('Meeting scheduled'))
       .toBeInTheDocument()
+    expect(previewSpy).toHaveBeenCalledTimes(2)
+    expect(previewSpy.mock.calls[1]?.[1]).not.toHaveProperty('meetingId')
     expect(
       postSpy.mock.calls.filter(([url]) => url === '/meetings')
     ).toHaveLength(1)
@@ -819,7 +1262,9 @@ describe('MeetingCreationDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -885,11 +1330,13 @@ describe('MeetingCreationDialog', () => {
     })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <MeetingCreationDialog
-          open
-          onOpenChange={vi.fn()}
-          onCommitted={onCommitted}
-        />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog
+            open
+            onOpenChange={vi.fn()}
+            onCommitted={onCommitted}
+          />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 
@@ -957,7 +1404,9 @@ describe('MeetingCreationDialog', () => {
       .mockRejectedValue(new Error('detail unavailable'))
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
-        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
       </QueryClientProvider>
     )
 

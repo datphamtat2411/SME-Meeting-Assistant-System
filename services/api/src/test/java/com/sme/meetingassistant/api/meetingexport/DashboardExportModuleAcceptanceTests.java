@@ -5,15 +5,23 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.sme.meetingassistant.api.media.MediaProperties;
+import com.sme.meetingassistant.api.media.storage.S3ObjectStorageAdapter;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.Principal;
+import java.time.Duration;
 import java.util.UUID;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -25,16 +33,27 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.utility.DockerImageName;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
  * DE-13 acceptance: real canonical Meeting/Transcript/Summary/Decision/Action Item
  * persistence -> actual MinutesAssembler -> Spring HTTP admission -> PostgreSQL
- * durable worker -> both renderers -> authorized status/capability -> stale and
- * revocation. The private network-object boundary is an integrity-verifying
- * test double; ExportS3StorageIntegrationTests owns real RustFS/S3 verification.
- * No @MockitoBean for canonical source assembly.
+ * durable worker -> both renderers -> real private RustFS/S3 objects ->
+ * authorized status/capability -> stale and revocation.
+ * The public API signs HTTPS URLs, while a separate test-local signer verifies
+ * actual HTTP downloads from the isolated RustFS container. This does not
+ * establish public HTTPS transport or Web browser acceptance.
+ * No mocked Minutes assembly, worker, renderer, or object storage.
  */
 @ActiveProfiles("test")
 @SpringBootTest(properties={
@@ -48,25 +67,79 @@ import tools.jackson.databind.ObjectMapper;
 class DashboardExportModuleAcceptanceTests {
     @TestConfiguration(proxyBeanMethods=false)
     static class StorageConfig {
-        @Bean @Primary
-        ExportJobIntegrationTests.InMemoryExportStore verifiedSourceStore() {
-            return new ExportJobIntegrationTests.InMemoryExportStore();
+        @Bean(destroyMethod = "close")
+        RustfsFixture mi06Rustfs() {
+            return new RustfsFixture();
         }
 
-        @Bean @Primary
-        ExportDownloadStore verifiedDownload(
-                ExportJobIntegrationTests.InMemoryExportStore store) {
-            return (record, ttl) -> {
-                byte[] actual = store.readVerified(record.objectKey(),
-                        record.artifactSha256(), 32 * 1024 * 1024);
-                if (actual.length != record.artifactSizeBytes()
-                        || record.status() != ExportStatus.READY) {
-                    throw new ExportArtifactStore.IntegrityFailure(
-                            "DE13 test: persisted artifact metadata mismatch");
+        @Bean
+        @Primary
+        S3ObjectStorageAdapter mi06PublicStorage(RustfsFixture fixture) {
+            return new S3ObjectStorageAdapter(fixture.properties(true));
+        }
+
+        @Bean
+        S3ObjectStorageAdapter mi06LocalStorage(RustfsFixture fixture) {
+            return new S3ObjectStorageAdapter(fixture.properties(false));
+        }
+    }
+
+    /** Uses the same pinned storage image as ExportS3StorageIntegrationTests. */
+    static final class RustfsFixture implements AutoCloseable {
+        private static final String ACCESS = "mi06-test-access";
+        private static final String SECRET = "mi06-isolated-test-secret-value";
+        private static final String BUCKET = "mi06-private-exports";
+        private final GenericContainer<?> container = new GenericContainer<>(
+                DockerImageName.parse("rustfs/rustfs:1.0.3"))
+                .withEnv("RUSTFS_ACCESS_KEY", ACCESS)
+                .withEnv("RUSTFS_SECRET_KEY", SECRET)
+                .withEnv("RUSTFS_ADDRESS", ":9000")
+                .withEnv("RUSTFS_CONSOLE_ENABLE", "false")
+                .withExposedPorts(9000).withCommand("/data")
+                .waitingFor(Wait.forHttp("/health/ready").forPort(9000).forStatusCode(200))
+                .withStartupTimeout(Duration.ofMinutes(3));
+        private final String endpoint;
+
+        RustfsFixture() {
+            container.start();
+            try {
+                endpoint = "http://" + container.getHost() + ":" + container.getMappedPort(9000);
+                try (S3Client admin = S3Client.builder().endpointOverride(URI.create(endpoint))
+                        .region(Region.US_EAST_1)
+                        .serviceConfiguration(S3Configuration.builder()
+                                .pathStyleAccessEnabled(true).build())
+                        .credentialsProvider(StaticCredentialsProvider.create(
+                                AwsBasicCredentials.create(ACCESS, SECRET))).build()) {
+                    admin.createBucket(CreateBucketRequest.builder().bucket(BUCKET).build());
                 }
-                return "https://downloads.example.invalid/de13/" + record.id()
-                        + "?X-Amz-Signature=de13-integrity-verified";
-            };
+            } catch (RuntimeException | Error failure) {
+                container.stop();
+                throw failure;
+            }
+        }
+
+        MediaProperties properties(boolean publicSigner) {
+            MediaProperties config = new MediaProperties();
+            var bucket = config.getStorage();
+            bucket.setEndpoint(endpoint);
+            bucket.setRegion("us-east-1");
+            bucket.setBucket(BUCKET);
+            bucket.setAccessKey(ACCESS);
+            bucket.setSecretKey(SECRET);
+            bucket.setPathStyleAccess(true);
+            if (publicSigner) {
+                bucket.setPublicDownloadEndpoint("https://downloads.example.invalid");
+            }
+            return config;
+        }
+
+        URI unsignedArtifact(ExportRecord record) {
+            return URI.create(endpoint + "/" + BUCKET + "/" + record.objectKey());
+        }
+
+        @Override
+        public void close() {
+            container.stop();
         }
     }
 
@@ -76,11 +149,12 @@ class DashboardExportModuleAcceptanceTests {
     @Autowired MeetingExportRepository exports;
     @Autowired ExportJobProcessor worker;
     @Autowired ExportGenerationStateMachine state;
-    @Autowired ExportJobIntegrationTests.InMemoryExportStore storage;
+    @Autowired S3ExportArtifactStore storage;
+    @Autowired RustfsFixture rustfs;
+    @Autowired @Qualifier("mi06LocalStorage") S3ObjectStorageAdapter localStorage;
 
     @BeforeEach
     void clearUnclaimedFixtures() {
-        storage.clear();
         for (int i = 0; i < 100; i++) {
             var claim = state.claimNext(30);
             if (claim.isEmpty()) break;
@@ -128,13 +202,13 @@ class DashboardExportModuleAcceptanceTests {
         assertThat(pdfArtifact.status()).isEqualTo(ExportStatus.READY);
         assertThat(md.sourceFingerprint()).isEqualTo(originalFingerprint);
         assertThat(pdfArtifact.sourceFingerprint()).isEqualTo(originalFingerprint);
-        assertThat(new String(storage.readVerified(md.objectKey(),
-                md.artifactSha256(), 32 * 1024 * 1024), StandardCharsets.UTF_8))
+        byte[] downloadedMarkdown = downloadFromIsolatedStorage(md);
+        byte[] downloadedPdf = downloadFromIsolatedStorage(pdfArtifact);
+        assertThat(new String(downloadedMarkdown, StandardCharsets.UTF_8))
                 .contains("Tóm tắt đã được rà soát", "Chốt triển khai giải pháp A",
                         "Chuẩn bị tài liệu kiểm thử")
                 .doesNotContain("Đề xuất chưa duyệt");
-        try (var doc = Loader.loadPDF(storage.readVerified(pdfArtifact.objectKey(),
-                pdfArtifact.artifactSha256(), 32 * 1024 * 1024))) {
+        try (var doc = Loader.loadPDF(downloadedPdf)) {
             String rendered = new PDFTextStripper().getText(doc);
             assertThat(rendered).contains("Tóm tắt đã được rà soát",
                     "Chốt triển khai giải pháp A", "Chuẩn bị tài liệu kiểm thử");
@@ -148,8 +222,10 @@ class DashboardExportModuleAcceptanceTests {
                 "artifactSha256", "claimToken");
         JsonNode issued = data(mvc.perform(post("/api/v1/exports/{id}/access-url", markdown)
                 .principal(as(member))).andExpect(status().isOk()).andReturn());
-        assertThat(issued.path("accessUrl").asText()).startsWith("https://");
-        assertThat(issued.path("freshness").asText()).isEqualTo("CURRENT");
+        assertPublicCapability(issued, md);
+        JsonNode issuedPdf = data(mvc.perform(post("/api/v1/exports/{id}/access-url", pdf)
+                .principal(as(member))).andExpect(status().isOk()).andReturn());
+        assertPublicCapability(issuedPdf, pdfArtifact);
 
         mvc.perform(get("/api/v1/exports/{id}", markdown)
                 .principal(as(outsider))).andExpect(status().isNotFound());
@@ -166,6 +242,10 @@ class DashboardExportModuleAcceptanceTests {
         assertThat(exports.require(markdown).sourceFingerprint())
                 .isEqualTo(originalFingerprint);
         assertThat(exports.require(pdf).status()).isEqualTo(ExportStatus.READY);
+        assertThat(storage.readVerified(md.objectKey(), md.artifactSha256(),
+                32 * 1024 * 1024)).isEqualTo(downloadedMarkdown);
+        assertThat(storage.readVerified(pdfArtifact.objectKey(), pdfArtifact.artifactSha256(),
+                32 * 1024 * 1024)).isEqualTo(downloadedPdf);
 
         jdbc.update("UPDATE meeting_participants SET removed_at=clock_timestamp() "
                 + "WHERE meeting_id=? AND user_id=? AND removed_at IS NULL", meeting, member);
@@ -201,6 +281,51 @@ class DashboardExportModuleAcceptanceTests {
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM meeting_exports WHERE meeting_id=?",
                 Long.class, meeting)).isZero();
+    }
+
+    private static void assertPublicCapability(JsonNode capability, ExportRecord record) {
+        URI url = URI.create(capability.path("accessUrl").asText());
+        assertThat(url.getScheme()).isEqualTo("https");
+        assertThat(url.getHost()).isEqualTo("downloads.example.invalid");
+        assertThat(url.getRawQuery() != null && url.getRawQuery().contains("X-Amz-Signature="))
+                .isTrue();
+        assertThat(capability.path("exportId").asText()).isEqualTo(record.id().toString());
+        assertThat(capability.path("filename").asText()).isEqualTo(
+                "meeting-minutes-" + record.id() + "." + record.format().extension());
+        assertThat(capability.path("freshness").asText()).isEqualTo("CURRENT");
+    }
+
+    /**
+     * Exercise real signed GETs without rewriting or following the public API
+     * capability to an untrusted HTTP origin. The test-local storage adapter
+     * signs the same READY record for this isolated HTTP-only container.
+     */
+    private byte[] downloadFromIsolatedStorage(ExportRecord record) throws Exception {
+        String signed = new S3ExportArtifactStore(localStorage)
+                .createVerifiedCapability(record, Duration.ofSeconds(60));
+        try (HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10)).build()) {
+            var unsigned = client.send(HttpRequest.newBuilder(rustfs.unsignedArtifact(record))
+                    .timeout(Duration.ofSeconds(20)).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+            assertThat(unsigned.statusCode()).isEqualTo(403);
+            var response = client.send(HttpRequest.newBuilder(URI.create(signed))
+                    .timeout(Duration.ofSeconds(20)).GET().build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat((long) response.body().length).isEqualTo(record.artifactSizeBytes());
+            assertThat(ExportSnapshotCodec.sha256(response.body()))
+                    .isEqualTo(record.artifactSha256());
+            assertThat(response.headers().firstValue("Content-Type").orElse(""))
+                    .isEqualTo(record.format() == ExportFormat.PDF
+                            ? "application/pdf" : "text/markdown; charset=UTF-8");
+            assertThat(response.headers().firstValue("Content-Disposition").orElse(""))
+                    .isEqualTo("attachment; filename=\"meeting-minutes-" + record.id()
+                            + "." + record.format().extension() + "\"");
+            assertThat(response.headers().firstValue("Cache-Control").orElse(""))
+                    .contains("private", "no-store");
+            return response.body();
+        }
     }
 
     private UUID requestExport(UUID meeting, UUID owner, String format, String key)

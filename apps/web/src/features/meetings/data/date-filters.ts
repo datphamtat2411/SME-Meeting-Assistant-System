@@ -1,64 +1,49 @@
-function parseCalendarDate(value: string) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value)
-  if (!match) return undefined
-  const [, yearValue, monthValue, dayValue] = match
-  const year = Number(yearValue)
-  const month = Number(monthValue)
-  const day = Number(dayValue)
-  const date = new Date(year, month - 1, day)
-  if (
-    !Number.isFinite(date.getTime()) ||
-    date.getFullYear() !== year ||
-    date.getMonth() !== month - 1 ||
-    date.getDate() !== day
-  ) {
-    return undefined
-  }
-  return date
-}
+import {
+  civilBoundary,
+  civilDayInterval,
+  compareInstants,
+  instantCivilFields,
+  parseCivilDate,
+} from '@/lib/regional-time'
 
+/** Only present a whole-day selection when the saved instant is a civil
+ * boundary in the active timezone. An offset in a URL is not a timezone.
+ */
 export function dateInputValue(
   value: string | undefined,
-  exclusiveEnd = false
+  exclusiveEnd = false,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 ) {
   if (!value) return ''
-  const date = parseCalendarDate(value)
+  const civil = instantCivilFields(value, timezone)
+  const date = civil && parseCivilDate(civil.date)
   if (!date) return ''
-  if (exclusiveEnd) date.setDate(date.getDate() - 1)
-
-  return [date.getFullYear(), date.getMonth() + 1, date.getDate()]
-    .map((part, index) =>
-      index === 0 ? String(part) : String(part).padStart(2, '0')
-    )
-    .join('-')
+  try {
+    if (compareInstants(value, civilBoundary(date, timezone)) !== 0) return ''
+    if (!exclusiveEnd) return date.toString()
+    let previous = date.subtract({ days: 1 })
+    // A skipped civil date has no occupied interval.
+    while (compareInstants(civilBoundary(previous, timezone), value) === 0) {
+      previous = previous.subtract({ days: 1 })
+    }
+    return previous.toString()
+  } catch {
+    return ''
+  }
 }
 
 export function dateInputToOffsetDateTime(
   value: string,
-  exclusiveEnd: boolean
+  exclusiveEnd: boolean,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 ) {
-  const [year, month, day] = value.split('-').map(Number)
-  if (![year, month, day].every(Number.isInteger)) return undefined
-
-  const date = new Date(year, month - 1, day)
-  if (
-    !Number.isFinite(date.getTime()) ||
-    date.getFullYear() !== year ||
-    date.getMonth() !== month - 1 ||
-    date.getDate() !== day
-  ) {
+  const date = parseCivilDate(value)
+  if (!date) return undefined
+  try {
+    const interval = civilDayInterval(date, timezone)
+    if (compareInstants(interval.from, interval.to) >= 0) return undefined
+    return exclusiveEnd ? interval.to : interval.from
+  } catch {
     return undefined
   }
-  if (exclusiveEnd) date.setDate(date.getDate() + 1)
-
-  const offsetMinutes = -date.getTimezoneOffset()
-  const sign = offsetMinutes >= 0 ? '+' : '-'
-  const absoluteOffset = Math.abs(offsetMinutes)
-  const offsetHours = String(Math.floor(absoluteOffset / 60)).padStart(2, '0')
-  const offsetRemainder = String(absoluteOffset % 60).padStart(2, '0')
-  const dateValue = [date.getFullYear(), date.getMonth() + 1, date.getDate()]
-    .map((part) => String(part).padStart(2, '0'))
-    .join('-')
-
-  return `${dateValue}T00:00:00${sign}${offsetHours}:${offsetRemainder}`
 }

@@ -13,6 +13,7 @@ import java.net.URI;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
 import java.util.UUID;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpHeaders;
@@ -43,6 +44,7 @@ public class ActionItemController {
             @RequestParam(required=false) @Size(max=200) String q,
             @RequestParam(required=false) @Size(max=64) String assignee,
             @RequestParam(required=false) Boolean overdue,
+            @RequestParam(required=false) Boolean official,
             @RequestParam(defaultValue="0") @Min(0) int page,
             @RequestParam(defaultValue="20") @Min(1) @Max(100) int size,
             @RequestParam(defaultValue="createdAt,desc") String sort) {
@@ -51,8 +53,31 @@ public class ActionItemController {
         Sort.Direction direction;
         try { direction = Sort.Direction.fromString(parts[1]); }
         catch (IllegalArgumentException bad) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST); }
-        return responses.successPage(service.list(caller.requireUserId(), meetingId, status, q, assignee, overdue,
-            PageRequest.of(page, size, Sort.by(direction, parts[0]))));
+        return responses.successPage(service.list(caller.requireUserId(), meetingId, status, q, assignee,
+            overdue, official, PageRequest.of(page, size, Sort.by(direction, parts[0]))));
+    }
+
+    @GetMapping("/management-targets")
+    public ApiResponse<List<ActionItemService.ManagementTarget>> managementTargets(
+            @RequestParam(required=false) @Size(max=200) String q,
+            @RequestParam(defaultValue="0") @Min(0) int page,
+            @RequestParam(defaultValue="20") @Min(1) @Max(20) int size) {
+        return responses.successPage(service.managementTargets(caller.requireUserId(), q, page, size));
+    }
+
+    @GetMapping("/management-capability")
+    public ApiResponse<ActionItemService.ManagementCapability> managementCapability(
+            @RequestParam(required=false) UUID meetingId) {
+        return responses.success(service.managementCapability(caller.requireUserId(), meetingId));
+    }
+
+    @GetMapping("/assignee-candidates")
+    public ApiResponse<List<ActionItemService.AssigneeCandidate>> assigneeCandidates(
+            @RequestParam UUID meetingId,
+            @RequestParam @Size(max=200) String q,
+            @RequestParam(defaultValue="0") @Min(0) int page,
+            @RequestParam(defaultValue="20") @Min(1) @Max(20) int size) {
+        return responses.successPage(service.assigneeCandidates(caller.requireUserId(), meetingId, q, page, size));
     }
 
     @PostMapping

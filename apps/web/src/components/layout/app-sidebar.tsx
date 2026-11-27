@@ -6,14 +6,22 @@ import {
   SidebarHeader,
   SidebarRail,
 } from '@/components/ui/sidebar'
+import type { AuthContext } from '@/features/auth/session/current-user'
 import { AppTitle } from './app-title'
-import { navigationGroups } from './data/navigation-data'
+import { getNavigationGroups } from './data/navigation-data'
 import { NavGroup } from './nav-group'
 import { NavUser } from './nav-user'
 import { type UserPresentation } from './types'
 
-export function AppSidebar({ user }: { user?: UserPresentation }) {
+export function AppSidebar({
+  user,
+  identity,
+}: {
+  user?: UserPresentation
+  identity?: AuthContext | null
+}) {
   const { collapsible, variant } = useLayout()
+  const groups = getNavigationGroups(identity)
   return (
     <Sidebar collapsible={collapsible} variant={variant}>
       <SidebarHeader>
@@ -21,8 +29,8 @@ export function AppSidebar({ user }: { user?: UserPresentation }) {
       </SidebarHeader>
       <SidebarContent>
         <nav aria-label='Primary navigation'>
-          {navigationGroups.map((props) => (
-            <NavGroup key={props.title} {...props} />
+          {groups.map((props) => (
+            <NavGroup key={props.title} {...props} activeGroups={groups} />
           ))}
         </nav>
       </SidebarContent>

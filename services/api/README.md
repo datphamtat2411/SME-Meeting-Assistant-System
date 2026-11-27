@@ -92,7 +92,9 @@ The API and PostgreSQL canonical files provide the values; the mapped values
 are passed only to the Maven process.
 Credentialed CORS is enabled by default, so the allowed origin must be an
 explicit origin rather than empty or `*`. Change the local origin only when the
-browser client is actually served from a different origin.
+browser client is actually served from a different supported origin. The
+canonical local Web origin is `http://localhost:5173`; the local Web proxy
+reaches Core at `http://127.0.0.1:8080`.
 
 | Setting | Purpose |
 | --- | --- |
@@ -176,7 +178,10 @@ substitute. `ADMINISTRATOR` remains an organizational-management role; meeting
 content authorization is evaluated separately.
 
 For direct local HTTP, leave HSTS disabled, which is the application default.
-Only enable `APP_HTTP_SECURITY_HSTS_ENABLED` after verifying an HTTPS setup.
+The public local Core connector is HTTP; private service connectors, broker,
+storage, and AI HTTPS/mTLS settings remain isolated service-security contracts
+and are not browser prerequisites. Only enable HSTS after verifying an HTTPS
+deployment.
 Do not use the `test` Spring profile to run the normal local API; that profile
 is used by the test suite.
 
@@ -290,7 +295,7 @@ not the default development shutdown workflow.
 | PostgreSQL authentication fails | Confirm `DB_USERNAME` and `DB_PASSWORD` match the credentials used when the existing PostgreSQL volume was initialized. |
 | `DB_URL` or datasource settings are missing | Confirm the PostgreSQL canonical file contains non-empty bootstrap values and launch Core through `./run-core.sh`. |
 | Runtime environment validation fails | Set a non-empty `APP_ENVIRONMENT`, normally `development` for local HTTP. |
-| CORS configuration validation fails | Set an explicit approved origin, such as `APP_HTTP_SECURITY_CORS_ALLOWED_ORIGINS=http://localhost:3000`; do not use an empty or wildcard origin with credentialed CORS. |
+| CORS configuration validation fails | Set the canonical explicit origin `APP_HTTP_SECURITY_CORS_ALLOWED_ORIGINS=http://localhost:5173`; do not use an empty or wildcard origin with credentialed CORS. |
 | Startup rejects RS256 keys or issuer/audience | Provide matching RSA private/public PEM files (2048+ bits), a unique `APP_AUTH_JWT_KEY_ID`, `APP_AUTH_JWT_ISSUER` and `APP_AUTH_JWT_AUDIENCE`; these are required even with login transport disabled. |
 | Setup invitation creation fails | Configure a separate valid Base64 `APP_ACCOUNT_SETUP_SIGNING_KEY`; for mail delivery also configure an approved HTTPS setup URL and SMTP sender. |
 | Login/recovery endpoints are unavailable | Confirm the relevant opt-in flag and its independent signing/abuse secrets, HTTPS/CSRF prerequisites, and approved rollout; do not disable security to expose them. |

@@ -9,9 +9,11 @@ There is one canonical dotenv file per logical module:
 | PostgreSQL bootstrap | `infra/local/postgres/.env` |
 | Secure integration bootstrap | `infra/local/secure-integration/.env` |
 | PI-05 orchestration metadata | `infra/local/pi05-isolated/.env` |
-| Web | `apps/web/.env` |
+| Web | `apps/web/.env.local` |
 
-Copy each adjacent `.env.example` once and keep the local files untracked.
+Copy each adjacent `.env.example` once to the module's canonical local file and
+keep the local files untracked. Vite's active Web local override is
+`apps/web/.env.local`.
 Launchers parse literal `KEY=VALUE` entries; they do not execute dotenv files.
 Core receives `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD` only as a launch-time
 mapping from PostgreSQL bootstrap settings. AI launchers map only the selected

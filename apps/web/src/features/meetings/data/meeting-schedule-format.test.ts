@@ -49,6 +49,13 @@ describe('meeting schedule formatter', () => {
     ).toBe('Nov 10, 2026 · 2:00 AM - 3:00 AM')
   })
 
+  it('uses the effective locale and timezone without changing instants', () => {
+    const start = '2026-12-01T02:00:00Z'
+    const end = '2026-12-01T03:00:00Z'
+    const result = formatMeetingSchedule(start, end, 'Asia/Tokyo', 'en-GB')
+    expect(result).toBe('1 Dec 2026 · 11:00 - 12:00')
+  })
+
   it('labels incomplete draft schedules as unscheduled', () => {
     expect(formatMeetingSchedule(null, null, 'UTC')).toBe('Unscheduled')
     expect(formatMeetingSchedule('2026-11-10T09:00:00Z', null, 'UTC')).toBe(

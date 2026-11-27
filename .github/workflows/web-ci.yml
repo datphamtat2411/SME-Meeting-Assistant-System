@@ -54,7 +54,17 @@ jobs:
         run: pnpm run lint
 
       - name: Check Web formatting
+        id: web-format
         run: pnpm run format:check
+
+      - name: Show formatting diff on failure
+        if: failure() && steps.web-format.outcome == 'failure'
+        run: |
+          pnpm exec prettier --write . > /dev/null
+          git diff --no-color
+
+      - name: Verify Web transport security
+        run: pnpm run test:transport:node
 
       - name: Build Web
         run: pnpm run build
@@ -88,6 +98,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Refresh Ubuntu package indexes
+        run: sudo apt-get update
 
       - name: Install Playwright Chromium and Linux dependencies
         run: pnpm run test:browser:install

@@ -11,6 +11,7 @@ import {
   createMeetingFromIntent,
   createMeetingIntent,
   isMeetingCreationIntentReplaySafe,
+  meetingScheduleCheckQueryOptions,
   mapMeetingFieldErrors,
   parseCreateMeetingResponse,
   parseCreateMeetingReplayResponse,
@@ -102,6 +103,43 @@ describe('meeting creation API adapter', () => {
       scheduledStartAt: '2026-09-01T02:00:00.000Z',
       scheduledEndAt: '2026-09-01T03:00:00.000Z',
     })
+  })
+
+  it('keys contextual schedule previews by their exact room, interval, and meeting context', () => {
+    const creationPreview = meetingScheduleCheckQueryOptions({
+      roomId: 'room-1',
+      start: '2026-09-01T02:00:00.000Z',
+      end: '2026-09-01T03:00:00.000Z',
+      participantUserIds: ['user-1', 'user-2'],
+    })
+    const editingPreview = meetingScheduleCheckQueryOptions({
+      meetingId: 'meeting-1',
+      roomId: 'room-1',
+      start: '2026-09-01T02:00:00.000Z',
+      end: '2026-09-01T03:00:00.000Z',
+    })
+
+    expect(creationPreview.queryKey).toEqual([
+      'meeting-schedule-checks',
+      'preview',
+      {
+        roomId: 'room-1',
+        start: '2026-09-01T02:00:00.000Z',
+        end: '2026-09-01T03:00:00.000Z',
+        participantUserIds: ['user-1', 'user-2'],
+      },
+    ])
+    expect(editingPreview.queryKey).toEqual([
+      'meeting-schedule-checks',
+      'preview',
+      {
+        meetingId: 'meeting-1',
+        roomId: 'room-1',
+        start: '2026-09-01T02:00:00.000Z',
+        end: '2026-09-01T03:00:00.000Z',
+      },
+    ])
+    expect(editingPreview.queryKey[2]).not.toHaveProperty('participantUserIds')
   })
 
   it('validates create and schedule status plus exact opaque ETags', () => {

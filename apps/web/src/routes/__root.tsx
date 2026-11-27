@@ -1,5 +1,9 @@
 import { type QueryClient } from '@tanstack/react-query'
-import { createRootRouteWithContext, Outlet } from '@tanstack/react-router'
+import {
+  createRootRouteWithContext,
+  Outlet,
+  useLocation,
+} from '@tanstack/react-router'
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
 import { Toaster } from '@/components/ui/sonner'
@@ -10,7 +14,13 @@ import { NotFoundError } from '@/features/errors/not-found-error'
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient
 }>()({
-  component: () => {
+  component: function RootComponent() {
+    const sensitiveCallback = useLocation({
+      select: (location) =>
+        ['/account-setup', '/sign-up', '/otp', '/reset-password'].includes(
+          location.pathname
+        ),
+    })
     return (
       <>
         <NavigationProgress />
@@ -18,8 +28,12 @@ export const Route = createRootRouteWithContext<{
         <Toaster duration={5000} />
         {import.meta.env.MODE === 'development' && (
           <>
-            <ReactQueryDevtools buttonPosition='bottom-left' />
-            <TanStackRouterDevtools position='bottom-right' />
+            {!sensitiveCallback && (
+              <>
+                <ReactQueryDevtools buttonPosition='bottom-left' />
+                <TanStackRouterDevtools position='bottom-right' />
+              </>
+            )}
           </>
         )}
       </>

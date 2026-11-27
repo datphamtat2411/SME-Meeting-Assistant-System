@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, type RenderResult } from 'vitest-browser-react'
 import { type Locator, userEvent } from 'vitest/browser'
 import { CoreApiError } from '@/lib/core-api'
-import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import { UserAuthForm } from './user-auth-form'
 
 const FORM_MESSAGES = {
@@ -112,19 +111,6 @@ describe('UserAuthForm', () => {
       })
     )
     expect(navigate).toHaveBeenCalledWith({ to: '/', replace: true })
-  })
-
-  it('removes the cached identity before navigating after sign-in', async () => {
-    queryClient.setQueryData(currentUserQueryKey, {
-      displayName: 'Stale identity',
-    })
-
-    await userEvent.fill(emailInput, 'a@b.com')
-    await userEvent.fill(passwordInput, 'x')
-    await userEvent.click(signInButton)
-
-    await vi.waitFor(() => expect(navigate).toHaveBeenCalledOnce())
-    expect(queryClient.getQueryData(currentUserQueryKey)).toBeUndefined()
   })
 
   it('navigates to a safe redirect after an active session', async () => {

@@ -54,6 +54,7 @@ class IntelligenceContractValidationTests {
             OffsetDateTime.now(), null, null, null, null, null);
         evidence.clear();
         assertThat(view.evidenceSegmentIds()).hasSize(1);
+        assertThat(view.etag()).startsWith("\"dec-").endsWith("\"");
     }
 
     private static Set<String> fields(Class<?> type) {

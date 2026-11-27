@@ -1,4 +1,4 @@
-import { useFormContext } from 'react-hook-form'
+import { useFormContext, useWatch } from 'react-hook-form'
 import {
   AlertCircle,
   Check,
@@ -6,9 +6,9 @@ import {
   ChevronRight,
   Clock3,
   MapPin,
-  RefreshCw,
-  Users,
 } from 'lucide-react'
+import { instantCivilFields, resolveWallTime } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -33,19 +33,36 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
-import { Skeleton } from '@/components/ui/skeleton'
 import type { MeetingPagination, RoomFilterOption } from '../data/list-api'
 import type { ScheduleCheckResult } from '../data/meeting-creation-api'
 import { type MeetingScheduleFormValues } from '../data/meeting-scheduling-utils'
-import type { RoomAvailability } from '../data/room-availability-api'
 
-export function MeetingScheduleFields() {
+export function MeetingScheduleFields({
+  onDateInputChange,
+}: {
+  onDateInputChange?: () => void
+}) {
   const { control, getValues, setValue } =
     useFormContext<MeetingScheduleFormValues>()
+  const regional = useRegionalPresentation()
+  const timezone = useWatch({ control, name: 'scheduleTimezone' })
+  const fallbackRequired = useWatch({ control, name: 'fallbackRequired' })
+  const date = useWatch({ control, name: 'date' })
+  const endDate = useWatch({ control, name: 'endDate' })
+  const startTime = useWatch({ control, name: 'startTime' })
+  const endTime = useWatch({ control, name: 'endTime' })
+  const originalStartAt = useWatch({ control, name: 'originalStartAt' })
+  const originalEndAt = useWatch({ control, name: 'originalEndAt' })
+
+  const clearOccurrence = (name: 'startOccurrence' | 'endOccurrence') =>
+    setValue(name, '', { shouldDirty: true })
 
   return (
     <>
-      <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
+      <fieldset
+        disabled={!timezone}
+        className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'
+      >
         <FormField
           control={control}
           name='date'
@@ -60,7 +77,10 @@ export function MeetingScheduleFields() {
                     const previousDate = getValues('date')
                     const currentEndDate = getValues('endDate')
                     field.onChange(event)
+                    clearOccurrence('startOccurrence')
+                    onDateInputChange?.()
                     if (!currentEndDate || currentEndDate === previousDate) {
+                      clearOccurrence('endOccurrence')
                       setValue('endDate', event.target.value, {
                         shouldDirty: true,
                         shouldTouch: true,
@@ -81,7 +101,15 @@ export function MeetingScheduleFields() {
             <FormItem>
               <FormLabel>End date</FormLabel>
               <FormControl>
-                <Input {...field} type='date' />
+                <Input
+                  {...field}
+                  type='date'
+                  onChange={(event) => {
+                    field.onChange(event)
+                    clearOccurrence('endOccurrence')
+                    onDateInputChange?.()
+                  }}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -94,7 +122,14 @@ export function MeetingScheduleFields() {
             <FormItem>
               <FormLabel>Start time</FormLabel>
               <FormControl>
-                <Input {...field} type='time' />
+                <Input
+                  {...field}
+                  type='time'
+                  onChange={(event) => {
+                    field.onChange(event)
+                    clearOccurrence('startOccurrence')
+                  }}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -107,19 +142,161 @@ export function MeetingScheduleFields() {
             <FormItem>
               <FormLabel>End time</FormLabel>
               <FormControl>
-                <Input {...field} type='time' />
+                <Input
+                  {...field}
+                  type='time'
+                  onChange={(event) => {
+                    field.onChange(event)
+                    clearOccurrence('endOccurrence')
+                  }}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
           )}
         />
-      </div>
-      <p className='flex items-center gap-2 text-xs text-muted-foreground'>
-        <Clock3 className='size-3.5' />
-        Times use your browser&apos;s local timezone and are sent to Core API as
-        UTC offsets.
-      </p>
+      </fieldset>
+      {timezone ? (
+        <>
+          <ScheduleOccurrenceField
+            name='startOccurrence'
+            date={date}
+            time={startTime}
+            timezone={timezone}
+            original={originalStartAt}
+          />
+          <ScheduleOccurrenceField
+            name='endOccurrence'
+            date={endDate || date}
+            time={endTime}
+            timezone={timezone}
+            original={originalEndAt}
+          />
+          <p className='flex items-center gap-2 text-xs text-muted-foreground'>
+            <Clock3 className='size-3.5' />
+            Scheduling timezone: {timezone}. Times are sent to Core API as
+            absolute instants.
+          </p>
+          {regional.timezone !== timezone && (
+            <p role='status' className='text-xs text-muted-foreground'>
+              Regional preferences changed. This editor retains {timezone}; a
+              new editor will use {regional.timezone}.
+            </p>
+          )}
+          {fallbackRequired && (
+            <FormField
+              control={control}
+              name='fallbackAcknowledged'
+              render={({ field }) => (
+                <FormItem className='rounded-md border p-3'>
+                  <p className='text-sm'>
+                    The configured timezone was unavailable when this editor
+                    opened.
+                  </p>
+                  <div className='flex items-center gap-2'>
+                    <FormControl>
+                      <input
+                        type='checkbox'
+                        name={field.name}
+                        ref={field.ref}
+                        checked={field.value}
+                        onBlur={field.onBlur}
+                        onChange={(event) =>
+                          field.onChange(event.target.checked)
+                        }
+                      />
+                    </FormControl>
+                    <FormLabel>I confirm scheduling in {timezone}.</FormLabel>
+                  </div>
+                  <FormMessage />
+                  {regional.retry && (
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={regional.retry}
+                    >
+                      Retry regional preferences
+                    </Button>
+                  )}
+                </FormItem>
+              )}
+            />
+          )}
+        </>
+      ) : (
+        <p role='status' className='text-xs text-muted-foreground'>
+          Loading regional preferences…
+        </p>
+      )}
     </>
+  )
+}
+
+function ScheduleOccurrenceField({
+  name,
+  date,
+  time,
+  timezone,
+  original,
+}: {
+  name: 'startOccurrence' | 'endOccurrence'
+  date: string
+  time: string
+  timezone: string
+  original?: string | null
+}) {
+  const { control } = useFormContext<MeetingScheduleFormValues>()
+  const resolution = resolveWallTime(date, time, timezone)
+  const label =
+    name === 'startOccurrence' ? 'Start time UTC offset' : 'End time UTC offset'
+  if (resolution.kind === 'gap') {
+    return (
+      <p role='alert' className='text-sm text-destructive'>
+        {label}: this local time does not exist. Choose another time.
+      </p>
+    )
+  }
+  if (resolution.kind !== 'ambiguous') return null
+  const existing = original ? instantCivilFields(original, timezone) : undefined
+  const originalChoice =
+    existing?.date === date && existing.time === time
+      ? resolution.occurrences.find(
+          (candidate) => candidate.offset === existing.offset
+        )?.instant
+      : undefined
+
+  return (
+    <FormField
+      control={control}
+      name={name}
+      render={({ field }) => (
+        <FormItem>
+          <FormLabel>{label}</FormLabel>
+          <FormControl>
+            <select
+              className='h-9 w-full rounded-md border bg-background px-3 text-sm'
+              name={field.name}
+              ref={field.ref}
+              onBlur={field.onBlur}
+              value={field.value || originalChoice || ''}
+              onChange={(event) => field.onChange(event.target.value)}
+            >
+              <option value=''>Choose occurrence</option>
+              {resolution.occurrences.map((candidate) => (
+                <option key={candidate.instant} value={candidate.instant}>
+                  {time} (UTC{candidate.offset})
+                </option>
+              ))}
+            </select>
+          </FormControl>
+          <p className='text-xs text-muted-foreground'>
+            This local time occurs twice. Select the intended occurrence.
+          </p>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
   )
 }
 
@@ -299,79 +476,6 @@ export function MeetingRoomLookup({
       </PopoverContent>
     </Popover>
   )
-}
-
-export function RoomAvailabilityNotice({
-  query,
-  room,
-}: {
-  query: {
-    isPending: boolean
-    isError: boolean
-    refetch: () => unknown
-  }
-  room?: RoomAvailability
-}) {
-  if (query.isPending) {
-    return (
-      <div
-        role='status'
-        className='flex items-center gap-2 text-xs text-muted-foreground'
-      >
-        <Skeleton className='h-4 w-4 rounded-full' />
-        Checking advisory room availability...
-      </div>
-    )
-  }
-  if (query.isError) {
-    return (
-      <Alert>
-        <AlertCircle />
-        <AlertTitle>Room availability is unavailable</AlertTitle>
-        <AlertDescription>
-          <p>
-            This advisory lookup failed. The schedule check and backend
-            reservation outcome remain authoritative.
-          </p>
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            onClick={() => void query.refetch()}
-          >
-            <RefreshCw />
-            Try again
-          </Button>
-        </AlertDescription>
-      </Alert>
-    )
-  }
-  if (!room) return null
-  if (!room.available) {
-    return (
-      <Alert>
-        <AlertCircle />
-        <AlertTitle>Room currently appears unavailable</AlertTitle>
-        <AlertDescription>
-          This is an advisory snapshot only. The schedule check and backend
-          reservation remain authoritative.
-        </AlertDescription>
-      </Alert>
-    )
-  }
-  if (room.capacityExceeded) {
-    return (
-      <Alert>
-        <Users />
-        <AlertTitle>Capacity advisory</AlertTitle>
-        <AlertDescription>
-          The selected room&apos;s configured capacity is below the current
-          participant count. This warning does not block scheduling.
-        </AlertDescription>
-      </Alert>
-    )
-  }
-  return null
 }
 
 export function SchedulePreviewNotice({

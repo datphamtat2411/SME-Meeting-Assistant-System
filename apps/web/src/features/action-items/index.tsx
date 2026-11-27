@@ -1,34 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Link } from '@tanstack/react-router'
-import {
-  type ColumnDef,
-  type ColumnFiltersState,
-  type PaginationState,
-  type SortingState,
-  type VisibilityState,
-  flexRender,
-  getCoreRowModel,
-  getFacetedRowModel,
-  getFacetedUniqueValues,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  getSortedRowModel,
-  useReactTable,
-} from '@tanstack/react-table'
-import {
-  ArrowDown,
-  ArrowRight,
-  ArrowUp,
-  Circle,
-  CheckCircle2,
-  CircleAlert,
-  ListChecks,
-  Timer,
-} from 'lucide-react'
-import { toast } from 'sonner'
-import { cn, getDisplayNameInitials } from '@/lib/utils'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useBlocker } from '@tanstack/react-router'
+import { ListChecks, Plus, Search } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
@@ -36,6 +11,8 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -43,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import {
   Table,
   TableBody,
@@ -51,123 +29,116 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import {
-  DataTableColumnHeader,
-  DataTablePagination,
-  DataTableToolbar,
-} from '@/components/data-table'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { RegionalCivilDate } from '@/components/regional-timestamp'
 import {
-  actionItems as sharedActionItems,
-  currentDemoUser,
-  getMemberById,
-  getMeetingById,
-  members,
-  updateActionItemStatus,
+  RequestEmpty,
+  RequestError,
+  RequestLoading,
+} from '@/components/request-state'
+import { isAuthLifecycleBlocking } from '@/features/auth/session/auth-lifecycle'
+import {
+  classifySessionFailure,
+  currentUserQueryKey,
+} from '@/features/auth/session/current-user'
+import {
+  actionItemsQuery,
+  managementCapabilityQuery,
+  type ActionFilter,
   type ActionItem,
-  type ActionItemPriority,
-  type ActionItemStatus,
-  type Member,
-} from '@/features/meetings/data'
+  type ActionSort,
+} from './action-api'
+import { ActionCommands } from './action-commands'
+import { ActionForm } from './action-form'
+import {
+  blockUnresolvedActionCreation,
+  type ActionDraftProtection,
+} from './action-navigation-protection'
 
-const actionStatusLabels: Record<ActionItemStatus, string> = {
-  todo: 'To do',
-  in_progress: 'In progress',
-  done: 'Done',
-}
+type ActionView = 'my' | 'visible' | 'proposals' | 'history'
 
-const actionStatusStyles: Record<ActionItemStatus, string> = {
-  todo: 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300',
-  in_progress:
-    'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300',
-  done: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300',
-}
-
-const actionPriorityLabels: Record<ActionItemPriority, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-}
-
-const actionPriorityStyles: Record<ActionItemPriority, string> = {
-  low: 'border-slate-200 text-slate-600 dark:border-slate-800 dark:text-slate-400',
-  medium: 'border-sky-200 text-sky-700 dark:border-sky-900 dark:text-sky-300',
-  high: 'border-red-200 text-red-700 dark:border-red-900 dark:text-red-300',
-}
-
-const actionStatusOptions: {
-  label: string
-  value: ActionItemStatus
-  icon: typeof Circle
-}[] = [
-  { label: 'To do', value: 'todo', icon: Circle },
-  { label: 'In progress', value: 'in_progress', icon: Timer },
-  { label: 'Done', value: 'done', icon: CheckCircle2 },
+const statuses: Array<ActionFilter['status']> = [
+  'all',
+  'PROPOSED',
+  'OPEN',
+  'IN_PROGRESS',
+  'DONE',
+  'CANCELLED',
 ]
 
-const actionPriorityOptions: {
-  label: string
-  value: ActionItemPriority
-  icon: typeof ArrowDown
-}[] = [
-  { label: 'Low', value: 'low', icon: ArrowDown },
-  { label: 'Medium', value: 'medium', icon: ArrowRight },
-  { label: 'High', value: 'high', icon: ArrowUp },
-]
-
-const actionAssigneeOptions = members.map((member) => ({
-  label: member.name,
-  value: member.id,
-}))
-
-const timeZone = 'Asia/Ho_Chi_Minh'
-const actionDateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-  timeZone,
+const defaultFilter = (
+  overrides: Partial<ActionFilter> = {}
+): ActionFilter => ({
+  page: 0,
+  q: '',
+  status: 'all',
+  official: 'all',
+  assignee: 'all',
+  overdue: false,
+  sort: 'createdAt,desc',
+  ...overrides,
 })
-const datePartsFormatter = new Intl.DateTimeFormat('en-US', {
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  timeZone,
-})
-
-type ActionItemsView = 'my' | 'all'
 
 export function ActionItemsPage() {
-  const [view, setView] = useState<ActionItemsView>('my')
-  const [actionItems, setActionItems] = useState<ActionItem[]>(() => [
-    ...sharedActionItems,
-  ])
-
-  const myActionItems = actionItems.filter(
-    (actionItem) => actionItem.assigneeId === currentDemoUser.id
+  const [view, setView] = useState<ActionView>('my')
+  const [search, setSearch] = useState('')
+  const [filter, setFilter] = useState<ActionFilter>(
+    defaultFilter({ official: true, assignee: 'me' })
   )
-  const visibleActionItems = view === 'my' ? myActionItems : actionItems
-
-  const handleStatusChange = (
-    actionItemId: string,
-    status: ActionItemStatus
-  ) => {
-    const actionItem = actionItems.find((item) => item.id === actionItemId)
-    if (!actionItem || actionItem.status === status) {
-      return
-    }
-
-    setActionItems((currentItems) =>
-      currentItems.map((item) =>
-        item.id === actionItemId ? { ...item, status } : item
-      )
+  const [open, setOpen] = useState(false)
+  const [selected, setSelected] = useState<ActionItem | null>(null)
+  const managementCapability = useQuery(managementCapabilityQuery())
+  const queryClient = useQueryClient()
+  const protectionRef = useRef<ActionDraftProtection>('none')
+  const setProtection = useCallback((protection: ActionDraftProtection) => {
+    protectionRef.current = protection
+  }, [])
+  function hasConfirmedSessionLoss() {
+    const identity = queryClient.getQueryState(currentUserQueryKey)
+    return (
+      isAuthLifecycleBlocking() ||
+      (identity?.status === 'error' &&
+        classifySessionFailure(identity.error) !== 'unavailable')
     )
-    updateActionItemStatus(actionItemId, status)
-    toast.success('Action item status updated', {
-      description: `${actionItem.title} is now ${actionStatusLabels[status].toLocaleLowerCase()}.`,
-    })
+  }
+  useBlocker({
+    enableBeforeUnload: () =>
+      protectionRef.current !== 'none' && !hasConfirmedSessionLoss(),
+    shouldBlockFn: () => {
+      if (hasConfirmedSessionLoss()) return false
+      const protection = protectionRef.current
+      if (blockUnresolvedActionCreation(protection)) return true
+      return (
+        protection === 'dirty' &&
+        !window.confirm('Unsaved Action Item work may be lost. Leave anyway?')
+      )
+    },
+  })
+
+  function selectView(next: string) {
+    const nextView = next as ActionView
+    setView(nextView)
+    if (nextView === 'my') {
+      setFilter(defaultFilter({ official: true, assignee: 'me', q: search }))
+    } else if (nextView === 'visible') {
+      setFilter(defaultFilter({ official: 'all', assignee: 'all', q: search }))
+    } else if (nextView === 'proposals') {
+      setFilter(
+        defaultFilter({ official: false, status: 'PROPOSED', q: search })
+      )
+    }
+  }
+
+  function change(update: Partial<ActionFilter>) {
+    setFilter((current) => ({ ...current, page: 0, ...update }))
+  }
+
+  function openCreate() {
+    setSelected(null)
+    setOpen(true)
   }
 
   return (
@@ -175,8 +146,7 @@ export function ActionItemsPage() {
       <Header fixed>
         <HeaderActions />
       </Header>
-
-      <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
+      <Main className='flex flex-1 flex-col gap-5 sm:gap-6'>
         <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
           <div>
             <p className='text-sm font-medium text-primary'>
@@ -186,453 +156,410 @@ export function ActionItemsPage() {
               Action Items
             </h1>
             <p className='mt-2 max-w-2xl text-muted-foreground'>
-              Review follow-up work extracted from your team&apos;s meetings.
+              Review proposals separately from official organizational work,
+              then track each obligation to completion.
             </p>
           </div>
-          <div className='flex items-center gap-2 text-sm text-muted-foreground'>
-            <ListChecks className='size-4' />
-            <span>
-              {
-                actionItems.filter((actionItem) => actionItem.status !== 'done')
-                  .length
-              }{' '}
-              open across all meetings
-            </span>
-          </div>
+          {managementCapability.data?.canCreate === true && (
+            <Button onClick={openCreate}>
+              <Plus className='size-4' /> Add official work
+            </Button>
+          )}
         </div>
-
-        <Tabs
-          value={view}
-          onValueChange={(value) => setView(value as ActionItemsView)}
-          className='w-full'
-        >
+        <Tabs value={view} onValueChange={selectView} className='w-full'>
           <Card className='overflow-hidden'>
             <CardHeader className='border-b'>
-              <div className='flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between'>
+              <div className='flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between'>
                 <div>
-                  <CardTitle>Follow-up workspace</CardTitle>
+                  <CardTitle className='flex items-center gap-2'>
+                    <ListChecks className='size-5' /> Follow-up workspace
+                  </CardTitle>
                   <CardDescription>
-                    Keep every action item connected to the meeting that
-                    produced it.
+                    All collections are filtered and paginated by Core.
                   </CardDescription>
                 </div>
                 <p className='text-sm text-muted-foreground'>
-                  {visibleActionItems.length} item
-                  {visibleActionItems.length === 1 ? '' : 's'} in this view
+                  No local page filtering or sorting
                 </p>
               </div>
-              <TabsList className='mt-2 w-fit'>
-                <TabsTrigger value='my'>
-                  My Tasks
-                  <span className='ms-1 text-xs text-muted-foreground'>
-                    {myActionItems.length}
-                  </span>
-                </TabsTrigger>
-                <TabsTrigger value='all'>
-                  All Tasks
-                  <span className='ms-1 text-xs text-muted-foreground'>
-                    {actionItems.length}
-                  </span>
-                </TabsTrigger>
+              <TabsList className='mt-3 w-fit flex-wrap'>
+                <TabsTrigger value='my'>My official work</TabsTrigger>
+                <TabsTrigger value='visible'>Visible work</TabsTrigger>
+                <TabsTrigger value='proposals'>Review proposals</TabsTrigger>
+                <TabsTrigger value='history'>History</TabsTrigger>
               </TabsList>
             </CardHeader>
-            <CardContent className='p-0'>
-              <TabsContent value='my' className='m-0 p-4 sm:p-6'>
-                {view === 'my' && (
-                  <ActionItemsTable
-                    data={myActionItems}
-                    emptyMessage='You have no open action items.'
-                    onStatusChange={handleStatusChange}
-                  />
-                )}
-              </TabsContent>
-              <TabsContent value='all' className='m-0 p-4 sm:p-6'>
-                {view === 'all' && (
-                  <ActionItemsTable
-                    data={actionItems}
-                    emptyMessage='No action items found.'
-                    onStatusChange={handleStatusChange}
-                  />
-                )}
-              </TabsContent>
+            <CardContent className='p-4 sm:p-6'>
+              {view === 'history' ? (
+                <HistoryView
+                  search={search}
+                  onSelect={(item) => {
+                    setSelected(item)
+                    setOpen(true)
+                  }}
+                />
+              ) : (
+                <ActionCollection
+                  filter={filter}
+                  search={search}
+                  onSearch={(value) => {
+                    setSearch(value)
+                    change({ q: value })
+                  }}
+                  onChange={change}
+                  onSelect={(item) => {
+                    setSelected(item)
+                    setOpen(true)
+                  }}
+                  emptyMessage={
+                    view === 'proposals'
+                      ? 'No proposals await review.'
+                      : view === 'my'
+                        ? 'You have no official Action Items.'
+                        : 'No Action Items are visible in this authorized scope.'
+                  }
+                />
+              )}
             </CardContent>
           </Card>
         </Tabs>
       </Main>
+      <ActionForm
+        key={open ? (selected?.id ?? 'new') : 'closed'}
+        open={open}
+        onOpenChange={setOpen}
+        item={selected}
+        onProtectionChange={setProtection}
+        canManageActionItems={managementCapability.data?.canCreate === true}
+      />
     </>
   )
 }
 
-type ActionItemsTableProps = {
-  data: ActionItem[]
-  emptyMessage: string
-  onStatusChange: (actionItemId: string, status: ActionItemStatus) => void
-}
-
-function ActionItemsTable({
-  data,
-  emptyMessage,
-  onStatusChange,
-}: ActionItemsTableProps) {
-  const [sorting, setSorting] = useState<SortingState>([])
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
-  const [globalFilter, setGlobalFilter] = useState('')
-  const [pagination, setPagination] = useState<PaginationState>({
-    pageIndex: 0,
-    pageSize: 10,
-  })
-  const columns = useMemo(
-    () => createActionItemsColumns(onStatusChange),
-    [onStatusChange]
+function HistoryView({
+  search,
+  onSelect,
+}: {
+  search: string
+  onSelect: (item: ActionItem) => void
+}) {
+  const [donePage, setDonePage] = useState(0)
+  const [cancelledPage, setCancelledPage] = useState(0)
+  const [rejectedPage, setRejectedPage] = useState(0)
+  const done = useActionPage(
+    defaultFilter({
+      official: true,
+      status: 'DONE',
+      q: search,
+      page: donePage,
+    })
   )
-
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const table = useReactTable({
-    data,
-    columns,
-    state: {
-      sorting,
-      columnVisibility,
-      columnFilters,
-      globalFilter,
-      pagination,
-    },
-    onSortingChange: setSorting,
-    onColumnVisibilityChange: setColumnVisibility,
-    onColumnFiltersChange: setColumnFilters,
-    onGlobalFilterChange: setGlobalFilter,
-    onPaginationChange: setPagination,
-    globalFilterFn: (row, _columnId, filterValue) => {
-      const searchValue = String(filterValue).trim().toLocaleLowerCase()
-      const actionItem = row.original
-      const meetingTitle =
-        getMeetingById(actionItem.meetingId)?.title.toLocaleLowerCase() ?? ''
-
-      return (
-        actionItem.title.toLocaleLowerCase().includes(searchValue) ||
-        meetingTitle.includes(searchValue)
-      )
-    },
-    getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFacetedRowModel: getFacetedRowModel(),
-    getFacetedUniqueValues: getFacetedUniqueValues(),
-  })
-
-  // Start filtered results at the first page, just like the template Tasks table.
-  useEffect(() => {
-    setPagination((current) =>
-      current.pageIndex === 0 ? current : { ...current, pageIndex: 0 }
-    )
-  }, [columnFilters, data, globalFilter])
-
-  // A status update can remove a row from the current view or filter.
-  const pageCount = table.getPageCount()
-  useEffect(() => {
-    if (pageCount > 0 && pagination.pageIndex >= pageCount) {
-      setPagination((current) => ({
-        ...current,
-        pageIndex: pageCount - 1,
-      }))
-    }
-  }, [pageCount, pagination.pageIndex])
-
-  const rows = table.getRowModel().rows
-  const filteredCount = table.getFilteredRowModel().rows.length
-
+  const cancelledOfficial = useActionPage(
+    defaultFilter({
+      official: true,
+      status: 'CANCELLED',
+      q: search,
+      page: cancelledPage,
+    })
+  )
+  const rejected = useActionPage(
+    defaultFilter({
+      official: false,
+      status: 'CANCELLED',
+      q: search,
+      page: rejectedPage,
+    })
+  )
   return (
-    <div className='flex flex-col gap-4'>
-      <DataTableToolbar
-        table={table}
-        searchPlaceholder='Search action items or meetings...'
-        filters={[
-          {
-            columnId: 'status',
-            title: 'Status',
-            options: actionStatusOptions,
-          },
-          {
-            columnId: 'priority',
-            title: 'Priority',
-            options: actionPriorityOptions,
-          },
-          {
-            columnId: 'assigneeId',
-            title: 'Assignee',
-            options: actionAssigneeOptions,
-          },
-        ]}
+    <div className='space-y-6'>
+      <HistoryCollection
+        title='Completed official work'
+        result={done}
+        onPageChange={setDonePage}
+        onSelect={onSelect}
       />
-      <div className='overflow-x-auto rounded-md border'>
-        <Table className='min-w-[980px]'>
-          <TableHeader>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id}>
-                {headerGroup.headers.map((header) => (
-                  <TableHead
-                    key={header.id}
-                    colSpan={header.colSpan}
-                    className={cn(
-                      header.column.columnDef.meta?.className,
-                      header.column.columnDef.meta?.thClassName
-                    )}
-                  >
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(
-                          header.column.columnDef.header,
-                          header.getContext()
-                        )}
-                  </TableHead>
-                ))}
-              </TableRow>
-            ))}
-          </TableHeader>
-          <TableBody>
-            {rows.length ? (
-              rows.map((row) => (
-                <TableRow key={row.id}>
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell
-                      key={cell.id}
-                      className={cn(
-                        cell.column.columnDef.meta?.className,
-                        cell.column.columnDef.meta?.tdClassName
-                      )}
-                    >
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      )}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            ) : (
-              <TableRow>
-                <TableCell
-                  colSpan={columns.length}
-                  className='h-32 text-center'
-                >
-                  <div className='flex flex-col items-center gap-1'>
-                    <CircleAlert className='size-5 text-muted-foreground' />
-                    <span>
-                      {data.length ? 'No action items found.' : emptyMessage}
-                    </span>
-                    {data.length > 0 && filteredCount === 0 && (
-                      <span className='text-sm text-muted-foreground'>
-                        Try adjusting your search or filters.
-                      </span>
-                    )}
-                  </div>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </div>
-      {filteredCount > 0 && <DataTablePagination table={table} />}
+      <HistoryCollection
+        title='Cancelled official work'
+        result={cancelledOfficial}
+        onPageChange={setCancelledPage}
+        onSelect={onSelect}
+      />
+      <HistoryCollection
+        title='Rejected proposals'
+        result={rejected}
+        onPageChange={setRejectedPage}
+        onSelect={onSelect}
+      />
     </div>
   )
 }
 
-function createActionItemsColumns(
-  onStatusChange: ActionItemsTableProps['onStatusChange']
-): ColumnDef<ActionItem>[] {
-  return [
-    {
-      accessorKey: 'title',
-      header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='Task' />
-      ),
-      meta: {
-        className: 'ps-1 w-[28%]',
-        tdClassName: 'ps-4',
-      },
-      cell: ({ row }) => (
-        <div className='min-w-56 space-y-1 whitespace-normal'>
-          <p className='font-medium'>{row.original.title}</p>
-          <p className='line-clamp-2 text-xs leading-5 text-muted-foreground'>
-            {row.original.description}
-          </p>
-        </div>
-      ),
-    },
-    {
-      accessorKey: 'meetingId',
-      header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='Source Meeting' />
-      ),
-      meta: { className: 'ps-1 w-[23%]', tdClassName: 'ps-4' },
-      cell: ({ row }) => {
-        const meeting = getMeetingById(row.original.meetingId)
-
-        return meeting ? (
-          <div className='min-w-48 space-y-1 whitespace-normal'>
-            <Link
-              to='/meetings/$meetingId'
-              params={{ meetingId: meeting.id }}
-              className='font-medium hover:underline'
-            >
-              {meeting.title}
-            </Link>
-            <p className='text-xs text-muted-foreground'>
-              Meeting-derived item
-            </p>
-            {row.original.sourceSegmentId && (
-              <Link
-                to='/meetings/$meetingId'
-                params={{ meetingId: meeting.id }}
-                className='text-xs text-primary hover:underline'
-              >
-                View source
-              </Link>
-            )}
-          </div>
-        ) : (
-          <span className='text-muted-foreground'>Unknown meeting</span>
-        )
-      },
-    },
-    {
-      accessorKey: 'assigneeId',
-      header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='Assignee' />
-      ),
-      meta: { className: 'ps-1', tdClassName: 'ps-4' },
-      cell: ({ row }) => {
-        const assignee = getMemberById(row.original.assigneeId)
-
-        return assignee ? (
-          <div className='flex items-center gap-2 whitespace-nowrap'>
-            <MemberAvatar member={assignee} className='size-7' />
-            <span>{assignee.name}</span>
-          </div>
-        ) : (
-          <span className='text-muted-foreground'>Unassigned</span>
-        )
-      },
-      filterFn: (row, id, value) =>
-        Array.isArray(value) && value.includes(row.getValue(id)),
-    },
-    {
-      accessorKey: 'dueDate',
-      header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='Due Date' />
-      ),
-      meta: { className: 'ps-1', tdClassName: 'ps-4' },
-      cell: ({ row }) => {
-        const overdue = isActionItemOverdue(row.original)
-
-        return (
-          <div className='flex flex-col items-start gap-1 whitespace-nowrap'>
-            <span className={cn(overdue && 'font-semibold text-destructive')}>
-              {formatActionDate(row.original.dueDate)}
-            </span>
-            {overdue && (
-              <Badge variant='destructive' className='gap-1'>
-                <CircleAlert />
-                Overdue
-              </Badge>
-            )}
-          </div>
-        )
-      },
-    },
-    {
-      accessorKey: 'priority',
-      header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='Priority' />
-      ),
-      meta: { className: 'ps-1', tdClassName: 'ps-4' },
-      cell: ({ row }) => {
-        const priority = row.original.priority
-
-        return (
-          <Badge variant='outline' className={actionPriorityStyles[priority]}>
-            {actionPriorityLabels[priority]}
-          </Badge>
-        )
-      },
-      filterFn: (row, id, value) =>
-        Array.isArray(value) && value.includes(row.getValue(id)),
-    },
-    {
-      accessorKey: 'status',
-      header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='Status' />
-      ),
-      meta: { className: 'ps-1', tdClassName: 'ps-4' },
-      cell: ({ row }) => {
-        const actionItem = row.original
-
-        return (
-          <Select
-            value={actionItem.status}
-            onValueChange={(value) =>
-              onStatusChange(actionItem.id, value as ActionItemStatus)
-            }
-          >
-            <SelectTrigger
-              className={cn('h-8 w-32', actionStatusStyles[actionItem.status])}
-              aria-label={`Update status for ${actionItem.title}`}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {actionStatusOptions.map((status) => (
-                <SelectItem key={status.value} value={status.value}>
-                  <status.icon className='text-muted-foreground' />
-                  {status.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )
-      },
-      filterFn: (row, id, value) =>
-        Array.isArray(value) && value.includes(row.getValue(id)),
-    },
-  ]
-}
-
-function MemberAvatar({
-  member,
-  className,
+function HistoryCollection({
+  title,
+  result,
+  onSelect,
+  onPageChange,
 }: {
-  member: Member
-  className?: string
+  title: string
+  onPageChange: (page: number) => void
+  result: ReturnType<typeof useActionPage>
+  onSelect: (item: ActionItem) => void
 }) {
   return (
-    <Avatar className={cn('size-9', className)}>
-      {member.avatar && <AvatarImage src={member.avatar} alt={member.name} />}
-      <AvatarFallback className='bg-primary/10 text-xs font-medium text-primary'>
-        {getDisplayNameInitials(member.name)}
-      </AvatarFallback>
-    </Avatar>
+    <section className='space-y-2'>
+      <div>
+        <h3 className='font-semibold'>{title}</h3>
+        <p className='text-sm text-muted-foreground'>
+          Historical records remain read-only when Core reports a terminal
+          state.
+        </p>
+      </div>
+      <ActionTable
+        result={result}
+        onSelect={onSelect}
+        onPageChange={onPageChange}
+      />
+    </section>
   )
 }
 
-function formatActionDate(date: string) {
-  return actionDateFormatter.format(new Date(`${date}T12:00:00+07:00`))
+function ActionCollection({
+  filter,
+  search,
+  onSearch,
+  onChange,
+  onSelect,
+  emptyMessage,
+}: {
+  filter: ActionFilter
+  search: string
+  onSearch: (value: string) => void
+  onChange: (update: Partial<ActionFilter>) => void
+  onSelect: (item: ActionItem) => void
+  emptyMessage: string
+}) {
+  const result = useActionPage(filter)
+
+  return (
+    <div className='space-y-4'>
+      <div className='flex flex-col gap-3 lg:flex-row lg:items-center'>
+        <form
+          className='relative flex min-w-52 flex-1'
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSearch(search.trim())
+          }}
+        >
+          <Search className='absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground' />
+          <Input
+            className='pl-9'
+            placeholder='Search titles or details…'
+            aria-label='Search action items'
+            value={search}
+            onChange={(event) => onSearch(event.target.value)}
+          />
+        </form>
+        <Select
+          value={filter.status}
+          onValueChange={(value) =>
+            onChange({ status: value as ActionFilter['status'] })
+          }
+        >
+          <SelectTrigger className='w-full lg:w-40'>
+            <SelectValue placeholder='Status' />
+          </SelectTrigger>
+          <SelectContent>
+            {statuses.map((status) => (
+              <SelectItem key={status} value={status}>
+                {status === 'all' ? 'All statuses' : status.replace(/_/g, ' ')}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={filter.sort}
+          onValueChange={(value) => onChange({ sort: value as ActionSort })}
+        >
+          <SelectTrigger className='w-full lg:w-40'>
+            <SelectValue placeholder='Sort' />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value='createdAt,desc'>Newest</SelectItem>
+            <SelectItem value='dueDate,asc'>Due date</SelectItem>
+            <SelectItem value='status,asc'>Status</SelectItem>
+            <SelectItem value='title,asc'>Title</SelectItem>
+          </SelectContent>
+        </Select>
+        <div className='flex items-center gap-2'>
+          <Switch
+            id='global-overdue'
+            checked={filter.overdue}
+            onCheckedChange={(value) => onChange({ overdue: value })}
+          />
+          <Label htmlFor='global-overdue'>Overdue</Label>
+        </div>
+      </div>
+      <ActionTable
+        result={result}
+        onSelect={onSelect}
+        emptyMessage={emptyMessage}
+        onPageChange={(page) => onChange({ page })}
+      />
+    </div>
+  )
 }
 
-function isActionItemOverdue(actionItem: ActionItem) {
-  if (actionItem.status === 'done') {
-    return false
-  }
-
-  return actionItem.dueDate < getDateKey(new Date())
+function useActionPage(filter: ActionFilter) {
+  const query = useQuery(actionItemsQuery(filter))
+  return { query, filter }
 }
 
-function getDateKey(date: Date) {
-  const parts = datePartsFormatter.formatToParts(date)
-  const year = parts.find((part) => part.type === 'year')?.value ?? ''
-  const month = parts.find((part) => part.type === 'month')?.value ?? ''
-  const day = parts.find((part) => part.type === 'day')?.value ?? ''
-
-  return `${year}-${month}-${day}`
+function ActionTable({
+  result,
+  onSelect,
+  emptyMessage = 'No Action Items found.',
+  onPageChange,
+}: {
+  result: ReturnType<typeof useActionPage>
+  onSelect: (item: ActionItem) => void
+  emptyMessage?: string
+  onPageChange?: (page: number) => void
+}) {
+  const { query, filter } = result
+  const lastPage = query.data
+    ? Math.max(0, query.data.page.totalPages - 1)
+    : filter.page
+  useEffect(() => {
+    if (filter.page > lastPage) onPageChange?.(lastPage)
+  }, [filter.page, lastPage, onPageChange])
+  if (query.isPending) return <RequestLoading />
+  if (query.isError)
+    return (
+      <RequestError error={query.error} retry={() => void query.refetch()} />
+    )
+  if (!query.data.items.length && filter.page === 0)
+    return <RequestEmpty title={emptyMessage} />
+  return (
+    <div className='space-y-4'>
+      <div className='overflow-x-auto rounded-md border'>
+        <Table className='min-w-[900px]'>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Action</TableHead>
+              <TableHead>Source meeting</TableHead>
+              <TableHead>Responsible</TableHead>
+              <TableHead>Due</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className='text-end'>Commands</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {query.data.items.map((item) => (
+              <TableRow key={item.id}>
+                <TableCell className='min-w-64 whitespace-normal'>
+                  <button
+                    type='button'
+                    className='text-left font-medium hover:underline'
+                    onClick={() => onSelect(item)}
+                  >
+                    {item.title}
+                  </button>
+                  <p className='mt-1 line-clamp-2 text-xs text-muted-foreground'>
+                    {item.details ?? item.sourceType}
+                  </p>
+                  <div className='mt-1 flex flex-wrap gap-1'>
+                    <Badge variant={item.isOfficial ? 'secondary' : 'outline'}>
+                      {item.isOfficial ? 'Official' : 'Proposal'}
+                    </Badge>
+                    {item.overdue && (
+                      <Badge variant='destructive'>Overdue</Badge>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className='whitespace-normal'>
+                  {item.meeting.restricted ? (
+                    <span className='text-muted-foreground'>
+                      Restricted meeting
+                    </span>
+                  ) : (
+                    <Link
+                      className='font-medium hover:underline'
+                      to='/meetings/$meetingId'
+                      params={{ meetingId: item.meetingId }}
+                    >
+                      {item.meeting.label}
+                    </Link>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {item.assignee ? (
+                    <span
+                      className={!item.assignee.active ? 'text-amber-700' : ''}
+                    >
+                      {item.assignee.displayName ?? 'Unnamed user'}
+                      {!item.assignee.active && ' · inactive'}
+                    </span>
+                  ) : (
+                    <span className='text-muted-foreground'>Unassigned</span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <RegionalCivilDate value={item.dueDate} fallback='—' />
+                </TableCell>
+                <TableCell>
+                  <Badge
+                    variant={
+                      item.status === 'CANCELLED'
+                        ? 'destructive'
+                        : item.status === 'DONE'
+                          ? 'secondary'
+                          : 'outline'
+                    }
+                  >
+                    {item.status.replace(/_/g, ' ')}
+                  </Badge>
+                </TableCell>
+                <TableCell className='text-end'>
+                  <div className='flex flex-wrap justify-end gap-1'>
+                    <ActionCommands item={item} />
+                    {item.capabilities.canEdit && (
+                      <Button
+                        size='sm'
+                        variant='ghost'
+                        onClick={() => onSelect(item)}
+                      >
+                        Edit
+                      </Button>
+                    )}
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      <div className='flex items-center justify-between text-sm text-muted-foreground'>
+        <span>{query.data.page.totalElements} record(s)</span>
+        <div className='flex items-center gap-2'>
+          <Button
+            variant='outline'
+            size='sm'
+            disabled={!query.data.page.hasPrevious || filter.page === 0}
+            onClick={() => onPageChange?.(filter.page - 1)}
+          >
+            Previous
+          </Button>
+          Page {filter.page + 1}
+          <Button
+            variant='outline'
+            size='sm'
+            disabled={!query.data.page.hasNext}
+            onClick={() => onPageChange?.(filter.page + 1)}
+          >
+            Next
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
 }

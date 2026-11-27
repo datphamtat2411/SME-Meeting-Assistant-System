@@ -6,17 +6,20 @@ import { SearchProvider } from '@/context/search-provider'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { AppSidebar } from '@/components/layout/app-sidebar'
 import { SkipToMain } from '@/components/skip-to-main'
+import type { AuthContext } from '@/features/auth/session/current-user'
 import { UserPresentationProvider } from './data/user-presentation'
 import { type UserPresentation } from './types'
 
 type AuthenticatedLayoutProps = {
   children?: React.ReactNode
   user?: UserPresentation
+  identity?: AuthContext
 }
 
 export function AuthenticatedLayout({
   children,
   user,
+  identity,
 }: AuthenticatedLayoutProps) {
   const defaultOpen = getCookie('sidebar_state') !== 'false'
   return (
@@ -25,7 +28,7 @@ export function AuthenticatedLayout({
         <LayoutProvider>
           <SidebarProvider defaultOpen={defaultOpen}>
             <SkipToMain />
-            <AppSidebar user={user} />
+            <AppSidebar user={user} identity={identity} />
             <SidebarInset
               className={cn(
                 // Set content container, so we can use container queries

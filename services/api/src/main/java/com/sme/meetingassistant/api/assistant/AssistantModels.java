@@ -1,6 +1,5 @@
 package com.sme.meetingassistant.api.assistant;
 
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.time.OffsetDateTime;
@@ -13,7 +12,7 @@ public final class AssistantModels {
     private AssistantModels() {}
 
     public record CreateConversation(@NotNull UUID meetingId, @Size(max=255) String title) {}
-    public record Ask(@NotBlank @Size(max=4096) String question) {}
+    public record Ask(@NotNull String question) {}
 
     public record ConversationView(UUID id, UUID meetingId, String title, String status,
                                    OffsetDateTime createdAt, OffsetDateTime updatedAt) {}
@@ -24,11 +23,21 @@ public final class AssistantModels {
                               String visibility, List<ClaimView> claims, List<CitationView> citations,
                               OffsetDateTime createdAt) {}
     public record ConversationDetail(ConversationView conversation, List<MessageView> messages,
-                                     int page, int size, boolean hasMore) {}
+                                     int page, int size, boolean hasMore, UUID nextBeforeMessageId,
+                                     TurnStatusView pendingTurn) {}
+    public record TurnStatusView(UUID conversationId, UUID turnId, String state, String leaseStatus,
+                                 UUID userMessageId, UUID assistantMessageId, String answerStatus) {}
     public record TurnView(UUID turnId, String state, UUID userMessageId, UUID assistantMessageId,
                            String answerStatus, String answer, List<ClaimView> claims,
                            List<CitationView> citations) {}
     public record TurnOutcome(int httpStatus, TurnView result) {}
+
+    public record EvidenceNavigation(String target, String precision) {}
+    public record EvidenceView(String citationId, String sourceType, UUID sourceId,
+                               long sourceRevision, String label, String meetingTitle,
+                               String preview, List<String> claimIds, EvidenceNavigation navigation) {}
+    public record MessageEvidence(UUID conversationId, UUID messageId, UUID meetingId,
+                                  List<EvidenceView> evidence) {}
 
     /** AI-only result validated before it is eligible for canonical persistence. */
     record ValidatedAnswer(String status, String text, JsonNode claims, JsonNode diagnostics,

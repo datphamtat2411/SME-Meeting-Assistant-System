@@ -5,7 +5,7 @@ export function SettingsNotifications() {
   return (
     <ContentSection
       title='Notifications'
-      desc='Configure how you receive notifications.'
+      desc='Manage optional meeting and action item email communications.'
     >
       <NotificationsForm />
     </ContentSection>

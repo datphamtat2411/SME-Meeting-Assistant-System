@@ -122,6 +122,10 @@ class MeetingMinutesHttpIntegrationTests {
         assertThat(data.path("officialActionItems").size()).isEqualTo(1);
         assertThat(data.path("officialActionItems").get(0).path("title").asText())
                 .isEqualTo("Viết báo cáo");
+        assertThat(data.path("displayMetadata").path("assigneeDisplayNames")
+                .path(externalAssignee.toString()).asText()).isEqualTo("DE05 user");
+        assertThat(data.path("officialActionItems").get(0).path("assigneeUserId").asText())
+                .isEqualTo(externalAssignee.toString());
         assertThat(data.path("proposalsIncluded").asBoolean()).isFalse();
         assertThat(data.toString()).doesNotContain("AI chưa xác nhận");
 
@@ -132,6 +136,12 @@ class MeetingMinutesHttpIntegrationTests {
                 .matches("[0-9a-f]{64}");
         JsonNode repeat = data(request(meeting, invited));
         assertThat(repeat.path("sourceFingerprint").asText())
+                .isEqualTo(data.path("sourceFingerprint").asText());
+        jdbc.update("UPDATE users SET display_name=? WHERE id=?", "Updated assignee name", externalAssignee);
+        JsonNode renamed = data(request(meeting, organizer));
+        assertThat(renamed.path("displayMetadata").path("assigneeDisplayNames")
+                .path(externalAssignee.toString()).asText()).isEqualTo("Updated assignee name");
+        assertThat(renamed.path("sourceFingerprint").asText())
                 .isEqualTo(data.path("sourceFingerprint").asText());
     }
 

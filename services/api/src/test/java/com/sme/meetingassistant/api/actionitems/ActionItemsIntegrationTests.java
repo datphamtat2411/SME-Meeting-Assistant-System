@@ -92,6 +92,18 @@ class ActionItemsIntegrationTests {
             Integer.class, id)).isEqualTo(3);
     }
 
+    @Test void assigneeLookupRequiresManagementScopeAndIncludesSelf() throws Exception {
+        MvcResult result = mvc.perform(get("/api/v1/action-items/assignee-candidates")
+                .principal(principal(organizer)).param("meetingId", meetingId.toString())
+                .param("q", organizer.getEmail()))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(result).path("data").toString()).contains(organizer.getId().toString());
+        mvc.perform(get("/api/v1/action-items/assignee-candidates")
+                .principal(principal(outsider)).param("meetingId", meetingId.toString())
+                .param("q", organizer.getEmail()))
+            .andExpect(status().isNotFound());
+    }
+
     @Test void schemaUsesCanonicalStatusesAndDoesNotPersistOverdueState() {
         assertThat(jdbc.queryForList("""
             SELECT check_clause FROM information_schema.check_constraints
@@ -212,10 +224,16 @@ class ActionItemsIntegrationTests {
         assertThat(scoped.path("createdByUserId").isNull()).isTrue();
         assertThat(scoped.path("confirmedByUserId").isNull()).isTrue();
         assertThat(scoped.path("confirmedAt").isNull()).isTrue();
+        assertThat(scoped.path("isOfficial").asBoolean()).isTrue();
+        assertThat(scoped.path("capabilities").path("canComplete").asBoolean()).isTrue();
+        assertThat(scoped.path("capabilities").path("canCancel").asBoolean()).isFalse();
+        assertThat(scoped.path("capabilities").path("canAccessMeeting").asBoolean()).isFalse();
+        assertThat(scoped.path("capabilities").path("canAccessEvidence").asBoolean()).isFalse();
 
         MvcResult list = mvc.perform(get("/api/v1/action-items").principal(principal(outsider))
                 .param("assignee", "me").param("meetingId",meetingId.toString())
-                .param("status","OPEN").param("q","Gửi báo cáo").param("page","0").param("size","1"))
+                .param("status","OPEN").param("official","true")
+                .param("q","Gửi báo cáo").param("page","0").param("size","1"))
             .andExpect(status().isOk()).andReturn();
         assertThat(body(list).path("meta").path("pagination").path("totalElements").asLong())
             .isEqualTo(1);
@@ -351,6 +369,13 @@ class ActionItemsIntegrationTests {
             employeeWithGrant.getId(),unitId,organizer.getId());
         mvc.perform(get("/api/v1/action-items/{id}",id).principal(principal(employeeWithGrant)))
             .andExpect(status().isNotFound());
+        for (UserEntity actor : List.of(organizer, manager, employeeWithGrant, outsider)) {
+            MvcResult capability = mvc.perform(get("/api/v1/action-items/management-capability")
+                    .principal(principal(actor)).param("meetingId", meetingId.toString()))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(capability).path("data").path("canCreate").asBoolean())
+                .isEqualTo(actor.equals(organizer) || actor.equals(manager));
+        }
         MvcResult old=mvc.perform(get("/api/v1/action-items/{id}",id)
                 .principal(principal(manager))).andExpect(status().isOk()).andReturn();
         MvcResult cancelled=mvc.perform(post("/api/v1/action-items/{id}/cancel",id)

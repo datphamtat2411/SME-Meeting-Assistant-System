@@ -11,13 +11,16 @@ import { normalizeCoreApiError } from '@/lib/core-api'
 import { handleServerError } from '@/lib/handle-server-error'
 import { setRequestRecoverySessionLossHandler } from '@/lib/request-recovery'
 import { configureAuthLifecycle } from '@/features/auth/session/auth-lifecycle'
+import { getSafeSessionRedirect } from '@/features/auth/session/current-user'
 import {
-  clearCurrentUserCache,
-  getSafeSessionRedirect,
-} from '@/features/auth/session/current-user'
+  configureSessionRevalidation,
+  noteBrowserSessionLoss,
+  revalidateBrowserSession,
+} from '@/features/auth/session/session-revalidation'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
+import { containProtectedState } from './protected-state-containment'
 // Generated Routes
 import { routeTree } from './routeTree.gen'
 // Styles
@@ -59,7 +62,13 @@ const queryClient = new QueryClient({
     },
   },
   queryCache: new QueryCache({
-    onError: (error) => {
+    onError: (error, query) => {
+      if (
+        query.meta?.featureErrorBoundary === true ||
+        query.meta?.handlesOwnErrors === true
+      ) {
+        return
+      }
       const apiError = normalizeCoreApiError(error)
       if (apiError.recoveryOutcome) return
 
@@ -82,16 +91,31 @@ const router = createRouter({
   defaultPreloadStaleTime: 0,
 })
 
-function containProtectedState(): void {
-  void queryClient.cancelQueries()
-  queryClient.removeQueries()
-  queryClient.getMutationCache().clear()
-  clearCurrentUserCache(queryClient)
-}
+configureSessionRevalidation({
+  queryClient,
+  onContainment: () => containProtectedState(queryClient),
+  onChanged: (preserveProtectedRoute) => {
+    // An unchanged mounted protected route already observes verification
+    // reactively. Reloading its loaders can discard compatible local drafts.
+    if (
+      preserveProtectedRoute &&
+      router.state.matches.some(
+        (match) =>
+          match.routeId === '/_authenticated' && match.status === 'success'
+      )
+    ) {
+      return
+    }
+    void router.invalidate()
+  },
+})
 
 configureAuthLifecycle({
+  onRevalidation: () => {
+    void revalidateBrowserSession()
+  },
   onContainment: () => {
-    containProtectedState()
+    containProtectedState(queryClient)
     void router.invalidate()
   },
   onNavigate: (redirect) => {
@@ -104,7 +128,8 @@ configureAuthLifecycle({
 })
 
 setRequestRecoverySessionLossHandler(() => {
-  containProtectedState()
+  noteBrowserSessionLoss()
+  containProtectedState(queryClient)
   void router.invalidate()
 })
 
