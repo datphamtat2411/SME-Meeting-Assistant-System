@@ -245,7 +245,9 @@ function LiveMeetingDetail({
           </span>
           <span className='inline-flex items-center gap-1.5'>
             <MapPin className='size-4' />
-            {meeting.roomId ? t('workspace:live_roomAssigned') : t('workspace:live_roomNotAssigned')}
+            {meeting.roomId
+              ? t('workspace:live_roomAssigned')
+              : t('workspace:live_roomNotAssigned')}
           </span>
         </div>
       </section>
@@ -379,7 +381,9 @@ function LiveMeetingDetail({
                 ))
               ) : (
                 <div className='flex items-center justify-between gap-3 text-sm'>
-                  <span className='text-muted-foreground'>{t('workspace:live_organizer')}</span>
+                  <span className='text-muted-foreground'>
+                    {t('workspace:live_organizer')}
+                  </span>
                   <span className='text-end font-medium'>
                     {currentUserId === meeting.organizerUserId
                       ? (currentUserName ?? meeting.organizerUserId)
@@ -454,7 +458,9 @@ function LifecycleSummary({ meeting }: { meeting: MeetingView }) {
         ))}
         {meeting.cancellationReason && (
           <div className='flex items-start justify-between gap-4 text-sm'>
-            <span className='text-muted-foreground'>{t('workspace:live_cancellationReason')}</span>
+            <span className='text-muted-foreground'>
+              {t('workspace:live_cancellationReason')}
+            </span>
             <span className='max-w-[65%] text-end font-medium'>
               {meeting.cancellationReason}
             </span>
@@ -525,13 +531,18 @@ function recordingMetric(
     case 'requesting-permission':
       return t('workspace:live_requestingMic')
     case 'recording':
-      return t('workspace:live_recordingDuration', { duration: formatDuration(recording.durationMs) })
+      return t('workspace:live_recordingDuration', {
+        duration: formatDuration(recording.durationMs),
+      })
     case 'stopping':
       return t('workspace:live_finalizingCapture')
     case 'completed':
-      if (recording.uploadStatus === 'submitting') return t('workspace:live_submitting')
-      if (recording.uploadStatus === 'uncertain') return t('workspace:live_submissionUncertain')
-      if (recording.uploadStatus === 'failed') return t('workspace:live_submissionFailed')
+      if (recording.uploadStatus === 'submitting')
+        return t('workspace:live_submitting')
+      if (recording.uploadStatus === 'uncertain')
+        return t('workspace:live_submissionUncertain')
+      if (recording.uploadStatus === 'failed')
+        return t('workspace:live_submissionFailed')
       return t('workspace:live_completedAudio')
     case 'failed':
       return t('workspace:live_captureSubmissionFailed')
@@ -573,7 +584,11 @@ function lifecycleDetail(meeting: MeetingView, t: Translate) {
   return t('workspace:live_reviewDraft')
 }
 
-function formatElapsedBetween(startedAt: number, endedAt: number, t: Translate): string {
+function formatElapsedBetween(
+  startedAt: number,
+  endedAt: number,
+  t: Translate
+): string {
   if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) {
     return t('workspace:live_notAvailable')
   }
@@ -680,7 +695,9 @@ function LiveMeetingAccessState({
       <CardContent className='flex flex-col items-center justify-center px-6 py-16 text-center'>
         <AlertCircle className='size-10 text-destructive' />
         <h1 className='mt-4 text-xl font-semibold'>
-          {denied ? t('workspace:live_meetingAccessDenied') : t('workspace:live_meetingAccessUnverified')}
+          {denied
+            ? t('workspace:live_meetingAccessDenied')
+            : t('workspace:live_meetingAccessUnverified')}
         </h1>
         <p className='mt-2 max-w-lg text-sm text-muted-foreground'>
           {t('workspace:live_protected')}
@@ -697,7 +714,11 @@ function LiveMeetingAccessState({
 function LiveMeetingSkeleton() {
   const { t } = useUiTranslation()
   return (
-    <div role='status' aria-label={t('workspace:live_loading')} className='space-y-6'>
+    <div
+      role='status'
+      aria-label={t('workspace:live_loading')}
+      className='space-y-6'
+    >
       <Skeleton className='h-10 w-3/4 max-w-2xl' />
       <Skeleton className='h-5 w-96 max-w-full' />
       <Skeleton className='h-56 w-full rounded-xl' />

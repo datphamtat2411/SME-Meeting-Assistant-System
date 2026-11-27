@@ -71,9 +71,7 @@ export function MeetingTools({
           description={t('workspace:recordingSectionDescription')}
         />
         {!capabilities.canSubmitMedia && (
-          <ReadOnlyNote>
-            {t('workspace:recordingReadOnly')}
-          </ReadOnlyNote>
+          <ReadOnlyNote>{t('workspace:recordingReadOnly')}</ReadOnlyNote>
         )}
         <RecordingPanel
           meetingId={meetingId}
@@ -102,9 +100,7 @@ export function MeetingTools({
           description={t('workspace:transcriptSectionDescription')}
         />
         {!capabilities.canCorrectTranscript && (
-          <ReadOnlyNote>
-            {t('workspace:transcriptReadOnly')}
-          </ReadOnlyNote>
+          <ReadOnlyNote>{t('workspace:transcriptReadOnly')}</ReadOnlyNote>
         )}
         {evidenceReturn === 'decisions' && capabilities.canReadIntelligence && (
           <Button
@@ -170,9 +166,7 @@ export function MeetingTools({
           description={t('workspace:intelligenceSectionDescription')}
         />
         {!capabilities.canMutateIntelligence && (
-          <ReadOnlyNote>
-            {t('workspace:intelligenceReadOnly')}
-          </ReadOnlyNote>
+          <ReadOnlyNote>{t('workspace:intelligenceReadOnly')}</ReadOnlyNote>
         )}
         <TranscriptReviewWorkflowStatus
           onReview={() => onSectionChange?.('transcript')}
@@ -188,15 +182,11 @@ export function MeetingTools({
             aria-label={t('workspace:intelligenceViews')}
             className='w-full justify-start sm:w-fit'
           >
-            <TabsTrigger value='summary'>
-              {t('workspace:summary')}
-            </TabsTrigger>
+            <TabsTrigger value='summary'>{t('workspace:summary')}</TabsTrigger>
             <TabsTrigger value='decisions'>
               {t('workspace:decisions')}
             </TabsTrigger>
-            <TabsTrigger value='minutes'>
-              {t('workspace:minutes')}
-            </TabsTrigger>
+            <TabsTrigger value='minutes'>{t('workspace:minutes')}</TabsTrigger>
           </TabsList>
           <TabsContent value='summary'>
             {intelligenceView === 'summary' && (
