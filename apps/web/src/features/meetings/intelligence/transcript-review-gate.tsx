@@ -1,4 +1,3 @@
-import { featureValidationMessage, operationErrorFormMessage } from '@/lib/i18n/presentation'
 import {
   createContext,
   useCallback,
@@ -12,6 +11,10 @@ import {
 } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import {
+  featureValidationMessage,
+  operationErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import { useMeetingSession } from '../media/meeting-session-context'
 import type { ProcessingJob } from '../media/processing-api'
 import { useOptionalMeetingAuthorization } from '../meeting-authorization-context'
@@ -608,7 +611,9 @@ export function TranscriptReviewGateProvider({
         setProofInvalidationMessage(
           proofIsCurrent
             ? null
-            : featureValidationMessage('transcript:reviewGate_historicalReceipt')
+            : featureValidationMessage(
+                'transcript:reviewGate_historicalReceipt'
+              )
         )
         publishAcknowledgement()
         sessionRef.current.processing.releaseReviewCommand(operation)
@@ -934,7 +939,9 @@ export function TranscriptReviewGateProvider({
         ? featureValidationMessage('transcript:reviewGate_evidenceUnverified')
         : (reviewJobEligibility(evidence, meetingId, observedSnapshot) ??
           (session.processing.unresolvedOperations.length > 0
-            ? featureValidationMessage('transcript:reviewGate_resolveProcessing')
+            ? featureValidationMessage(
+                'transcript:reviewGate_resolveProcessing'
+              )
             : null))
   const value = useMemo<TranscriptReviewGateValue>(
     () => ({
@@ -1018,7 +1025,8 @@ function reviewJobEligibility(
   if (proof.meetingId !== meetingId) {
     return featureValidationMessage('transcript:reviewGate_wrongMeeting')
   }
-  if (!snapshot) return featureValidationMessage('transcript:reviewGate_jobSourceUnverified')
+  if (!snapshot)
+    return featureValidationMessage('transcript:reviewGate_jobSourceUnverified')
   const job = snapshot.jobs.find((item) => item.id === proof.processingJobId)
   if (
     !job ||

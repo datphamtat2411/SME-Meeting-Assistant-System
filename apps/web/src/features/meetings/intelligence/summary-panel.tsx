@@ -4,7 +4,11 @@ import { AlertTriangle, Columns2, FileText, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { i18n, useUiTranslation } from '@/lib/i18n'
-import { localizedValidationMessage, operationErrorFormMessage, UiPresentationError } from '@/lib/i18n/presentation'
+import {
+  localizedValidationMessage,
+  operationErrorFormMessage,
+  UiPresentationError,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RegionalTimestamp } from '@/components/regional-timestamp'
@@ -289,7 +293,9 @@ function SummaryPanelContent({
         return
       }
       toast.error(i18n.t('summary:activationFailed'), {
-        description: localizedValidationMessage(operationErrorFormMessage(error)),
+        description: localizedValidationMessage(
+          operationErrorFormMessage(error)
+        ),
       })
     },
   })
@@ -324,8 +330,7 @@ function SummaryPanelContent({
       if (!ownsScope?.()) return
       if (result.status === 'blocked') {
         toast.error(i18n.t('summary:regenerationBlocked'), {
-          description:
-            i18n.t('summary:refreshBeforeRetry'),
+          description: i18n.t('summary:refreshBeforeRetry'),
         })
         return
       }
@@ -337,8 +342,7 @@ function SummaryPanelContent({
             ? i18n.t('summary:regenerationRecovered')
             : i18n.t('summary:regenerationAdmitted'),
         {
-          description:
-            i18n.t('summary:followJob'),
+          description: i18n.t('summary:followJob'),
         }
       )
     },
@@ -493,7 +497,11 @@ function SummaryPanelContent({
               {session?.processing.summaryObservationStatus === 'unavailable'
                 ? t('summary:lastObserved')
                 : t('summary:regenerationStatus')}{' '}
-              {t(`summary:job_${regenerationJob.status}`, { defaultValue: regenerationJob.status.replace(/_/g, ' ').toLowerCase() })}
+              {t(`summary:job_${regenerationJob.status}`, {
+                defaultValue: regenerationJob.status
+                  .replace(/_/g, ' ')
+                  .toLowerCase(),
+              })}
             </p>
             {regenerationJob.warningSummary && (
               <p>{regenerationJob.warningSummary}</p>
@@ -565,9 +573,7 @@ function SummaryPanelContent({
                   content={editConflict.latest.summary.content}
                 />
               ) : (
-                <p>
-                  {t('summary:latestUnverified')}
-                </p>
+                <p>{t('summary:latestUnverified')}</p>
               )}
             </div>
             <p className='text-muted-foreground'>
@@ -647,7 +653,12 @@ function SummaryPanelContent({
             </div>
             {versions.data && (
               <span className='text-xs text-muted-foreground'>
-                {versions.data.page.totalElements === 0 ? t('summary:noPage') : t('summary:page', { page: versions.data.page.page + 1, total: versions.data.page.totalPages })}
+                {versions.data.page.totalElements === 0
+                  ? t('summary:noPage')
+                  : t('summary:page', {
+                      page: versions.data.page.page + 1,
+                      total: versions.data.page.totalPages,
+                    })}
               </span>
             )}
           </div>
@@ -699,7 +710,9 @@ function SummaryPanelContent({
                   {t('summary:previous')}
                 </Button>
                 <span className='text-xs text-muted-foreground'>
-                  {t('summary:totalVersions', { count: versions.data.page.totalElements })}
+                  {t('summary:totalVersions', {
+                    count: versions.data.page.totalElements,
+                  })}
                 </span>
                 <Button
                   size='sm'
@@ -724,10 +737,15 @@ function SummaryPanelContent({
             <div className='flex flex-wrap items-start justify-between gap-3'>
               <div>
                 <h3 className='font-semibold'>
-                  {t('summary:preview', { version: selectedVersion.versionNumber })}
+                  {t('summary:preview', {
+                    version: selectedVersion.versionNumber,
+                  })}
                 </h3>
                 <p className='text-xs text-muted-foreground'>
-                  {t(`summary:status_${selectedVersion.sourceType}`, { defaultValue: selectedVersion.sourceType })} · {t('summary:createdLower')}{' '}
+                  {t(`summary:status_${selectedVersion.sourceType}`, {
+                    defaultValue: selectedVersion.sourceType,
+                  })}{' '}
+                  · {t('summary:createdLower')}{' '}
                   <RegionalTimestamp value={selectedVersion.createdAt} />
                   {selectedVersion.isStale ? t('summary:staleNotice') : ''}
                 </p>
@@ -739,7 +757,9 @@ function SummaryPanelContent({
                 disabled={!currentSummary}
               >
                 <Columns2 />
-                {comparisonOpen ? t('summary:hideComparison') : t('summary:compare')}
+                {comparisonOpen
+                  ? t('summary:hideComparison')
+                  : t('summary:compare')}
               </Button>
             </div>
             {selectedVersion.aiWarnings?.map((warning, index) => (
@@ -774,15 +794,21 @@ function SummaryPanelContent({
             {activationReview && (
               <section className='space-y-3 rounded-md border p-3'>
                 <h4 className='font-medium'>
-                  {t('summary:reviewActivationOf', { version: activationReview.candidate.versionNumber })}
+                  {t('summary:reviewActivationOf', {
+                    version: activationReview.candidate.versionNumber,
+                  })}
                 </h4>
                 <div className='grid gap-3 lg:grid-cols-2'>
                   <PreviewColumn
-                    title={t('summary:reviewedVersion', { version: activationReview.baseline.summary.versionNumber })}
+                    title={t('summary:reviewedVersion', {
+                      version: activationReview.baseline.summary.versionNumber,
+                    })}
                     content={activationReview.baseline.summary.content}
                   />
                   <PreviewColumn
-                    title={t('summary:candidateVersion', { version: activationReview.candidate.versionNumber })}
+                    title={t('summary:candidateVersion', {
+                      version: activationReview.candidate.versionNumber,
+                    })}
                     content={activationReview.candidate.content}
                   />
                 </div>
@@ -818,11 +844,15 @@ function SummaryPanelContent({
             {comparisonOpen && currentSummary ? (
               <div className='grid gap-4 lg:grid-cols-2'>
                 <PreviewColumn
-                  title={t('summary:historicalVersion', { version: selectedVersion.versionNumber })}
+                  title={t('summary:historicalVersion', {
+                    version: selectedVersion.versionNumber,
+                  })}
                   content={selectedVersion.content}
                 />
                 <PreviewColumn
-                  title={t('summary:currentVersionTitle', { version: currentSummary.versionNumber })}
+                  title={t('summary:currentVersionTitle', {
+                    version: currentSummary.versionNumber,
+                  })}
                   content={currentSummary.content}
                 />
               </div>

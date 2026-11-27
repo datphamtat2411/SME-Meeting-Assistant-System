@@ -1,7 +1,7 @@
-import { useUiTranslation } from '@/lib/i18n'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { LoaderCircle, ShieldAlert } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { RegionalTimestamp } from '@/components/regional-timestamp'
@@ -170,9 +170,7 @@ export function ConversationHistory({
         )}
         {!messages.length && (
           <div className='mx-auto max-w-lg space-y-4 py-8 text-center'>
-            <h3 className='text-lg font-semibold'>
-              {t('assistant:ready')}
-            </h3>
+            <h3 className='text-lg font-semibold'>{t('assistant:ready')}</h3>
             <p className='text-sm text-muted-foreground'>
               {t('assistant:explore')}
             </p>
@@ -277,9 +275,7 @@ function AssistantMessageCard({
         <Alert>
           <ShieldAlert />
           <AlertTitle>{t('assistant:sourceUnavailable')}</AlertTitle>
-          <AlertDescription>
-            {t('assistant:sourceWithheld')}
-          </AlertDescription>
+          <AlertDescription>{t('assistant:sourceWithheld')}</AlertDescription>
         </Alert>
       ) : (
         <>
@@ -319,7 +315,9 @@ function AssistantMessageCard({
                   >
                     <p className='whitespace-pre-wrap'>{claim.text}</p>
                     <p className='text-xs text-muted-foreground'>
-                      {supportLabels[claim.support] ? t(supportLabels[claim.support]) : t('assistant:supportUnknown')}
+                      {supportLabels[claim.support]
+                        ? t(supportLabels[claim.support])
+                        : t('assistant:supportUnknown')}
                     </p>
                     <div className='flex flex-wrap gap-1'>
                       {message.citations.map((citation, index) =>
@@ -330,7 +328,9 @@ function AssistantMessageCard({
                             type='button'
                             variant='outline'
                             size='sm'
-                            aria-label={t('assistant:inspectCitation', { number: index + 1 })}
+                            aria-label={t('assistant:inspectCitation', {
+                              number: index + 1,
+                            })}
                             onClick={(event) =>
                               onInspect(
                                 message.id,

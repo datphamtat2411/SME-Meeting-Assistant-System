@@ -4,7 +4,11 @@ import { CheckCircle2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { i18n, useUiTranslation } from '@/lib/i18n'
-import { localizedValidationMessage, operationErrorFormMessage, UiPresentationError } from '@/lib/i18n/presentation'
+import {
+  localizedValidationMessage,
+  operationErrorFormMessage,
+  UiPresentationError,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -304,7 +308,9 @@ function DecisionsPanelContent({
         setReviewBlocked(true)
         setReviewConflict(null)
         toast.error(i18n.t('decisions:reviewFailed'), {
-          description: localizedValidationMessage(operationErrorFormMessage(error)),
+          description: localizedValidationMessage(
+            operationErrorFormMessage(error)
+          ),
         })
         const ownsReconciliation = captureReviewReconciliation()
         void query.refetch().then((result) => {
@@ -318,7 +324,9 @@ function DecisionsPanelContent({
         return
       }
       toast.error(i18n.t('decisions:reviewFailed'), {
-        description: localizedValidationMessage(operationErrorFormMessage(error)),
+        description: localizedValidationMessage(
+          operationErrorFormMessage(error)
+        ),
       })
     },
   })
@@ -381,7 +389,9 @@ function DecisionsPanelContent({
         return
       }
       toast.error(i18n.t('decisions:editFailed'), {
-        description: localizedValidationMessage(operationErrorFormMessage(error)),
+        description: localizedValidationMessage(
+          operationErrorFormMessage(error)
+        ),
       })
     },
   })
@@ -500,9 +510,7 @@ function DecisionsPanelContent({
     } catch {
       if (ownsScope()) {
         setCreateReconciled(false)
-        toast.error(
-          i18n.t('decisions:verifyFailed')
-        )
+        toast.error(i18n.t('decisions:verifyFailed'))
       }
     } finally {
       if (ownsScope()) setReconcilingCreation(false)
@@ -585,7 +593,9 @@ function DecisionsPanelContent({
                 disabled={mutationPending}
                 onClick={() => selectFilter(option)}
               >
-                {option === 'ALL' ? t('decisions:all') : decisionLabel(option, t)}
+                {option === 'ALL'
+                  ? t('decisions:all')
+                  : decisionLabel(option, t)}
               </Button>
             )
           )}
@@ -658,7 +668,10 @@ function DecisionsPanelContent({
                   {t('decisions:previous')}
                 </Button>
                 <span className='text-xs text-muted-foreground'>
-                  {t('decisions:page', { page: query.data.page.page + 1, total: query.data.page.totalPages })}
+                  {t('decisions:page', {
+                    page: query.data.page.page + 1,
+                    total: query.data.page.totalPages,
+                  })}
                 </span>
                 <Button
                   size='sm'
@@ -750,9 +763,7 @@ function DecisionsPanelContent({
                 role='alert'
                 className='space-y-2 rounded-md border border-amber-300/70 p-3 text-sm'
               >
-                <p>
-                  {t('decisions:previousRequest')}
-                </p>
+                <p>{t('decisions:previousRequest')}</p>
                 <Button
                   size='sm'
                   variant='outline'
@@ -861,9 +872,7 @@ function DecisionsPanelContent({
                   return
                 if (
                   (createDraft.trim() || selectedEvidence.length) &&
-                  !window.confirm(
-                    t('decisions:discardCreate')
-                  )
+                  !window.confirm(t('decisions:discardCreate'))
                 )
                   return
                 retireCreateOperation()

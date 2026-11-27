@@ -1,7 +1,7 @@
-import { useUiTranslation } from '@/lib/i18n'
-import { localizedValidationMessage } from '@/lib/i18n/presentation'
 import { useState } from 'react'
 import { AlertTriangle, CheckCircle2, ShieldCheck } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
+import { localizedValidationMessage } from '@/lib/i18n/presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -113,7 +113,9 @@ export function TranscriptReviewAdmissionPanel({
             className='flex gap-2 rounded-lg border border-amber-300/70 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-200'
           >
             <AlertTriangle className='mt-0.5 size-4 shrink-0' />
-            <span>{localizedValidationMessage(gate.proofInvalidationMessage, t)}</span>
+            <span>
+              {localizedValidationMessage(gate.proofInvalidationMessage, t)}
+            </span>
           </div>
         )}
 
@@ -124,7 +126,9 @@ export function TranscriptReviewAdmissionPanel({
         )}
         {gate.digestStatus === 'error' && (
           <p role='alert' className='text-sm text-destructive'>
-            {gate.digestError ? localizedValidationMessage(gate.digestError, t) : t('transcript:reviewGate_digestUnverified')}
+            {gate.digestError
+              ? localizedValidationMessage(gate.digestError, t)
+              : t('transcript:reviewGate_digestUnverified')}
           </p>
         )}
         {!gate.isAuthorized && (
@@ -146,11 +150,14 @@ export function TranscriptReviewAdmissionPanel({
         )}
         {recovering && (
           <div role='status' className='space-y-2 rounded-lg border p-3'>
-            <p className='text-sm'>
-              {t('transcript:reviewGate_uncertain')}
-            </p>
+            <p className='text-sm'>{t('transcript:reviewGate_uncertain')}</p>
             <p className='text-sm text-muted-foreground'>
-              {localizedValidationMessage((gate.admission.status === 'uncertain' ? gate.admission.message : gate.acknowledgement.message) ?? '', t)}
+              {localizedValidationMessage(
+                (gate.admission.status === 'uncertain'
+                  ? gate.admission.message
+                  : gate.acknowledgement.message) ?? '',
+                t
+              )}
             </p>
             <Button
               type='button'
@@ -170,7 +177,9 @@ export function TranscriptReviewAdmissionPanel({
         )}
         {gate.receipt && !gate.receiptIsCurrent && (
           <p className='text-sm text-muted-foreground'>
-            {t('transcript:reviewGate_receiptRevision', { revision: gate.receipt.contentRevision })}
+            {t('transcript:reviewGate_receiptRevision', {
+              revision: gate.receipt.contentRevision,
+            })}
           </p>
         )}
         {gate.admission.status === 'confirmed' && !admissionConfirmed && (
@@ -181,12 +190,21 @@ export function TranscriptReviewAdmissionPanel({
         {gate.evidence && (
           <div className='flex flex-wrap gap-2 text-xs'>
             <Badge variant='outline'>
-              {t('transcript:reviewGate_revision', { revision: gate.evidence.contentRevision })}
+              {t('transcript:reviewGate_revision', {
+                revision: gate.evidence.contentRevision,
+              })}
             </Badge>
             <Badge variant='outline'>
-              {t('transcript:reviewGate_source', { source: gate.evidence.sourceMediaId.slice(0, 8) })}
+              {t('transcript:reviewGate_source', {
+                source: gate.evidence.sourceMediaId.slice(0, 8),
+              })}
             </Badge>
-            <Badge variant='outline'>{t(`transcript:reviewGate_status_${gate.evidence.transcriptStatus}`, { defaultValue: gate.evidence.transcriptStatus })}</Badge>
+            <Badge variant='outline'>
+              {t(
+                `transcript:reviewGate_status_${gate.evidence.transcriptStatus}`,
+                { defaultValue: gate.evidence.transcriptStatus }
+              )}
+            </Badge>
           </div>
         )}
 
@@ -197,7 +215,10 @@ export function TranscriptReviewAdmissionPanel({
               {t('transcript:reviewGate_acknowledgementConfirmed')}
             </p>
             <p className='mt-1 text-muted-foreground'>
-              {t('transcript:reviewGate_attributed', { user: gate.receipt.acknowledgedByUserId, time: gate.receipt.acknowledgedAt })}
+              {t('transcript:reviewGate_attributed', {
+                user: gate.receipt.acknowledgedByUserId,
+                time: gate.receipt.acknowledgedAt,
+              })}
             </p>
           </div>
         )}
@@ -222,9 +243,7 @@ export function TranscriptReviewAdmissionPanel({
                   })
                 }
               />
-              <span>
-                {t('transcript:reviewGate_acknowledgementStatement')}
-              </span>
+              <span>{t('transcript:reviewGate_acknowledgementStatement')}</span>
             </label>
             <div className='flex flex-wrap items-center gap-2'>
               <Button
@@ -245,7 +264,10 @@ export function TranscriptReviewAdmissionPanel({
               {gate.acknowledgement.status === 'rejected' &&
                 gate.acknowledgement.message && (
                   <span role='alert' className='text-sm text-destructive'>
-                    {localizedValidationMessage(gate.acknowledgement.message, t)}
+                    {localizedValidationMessage(
+                      gate.acknowledgement.message,
+                      t
+                    )}
                   </span>
                 )}
             </div>
@@ -320,9 +342,15 @@ export function TranscriptReviewWorkflowStatus({
       {job && (
         <>
           <p className='font-medium'>
-            {t('transcript:reviewGate_processing', { status: presentProcessingStatus(job.status).label })}
+            {t('transcript:reviewGate_processing', {
+              status: presentProcessingStatus(job.status).label,
+            })}
           </p>
-          {job.currentStage && <p>{t('transcript:reviewGate_stage', { stage: job.currentStage })}</p>}
+          {job.currentStage && (
+            <p>
+              {t('transcript:reviewGate_stage', { stage: job.currentStage })}
+            </p>
+          )}
           {job.warningSummary && (
             <p className='text-muted-foreground'>{job.warningSummary}</p>
           )}
@@ -332,9 +360,7 @@ export function TranscriptReviewWorkflowStatus({
         </>
       )}
       {gate.hasUnresolvedOperation && (
-        <p>
-          {t('transcript:reviewGate_requestUnresolved')}
-        </p>
+        <p>{t('transcript:reviewGate_requestUnresolved')}</p>
       )}
       {onReview && (
         <Button type='button' variant='outline' onClick={onReview}>

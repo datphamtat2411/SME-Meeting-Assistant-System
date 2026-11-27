@@ -21,7 +21,12 @@ import {
 import { toast } from 'sonner'
 import { CoreApiError, normalizeCoreApiError } from '@/lib/core-api'
 import { i18n, useUiTranslation } from '@/lib/i18n'
-import { featureValidationMessage, localizedValidationMessage, operationErrorFormMessage, UiPresentationError } from '@/lib/i18n/presentation'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+  operationErrorFormMessage,
+  UiPresentationError,
+} from '@/lib/i18n/presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -195,7 +200,10 @@ function statusBadgeVariant(
   return 'outline'
 }
 
-function coverageStatusLabel(status: TranscriptCoverage['coverageStatus'], t: (key: string) => string) {
+function coverageStatusLabel(
+  status: TranscriptCoverage['coverageStatus'],
+  t: (key: string) => string
+) {
   switch (status) {
     case 'COVERED':
       return t('transcript:review_covered')
@@ -206,7 +214,11 @@ function coverageStatusLabel(status: TranscriptCoverage['coverageStatus'], t: (k
   }
 }
 
-function speakerName(segment: TranscriptSegment, speakers: Speaker[], unknownSpeaker = 'Unknown speaker'): string {
+function speakerName(
+  segment: TranscriptSegment,
+  speakers: Speaker[],
+  unknownSpeaker = 'Unknown speaker'
+): string {
   const speaker = segment.speakerClusterId
     ? speakers.find((item) => item.id === segment.speakerClusterId)
     : undefined
@@ -234,7 +246,9 @@ function operationErrorMessage(error: unknown, fallback: string): string {
     ? featureValidationMessage('transcript:review_operationUnauthorized')
     : normalized.status === 404
       ? featureValidationMessage('transcript:review_canonicalUnavailable')
-      : (error instanceof CoreApiError || error instanceof UiPresentationError ? operationErrorFormMessage(error) : fallback)
+      : error instanceof CoreApiError || error instanceof UiPresentationError
+        ? operationErrorFormMessage(error)
+        : fallback
 }
 
 export function TranscriptReviewWorkspace({
@@ -477,7 +491,14 @@ function TranscriptReviewWorkspaceContent({
     const options = new Map<string, string>()
     for (const segment of orderedSegments) {
       const key = segment.speakerClusterId ?? `label:${segment.speakerLabel}`
-      options.set(key, speakerName(segment, availableSpeakers, t('transcript:review_unknownSpeaker')))
+      options.set(
+        key,
+        speakerName(
+          segment,
+          availableSpeakers,
+          t('transcript:review_unknownSpeaker')
+        )
+      )
     }
     return Array.from(options.entries()).sort((left, right) =>
       left[1].localeCompare(right[1])
@@ -489,7 +510,11 @@ function TranscriptReviewWorkspaceContent({
       const matchesSearch =
         !search ||
         segment.text.toLocaleLowerCase().includes(search) ||
-        speakerName(segment, availableSpeakers, t('transcript:review_unknownSpeaker'))
+        speakerName(
+          segment,
+          availableSpeakers,
+          t('transcript:review_unknownSpeaker')
+        )
           .toLocaleLowerCase()
           .includes(search)
       const key = segment.speakerClusterId ?? `label:${segment.speakerLabel}`
@@ -613,7 +638,9 @@ function TranscriptReviewWorkspaceContent({
     }) => {
       const { execution, draft, segmentId } = payload
       if (!isCurrent(execution) || !canCorrectRef.current) {
-        throw new UiPresentationError('transcript:review_correctionUnauthorized')
+        throw new UiPresentationError(
+          'transcript:review_correctionUnauthorized'
+        )
       }
       const snapshot = transcriptRef.current
       const observed = snapshot?.transcript.segments.find(
@@ -683,7 +710,10 @@ function TranscriptReviewWorkspaceContent({
       setCorrectionNotice({
         kind: uncertain ? 'uncertain' : 'error',
         segmentId: payload.segmentId,
-        message: operationErrorMessage(error, featureValidationMessage('transcript:review_saveFailed')),
+        message: operationErrorMessage(
+          error,
+          featureValidationMessage('transcript:review_saveFailed')
+        ),
       })
     },
     onSettled: (_, __, payload) => release(payload.execution),
@@ -1100,7 +1130,9 @@ function TranscriptReviewWorkspaceContent({
               </div>
               <div className='flex flex-wrap gap-2'>
                 <Badge variant={statusBadgeVariant(transcriptValue.status)}>
-                  {t(`transcript:review_status_${transcriptValue.status}`, { defaultValue: transcriptValue.status })}
+                  {t(`transcript:review_status_${transcriptValue.status}`, {
+                    defaultValue: transcriptValue.status,
+                  })}
                 </Badge>
                 <Badge variant='outline'>
                   {transcriptValue.languageCode?.toUpperCase() ??
@@ -1109,9 +1141,21 @@ function TranscriptReviewWorkspaceContent({
               </div>
             </div>
             <div className='flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground'>
-              <span>{t('transcript:review_version', { version: transcriptValue.versionNumber })}</span>
-              <span>{t('transcript:review_revision', { revision: transcriptValue.contentRevision })}</span>
-              <span>{t('transcript:review_segmentCount', { count: orderedSegments.length })}</span>
+              <span>
+                {t('transcript:review_version', {
+                  version: transcriptValue.versionNumber,
+                })}
+              </span>
+              <span>
+                {t('transcript:review_revision', {
+                  revision: transcriptValue.contentRevision,
+                })}
+              </span>
+              <span>
+                {t('transcript:review_segmentCount', {
+                  count: orderedSegments.length,
+                })}
+              </span>
             </div>
           </CardHeader>
           <CardContent className='space-y-4 pt-5'>
@@ -1121,7 +1165,11 @@ function TranscriptReviewWorkspaceContent({
                 className='flex gap-2 rounded-lg border border-amber-300/70 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-200'
               >
                 <AlertTriangle className='mt-0.5 size-4 shrink-0' />
-                {t('transcript:review_languageMismatch', { language: transcriptValue.languageCode ?? t('transcript:review_unknown') })}
+                {t('transcript:review_languageMismatch', {
+                  language:
+                    transcriptValue.languageCode ??
+                    t('transcript:review_unknown'),
+                })}
               </div>
             )}
             {!isFinalized && (
@@ -1147,9 +1195,7 @@ function TranscriptReviewWorkspaceContent({
                 role='alert'
                 className='space-y-2 rounded-lg border p-3 text-sm'
               >
-                <p>
-                  {t('transcript:review_replaced')}
-                </p>
+                <p>{t('transcript:review_replaced')}</p>
                 {Object.entries(drafts).map(([id, draft]) => (
                   <p key={id} className='whitespace-pre-wrap'>
                     {draft.text}
@@ -1176,9 +1222,7 @@ function TranscriptReviewWorkspaceContent({
                 role='alert'
                 className='space-y-2 rounded-lg border p-3 text-sm'
               >
-                <p>
-                  {t('transcript:review_uncertainWrite')}
-                </p>
+                <p>{t('transcript:review_uncertainWrite')}</p>
                 <Button
                   type='button'
                   variant='outline'
@@ -1222,7 +1266,10 @@ function TranscriptReviewWorkspaceContent({
               evidenceContentRevision !== undefined &&
               evidenceContentRevision !== transcriptValue.contentRevision && (
                 <p role='status' className='text-sm text-muted-foreground'>
-                  {t('transcript:review_staleEvidence', { cited: evidenceContentRevision, current: transcriptValue.contentRevision })}
+                  {t('transcript:review_staleEvidence', {
+                    cited: evidenceContentRevision,
+                    current: transcriptValue.contentRevision,
+                  })}
                 </p>
               )}
             {evidenceReferenceIssue && (
@@ -1264,7 +1311,10 @@ function TranscriptReviewWorkspaceContent({
                 label={t('transcript:review_speakerFilter')}
                 value={speakerFilter}
                 onChange={setSpeakerFilter}
-                options={[['all', t('transcript:review_allSpeakers')], ...speakerOptions]}
+                options={[
+                  ['all', t('transcript:review_allSpeakers')],
+                  ...speakerOptions,
+                ]}
               />
               <SelectField
                 label={t('transcript:review_qualityFilter')}
@@ -1272,13 +1322,24 @@ function TranscriptReviewWorkspaceContent({
                 onChange={setQualityFilter}
                 options={[
                   ['all', t('transcript:review_allQuality')],
-                  ...qualityOptions.map((status) => [status, t(`transcript:review_status_${status}`, { defaultValue: status })] as const),
+                  ...qualityOptions.map(
+                    (status) =>
+                      [
+                        status,
+                        t(`transcript:review_status_${status}`, {
+                          defaultValue: status,
+                        }),
+                      ] as const
+                  ),
                 ]}
               />
             </div>
             <div className='flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground'>
               <span>
-                {t('transcript:review_showing', { shown: filteredSegments.length, total: orderedSegments.length })}
+                {t('transcript:review_showing', {
+                  shown: filteredSegments.length,
+                  total: orderedSegments.length,
+                })}
               </span>
               {(searchInput ||
                 speakerFilter !== 'all' ||
@@ -1357,20 +1418,33 @@ function TranscriptReviewWorkspaceContent({
                               playFrom(segment.startMs)
                             }}
                             disabled={!segmentSourceAvailable && !sourceLoading}
-                            aria-label={t('transcript:review_playFrom', { time: timecode(segment.startMs) })}
-                            title={sourcePositionLabel(segmentSourceAvailable, sourceLoading, t)}
+                            aria-label={t('transcript:review_playFrom', {
+                              time: timecode(segment.startMs),
+                            })}
+                            title={sourcePositionLabel(
+                              segmentSourceAvailable,
+                              sourceLoading,
+                              t
+                            )}
                           >
                             {timecode(segment.startMs)}–
                             {timecode(segment.endMs)}
                           </button>
                           <span className='text-border'>•</span>
                           <span className='font-medium text-foreground'>
-                            {speakerName(segment, availableSpeakers, t('transcript:review_unknownSpeaker'))}
+                            {speakerName(
+                              segment,
+                              availableSpeakers,
+                              t('transcript:review_unknownSpeaker')
+                            )}
                           </span>
                           <Badge
                             variant={statusBadgeVariant(segment.qualityStatus)}
                           >
-                            {t(`transcript:review_status_${segment.qualityStatus}`, { defaultValue: segment.qualityStatus })}
+                            {t(
+                              `transcript:review_status_${segment.qualityStatus}`,
+                              { defaultValue: segment.qualityStatus }
+                            )}
                           </Badge>
                         </div>
                         <div className='flex flex-wrap items-center gap-1'>
@@ -1385,7 +1459,11 @@ function TranscriptReviewWorkspaceContent({
                             }}
                           >
                             <Play className='size-3.5' />
-                            {sourcePositionLabel(segmentSourceAvailable, sourceLoading, t)}
+                            {sourcePositionLabel(
+                              segmentSourceAvailable,
+                              sourceLoading,
+                              t
+                            )}
                           </Button>
                           {canEditCanonicalTranscript && (
                             <Button
@@ -1502,7 +1580,9 @@ function TranscriptReviewWorkspaceContent({
                           type='button'
                           className='mt-3 block w-full text-left text-sm leading-6 whitespace-pre-wrap focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none'
                           onClick={() => setSelectedSegmentId(segment.id)}
-                          aria-label={t('transcript:review_selectSegment', { number: segment.ordinal + 1 })}
+                          aria-label={t('transcript:review_selectSegment', {
+                            number: segment.ordinal + 1,
+                          })}
                         >
                           {segment.text}
                         </button>
@@ -1696,7 +1776,11 @@ function ProcessingAvailability({
     <div className='rounded-lg border p-4 text-sm'>
       <div className='flex items-center gap-2 font-medium'>
         <span>{presentation.label}</span>
-        <Badge variant='outline'>{t(`transcript:review_status_${job.status}`, { defaultValue: job.status })}</Badge>
+        <Badge variant='outline'>
+          {t(`transcript:review_status_${job.status}`, {
+            defaultValue: job.status,
+          })}
+        </Badge>
       </div>
       {job.currentStage && (
         <p className='mt-1 text-muted-foreground'>
@@ -1783,8 +1867,16 @@ function CoverageCard({
                     }}
                     onClick={() => onReviewRegion(region.startMs)}
                     disabled={!sourceAvailable && !sourceLoading}
-                    aria-label={t('transcript:review_coverageRange', { status: coverageStatusLabel(region.coverageStatus, t), from: timecode(region.startMs), to: timecode(region.endMs) })}
-                    title={sourcePositionLabel(sourceAvailable, sourceLoading, t)}
+                    aria-label={t('transcript:review_coverageRange', {
+                      status: coverageStatusLabel(region.coverageStatus, t),
+                      from: timecode(region.startMs),
+                      to: timecode(region.endMs),
+                    })}
+                    title={sourcePositionLabel(
+                      sourceAvailable,
+                      sourceLoading,
+                      t
+                    )}
                   />
                 )
               })}
@@ -1813,7 +1905,9 @@ function CoverageCard({
                       </span>
                     )}
                     <span className='text-muted-foreground'>
-                      {t('transcript:review_retryCount', { count: region.retryCount })}
+                      {t('transcript:review_retryCount', {
+                        count: region.retryCount,
+                      })}
                     </span>
                   </span>
                 </button>
@@ -1898,7 +1992,8 @@ function SpeakerMappingCard({
                   <div className='min-w-0'>
                     <p className='font-medium'>{speaker.label}</p>
                     <p className='truncate text-xs text-muted-foreground'>
-                      {speaker.displayName ?? t('transcript:review_identityUnconfirmed')}
+                      {speaker.displayName ??
+                        t('transcript:review_identityUnconfirmed')}
                     </p>
                   </div>
                   {canMap && (
@@ -1911,7 +2006,9 @@ function SpeakerMappingCard({
                       }
                       onClick={() => onSelectSpeaker(speaker.id)}
                     >
-                      {active ? t('transcript:review_close') : t('transcript:review_map')}
+                      {active
+                        ? t('transcript:review_close')
+                        : t('transcript:review_map')}
                     </Button>
                   )}
                 </div>
@@ -1919,7 +2016,9 @@ function SpeakerMappingCard({
                   <div className='mt-2 flex items-center justify-between gap-2 text-xs'>
                     <span className='text-emerald-700 dark:text-emerald-300'>
                       <CheckCircle2 className='mr-1 inline size-3.5' />
-                      {t('transcript:review_mappedTo', { name: speaker.displayName ?? speaker.userId })}
+                      {t('transcript:review_mappedTo', {
+                        name: speaker.displayName ?? speaker.userId,
+                      })}
                     </span>
                     {canMap && (
                       <Button
@@ -1941,7 +2040,9 @@ function SpeakerMappingCard({
                         value={searchInput}
                         onChange={(event) => onSearchInput(event.target.value)}
                         placeholder={t('transcript:review_searchEligible')}
-                        aria-label={t('transcript:review_searchFor', { speaker: speaker.label })}
+                        aria-label={t('transcript:review_searchFor', {
+                          speaker: speaker.label,
+                        })}
                       />
                       <Button
                         type='submit'
@@ -1953,7 +2054,9 @@ function SpeakerMappingCard({
                       </Button>
                     </form>
                     {candidatesLoading && (
-                      <RequestLoading label={t('transcript:review_loadingParticipants')} />
+                      <RequestLoading
+                        label={t('transcript:review_loadingParticipants')}
+                      />
                     )}
                     {candidatesError && (
                       <Button
@@ -2002,7 +2105,9 @@ function SpeakerMappingCard({
                 {notice.kind === 'conflict'
                   ? t('transcript:review_mappingConflict')
                   : notice.kind === 'uncertain'
-                    ? t('transcript:review_mappingUncertain', { message: localizedValidationMessage(notice.message, t) })
+                    ? t('transcript:review_mappingUncertain', {
+                        message: localizedValidationMessage(notice.message, t),
+                      })
                     : localizedValidationMessage(notice.message, t)}
               </span>
               <Button
@@ -2018,7 +2123,11 @@ function SpeakerMappingCard({
             </div>
             {notice.kind === 'conflict' && intendedUserId !== undefined && (
               <div className='mt-2 space-y-2'>
-                <p>{t('transcript:review_intended', { name: intendedUserId ?? t('transcript:review_unmapped') })}</p>
+                <p>
+                  {t('transcript:review_intended', {
+                    name: intendedUserId ?? t('transcript:review_unmapped'),
+                  })}
+                </p>
                 <Button
                   type='button'
                   size='sm'
@@ -2064,10 +2173,15 @@ function CorrectionNoticeView({
           {notice.kind === 'conflict' ? (
             <>
               <p>
-                {t('transcript:review_segmentConflict', { attempted: notice.attemptedVersion, current: notice.currentVersion ?? currentSegment.version })}
+                {t('transcript:review_segmentConflict', {
+                  attempted: notice.attemptedVersion,
+                  current: notice.currentVersion ?? currentSegment.version,
+                })}
               </p>
               <p className='whitespace-pre-wrap'>
-                {t('transcript:review_currentText', { text: currentSegment.text })}
+                {t('transcript:review_currentText', {
+                  text: currentSegment.text,
+                })}
               </p>
               {draftExists && (
                 <div className='flex flex-wrap gap-2'>
@@ -2094,7 +2208,9 @@ function CorrectionNoticeView({
             <>
               <p>
                 {notice.kind === 'uncertain'
-                  ? t('transcript:review_writeUncertain', { message: localizedValidationMessage(notice.message, t) })
+                  ? t('transcript:review_writeUncertain', {
+                      message: localizedValidationMessage(notice.message, t),
+                    })
                   : localizedValidationMessage(notice.message, t)}
               </p>
               <Button

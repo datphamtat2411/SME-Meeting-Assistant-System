@@ -48,11 +48,18 @@ export function DecisionCard({
     >
       <div className='flex flex-wrap items-center gap-2'>
         <Badge variant={statusVariant(decision.status)}>
-          {t(`decisions:value_${decision.status}`, { defaultValue: decision.status })}
+          {t(`decisions:value_${decision.status}`, {
+            defaultValue: decision.status,
+          })}
         </Badge>
-        <Badge variant='outline'>{t(`decisions:value_${decision.sourceType}`, { defaultValue: decision.sourceType })}</Badge>
+        <Badge variant='outline'>
+          {t(`decisions:value_${decision.sourceType}`, {
+            defaultValue: decision.sourceType,
+          })}
+        </Badge>
         <span className='text-xs text-muted-foreground'>
-          {t('decisions:created')} <RegionalTimestamp value={decision.createdAt} />
+          {t('decisions:created')}{' '}
+          <RegionalTimestamp value={decision.createdAt} />
         </span>
         {decision.isStale && (
           <Badge variant='destructive'>{t('decisions:stale')}</Badge>
@@ -62,12 +69,20 @@ export function DecisionCard({
         {decision.content}
       </p>
       <div className='flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground'>
-        <span>{t('decisions:evidenceCount', { count: decision.evidenceSegmentIds.length })}</span>
+        <span>
+          {t('decisions:evidenceCount', {
+            count: decision.evidenceSegmentIds.length,
+          })}
+        </span>
         {decision.contentRevision !== null && (
-          <span>{t('decisions:revision', { revision: decision.contentRevision })}</span>
+          <span>
+            {t('decisions:revision', { revision: decision.contentRevision })}
+          </span>
         )}
         {decision.aiUncertainty && (
-          <span>{t('decisions:uncertainty', { value: decision.aiUncertainty })}</span>
+          <span>
+            {t('decisions:uncertainty', { value: decision.aiUncertainty })}
+          </span>
         )}
         {decision.aiProducer?.model && (
           <span>
@@ -99,7 +114,8 @@ export function DecisionCard({
                   )
                 }
               >
-                {t('decisions:evidenceNumber', { number: index + 1 })} <ExternalLink />
+                {t('decisions:evidenceNumber', { number: index + 1 })}{' '}
+                <ExternalLink />
               </Button>
             ) : (
               <span key={segmentId} className='text-xs text-muted-foreground'>
@@ -165,16 +181,25 @@ export function ReviewPanel({
         {decision.content}
       </p>
       <div className='flex flex-wrap gap-2'>
-        <Badge variant='outline'>{t(`decisions:value_${decision.sourceType}`, { defaultValue: decision.sourceType })}</Badge>
         <Badge variant='outline'>
-          {t('decisions:reviewRevision', { revision: decision.contentRevision ?? t('decisions:unavailableRevision') })}
+          {t(`decisions:value_${decision.sourceType}`, {
+            defaultValue: decision.sourceType,
+          })}
+        </Badge>
+        <Badge variant='outline'>
+          {t('decisions:reviewRevision', {
+            revision:
+              decision.contentRevision ?? t('decisions:unavailableRevision'),
+          })}
         </Badge>
         {decision.isStale && (
           <Badge variant='destructive'>{t('decisions:stale')}</Badge>
         )}
       </div>
       {decision.aiUncertainty && (
-        <p className='text-sm'>{t('decisions:uncertainty', { value: decision.aiUncertainty })}</p>
+        <p className='text-sm'>
+          {t('decisions:uncertainty', { value: decision.aiUncertainty })}
+        </p>
       )}
       {decision.aiWarnings?.map((warning, index) => (
         <p key={index} className='text-sm text-muted-foreground'>
@@ -204,7 +229,12 @@ export function ReviewPanel({
           <p>{t('decisions:reviewBlocked')}</p>
           {conflict ? (
             <>
-              <p>{t('decisions:latestStatus')} {t(`decisions:value_${conflict.status}`, { defaultValue: conflict.status })}</p>
+              <p>
+                {t('decisions:latestStatus')}{' '}
+                {t(`decisions:value_${conflict.status}`, {
+                  defaultValue: conflict.status,
+                })}
+              </p>
               <p className='whitespace-pre-wrap'>{conflict.content}</p>
               {conflict.status === 'PROPOSED' && (
                 <Button size='sm' variant='outline' onClick={onUseLatest}>
@@ -213,9 +243,7 @@ export function ReviewPanel({
               )}
             </>
           ) : (
-            <p>
-              {t('decisions:unverified')}
-            </p>
+            <p>{t('decisions:unverified')}</p>
           )}
         </div>
       )}
@@ -308,14 +336,17 @@ export function EditDecisionPanel({
           role='alert'
           className='space-y-2 rounded-md border border-amber-300/70 p-3 text-sm'
         >
-          <p>
-            {t('decisions:correctionBlocked')}
-          </p>
+          <p>{t('decisions:correctionBlocked')}</p>
           <p className='font-medium'>{t('decisions:reviewedContent')}</p>
           <p className='whitespace-pre-wrap'>{decision.content}</p>
           {conflict ? (
             <>
-              <p className='font-medium'>{t('decisions:latestContent')} · {t(`decisions:value_${conflict.status}`, { defaultValue: conflict.status })}</p>
+              <p className='font-medium'>
+                {t('decisions:latestContent')} ·{' '}
+                {t(`decisions:value_${conflict.status}`, {
+                  defaultValue: conflict.status,
+                })}
+              </p>
               <p className='whitespace-pre-wrap'>{conflict.content}</p>
               {conflict.status === 'CONFIRMED' && (
                 <Button size='sm' variant='outline' onClick={onUseLatest}>
@@ -324,9 +355,7 @@ export function EditDecisionPanel({
               )}
             </>
           ) : (
-            <p>
-              {t('decisions:locateLatest')}
-            </p>
+            <p>{t('decisions:locateLatest')}</p>
           )}
         </div>
       )}
