@@ -141,8 +141,11 @@ full-product acceptance remain integration verification gates.
 
 - Core API: `./mvnw -B -ntp -Dtest=ActionItemsIntegrationTests,ActionItemLifecycleTests,ActionItemConcurrentCommandsIntegrationTests test` from `services/api` using the existing PostgreSQL/Testcontainers prerequisites.
 - Mobile: `dart format --output=none --set-exit-if-changed lib test`,
-  `flutter analyze`, and `flutter test test/action_item_foundation_test.dart`
-  from `apps/mobile` using the repository-pinned SDK.
+  `flutter analyze`, and `flutter test test/action_item_foundation_test.dart test/results_workspace_regression_test.dart`
+  from `apps/mobile` using the repository-pinned SDK. Meeting Results fixtures
+  must use the same management-targets projection and scoped candidate lookup
+  as the standalone Action Items UI, including recovery of a different meeting's
+  original creation intent and revocation of a nested assignment picker.
 
 Wave 01 verification is recorded in `docs/integration/INT-02-RESULTS.md`.
 Wave 02 acceptance uses the GitHub Actions results for the integrated commit;

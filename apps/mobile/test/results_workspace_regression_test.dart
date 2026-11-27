@@ -31,7 +31,8 @@ import 'package:sme_meeting_assistant/features/results/results_repository.dart';
 import 'package:sme_meeting_assistant/features/results/results_panel.dart';
 import 'package:sme_meeting_assistant/features/results/results_workspace_controller.dart';
 
-import 'action_item_foundation_test.dart' show itemId, itemJson, pageMeta;
+import 'action_item_foundation_test.dart'
+    show assignmentCandidateJson, itemId, itemJson, pageMeta;
 import 'support/meeting_test_support.dart';
 import 'support/widget_test_support.dart';
 
@@ -471,9 +472,20 @@ _mountActionResults(
 
 Map<String, dynamic> _creationMeeting(String id) => {
   'id': id,
-  'title': id == testMeetingId ? 'Current meeting' : 'Other meeting',
-  'canReadMeetingContext': true,
+  'label': id == testMeetingId ? 'Current meeting' : 'Other meeting',
+  'restricted': false,
 };
+
+Future<http.StreamedResponse> _selfAssignmentCandidate(
+  http.BaseRequest request,
+  String meetingId,
+) {
+  expect(request.method, 'GET');
+  expect(request.url.queryParameters['meetingId'], meetingId);
+  expect(request.url.queryParameters['candidateId'], testUserId);
+  expect(request.url.queryParameters.containsKey('q'), isFalse);
+  return meetingApiSuccess([assignmentCandidateJson()], meta: pageMeta());
+}
 
 Future<void> _fillContextualCreation(WidgetTester tester) async {
   await pumpUntil(
@@ -497,7 +509,11 @@ Future<void> _fillContextualCreation(WidgetTester tester) async {
   final assignee = find.text('Chọn người phụ trách *');
   await tester.ensureVisible(assignee);
   await tester.tap(assignee);
-  await tester.pumpAndSettle();
+  await pumpUntil(
+    tester,
+    () => find.textContaining('Giao cho tôi').evaluate().isNotEmpty,
+    reason: 'authorized self assignment',
+  );
   await tester.tap(find.textContaining('Giao cho tôi'));
   await tester.pumpAndSettle();
 }
@@ -509,7 +525,10 @@ void main() {
     final writes = <Map<String, dynamic>>[];
     final pages = <int>[];
     final client = MeetingTestHttpClient((request) async {
-      if (request.url.path.endsWith('/creation-meetings')) {
+      if (request.url.path.endsWith('/assignee-candidates')) {
+        return _selfAssignmentCandidate(request, testMeetingId);
+      }
+      if (request.url.path.endsWith('/management-targets')) {
         expect(request.url.queryParameters['q'], testMeetingId);
         final page = int.parse(request.url.queryParameters['page']!);
         pages.add(page);
@@ -587,7 +606,10 @@ void main() {
     var reads = 0;
     var writes = 0;
     final client = MeetingTestHttpClient((request) async {
-      if (request.url.path.endsWith('/creation-meetings')) {
+      if (request.url.path.endsWith('/assignee-candidates')) {
+        return _selfAssignmentCandidate(request, testMeetingId);
+      }
+      if (request.url.path.endsWith('/management-targets')) {
         reads++;
         if (reads == 3) return pending.future;
         return meetingApiSuccess([
@@ -641,7 +663,10 @@ void main() {
     final writes = <Map<String, dynamic>>[];
     final keys = <String?>[];
     final client = MeetingTestHttpClient((request) async {
-      if (request.url.path.endsWith('/creation-meetings')) {
+      if (request.url.path.endsWith('/assignee-candidates')) {
+        return _selfAssignmentCandidate(request, testRoomId);
+      }
+      if (request.url.path.endsWith('/management-targets')) {
         final id = request.url.queryParameters['q']!;
         return meetingApiSuccess([_creationMeeting(id)], meta: pageMeta());
       }
@@ -789,7 +814,7 @@ void main() {
     var detailReads = 0;
     final client = MeetingTestHttpClient((request) async {
       expect(request.method, 'GET');
-      if (request.url.path.endsWith('/action-items/creation-meetings')) {
+      if (request.url.path.endsWith('/action-items/management-targets')) {
         return meetingApiSuccess([], meta: pageMeta(total: 0));
       }
       if (request.url.path.endsWith('/action-items/$itemId')) {
@@ -873,8 +898,11 @@ void main() {
     var listReads = 0;
     var detailReads = 0;
     final client = MeetingTestHttpClient((request) async {
+      if (request.url.path.endsWith('/assignee-candidates')) {
+        return _selfAssignmentCandidate(request, testMeetingId);
+      }
       expect(request.method, 'GET');
-      if (request.url.path.endsWith('/action-items/creation-meetings')) {
+      if (request.url.path.endsWith('/action-items/management-targets')) {
         return meetingApiSuccess([], meta: pageMeta(total: 0));
       }
       if (request.url.path.endsWith('/action-items/$itemId')) {
@@ -938,7 +966,11 @@ void main() {
     final assignee = find.widgetWithText(OutlinedButton, 'Test User');
     await tester.ensureVisible(assignee);
     await tester.tap(assignee);
-    await tester.pumpAndSettle();
+    await pumpUntil(
+      tester,
+      () => find.textContaining('Giao cho tôi').evaluate().isNotEmpty,
+      reason: 'authorized nested assignment picker',
+    );
     expect(find.textContaining('Giao cho tôi'), findsOneWidget);
 
     workspace.updateCapabilities(
