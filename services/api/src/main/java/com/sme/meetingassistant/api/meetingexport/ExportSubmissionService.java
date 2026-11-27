@@ -52,11 +52,10 @@ public class ExportSubmissionService {
         budget.verifyNewIntent(record.requestedByUserId());
         if (snapshot == null || snapshot.meeting() == null
                 || !meetingId.equals(snapshot.meeting().id())
-                || !"COMPLETE".equals(snapshot.completeness())
-                || snapshot.proposalsIncluded()) {
+                 || !snapshot.hasUsableContent()) {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.CONFLICT,
-                    "Only complete approved minutes may be exported");
+                     "No usable minutes content is available to export");
         }
         byte[] intakeBytes = codec.encode(record, snapshot);
         String digest = ExportSnapshotCodec.sha256(intakeBytes);

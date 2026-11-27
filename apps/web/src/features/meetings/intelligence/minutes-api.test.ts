@@ -183,7 +183,20 @@ describe('canonical Minutes adapter', () => {
 
   it('preserves the non-official proposal marker for presentation guards', () => {
     expect(
-      parseMinutes({ ...validMinutes(), proposalsIncluded: true })
+      parseMinutes({
+        ...validMinutes(),
+        proposalsIncluded: true,
+        draftProposals: [
+          {
+            id: '77777777-7777-4777-8777-777777777777',
+            kind: 'DECISION',
+            text: 'Proposal awaiting confirmation.',
+            transcriptId: null,
+            contentRevision: null,
+            uncertainty: null,
+          },
+        ],
+      })
         .proposalsIncluded
     ).toBe(true)
   })

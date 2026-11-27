@@ -7,4 +7,5 @@ import java.util.UUID;
 /** Action Items-owned read port; only actual official records, never AI proposals. */
 public interface ActionItemMinutesSource {
     List<ActionItemView> officialForMeeting(UUID meetingId);
+    List<ActionItemView> currentProposals(UUID meetingId, UUID transcriptId, Long revision);
 }

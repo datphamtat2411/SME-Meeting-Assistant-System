@@ -40,3 +40,18 @@ after approved run inputs and certificates exist.
 
 Never place database, broker, storage, AI provider, or private-key values in
 `apps/web/.env`; Vite exposes `VITE_*` values to the browser bundle.
+
+## Progressive meeting intelligence
+
+The existing intelligence stage, budget, and private worker settings still
+control which stages run. Transcript edits enqueue derived-only work; the Core
+scheduler polls pending revisions using `app.media.intelligence.refresh-poll-ms`
+(default `10000`). `APP_MEDIA_INTELLIGENCE_REGENERATION_ENABLED` controls the
+explicit regeneration endpoint, independent of automatic edit synchronization.
+
+Assistant generation still requires configured provider access and the existing
+private Core–AI operation grants, including source verification. Its HTTP
+process can serve conversation and current canonical context while retrieval
+dependencies recover. For a rollout that should add previously excluded
+uncertain segments to existing indexed meetings, reconcile/rebuild through the
+existing knowledge generation administration rather than dropping the collection.

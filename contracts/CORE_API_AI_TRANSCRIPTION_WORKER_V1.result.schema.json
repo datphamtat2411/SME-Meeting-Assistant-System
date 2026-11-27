@@ -24,7 +24,7 @@
     "provenance":{"$ref":"#/$defs/provenance"},
     "correctionProof":{
       "type":"object","additionalProperties":false,"required":["contextScope","promptVersion","outputSha256"],
-      "properties":{"contextScope":{"const":"WHOLE_MEETING"},"promptVersion":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$"},"outputSha256":{"$ref":"#/$defs/digest"}}
+      "properties":{"contextScope":{"enum":["WHOLE_MEETING","RECONCILED_FALLBACK"]},"promptVersion":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$"},"outputSha256":{"$ref":"#/$defs/digest"}}
     }
   },
   "$defs":{

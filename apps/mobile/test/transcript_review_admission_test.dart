@@ -12,7 +12,6 @@ import 'package:sme_meeting_assistant/features/recording/local_media_repository.
 import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_manager.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
-import 'package:sme_meeting_assistant/features/recording/processing_timeline_panel.dart';
 import 'package:sme_meeting_assistant/features/recording/transcript_review_contract.dart';
 
 import 'support/meeting_test_support.dart';
@@ -60,12 +59,12 @@ TranscriptReviewProof _proof(Transcript transcript) =>
       sourceMediaId: _media,
     );
 
-Map<String, dynamic> _jobJson(bool admitted) => {
+Map<String, dynamic> _jobJson(bool admitted, {String? status}) => {
   'id': _job,
   'meetingId': testMeetingId,
   'sourceMediaId': _media,
   'jobType': 'OFFLINE_MEETING_PROCESSING',
-  'status': admitted ? 'RUNNING' : 'WAITING_FOR_REVIEW',
+  'status': status ?? (admitted ? 'RUNNING' : 'WAITING_FOR_REVIEW'),
   'requestedByUserId': testUserId,
   'currentStage': null,
   'queuedAt': '2026-11-24T12:00:00Z',
@@ -95,26 +94,23 @@ Map<String, dynamic> _receipt(Map<String, dynamic> proof) => {
 };
 
 void main() {
-  testWidgets('Processing handoff requires separate review and admission', (
+  testWidgets('Processing handoff opens progressive results without mandatory review', (
     tester,
   ) async {
     var admitted = false;
     final calls = <String>[];
-    final keys = <String?>[];
     final source = _source();
     final proof = _proof(source);
     final client = MeetingTestHttpClient((request) async {
       final path = request.url.path;
       if (path.endsWith('/transcript-review/acknowledge')) {
         calls.add('acknowledge');
-        keys.add(request.headers['idempotency-key']);
         final body = decodeRequestBody(request);
         expect(body, proof.toJson());
         return meetingApiSuccess(_receipt(body));
       }
       if (path.endsWith('/meeting-intelligence/admit')) {
         calls.add('admit');
-        keys.add(request.headers['idempotency-key']);
         expect(decodeRequestBody(request), {
           ...proof.toJson(),
           'reviewId': _review,
@@ -123,10 +119,12 @@ void main() {
         return meetingApiSuccess(_jobJson(true), status: 202);
       }
       if (path.endsWith('/processing-jobs/$_job')) {
-        return meetingApiSuccess(_jobJson(admitted));
+        return meetingApiSuccess(_jobJson(admitted, status: 'RUNNING'));
       }
       if (path.endsWith('/processing-jobs')) {
-        return meetingApiSuccess([_jobJson(admitted)]);
+        return meetingApiSuccess([
+          _jobJson(admitted, status: 'RUNNING'),
+        ]);
       }
       if (path.endsWith('/transcript')) {
         return meetingApiSuccess(
@@ -214,87 +212,36 @@ void main() {
       await tester.pump();
       expect(processingTab.hitTestable(), findsOneWidget);
       await tester.tap(processingTab);
-      final handoff = find.text('Mở rà soát bản ghi');
+      final resultsTab = find.text('Biên bản AI');
       await pumpUntil(
         tester,
-        () => handoff.evaluate().isNotEmpty,
-        reason: 'waiting job to offer review',
+        () => resultsTab.evaluate().isNotEmpty,
+        reason: 'progressive processing to remain available',
       );
-      await Scrollable.ensureVisible(tester.element(handoff), alignment: 0.5);
+      await Scrollable.ensureVisible(tester.element(resultsTab), alignment: 0.5);
       await tester.pump();
-      expect(handoff.hitTestable(), findsOneWidget);
-      await tester.tap(handoff);
-      final acknowledge = find.widgetWithText(
-        OutlinedButton,
-        'Xác nhận đã rà soát bản ghi',
+      expect(resultsTab.hitTestable(), findsOneWidget);
+      await tester.tap(resultsTab);
+      final transcriptTabs = find.text('Bản ghi lời thoại');
+      await pumpUntil(
+        tester,
+        () => transcriptTabs.evaluate().isNotEmpty,
+        reason: 'progressive results workspace',
       );
-      final admit = find.widgetWithText(
-        FilledButton,
-        'Tiếp tục phân tích cuộc họp',
-      );
+      final transcriptTab = transcriptTabs.first;
+      await tester.ensureVisible(transcriptTab);
+      await tester.tap(transcriptTab);
+      final transcriptHeading = find.text('Bản ghi lời thoại');
       await pumpUntil(
         tester,
         () =>
-            acknowledge.evaluate().isNotEmpty &&
-            tester.widget<OutlinedButton>(acknowledge).onPressed != null,
-        reason: 'current bound transcript and coverage',
+            transcriptHeading.evaluate().isNotEmpty &&
+            find.text('Xin chào').evaluate().isNotEmpty,
+        reason: 'progressive transcript results',
       );
-      expect(tester.widget<FilledButton>(admit).onPressed, isNull);
       expect(calls, isEmpty);
-      await Scrollable.ensureVisible(
-        tester.element(acknowledge),
-        alignment: 0.5,
-      );
-      await tester.pump();
-      expect(acknowledge.hitTestable(), findsOneWidget);
-      await tester.tap(acknowledge);
-      await pumpUntil(
-        tester,
-        () =>
-            admit.evaluate().isNotEmpty &&
-            tester.widget<FilledButton>(admit).onPressed != null,
-        reason: 'receipt to enable explicit admission',
-      );
-      expect(calls, ['acknowledge']);
-      // Leave the review and reopen the same handoff. The receipt is owned
-      // by the application manager, not the discarded Results widget.
-      await Scrollable.ensureVisible(
-        tester.element(processingTab),
-        alignment: 0.5,
-      );
-      await tester.pump();
-      expect(processingTab.hitTestable(), findsOneWidget);
-      await tester.tap(processingTab);
-      await pumpUntil(
-        tester,
-        () => handoff.evaluate().isNotEmpty,
-        reason: 'waiting job after leaving review',
-      );
-      await Scrollable.ensureVisible(tester.element(handoff), alignment: 0.5);
-      await tester.pump();
-      expect(handoff.hitTestable(), findsOneWidget);
-      await tester.tap(handoff);
-      await pumpUntil(
-        tester,
-        () =>
-            admit.evaluate().isNotEmpty &&
-            tester.widget<FilledButton>(admit).onPressed != null,
-        reason: 'restored receipt',
-      );
-      expect(calls, ['acknowledge']);
-      await Scrollable.ensureVisible(tester.element(admit), alignment: 0.5);
-      await tester.pump();
-      expect(admit.hitTestable(), findsOneWidget);
-      await tester.tap(admit);
-      await pumpUntil(
-        tester,
-        () =>
-            admitted &&
-            find.byType(ProcessingTimelinePanel).evaluate().isNotEmpty,
-        reason: 'admitted job to return to Processing',
-      );
-      expect(calls, ['acknowledge', 'admit']);
-      expect(keys, [proof.key(), proof.key(reviewId: _review)]);
+      expect(find.text('Xác nhận đã rà soát bản ghi'), findsNothing);
+      expect(find.text('Tiếp tục phân tích cuộc họp'), findsNothing);
       expect(tester.takeException(), isNull);
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());

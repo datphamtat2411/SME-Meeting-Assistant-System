@@ -146,8 +146,27 @@ class ResultsProcessingBridge {
     final affected = <ResultsResourceKind>{};
     for (final job in state.jobs) {
       onJobObserved?.call(job);
-      if (!job.status.isTerminal && !job.isWaitingForReview) continue;
-      final outcome = '${job.status.wireValue}:${job.retryCount}';
+      final published = job.stageRuns.where(
+        (stage) =>
+            (stage.status == ProcessingStageStatus.succeeded ||
+                stage.status == ProcessingStageStatus.succeededWithWarning) &&
+            const {
+              'FINALIZING_TRANSCRIPT',
+              'DIARIZING',
+              'GENERATING_SUMMARY',
+              'EXTRACTING_DECISIONS',
+              'EXTRACTING_ACTION_ITEMS',
+            }.contains(stage.stageCode),
+      );
+      if (!job.status.isTerminal &&
+          !job.isWaitingForReview &&
+          published.isEmpty) {
+        continue;
+      }
+      final state = job.status.isTerminal || job.isWaitingForReview
+          ? '${job.status.wireValue}:${job.retryCount}'
+          : 'progress';
+      final outcome = '$state:${published.map((stage) => stage.id).join(",")}';
       final alreadySeen = _seenOutcomes[job.id] == outcome;
       _seenOutcomes[job.id] = outcome;
       if (job.status.isTerminal) onTerminalOutcome?.call(job.id);
@@ -165,7 +184,8 @@ class ResultsProcessingBridge {
         });
       }
     }
-    if (_invalidation.processingMinutesHandledExternally) {
+    if (_invalidation.processingMinutesHandledExternally &&
+        state.jobs.every((job) => job.status.isTerminal)) {
       affected.remove(ResultsResourceKind.minutes);
     }
     if (publish && affected.isNotEmpty) {

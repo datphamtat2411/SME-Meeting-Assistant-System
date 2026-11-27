@@ -637,20 +637,24 @@ describe('ExportPanel authorization and download boundary', () => {
     expect(exportMocks.createMinutesExport).not.toHaveBeenCalled()
   })
 
-  it('does not admit a durable export when Core marks proposals as included', async () => {
+  it('allows an authorized draft export when Core marks proposals as included', async () => {
     minutesData.value = { ...minutesData.value, proposalsIncluded: true }
     const screen = await renderPanel()
 
     const generatePdf = screen.getByRole('button', { name: 'Generate PDF' })
-    await expect.element(generatePdf).toBeDisabled()
+    await expect.element(generatePdf).toBeEnabled()
     await expect
       .element(
         screen.getByText(
-          'Minutes contain unconfirmed AI proposals and are not eligible for export.'
+          'The draft lists unconfirmed AI proposals separately from official records.'
         )
       )
       .toBeInTheDocument()
-    expect(exportMocks.createMinutesExport).not.toHaveBeenCalled()
+    await userEvent.click(generatePdf)
+    await expect
+      .element(screen.getByRole('button', { name: 'Download' }))
+      .toBeInTheDocument()
+    expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
   })
 
   it('allows an authorized meeting-content reader to generate and download an export', async () => {

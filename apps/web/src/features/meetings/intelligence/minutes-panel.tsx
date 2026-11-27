@@ -114,7 +114,8 @@ export function MinutesPanel({
         t('minutes:timeUnavailable'))
       : t('minutes:notRecorded')
   const ready =
-    minutes.completeness === 'COMPLETE' && !minutes.proposalsIncluded
+    minutes.completeness === 'COMPLETE' &&
+    minutes.summary.sourceType !== 'AI_GENERATED'
   const transcript = minutes.transcript
   const hasTranscript =
     transcript.id !== null && transcript.availability !== 'NOT_AVAILABLE'
@@ -252,6 +253,31 @@ export function MinutesPanel({
           </div>
           <Warnings warnings={minutes.summary.aiWarnings} />
         </section>
+
+        {minutes.draftProposals.length > 0 && (
+          <section className='space-y-3 border-t pt-5'>
+            <h3 className='text-lg font-semibold'>
+              {t('minutes:draftProposals')}
+            </h3>
+            {minutes.draftProposals.map((proposal) => (
+              <article
+                key={`${proposal.kind}:${proposal.id}`}
+                className='rounded-lg border p-4'
+              >
+                <p className='text-xs text-muted-foreground'>
+                  {t(
+                    proposal.kind === 'DECISION'
+                      ? 'minutes:proposedDecision'
+                      : 'minutes:proposedAction'
+                  )}
+                </p>
+                <p className='text-sm break-words whitespace-pre-wrap'>
+                  {proposal.text}
+                </p>
+              </article>
+            ))}
+          </section>
+        )}
 
         <section className='space-y-3 border-t pt-5'>
           <div className='flex flex-wrap items-center justify-between gap-2'>

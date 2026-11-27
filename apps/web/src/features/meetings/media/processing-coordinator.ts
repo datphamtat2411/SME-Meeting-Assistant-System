@@ -180,21 +180,23 @@ function reprocessableStatus(status: string): boolean {
 
 function lifecycleSignature(job: ProcessingJob): string {
   return JSON.stringify({
-    status: job.status,
-    retryCount: job.retryCount,
-    currentStage: job.currentStage,
-    sourceMediaId: job.sourceMediaId,
-    reprocessOfJobId: job.reprocessOfJobId,
-    retryable: job.retryable,
-    stageRuns: job.stageRuns.map((stage) => ({
-      id: stage.id,
-      stageCode: stage.stageCode,
-      attemptNumber: stage.attemptNumber,
-      status: stage.status,
-      errorCode: stage.errorCode,
-      completedAt: stage.completedAt,
-    })),
+    status: terminalStatus(job.status) ? job.status : null,
+    stageRuns: publishedStages(job).map((stage) => stage.id),
   })
+}
+
+function publishedStages(job: ProcessingJob) {
+  return job.stageRuns.filter(
+    (stage) =>
+      ['SUCCEEDED', 'SUCCEEDED_WITH_WARNING'].includes(stage.status) &&
+      [
+        'FINALIZING_TRANSCRIPT',
+        'DIARIZING',
+        'GENERATING_SUMMARY',
+        'EXTRACTING_DECISIONS',
+        'EXTRACTING_ACTION_ITEMS',
+      ].includes(stage.stageCode)
+  )
 }
 
 function selectObservedProcessingAttempt(
@@ -559,16 +561,23 @@ export function useProcessingCoordinator({
       const previousSignature = lifecycle.current.get(job.id)
       const meaningfulTransition =
         previousSignature !== undefined && previousSignature !== nextSignature
-      const terminalOrReview =
-        terminalStatus(job.status) || job.status === 'WAITING_FOR_REVIEW'
+      const stages = publishedStages(job)
+      const resultsAvailable =
+        terminalStatus(job.status) ||
+        job.status === 'WAITING_FOR_REVIEW' ||
+        stages.length > 0
 
       if (
-        terminalOrReview &&
+        resultsAvailable &&
         (previousSignature === undefined || meaningfulTransition)
       ) {
         invalidateMeetingArtifacts(queryClient, meetingId, {
           transcript: true,
-          actions: terminalStatus(job.status),
+          actions:
+            terminalStatus(job.status) ||
+            stages.some(
+              (stage) => stage.stageCode === 'EXTRACTING_ACTION_ITEMS'
+            ),
         })
       }
       const summaryOperation = operations.current.get(

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock
+from time import monotonic
 from typing import Any
 
 from sme_meeting_ai.core.config import ConfigurationError, Settings
@@ -121,7 +123,48 @@ def build_retrieval_runtime(
         raise
 
 
-def build_qdrant_audit_store(settings: Settings) -> QdrantVectorStore:
+class AssistantRetrievalRuntime:
+    """Start the trust providers separately from optional search dependencies."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.authorization_provider = CoreApprovedAuthorizationProvider()
+        self.source_provider = CoreSourceVerificationProvider(settings)
+        self._runtime: RetrievalRuntime | None = None
+        self._start_lock = Lock()
+        self._retry_after = 0.0
+
+    def retrieve(self, request):
+        runtime = self._runtime
+        if runtime is None:
+            if not self._start_lock.acquire(blocking=False):
+                raise RuntimeError("Retrieval is initializing")
+            try:
+                if monotonic() < self._retry_after:
+                    raise RuntimeError("Retrieval is temporarily unavailable")
+                if self._runtime is None:
+                    try:
+                        self._runtime = build_retrieval_runtime(
+                            self.settings, authorization_provider=self.authorization_provider,
+                            source_provider=self.source_provider,
+                        )
+                    except Exception:
+                        self._retry_after = monotonic() + 30
+                        raise
+                runtime = self._runtime
+            finally:
+                self._start_lock.release()
+        return runtime.engine.retrieve(request)
+
+    def close(self) -> None:
+        runtime, self._runtime = self._runtime, None
+        if runtime is not None:
+            runtime.close()
+        else:
+            self.source_provider.close()
+
+
+def build_qdrant_audit_store(settings: Settings, *, validate: bool = True) -> QdrantVectorStore:
     """Build the read-only Qdrant adapter without loading inference artifacts."""
 
     manifest = load_bge_m3_manifest()
@@ -144,7 +187,8 @@ def build_qdrant_audit_store(settings: Settings) -> QdrantVectorStore:
     )
     store = QdrantVectorStore.from_settings(settings, compatibility)
     try:
-        store.validate_retrieval_schema()
+        if validate:
+            store.validate_retrieval_schema()
     except Exception:
         store.close()
         raise

@@ -16,7 +16,6 @@ import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
 import { resetAuthLifecycleAfterSignIn } from '@/features/auth/session/auth-lifecycle'
 import type { Transcript } from '@/features/meetings/intelligence/transcript-api'
-import { computeTranscriptCorrectionDigest } from '@/features/meetings/intelligence/transcript-correction-digest'
 import type { MeetingMedia } from '@/features/meetings/media/media-api'
 import type { ProcessingJob } from '@/features/meetings/media/processing-api'
 
@@ -269,7 +268,7 @@ describe('generated meeting route coexistence', () => {
     expect(router.state.location.search.section).toBe('transcript')
   })
 
-  it('retains review acknowledgement and recovery through detail and live navigation', async () => {
+  it('keeps progressive transcript processing through detail and live navigation', async () => {
     const sourceMediaId = '33333333-3333-4333-8333-333333333333'
     const jobId = '44444444-4444-4444-8444-444444444444'
     const transcriptId = '55555555-5555-4555-8555-555555555555'
@@ -317,7 +316,7 @@ describe('generated meeting route coexistence', () => {
       meetingId: meetingA.id,
       sourceMediaId,
       jobType: 'OFFLINE_MEETING_PROCESSING',
-      status: 'WAITING_FOR_REVIEW',
+      status: 'RUNNING',
       requestedByUserId: user.userId,
       currentStage: null,
       queuedAt: null,
@@ -334,50 +333,11 @@ describe('generated meeting route coexistence', () => {
       stageRuns: [],
     }
     installAuthorizedApi({ transcript, media, job })
-    const correctionDigest = await computeTranscriptCorrectionDigest(
-      transcript.segments
-    )
-    const post = vi
-      .spyOn(coreApi, 'post')
-      .mockResolvedValueOnce({
-        reviewId: '88888888-8888-4888-8888-888888888888',
-        processingJobId: jobId,
-        meetingId: meetingA.id,
-        transcriptId,
-        contentRevision: 1,
-        correctionDigest,
-        transcriptStatus: 'READY',
-        acknowledgedByUserId: user.userId,
-        acknowledgedAt: '2026-11-23T00:00:00Z',
-        admittedByUserId: null,
-        admittedAt: null,
-      })
-      .mockRejectedValueOnce(
-        new CoreApiError({
-          message: 'Admission response lost.',
-          kind: 'network',
-          recoveryOutcome: 'uncertain',
-        })
-      )
-      .mockImplementationOnce(async () => {
-        job.status = 'RUNNING'
-        return job
-      })
 
     const { router, screen } = await renderRoute(
       `/meetings/${meetingA.id}?section=transcript`
     )
-    const checkbox = screen.getByRole('checkbox', {
-      name: /I reviewed the complete transcript/,
-    })
-    await expect.element(checkbox).toBeEnabled()
-    await userEvent.click(checkbox)
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Acknowledge transcript review' })
-    )
-    await expect
-      .element(screen.getByText('Core acknowledgement confirmed'))
-      .toBeInTheDocument()
+    await expect.element(screen.getByText('Reviewed transcript.')).toBeVisible()
 
     await router.navigate({
       to: '/meetings/$meetingId/live',
@@ -389,39 +349,12 @@ describe('generated meeting route coexistence', () => {
       params: { meetingId: meetingA.id },
       search: { section: 'transcript' },
     })
-    const admit = screen.getByRole('button', {
-      name: 'Admit Meeting Intelligence',
-    })
-    await expect.element(admit).toBeEnabled()
-    await userEvent.click(admit)
-    await expect
-      .element(screen.getByRole('button', { name: 'Recover admission' }))
-      .toBeEnabled()
-
-    await router.navigate({
-      to: '/meetings/$meetingId',
-      params: { meetingId: meetingA.id },
-      search: { section: 'recording' },
-    })
-    await expect
-      .element(screen.getByText(/Transcript review has unresolved work/))
-      .toBeInTheDocument()
-    await router.navigate({
-      to: '/meetings/$meetingId',
-      params: { meetingId: meetingA.id },
-      search: { section: 'transcript' },
-    })
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Recover admission' })
-    )
-    await expect
-      .element(screen.getByText(/admission confirmed by Core/i))
-      .toBeInTheDocument()
-    expect(post).toHaveBeenCalledTimes(3)
-    expect(post.mock.calls[1]?.[1]).toEqual(post.mock.calls[2]?.[1])
-    expect(post.mock.calls[1]?.[2]?.headers).toEqual(
-      post.mock.calls[2]?.[2]?.headers
-    )
+    await expect.element(screen.getByText('Reviewed transcript.')).toBeVisible()
+    expect(
+      screen.getByRole('checkbox', {
+        name: /I reviewed the complete transcript/,
+      })
+    ).not.toBeInTheDocument()
   })
 
   it('protects pending and uncertain creation through the actual meeting router', async () => {

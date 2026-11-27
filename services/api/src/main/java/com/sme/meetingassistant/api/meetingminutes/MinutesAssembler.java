@@ -106,7 +106,16 @@ public class MinutesAssembler {
             .map(a -> new MinutesSnapshot.Action(
                     a.id(), a.title(), a.details(), a.status().name(), a.sourceType(),
                     a.assigneeUserId(), a.dueDate(), a.version(), a.createdAt(),
-                    a.confirmedByUserId(), a.confirmedAt())).toList();
+                     a.confirmedByUserId(), a.confirmedAt())).toList();
+        List<MinutesSnapshot.DraftProposal> proposals = new ArrayList<>();
+        for (var proposal : intelligence.currentProposals(meetingId)) {
+            proposals.add(new MinutesSnapshot.DraftProposal(proposal.id(),"DECISION",proposal.content(),
+                proposal.transcriptId(),proposal.contentRevision(),proposal.aiUncertainty()));
+        }
+        for (var proposal : actions.currentProposals(meetingId,transcript.id(),transcript.contentRevision())) {
+            proposals.add(new MinutesSnapshot.DraftProposal(proposal.id(),"ACTION_ITEM",proposal.title(),
+                proposal.transcriptId(),proposal.contentRevision(),null));
+        }
         Map<UUID, String> assigneeDisplayNames = officialSource.stream()
                 .filter(a -> a.assignee() != null
                         && a.assignee().displayName() != null
@@ -129,6 +138,7 @@ public class MinutesAssembler {
             warnings.add("TRANSCRIPT_QUALITY_WARNING");
         }
         if ("NOT_AVAILABLE".equals(summary.availability())) warnings.add("SUMMARY_NOT_AVAILABLE");
+        if (!proposals.isEmpty()) warnings.add("UNCONFIRMED_PROPOSALS");
         if (summary.isStale()) warnings.add("SUMMARY_SOURCE_STALE");
         if ("READY_WITH_WARNINGS".equals(summary.qualityStatus())
                 || !summary.aiWarnings().isEmpty()) warnings.add("SUMMARY_QUALITY_WARNING");
@@ -147,15 +157,15 @@ public class MinutesAssembler {
 
         var content = new MinutesSnapshot.CanonicalContent(
                 SCHEMA_VERSION, completeness, meeting, summary,
-                decisions, official, transcript, warningCodes, false);
+                decisions, official, transcript, warningCodes, !proposals.isEmpty(), proposals);
         // Versioned SHA-256 over deterministic typed JSON fields. Never hash
         // assembledAt; identical canonical snapshots have identical fingerprints.
         String fingerprint = fingerprint(content);
         OffsetDateTime assembledAt = clock.instant().atOffset(ZoneOffset.UTC);
         return new MinutesSnapshot(SCHEMA_VERSION, assembledAt, fingerprint,
                 completeness, meeting, summary, decisions, official, transcript,
-                warningCodes, false,
-                new MinutesSnapshot.DisplayMetadata(assigneeDisplayNames));
+                 warningCodes, !proposals.isEmpty(),
+                 new MinutesSnapshot.DisplayMetadata(assigneeDisplayNames), proposals);
     }
 
     private static MinutesSnapshot.Decision decision(DecisionView d) {

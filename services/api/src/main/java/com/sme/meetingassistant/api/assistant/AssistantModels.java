@@ -21,7 +21,7 @@ public final class AssistantModels {
                                long sourceRevision, String retrievalChunkId, List<String> claimIds) {}
     public record MessageView(UUID id, String role, String content, String answerStatus,
                               String visibility, List<ClaimView> claims, List<CitationView> citations,
-                              OffsetDateTime createdAt) {}
+                              OffsetDateTime createdAt, String limitation) {}
     public record ConversationDetail(ConversationView conversation, List<MessageView> messages,
                                      int page, int size, boolean hasMore, UUID nextBeforeMessageId,
                                      TurnStatusView pendingTurn) {}
@@ -29,7 +29,12 @@ public final class AssistantModels {
                                  UUID userMessageId, UUID assistantMessageId, String answerStatus) {}
     public record TurnView(UUID turnId, String state, UUID userMessageId, UUID assistantMessageId,
                            String answerStatus, String answer, List<ClaimView> claims,
-                           List<CitationView> citations) {}
+                           List<CitationView> citations, String limitation) {
+        TurnView(UUID turnId, String state, UUID userMessageId, UUID assistantMessageId,
+                 String answerStatus, String answer, List<ClaimView> claims, List<CitationView> citations) {
+            this(turnId,state,userMessageId,assistantMessageId,answerStatus,answer,claims,citations,null);
+        }
+    }
     public record TurnOutcome(int httpStatus, TurnView result) {}
 
     public record EvidenceNavigation(String target, String precision) {}

@@ -57,4 +57,17 @@ public class ActionItemMinutesReader implements ActionItemMinutesSource {
         }
         return List.copyOf(official);
     }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ActionItemView> currentProposals(UUID meetingId, UUID transcriptId, Long revision) {
+        UUID actor = principal.requireUserId();
+        meetingAccess.requireReadable(meetingId, actor);
+        if (transcriptId == null) return List.of();
+        return items.list(actor, meetingId, ActionItemStatus.PROPOSED, null, null, null,
+                PageRequest.of(0, PAGE_SIZE, Sort.by(Sort.Direction.DESC, "createdAt")))
+            .getContent().stream()
+            .filter(item -> transcriptId.equals(item.transcriptId()) && java.util.Objects.equals(revision,item.contentRevision()))
+            .toList();
+    }
 }

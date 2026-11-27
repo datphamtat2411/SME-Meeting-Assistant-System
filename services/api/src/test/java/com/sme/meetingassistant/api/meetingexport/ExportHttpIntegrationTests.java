@@ -174,7 +174,7 @@ class ExportHttpIntegrationTests {
     }
 
     @Test
-    void incompleteMinutesAndUnrelatedActorCannotCreatePublicExport()
+    void usablePartialMinutesCanCreateADraftExportButUnrelatedActorCannot()
             throws Exception {
         UUID organizer=user("EMPLOYEE"),other=user("EMPLOYEE"),target=meeting(organizer);
         when(minutes.current(target)).thenReturn(snapshot(target,organizer,"PARTIAL"));
@@ -182,14 +182,14 @@ class ExportHttpIntegrationTests {
         mvc.perform(post(url).principal(principal(organizer))
                 .header("Idempotency-Key","incomplete")
                 .contentType(MediaType.APPLICATION_JSON).content("{\"format\":\"PDF\"}"))
-                .andExpect(status().isConflict());
+                .andExpect(status().isAccepted());
         mvc.perform(post(url).principal(principal(other))
                 .header("Idempotency-Key","wrong-owner")
                 .contentType(MediaType.APPLICATION_JSON).content("{\"format\":\"PDF\"}"))
                 .andExpect(status().isNotFound());
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM meeting_exports WHERE meeting_id=?",
-                Long.class,target)).isZero();
+                Long.class,target)).isEqualTo(1L);
     }
 
     @Test

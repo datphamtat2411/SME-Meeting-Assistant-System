@@ -45,7 +45,7 @@ public class ExportAdmissionController {
 
     @Operation(summary="Admit a durable, authorized complete-minutes export",
         description="Feature gated pending D09/D10/D12 policy review. "
-            + "Only COMPLETE snapshots, official decisions/actions, no proposals.")
+             + "Usable snapshots may be exported as drafts with separately labeled AI proposals.")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "202",
             description = "Durable export intent accepted", useReturnTypeSchema = true)
     @PostMapping("/{meetingId}/exports")

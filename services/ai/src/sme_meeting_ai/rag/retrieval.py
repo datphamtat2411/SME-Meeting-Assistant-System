@@ -561,6 +561,7 @@ def _message(category: str) -> str:
         "SCORE_NONFINITE": "Reranker returned non-finite scores",
         "RERANKER_OUTPUT_MISMATCH": "Reranker scores did not match candidates",
         "RERANKER_FAILURE": "Reranker inference failed",
+        "LOW_RELEVANCE_EVIDENCE": "Only weakly relevant verified evidence is available",
     }.get(category, "Retrieval stage failed")
 
 
@@ -605,6 +606,7 @@ def _authority_rank(value: str) -> int:
         "OFFICIAL_ACTION_ITEM": 3,
         "PRIMARY_TRANSCRIPT": 2,
         "SECONDARY_APPROVED_SUMMARY": 1,
+        "PROVISIONAL_SUMMARY": 0,
     }[value]
 
 
@@ -688,15 +690,22 @@ def select_evidence(
     query: str,
     ranked: Sequence[_VerifiedRankedCandidate],
     config: RetrievalConfig,
+    *,
+    reranked: bool = True,
 ) -> tuple[tuple[RetrievalEvidence, ...], float | None]:
-    """Apply score gating, deterministic deduplication, and bounded diversity."""
+    """Prefer strong relevance; use lexical support for a bounded weaker selection."""
 
+    strong = tuple(item for item in ranked if reranked and item.reranker_score >= config.reranker_score_cutoff)
+    pool = strong or tuple(item for item in ranked if (_query_coverage(query, (item,)) or 0) > 0)
+    def order(item: _VerifiedRankedCandidate):
+        return (-item.reranker_score, item.candidate.provenance.quality_class != "ACCEPTED",
+                -_authority_rank(item.candidate.provenance.authority_class),
+                -item.candidate.rrf_score, item.candidate.chunk_id)
     ordered = tuple(
-        sorted(
-            (item for item in ranked if item.reranker_score >= config.reranker_score_cutoff),
-            key=lambda item: (-item.reranker_score, -item.candidate.rrf_score, item.candidate.chunk_id),
-        )
+        sorted(pool, key=order)
     )
+    if not strong:
+        ordered = ordered[:3]
     if not ordered:
         return (), 0.0 if _content_tokens(query) else None
 
@@ -754,10 +763,8 @@ def select_evidence(
             break
         add(item)
 
-    selected.sort(key=lambda item: (-item.reranker_score, -item.candidate.rrf_score, item.candidate.chunk_id))
+    selected.sort(key=order)
     coverage = _query_coverage(query, selected)
-    if coverage is not None and coverage <= 0:
-        return (), coverage
 
     evidence: list[RetrievalEvidence] = []
     for rank, item in enumerate(selected, start=1):
@@ -771,7 +778,7 @@ def select_evidence(
                 provenance=item.candidate.provenance,
                 sourceVerification=item.source_verification,
                 rrfScore=item.candidate.rrf_score,
-                rerankerScore=item.reranker_score,
+                rerankerScore=item.reranker_score if reranked else None,
                 rerankerInputTruncated=item.input_truncated,
             )
         )
@@ -1181,11 +1188,12 @@ class RetrievalEngine:
         )
         rerank_candidates = tuple(candidate for candidate, _ in rerank_inputs)
         rerank_start = time.monotonic()
+        failure = None
+        score_map: dict[str, RerankerScore] = {}
         try:
             scores = tuple(self.reranker.rerank(prepared.normalized_query, rerank_candidates))
             if len(scores) != len(rerank_candidates):
                 raise RerankerError("SCORE_COUNT_INVALID")
-            score_map: dict[str, RerankerScore] = {}
             for score in scores:
                 if score.candidate_id in score_map or score.candidate_id not in {c.chunk_id for c in rerank_candidates}:
                     raise RerankerError("RERANKER_OUTPUT_MISMATCH")
@@ -1193,41 +1201,9 @@ class RetrievalEngine:
             if set(score_map) != {candidate.chunk_id for candidate in rerank_candidates}:
                 raise RerankerError("RERANKER_OUTPUT_MISMATCH")
         except RerankerError as error:
-            duration = max(0, round((time.monotonic() - rerank_start) * 1000))
-            return self._result(
-                RetrievalStatus.RERANKER_FAILURE,
-                request,
-                prepared=prepared,
-                context=context,
-                source_status="AUTHORITATIVELY_VERIFIED",
-                failures=(_failure(error.category, "RERANKER", retryable=error.category in {"INFERENCE_TIMEOUT"}),),
-                diagnostics=self._diagnostics(
-                    fused=len(points),
-                    validated=len(candidates),
-                    source_verified=len(verified),
-                    source_rejected=source_rejected,
-                    rejected=rejected_count,
-                    reranker_duration_ms=duration,
-                ),
-            )
+            failure = _failure(error.category, "RERANKER", retryable=error.category == "INFERENCE_TIMEOUT")
         except Exception:
-            duration = max(0, round((time.monotonic() - rerank_start) * 1000))
-            return self._result(
-                RetrievalStatus.RERANKER_FAILURE,
-                request,
-                prepared=prepared,
-                context=context,
-                source_status="AUTHORITATIVELY_VERIFIED",
-                failures=(_failure("RERANKER_FAILURE", "RERANKER"),),
-                diagnostics=self._diagnostics(
-                    fused=len(points),
-                    validated=len(candidates),
-                    source_verified=len(verified),
-                    source_rejected=source_rejected,
-                    rejected=rejected_count,
-                    reranker_duration_ms=duration,
-                ),
-            )
+            failure = _failure("RERANKER_FAILURE", "RERANKER")
 
         duration = max(0, round((time.monotonic() - rerank_start) * 1000))
         source_map = {
@@ -1237,18 +1213,22 @@ class RetrievalEngine:
             _VerifiedRankedCandidate(
                 candidate=candidate,
                 source_verification=source_map[candidate.chunk_id],
-                reranker_score=score_map[candidate.chunk_id].score,
-                input_truncated=score_map[candidate.chunk_id].input_truncated,
+                reranker_score=score_map[candidate.chunk_id].score if failure is None else candidate.rrf_score,
+                input_truncated=score_map[candidate.chunk_id].input_truncated if failure is None else False,
             )
             for candidate in rerank_candidates
         )
-        evidence, coverage = select_evidence(prepared.normalized_query, ranked, self.config)
+        evidence, coverage = select_evidence(prepared.normalized_query, ranked, self.config, reranked=failure is None)
+        if failure is None and evidence and all(
+            item.reranker_score < self.config.reranker_score_cutoff for item in evidence
+        ):
+            failure = _failure("LOW_RELEVANCE_EVIDENCE", "SUFFICIENCY")
         diagnostics = self._diagnostics(
             fused=len(points),
             validated=len(candidates),
             source_verified=len(verified),
             source_rejected=source_rejected,
-            reranked=len(ranked),
+            reranked=len(score_map) if failure is None or failure.stage == "SUFFICIENCY" else 0,
             final=len(evidence),
             rejected=rejected_count,
             coverage=coverage,
@@ -1256,11 +1236,12 @@ class RetrievalEngine:
         )
         if not evidence:
             return self._result(
-                RetrievalStatus.INSUFFICIENT_EVIDENCE,
+                RetrievalStatus.RERANKER_FAILURE if failure else RetrievalStatus.INSUFFICIENT_EVIDENCE,
                 request,
                 prepared=prepared,
                 context=context,
                 source_status="AUTHORITATIVELY_VERIFIED",
+                failures=(failure,) if failure else (),
                 diagnostics=diagnostics,
             )
         return self._result(
@@ -1270,5 +1251,6 @@ class RetrievalEngine:
             context=context,
             source_status="AUTHORITATIVELY_VERIFIED",
             evidence=evidence,
+            failures=(failure,) if failure else (),
             diagnostics=diagnostics,
         )

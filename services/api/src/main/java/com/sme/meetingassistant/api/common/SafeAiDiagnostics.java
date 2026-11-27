@@ -26,7 +26,7 @@ public final class SafeAiDiagnostics {
                      "attemptCount", "segmentCount", "chunkCount", "warningCount",
                      "unresolvedRegionCount" -> nonnegativeInteger(value);
                 case "contextScope" -> {
-                    if (!"WHOLE_MEETING".equals(value)) reject();
+                    if (!"WHOLE_MEETING".equals(value) && !"RECONCILED_FALLBACK".equals(value)) reject();
                 }
                 case "outputSha256" -> {
                     if (!(value instanceof String str) || !str.matches("[0-9a-f]{64}")) reject();

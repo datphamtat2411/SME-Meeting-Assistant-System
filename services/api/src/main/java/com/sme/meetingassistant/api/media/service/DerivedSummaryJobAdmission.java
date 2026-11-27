@@ -87,9 +87,10 @@ public class DerivedSummaryJobAdmission {
     }
 
     @Transactional(propagation=Propagation.MANDATORY)
-    public void admitReviewed(UUID jobId, MediaRepository.Job origin, UUID actor, UUID reviewId) {
+    public void admitTranscriptRevision(UUID jobId, MediaRepository.Job origin, UUID actor,
+            java.util.List<String> stages) {
         requireCapacity(actor, origin.meetingId());
-        repository.insertReviewedIntelligenceJob(jobId,origin,actor,reviewId);
+        repository.insertTranscriptIntelligenceJob(jobId,origin,actor,stages);
         snapshotBudget(jobId);
     }
 

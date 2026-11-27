@@ -190,7 +190,7 @@ def test_current_reconciled_transcript_is_normalized_with_all_provenance():
     assert "11111111" not in chunk.retrieval_text
 
 
-def test_transcript_excludes_suspicious_unknown_and_unresolved_segments():
+def test_transcript_indexes_meaningful_uncertain_segments_as_mixed_quality():
     accepted = TranscriptSegment(
         id=str(uuid4()), ordinal=0, start_ms=0, end_ms=1000,
         text="Nội dung đã được kiểm tra.", quality_status="ACCEPTED",
@@ -215,13 +215,11 @@ def test_transcript_excludes_suspicious_unknown_and_unresolved_segments():
     )
 
     assert result.status is ProcessingStatus.PROCESSED
-    assert len(result.chunks) == 1
-    assert [ref.segment_id for ref in result.chunks[0].provenance.source_references] == [accepted.id]
-    assert {issue.code for issue in result.issues} >= {
-        "SUSPICIOUS_SEGMENT_EXCLUDED",
-        "UNRESOLVED_SEGMENT_EXCLUDED",
-        "UNKNOWN_SEGMENT_QUALITY",
+    assert {ref.segment_id for chunk in result.chunks for ref in chunk.provenance.source_references} == {
+        accepted.id, suspicious.id, unknown.id, unresolved.id,
     }
+    assert all(chunk.provenance.quality_class == "MIXED" for chunk in result.chunks)
+    assert {issue.code for issue in result.issues} >= {"UNCERTAIN_TRANSCRIPT_SEGMENT"}
 
 
 @pytest.mark.parametrize(
@@ -245,7 +243,7 @@ def test_transcript_authority_rejects_stale_raw_or_unfinalized_sources(
     assert result.chunks == ()
 
 
-def test_no_eligible_transcript_content_is_not_malformed_input():
+def test_suspicious_transcript_content_remains_searchable_with_a_quality_warning():
     suspicious = TranscriptSegment(
         id=str(uuid4()), ordinal=0, start_ms=0, end_ms=1000,
         text="Đoạn chưa thể xác minh.", quality_status="SUSPICIOUS",
@@ -256,9 +254,11 @@ def test_no_eligible_transcript_content_is_not_malformed_input():
         token_counter=WordCounter(), config=config(),
     )
 
-    assert result.status is ProcessingStatus.NO_ELIGIBLE_CONTENT
+    assert result.status is ProcessingStatus.PROCESSED
     assert result.normalized is not None
-    assert result.chunks == ()
+    assert len(result.chunks) == 1
+    assert result.chunks[0].provenance.quality_class == "MIXED"
+    assert "UNCERTAIN_TRANSCRIPT_SEGMENT" in {issue.code for issue in result.issues}
 
 
 def test_confirmed_decision_preserves_evidence_and_rejects_proposal_or_stale():

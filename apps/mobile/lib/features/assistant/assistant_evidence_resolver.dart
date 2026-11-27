@@ -60,6 +60,11 @@ final class ActionItemEvidence extends AssistantEvidenceArtifact {
   final ActionItemResource item;
 }
 
+final class MeetingEvidence extends AssistantEvidenceArtifact {
+  const MeetingEvidence(this.preview, {super.meetingTitle});
+  final String? preview;
+}
+
 /// Reuses canonical public repositories and the server's evidence visibility
 /// decision. Each verification is bounded, read-only and owned by a caller.
 class AssistantEvidenceResolver {
@@ -99,6 +104,16 @@ class AssistantEvidenceResolver {
 
     final AssistantEvidenceArtifact artifact;
     switch (citation.sourceType) {
+      case AssistantSourceType.meeting:
+        if (!sameAssistantIdentity(citation.sourceId, meetingId)) {
+          throw const AssistantEvidenceFailure(
+            AssistantEvidenceIssue.unavailable,
+          );
+        }
+        artifact = MeetingEvidence(
+          proof.preview,
+          meetingTitle: proof.meetingTitle,
+        );
       case AssistantSourceType.transcript:
         final transcript = await results.currentTranscript(
           sessionScope: scope,

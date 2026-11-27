@@ -7,10 +7,6 @@ import {
 import { blockUnresolvedActionCreation } from '@/features/action-items/action-navigation-protection'
 import { isAuthLifecycleBlocking } from '@/features/auth/session/auth-lifecycle'
 import {
-  TranscriptReviewGateBoundary,
-  useTranscriptReviewGate,
-} from '@/features/meetings/intelligence/transcript-review-gate'
-import {
   MeetingSessionProvider,
   useMeetingSession,
 } from '@/features/meetings/media/meeting-session-context'
@@ -82,7 +78,7 @@ function MeetingRoute() {
   return (
     <MeetingAuthorizationProvider key={meetingId} meetingId={meetingId}>
       <MeetingSessionProvider key={meetingId} meetingId={meetingId}>
-        <TranscriptReviewGateBoundary meetingId={meetingId}>
+        <>
           <MeetingNavigationGuard />
           {isLiveRoute ? (
             <Outlet />
@@ -108,7 +104,7 @@ function MeetingRoute() {
               onEvidenceNavigate={navigateToEvidence}
             />
           )}
-        </TranscriptReviewGateBoundary>
+        </>
       </MeetingSessionProvider>
     </MeetingAuthorizationProvider>
   )
@@ -116,7 +112,6 @@ function MeetingRoute() {
 
 function MeetingNavigationGuard() {
   const session = useMeetingSession()
-  const gate = useTranscriptReviewGate()
   useBlocker({
     enableBeforeUnload: () =>
       !isAuthLifecycleBlocking() &&
@@ -124,15 +119,13 @@ function MeetingNavigationGuard() {
       (session.hasUnsavedResources ||
         session.hasUnsavedTranscriptReview ||
         session.hasUnsavedIntelligence ||
-        session.getActionDraftProtection() !== 'none' ||
-        gate.hasUnresolvedOperation),
+        session.getActionDraftProtection() !== 'none'),
     shouldBlockFn: ({ current, next }) => {
       if (
         !session.hasUnsavedResources &&
         !session.hasUnsavedTranscriptReview &&
         !session.hasUnsavedIntelligence &&
-        session.getActionDraftProtection() === 'none' &&
-        !gate.hasUnresolvedOperation
+        session.getActionDraftProtection() === 'none'
       ) {
         return false
       }
@@ -169,11 +162,6 @@ function MeetingNavigationGuard() {
         blockUnresolvedActionCreation(session.getActionDraftProtection())
       ) {
         return true
-      }
-      if (!sameMeeting && gate.hasUnresolvedOperation) {
-        return !window.confirm(
-          'A transcript review request is unresolved. Leaving will lose its local recovery key. Leave anyway?'
-        )
       }
       const remainsInTranscript =
         sameMeeting &&

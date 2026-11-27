@@ -14,6 +14,7 @@ import {
 const assistantAnswerStatuses = [
   'GROUNDED',
   'PARTIAL',
+  'CONVERSATIONAL',
   'INSUFFICIENT_EVIDENCE',
   'FAILED',
 ] as const
@@ -65,6 +66,7 @@ const messageSchema = z.object({
   claims: z.array(claimSchema),
   citations: z.array(citationSchema),
   createdAt: timestampSchema,
+  limitation: z.string().nullable().optional(),
 })
 
 const turnStatusSchema = z
@@ -94,7 +96,7 @@ const turnStatusSchema = z
     }
     if (turn.state === 'FAILED') return turn.answerStatus === 'FAILED'
     if (turn.state === 'STALE_SOURCE') {
-      return ['GROUNDED', 'PARTIAL'].includes(turn.answerStatus)
+      return turn.answerStatus !== 'FAILED'
     }
     return turn.answerStatus !== 'FAILED'
   })
@@ -118,6 +120,7 @@ const turnSchema = z.object({
   answer: z.string().nullable(),
   claims: z.array(claimSchema),
   citations: z.array(citationSchema),
+  limitation: z.string().nullable().optional(),
 })
 
 export type AssistantAnswerStatus = (typeof assistantAnswerStatuses)[number]

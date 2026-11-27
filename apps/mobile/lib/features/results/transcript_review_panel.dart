@@ -6,7 +6,6 @@ import '../../core/date_labels.dart';
 import '../../core/meeting_models.dart';
 import '../../core/widgets.dart';
 import '../recording/processing_manager.dart';
-import 'transcript_admission_panel.dart';
 import 'results_workspace_controller.dart';
 import 'results_presentation.dart';
 import 'results_models.dart';
@@ -344,12 +343,6 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
       if (transcript == null) {
         return Column(
           children: [
-            if (widget.reviewHandoff != null)
-              TranscriptAdmissionPanel(
-                workspace: widget.workspace,
-                handoff: widget.reviewHandoff!,
-                onAdmitted: widget.onReviewAdmitted,
-              ),
             resultsResourceMessage(
               resource,
               label: 'Bản ghi lời thoại',
@@ -488,12 +481,6 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                             () => widget.workspace.loadTranscript(force: true),
                           ),
                           _coverageOverview(projection),
-                          if (widget.reviewHandoff != null)
-                            TranscriptAdmissionPanel(
-                              workspace: widget.workspace,
-                              handoff: widget.reviewHandoff!,
-                              onAdmitted: widget.onReviewAdmitted,
-                            ),
                           if (transcript.segments.isEmpty)
                             const MessagePanel(
                               title: 'Bản ghi lời thoại chưa có nội dung',

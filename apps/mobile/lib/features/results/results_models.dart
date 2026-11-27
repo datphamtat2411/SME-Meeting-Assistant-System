@@ -717,6 +717,7 @@ class MeetingMinutes {
     required this.sourceFingerprint,
     required this.proposalsIncluded,
     this.assigneeDisplayNames = const {},
+    this.draftProposals = const [],
   });
 
   final String completeness;
@@ -731,6 +732,7 @@ class MeetingMinutes {
   final List<String> warnings;
   final bool proposalsIncluded;
   final Map<String, String> assigneeDisplayNames;
+  final List<({String kind, String text})> draftProposals;
 
   String get meetingId => meeting.id;
   String? get summaryContent => summary.content;
@@ -750,8 +752,31 @@ class MeetingMinutes {
       'proposalsIncluded',
       response: response,
     );
+    final proposals = raw.containsKey('draftProposals')
+        ? _nestedObjects(raw, 'draftProposals', response)
+              .map((proposal) {
+                final kind = requiredString(
+                  proposal,
+                  'kind',
+                  response: response,
+                );
+                if (kind != 'DECISION' && kind != 'ACTION_ITEM') {
+                  invalidApiData(response: response);
+                }
+                return (
+                  kind: kind,
+                  text: requiredString(
+                    proposal,
+                    'text',
+                    response: response,
+                    nonEmpty: true,
+                  ),
+                );
+              })
+              .toList(growable: false)
+        : <({String kind, String text})>[];
     if (schemaVersion != 1 ||
-        proposalsIncluded ||
+        proposalsIncluded != proposals.isNotEmpty ||
         !const {'COMPLETE', 'PARTIAL', 'NEEDS_REVIEW'}.contains(completeness)) {
       invalidApiData(response: response);
     }
@@ -793,6 +818,7 @@ class MeetingMinutes {
       ),
       warnings: _strings(raw, 'warnings', response),
       proposalsIncluded: proposalsIncluded,
+      draftProposals: List.unmodifiable(proposals),
       assigneeDisplayNames: _minutesAssigneeNames(raw, response),
     );
   }

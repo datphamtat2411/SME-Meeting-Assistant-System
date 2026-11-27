@@ -53,6 +53,7 @@ from sme_meeting_ai.transcription.coverage import CoverageReason
 from sme_meeting_ai.transcription.reconciliation import (
     ReconciliationChunkState,
     ReconciliationFlag,
+    TranscriptReconciliation,
 )
 from sme_meeting_ai.transcription.recovery import RecoveryStopReason
 
@@ -112,7 +113,7 @@ _WARNING_CODES = {
                           | {w.value for w in AsrErrorCategory} | {"unresolved-speech"}),
     "RECONCILIATION": ({w.value for w in ReconciliationChunkState} | {w.value for w in ReconciliationFlag}
                        | {"unresolved-interval"}),
-    "CORRECTION": {"completed-with-warnings", "empty-transcript"},
+    "CORRECTION": {"completed-with-warnings", "empty-transcript", "reconciled-fallback"},
 }
 
 
@@ -165,13 +166,13 @@ class Provenance(WireModel):
         if len({c.name for c in self.components}) != len(self.components):
             raise ValueError("Duplicate component")
         entries = [tuple(m.model_dump().values()) for m in self.models]
-        if len(set(entries)) != len(entries) or not any(m.role == "CORRECTION" for m in self.models):
+        if len(set(entries)) != len(entries):
             raise ValueError("Invalid model provenance")
         return self
 
 
 class CorrectionProof(WireModel):
-    contextScope: Literal["WHOLE_MEETING"]
+    contextScope: Literal["WHOLE_MEETING", "RECONCILED_FALLBACK"]
     promptVersion: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
     outputSha256: Digest
 
@@ -233,6 +234,13 @@ class CorrectedEnvelope(WireModel):
                    or any(c.coverageStatus != "COVERED" for c in self.coverage))
         if (self.pipelineStatus == "COMPLETED_WITH_WARNINGS") != flagged:
             raise ValueError("Invalid warning status")
+        fallback = self.correctionProof.contextScope == "RECONCILED_FALLBACK"
+        if fallback != any(w.stage == "CORRECTION" and w.code == "reconciled-fallback" for w in self.warnings):
+            raise ValueError("Invalid reconciliation fallback proof")
+        if fallback == any(m.role == "CORRECTION" for m in self.provenance.models):
+            raise ValueError("Correction provenance disagrees with the proof")
+        if fallback and self.correctionProof.promptVersion != "reconciliation-v1":
+            raise ValueError("Invalid fallback version")
         if correction_digest([s.model_dump() for s in self.segments]) != self.correctionProof.outputSha256:
             raise ValueError("Invalid correction proof")
         return self
@@ -289,9 +297,11 @@ def _provenance(outcome, settings, asr_adapter_version, correction_mode=None):
         ("detection", pre.detection.detector_version), ("speech-map", pre.speech_map.mapper_version),
         ("planning", p.planning.planner_version), ("asr-adapter", asr_adapter_version),
         ("coverage", p.coverage.assessor_version), ("recovery", p.recovery.recovery_version),
-        ("reconciliation", p.reconciliation.reconciler_version), ("correction", p.correction.correction_version),
+        ("reconciliation", p.reconciliation.reconciler_version),
     ]
-    effective = p.correction.effective_configuration
+    effective = p.correction.effective_configuration if p.correction else {}
+    if p.correction:
+        versions.append(("correction", p.correction.correction_version))
     reported_mode = effective.get("correction_mode")
     if correction_mode is not None:
         _require(reported_mode is None or reported_mode == correction_mode)
@@ -305,8 +315,9 @@ def _provenance(outcome, settings, asr_adapter_version, correction_mode=None):
                      resolvedModel=model.resolved_model)
         if entry not in models:
             models.append(entry)
-    models.append(dict(role="CORRECTION", provider=p.correction.provider,
-                       requestedModel=p.correction.requested_model, resolvedModel=p.correction.resolved_model))
+    if p.correction:
+        models.append(dict(role="CORRECTION", provider=p.correction.provider,
+                           requestedModel=p.correction.requested_model, resolvedModel=p.correction.resolved_model))
     # Explicit effective inference configuration only. No transport credentials,
     # paths, endpoints, provider response maps or environment dumps are included.
     config = {k: v for k, v in settings.model_dump(mode="json").items()
@@ -329,48 +340,69 @@ def map_result(outcome, settings, *, job_id, media_id, source_revision, producer
                asr_adapter_version="openrouter-whisper-v1", correction_mode=None):
     category = "RESOURCE"
     try:
-        _require(isinstance(outcome, OfflineTranscriptionOutcome)
-                 and outcome.status in (OfflineTranscriptionStatus.COMPLETED, OfflineTranscriptionStatus.COMPLETED_WITH_WARNINGS)
-                 and outcome.failure is None and outcome.completed_stages == tuple(OfflineTranscriptionStage))
-        result = outcome.result
-        _require(isinstance(result, TranscriptCorrectionResult))
-        if not result.segments or not any(s.text.strip() for s in result.segments):
-            raise ResultValidationError("EMPTY_OUTPUT")
+        _require(isinstance(outcome, OfflineTranscriptionOutcome))
         evidence = outcome.evidence
-        count = result.sample_count
-        _require(result.source_id == outcome.provenance.source_id == evidence.source_id == media_id
-                 and result.sample_rate_hz == outcome.provenance.sample_rate_hz == 16000
+        reconciliation = evidence.reconciliation
+        _require(reconciliation is not None)
+        fallback = outcome.status is OfflineTranscriptionStatus.FAILED
+        if fallback:
+            _require(pipeline_failure(outcome).completed_through == "RECONCILIATION"
+                     and outcome.provenance.correction is None and outcome.result is None)
+            fallback_reconciliation = outcome._fallback_reconciliation
+            _require(isinstance(fallback_reconciliation, TranscriptReconciliation)
+                     and fallback_reconciliation.source_id == outcome.provenance.source_id
+                     and fallback_reconciliation.sample_count == outcome.provenance.sample_count
+                     and fallback_reconciliation.provenance == reconciliation.provenance
+                     and fallback_reconciliation.unresolved_intervals == reconciliation.unresolved_intervals
+                     and len(fallback_reconciliation.segments) == len(reconciliation.segments))
+            segments_to_publish = fallback_reconciliation.segments
+            proof_scope, version = "RECONCILED_FALLBACK", "reconciliation-v1"
+        else:
+            result = outcome.result
+            _require(outcome.failure is None and outcome.completed_stages == tuple(OfflineTranscriptionStage)
+                     and isinstance(result, TranscriptCorrectionResult)
+                     and result.provenance == outcome.provenance.correction
+                     and result.coverage == evidence.coverage and result.source_id == media_id
+                     and result.sample_count == outcome.provenance.sample_count
+                     and result.unresolved_intervals == evidence.reconciliation.unresolved_intervals
+                     and result.quality.validated_segment_count == result.quality.segment_count == len(result.segments))
+            segments_to_publish = result.segments
+            proof_scope, version = "WHOLE_MEETING", result.provenance.prompt_version
+        if not any(s.text.strip() for s in segments_to_publish):
+            raise ResultValidationError("EMPTY_OUTPUT")
+        count = outcome.provenance.sample_count
+        coverage_report = evidence.coverage
+        _require(type(count) is int and 0 < count <= 230400000
+                 and outcome.provenance.source_id == evidence.source_id == media_id
+                 and outcome.provenance.sample_rate_hz == 16000
                  and count == outcome.provenance.sample_count == evidence.audio_metadata.sample_count
                  and evidence.provenance == outcome.provenance
                  and outcome.provenance.preprocessing.source_id == media_id
                  and outcome.provenance.preprocessing.sample_count == count
                  and evidence.audio_metadata.source_metadata.source_id == media_id
-                 and result.provenance == outcome.provenance.correction
-                 and result.coverage == evidence.coverage == evidence.recovery.final_assessment
-                 and result.coverage.source_id == media_id and result.coverage.sample_count == count
-                 and result.coverage.provenance == outcome.provenance.coverage
-                 and evidence.reconciliation.provenance == outcome.provenance.reconciliation
-                 and result.unresolved_intervals == evidence.reconciliation.unresolved_intervals
-                 and result.quality.validated_segment_count == result.quality.segment_count == len(result.segments)
+                 and evidence.recovery is not None
+                 and coverage_report == evidence.recovery.final_assessment
+                 and coverage_report.source_id == media_id and coverage_report.sample_count == count
+                 and coverage_report.provenance == outcome.provenance.coverage
+                 and reconciliation.provenance == outcome.provenance.reconciliation
                  and outcome.warnings == evidence.warnings)
         segments = []
-        _require(len(result.segments) == len(evidence.reconciliation.segments))
-        for segment, original in zip(result.segments, evidence.reconciliation.segments, strict=True):
-            _require(isinstance(segment, CorrectedSegment) and segment.segment_id == original.segment_id
+        for segment, original in zip(segments_to_publish, reconciliation.segments, strict=True):
+            _require((fallback or isinstance(segment, CorrectedSegment)) and segment.segment_id == original.segment_id
                      and segment.ordinal == original.ordinal and segment.interval == original.interval
                      and segment.flags == original.flags and segment.source_chunk_ids == original.source_chunk_ids)
             unresolved = any(_sample_overlap(segment.interval, interval) for interval in (
-                *result.coverage.unresolved_intervals, *result.unresolved_intervals,
+                *coverage_report.unresolved_intervals, *evidence.reconciliation.unresolved_intervals,
             )) or any(r.state.value == "UNRESOLVED_ERROR" and _sample_overlap(segment.interval, r.interval)
-                      for r in result.coverage.regions)
+                       for r in coverage_report.regions)
             suspicious = bool(segment.flags) or any(
                 r.state.value == "SUSPICIOUS" and _sample_overlap(segment.interval, r.interval)
-                for r in result.coverage.regions
+                for r in coverage_report.regions
             )
             segments.append(dict(ordinal=segment.ordinal, **_interval_ms(segment.interval, count), text=segment.text,
                                  qualityStatus="UNRESOLVED" if unresolved else "SUSPICIOUS" if suspicious else "ACCEPTED"))
         coverage = []
-        for region in result.coverage.regions:
+        for region in coverage_report.regions:
             attempts = [a for a in evidence.recovery.attempts
                         if _sample_overlap(a.window.chunk.request_interval, region.interval)]
             supported = any(a.failure is None and a.window.chunk.chunk_id in region.supporting_chunk_ids
@@ -384,7 +416,6 @@ def map_result(outcome, settings, *, job_id, media_id, source_revision, producer
                 # worker/Core validators, including their millisecond projection.
                 qualities = {s["qualityStatus"] for s in segments
                              if s["startMs"] < bounds["endMs"] and bounds["startMs"] < s["endMs"]}
-                _require(bool(qualities))  # No canonical support is an invalid handoff.
                 if "ACCEPTED" not in qualities:
                     state = "SUSPICIOUS" if "SUSPICIOUS" in qualities else "UNRESOLVED_ERROR"
             coverage.append(dict(**bounds, coverageStatus=state,
@@ -393,13 +424,19 @@ def map_result(outcome, settings, *, job_id, media_id, source_revision, producer
                          startSample=w.interval.start_sample if w.interval else None,
                          endSample=w.interval.end_sample if w.interval else None,
                          sourceChunkIds=list(w.source_chunk_ids), phase=w.phase) for w in outcome.warnings]
+        if fallback:
+            warnings.append(dict(stage="CORRECTION", code="reconciled-fallback", startSample=None,
+                                 endSample=None, sourceChunkIds=[], phase=None))
+        warned = (warnings or any(s["qualityStatus"] != "ACCEPTED" for s in segments)
+                  or any(r["coverageStatus"] != "COVERED" for r in coverage))
         data = dict(contractVersion="1.0", resultType="CORRECTED_TRANSCRIPT", processingJobId=job_id,
                     sourceMediaId=media_id, sourceRevision=source_revision, producerStageRunId=producer_id,
-                    pipelineStatus=outcome.status.value, languageCode=settings.audio_asr_language,
+                    pipelineStatus="COMPLETED_WITH_WARNINGS" if warned else "COMPLETED",
+                    languageCode=settings.audio_asr_language,
                     sampleRateHz=16000, sampleCount=count, durationMs=(count * 1000 + 15999) // 16000,
                     segments=segments, coverage=coverage, warnings=warnings,
                     provenance=_provenance(outcome, settings, asr_adapter_version, correction_mode),
-                    correctionProof=dict(contextScope="WHOLE_MEETING", promptVersion=result.provenance.prompt_version,
+                    correctionProof=dict(contextScope=proof_scope, promptVersion=version,
                                          outputSha256=correction_digest(segments)))
         raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
         validate_result_bytes(raw, job_id=job_id, media_id=media_id,
@@ -601,7 +638,11 @@ class TranscriptionWorker:
                     or recovery and any(a.failure is AsrErrorCategory.AUTHENTICATION for a in recovery.attempts)):
                 raise WorkFailure("ASR", "AUTHENTICATION")
             if outcome.status is OfflineTranscriptionStatus.FAILED:
-                raise pipeline_failure(outcome)
+                failure = pipeline_failure(outcome)
+                if failure.completed_through != "RECONCILIATION" or not any(
+                    segment.text.strip() for segment in outcome.evidence.reconciliation.segments
+                ):
+                    raise failure
             phase = "RESULT_VALIDATION"
             from sme_meeting_ai.pipeline import OfflineTranscriptionPipeline
             actual_mode = self.pipeline._correction_mode if isinstance(self.pipeline, OfflineTranscriptionPipeline) else None

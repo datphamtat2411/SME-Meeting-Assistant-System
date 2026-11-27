@@ -86,6 +86,31 @@ class AssistantHttpIntegrationTests {
             "scopeVersion",req.path("authorizedScope").path("scopeVersion").asText(),
             "claims",List.of(),"citations",List.of(),"diagnostics",Map.of(),"failures",List.of()));
     }
+
+    @Test void conversationalReplySurvivesPersistenceAndHistoryWithoutCitations() throws Exception {
+        UUID owner=user(), id=conversation(owner,meeting(owner));
+        when(gateway.answer(anyString())).thenAnswer(call -> {
+            JsonNode request=json.readTree((String)call.getArgument(0));
+            var scope=request.path("authorizedScope");
+            String answer="Chào bạn! Tôi có thể giúp tóm tắt cuộc họp.";
+            return json.writeValueAsString(Map.ofEntries(
+                Map.entry("contractVersion","1.0"), Map.entry("requestId",request.path("requestId").asText()),
+                Map.entry("status","CONVERSATIONAL"), Map.entry("answer",answer),
+                Map.entry("scopeId",scope.path("scopeId").asText()),
+                Map.entry("scopeVersion",scope.path("scopeVersion").asText()),
+                Map.entry("claims",List.of(Map.of("claimId","A1","text",answer,"support","GENERAL","citationIds",List.of()))),
+                Map.entry("citations",List.of()), Map.entry("diagnostics",Map.of()), Map.entry("failures",List.of()),
+                Map.entry("modelProvenance",Map.of("provider","controlled","configuredModel","fixture","attempts",1))));
+        });
+        JsonNode turn=response(mvc.perform(post(target(id)).principal(principal(owner))
+            .header("Idempotency-Key","conversational-turn").contentType(MediaType.APPLICATION_JSON)
+            .content("{\"question\":\"Xin chào.\"}")).andExpect(status().isOk()).andReturn());
+        assertThat(turn.path("answerStatus").asText()).isEqualTo("CONVERSATIONAL");
+        assertThat(turn.path("citations").isEmpty()).isTrue();
+        JsonNode history=response(mvc.perform(get("/api/v1/assistant/conversations/"+id)
+            .principal(principal(owner))).andExpect(status().isOk()).andReturn());
+        assertThat(history.path("messages").toString()).contains("CONVERSATIONAL","GENERAL");
+    }
     @Test void historyPaginationPreservesEveryMessageAndStableOrdering() throws Exception {
         UUID owner=user(),id=conversation(owner,meeting(owner));
         // Equal timestamps exercise the canonical UUID tie-breaker as well as

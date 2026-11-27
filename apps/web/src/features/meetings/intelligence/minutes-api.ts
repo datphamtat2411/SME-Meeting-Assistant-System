@@ -80,6 +80,18 @@ export const minutesSchema = z
     summary: summarySchema,
     confirmedDecisions: z.array(decisionSchema),
     officialActionItems: z.array(actionSchema),
+    draftProposals: z
+      .array(
+        z.object({
+          id: z.string().uuid(),
+          kind: z.enum(['DECISION', 'ACTION_ITEM']),
+          text: z.string().min(1),
+          transcriptId: z.string().uuid().nullable(),
+          contentRevision: revision.nullable(),
+          uncertainty: z.string().nullable(),
+        })
+      )
+      .default([]),
     transcript: z
       .object({
         availability: z.enum([
@@ -114,6 +126,14 @@ export const minutesSchema = z
   })
   .passthrough()
   .superRefine((minutes, context) => {
+    if (minutes.proposalsIncluded !== minutes.draftProposals.length > 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['draftProposals'],
+        message:
+          'Draft proposal metadata does not match the available proposals.',
+      })
+    }
     // Validate structural guarantees of the server projection. Do not
     // recompute completeness or replace the server's review classification.
     if (

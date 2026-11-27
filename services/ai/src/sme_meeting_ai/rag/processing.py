@@ -154,7 +154,9 @@ def assess_eligibility(value: KnowledgeSnapshot | object) -> EligibilityResult:
         return EligibilityResult(
             source_identity=identity,
             eligible=not reasons,
-            authority_class="SECONDARY_APPROVED_SUMMARY" if not reasons else None,
+            authority_class=(
+                "PROVISIONAL_SUMMARY" if content.source_type == "AI_GENERATED" else "SECONDARY_APPROVED_SUMMARY"
+            ) if not reasons else None,
             quality_class=quality if not reasons else None,
             reasons=tuple(reasons),
         )
@@ -235,32 +237,22 @@ def _normalize_transcript(snapshot: TranscriptSnapshot) -> tuple[NormalizedTrans
     issues: list[ProcessingIssue] = []
     units: list[NormalizedTranscriptUnit] = []
     excluded: list[str] = []
+    uncertain = False
     non_covered = tuple(region for region in payload.coverage if region.coverage_status != "COVERED")
     speakers = {speaker.id: speaker for speaker in payload.speakers}
 
     for segment in projection.segments:
-        exclusion_code: str | None = None
-        if segment.quality_status == "SUSPICIOUS":
-            exclusion_code = "SUSPICIOUS_SEGMENT_EXCLUDED"
-        elif segment.quality_status == "UNRESOLVED":
-            exclusion_code = "UNRESOLVED_SEGMENT_EXCLUDED"
-        elif segment.quality_status != "ACCEPTED":
-            exclusion_code = "UNKNOWN_SEGMENT_QUALITY"
-        elif non_covered and (
-            any(_coverage_overlaps(segment, region) for region in non_covered)
-            or segment.start_ms is None
-        ):
-            exclusion_code = "UNCOVERED_SEGMENT_EXCLUDED"
-
         text = _normalize_text(segment.text)
-        if not text:
-            exclusion_code = exclusion_code or "EMPTY_SEGMENT"
-
-        if exclusion_code is not None:
+        if not any(character.isalnum() for character in text):
             excluded.append(segment.id)
-            severity = "WARNING" if exclusion_code == "EMPTY_SEGMENT" else "INFO"
-            issues.append(_issue(exclusion_code, severity, source_id=projection.id, segment_id=segment.id))
+            issues.append(_issue("EMPTY_SEGMENT", "WARNING", source_id=projection.id, segment_id=segment.id))
             continue
+        if segment.quality_status != "ACCEPTED" or any(
+            _coverage_overlaps(segment, region) for region in non_covered
+        ):
+            uncertain = True
+            issues.append(_issue("UNCERTAIN_TRANSCRIPT_SEGMENT", "WARNING",
+                                 source_id=projection.id, segment_id=segment.id))
 
         units.append(
             NormalizedTranscriptUnit(
@@ -283,7 +275,7 @@ def _normalize_transcript(snapshot: TranscriptSnapshot) -> tuple[NormalizedTrans
             )
         )
 
-    quality = "MIXED" if excluded else (
+    quality = "MIXED" if excluded or uncertain else (
         "WARNING" if projection.status == "READY_WITH_WARNINGS" else "ACCEPTED"
     )
     return (
@@ -393,7 +385,7 @@ def _normalize_summary(snapshot: SummarySnapshot) -> tuple[NormalizedSummary, tu
             source_type="SUMMARY",
             metadata=_source_metadata(
                 snapshot.metadata,
-                "SECONDARY_APPROVED_SUMMARY",
+                "PROVISIONAL_SUMMARY" if content.source_type == "AI_GENERATED" else "SECONDARY_APPROVED_SUMMARY",
                 quality,
                 content.quality_status,
                 content.is_current,

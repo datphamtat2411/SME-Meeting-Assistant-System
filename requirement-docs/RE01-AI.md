@@ -978,9 +978,9 @@ The reconciled transcript SHALL maintain coherent non-decreasing timeline orderi
 
 The system SHOULD retain sufficient source-region, attempt, timing, quality, and provider/model metadata so reconciliation can be investigated without retaining raw Whisper transcript text as a durable transcript artifact.
 
-### AI-RECON-008 — Contextual correction is mandatory before canonical transcript persistence
+### AI-RECON-008 — Attempt contextual correction before canonical transcript persistence
 
-The reconciled ASR candidate SHALL pass through an approved LLM transcript-correction stage before transcript text is returned for canonical persistence.
+The worker SHALL attempt approved contextual correction. When it fails after verified reconciliation and usable text remains, the worker MAY publish that reconciled revision with a warning and a distinct reconciliation proof. Invalid LLM output is discarded.
 
 ### AI-RECON-009 — Whole-meeting context is the baseline
 
@@ -1006,7 +1006,7 @@ Raw Whisper candidate text SHALL NOT be persisted as a competing transcript vers
 
 ### AI-RECON-014 — No raw-ASR fallback
 
-Failure of the LLM correction stage SHALL NOT cause raw Whisper text to be promoted as a successful final transcript. The correction stage SHALL be retried according to bounded policy or the transcript job SHALL remain failed/retryable.
+Failure of correction SHALL NOT promote raw Whisper candidates. A fallback SHALL use only selected reconciled segments, preserve lineage and gaps, and report `READY_WITH_WARNINGS`; jobs with no usable reconciled text remain failed.
 
 ### AI-RECON-015 — Context overflow is explicit
 
@@ -1522,7 +1522,7 @@ Not every AI artifact should be indexed equally.
 
 ### AI-KNOW-001 — Current transcript is eligible
 
-The current reconciled transcript is a primary RAG knowledge source when processing quality is acceptable.
+The current finalized reconciled transcript is independently indexable as soon as it contains usable evidence. Warning-bearing text remains searchable with qualified quality. Missing regions contain no fabricated searchable text.
 
 ### AI-KNOW-002 — Human-corrected transcript supersedes older text
 
@@ -1536,9 +1536,9 @@ Confirmed meeting decisions are high-authority RAG sources.
 
 Confirmed/official action items MAY be indexed for meeting knowledge retrieval.
 
-### AI-KNOW-005 — Current reviewed summary is eligible
+### AI-KNOW-005 — Current non-stale summary is eligible
 
-The current approved/user-facing meeting summary MAY be indexed as a secondary synthesized source.
+The current non-stale meeting summary MAY be indexed as secondary evidence. A machine-generated summary retains provisional authority.
 
 ### AI-KNOW-006 — Proposed decision is not equal to confirmed decision
 
@@ -1550,7 +1550,7 @@ Unconfirmed AI action-item proposals SHALL NOT be presented by RAG as official a
 
 ### AI-KNOW-008 — Raw ASR is not a RAG source
 
-Raw provider/Whisper candidate transcript text SHALL NOT be indexed as ordinary knowledge. RAG SHALL use the current persisted transcript, which is initially LLM-corrected and may later contain authorized human corrections.
+Raw provider/Whisper candidate transcript text SHALL NOT be indexed as ordinary knowledge. RAG SHALL use the current persisted transcript with correction or reconciliation provenance and any later authorized human corrections.
 
 ### AI-KNOW-009 — Unresolved regions are not authoritative
 
@@ -2049,21 +2049,19 @@ so it can avoid conflating proposals with confirmed business facts.
 
 ---
 
-# 42. Grounded AI Assistant
+# 42. Conversational AI Assistant
 
 ### AI-AST-001 — Meeting-grounded mode
 
-When answering questions about organizational meeting knowledge, the Assistant SHALL operate in a grounded mode based on authorized retrieved evidence.
+When answering questions about organizational meeting knowledge, the Assistant SHALL use authorized and verified sources. The selected meeting provides context from the first turn. Hybrid search augments bounded canonical excerpts and current meeting records; a search or reranking outage is not a provider failure.
 
 ### AI-AST-002 — Internal meeting facts require evidence
 
-The model MUST NOT present an internal meeting fact as established when no supporting authorized meeting evidence was retrieved.
+The model MUST NOT assert an internal meeting fact without supporting authorized evidence, whether sourced through retrieval or the Core-provided context.
 
 ### AI-AST-003 — General knowledge is distinguished
 
-If product behavior later allows general model knowledge, it SHALL be clearly distinguishable from claims grounded in internal meetings.
-
-The V1 meeting-knowledge Assistant SHOULD prioritize evidence-grounded answers.
+General knowledge, clarification and ordinary conversation MUST be distinguishable from internal facts and need no meeting evidence. Advice and inferences based on meeting evidence retain citations and are labeled as interpretation or suggestions.
 
 ### AI-AST-004 — Source references returned
 
@@ -2071,13 +2069,7 @@ A successful grounded answer SHOULD return source references sufficient for the 
 
 ### AI-AST-005 — Insufficient evidence answer
 
-When evidence is insufficient, the Assistant SHALL return a response equivalent to:
-
-```text
-The available meetings you are authorized to access do not provide enough evidence to answer this confidently.
-```
-
-rather than fabricating an internal fact.
+When evidence is insufficient, generation SHALL explain the missing information, ask for useful clarification, or offer relevant general help. Technical unavailability is tracked separately from insufficient evidence. Retrieval MAY use a small relevant fallback after weak scores or reranker failure; authorization and source verification remain mandatory.
 
 ### AI-AST-006 — Citations correspond to actual retrieved evidence
 

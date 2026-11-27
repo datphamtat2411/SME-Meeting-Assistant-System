@@ -521,6 +521,16 @@ export function ExportPanel({
   const capabilities = availability.isError ? undefined : availability.data
   const trusted = trustedDownloadHosts().length > 0
   const proposalsIncluded = minutes.data?.proposalsIncluded === true
+  const snapshot = minutes.data
+  const hasContent =
+    snapshot &&
+    (snapshot.summary.content?.trim() ||
+      ['READY', 'READY_WITH_WARNINGS'].includes(
+        snapshot.transcript.status ?? ''
+      ) ||
+      snapshot.confirmedDecisions.length ||
+      snapshot.officialActionItems.length ||
+      snapshot.draftProposals.length)
   const canGenerate = Boolean(
     authorized &&
     capabilities?.admission &&
@@ -528,8 +538,7 @@ export function ExportPanel({
     capabilities.access &&
     trusted &&
     !minutes.isError &&
-    minutes.data?.completeness === 'COMPLETE' &&
-    !proposalsIncluded
+    hasContent
   )
   return (
     <Card>

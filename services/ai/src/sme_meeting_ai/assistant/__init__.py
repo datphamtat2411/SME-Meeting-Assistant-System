@@ -38,7 +38,6 @@ from .service import (
     GenerationCapability,
     RetrievalCapability,
     TrustedFinalVerifier,
-    question_requires_context,
 )
 
 
@@ -85,5 +84,4 @@ __all__ = [
     "build_assistant_service",
     "estimate_prompt_tokens",
     "grounding_user_payload",
-    "question_requires_context",
 ]

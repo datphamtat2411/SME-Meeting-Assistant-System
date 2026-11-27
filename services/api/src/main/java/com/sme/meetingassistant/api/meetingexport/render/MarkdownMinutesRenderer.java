@@ -42,6 +42,9 @@ public final class MarkdownMinutesRenderer {
         validate(snapshot);
         var out = new StringBuilder(8192);
         out.append("# Biên bản cuộc họp\n\n");
+        if (!"COMPLETE".equals(snapshot.completeness()) || "AI_GENERATED".equals(snapshot.summary().sourceType())) {
+            out.append("**Bản nháp — chưa được phê duyệt chính thức.**\n\n");
+        }
         out.append("**Đây là bản thể hiện của dữ liệu tại thời điểm chốt nguồn; ")
                 .append("không thay thế dữ liệu nghiệp vụ gốc.**\n");
 
@@ -59,7 +62,11 @@ public final class MarkdownMinutesRenderer {
 
         section(out, "Mức độ đầy đủ và cảnh báo");
         field(out, "Mức độ đầy đủ", snapshot.completeness());
-        out.append("- **Đề xuất AI chưa được duyệt:** Không bao gồm trong biên bản chính thức.\n");
+        if (snapshot.proposalsIncluded()) {
+            out.append("- **Đề xuất AI:** Có nội dung chưa được xác nhận, trình bày riêng bên dưới.\n");
+        } else {
+            out.append("- **Đề xuất AI chưa được duyệt:** Không bao gồm trong biên bản chính thức.\n");
+        }
         out.append("- **Ghi chú:** Trạng thái cuộc họp độc lập với trạng thái xử lý AI.\n");
         if (snapshot.warnings().isEmpty()) {
             out.append("- Không có cảnh báo nào được ghi nhận trong snapshot này.\n");
@@ -94,6 +101,15 @@ public final class MarkdownMinutesRenderer {
             warningList(out, summary.aiWarnings(), "Cảnh báo tóm tắt");
         }
 
+        if (snapshot.proposalsIncluded()) {
+            section(out, "Đề xuất AI chưa xác nhận");
+            for (var proposal : snapshot.draftProposals()) {
+                field(out,"Loại đề xuất", "DECISION".equals(proposal.kind()) ? "Quyết định" : "Công việc");
+                SafeMarkdownText.quote(out,proposal.text());
+                field(out,"Mức độ không chắc chắn", proposal.uncertainty());
+                field(out,"Phiên bản bản chép lời", proposal.contentRevision());
+            }
+        }
         section(out, "Quyết định đã xác nhận (" + snapshot.confirmedDecisions().size() + ")");
         if (snapshot.confirmedDecisions().isEmpty()) {
             out.append("Không có quyết định CONFIRMED trong nguồn hiện tại.\n");
@@ -195,7 +211,8 @@ public final class MarkdownMinutesRenderer {
 
     private static void validate(MinutesSnapshot snapshot) {
         Objects.requireNonNull(snapshot, "snapshot");
-        if (snapshot.schemaVersion() != SUPPORTED_SCHEMA || snapshot.proposalsIncluded()
+        if (snapshot.schemaVersion() != SUPPORTED_SCHEMA
+                || snapshot.proposalsIncluded()!=!snapshot.draftProposals().isEmpty()
                 || snapshot.meeting() == null || snapshot.meeting().id() == null
                 || snapshot.meeting().status() == null || snapshot.summary() == null
                 || snapshot.transcript() == null

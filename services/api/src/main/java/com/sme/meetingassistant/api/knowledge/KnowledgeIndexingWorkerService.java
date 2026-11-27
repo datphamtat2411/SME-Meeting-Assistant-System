@@ -70,6 +70,10 @@ public class KnowledgeIndexingWorkerService {
     }
 
     private boolean sourceExists(SourceVerificationRequest request) {
+        if ("MEETING".equals(request.sourceType())) {
+            return request.meetingId().equals(request.sourceId()) && Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM meetings WHERE id=?)",Boolean.class,request.meetingId()));
+        }
         String table = switch (request.sourceType()) {
             case "TRANSCRIPT" -> "transcripts";
             case "SUMMARY" -> "meeting_summary_versions";
@@ -726,6 +730,9 @@ public class KnowledgeIndexingWorkerService {
             case "SUMMARY" -> summarySource(work);
             case "DECISION" -> decisionSource(work);
             case "ACTION_ITEM" -> actionSource(work);
+            case "MEETING" -> jdbc.query("SELECT version FROM meetings WHERE id=? AND id=?",
+                (rs, row) -> new SourceState(rs.getLong(1),true,true,null),work.meetingId(),work.sourceId())
+                .stream().findFirst().orElse(new SourceState(-1,false,false,null));
             default -> new SourceState(-1, false, false, null);
         };
     }

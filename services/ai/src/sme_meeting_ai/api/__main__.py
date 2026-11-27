@@ -8,9 +8,8 @@ import uvicorn
 from sme_meeting_ai.assistant.runtime import build_assistant_service
 from sme_meeting_ai.core.config import ConfigurationError, Environment, load_settings
 from sme_meeting_ai.rag.runtime import (
-    RetrievalRuntime,
+    AssistantRetrievalRuntime,
     build_qdrant_audit_store,
-    build_retrieval_runtime,
 )
 
 from .app import create_app
@@ -25,7 +24,7 @@ def main() -> int:
         return 1
 
     previous = {}
-    retrieval_runtime: RetrievalRuntime | None = None
+    retrieval_runtime: AssistantRetrievalRuntime | None = None
     audit_store = None
     try:
         tls_context = load_tls_context(settings)
@@ -34,14 +33,14 @@ def main() -> int:
         identity_source = MTLSIdentitySource() if tls_context is not None else None
         assistant_service = None
         if settings.assistant_enabled:
-            retrieval_runtime = build_retrieval_runtime(settings)
+            retrieval_runtime = AssistantRetrievalRuntime(settings)
             assistant_service = build_assistant_service(
                 settings,
-                retrieval_engine=retrieval_runtime.engine,
+                retrieval_engine=retrieval_runtime,
                 trusted_runtime=True,
             )
         if settings.knowledge_indexing_reconciliation_enabled:
-            audit_store = retrieval_runtime.store if retrieval_runtime is not None else build_qdrant_audit_store(settings)
+            audit_store = build_qdrant_audit_store(settings, validate=False)
         server = uvicorn.Server(uvicorn.Config(
             create_app(
                 settings,
@@ -80,7 +79,7 @@ def main() -> int:
     finally:
         if retrieval_runtime is not None:
             retrieval_runtime.close()
-        elif audit_store is not None:
+        if audit_store is not None:
             audit_store.close()
         for signum, handler in previous.items():
             signal.signal(signum, handler)

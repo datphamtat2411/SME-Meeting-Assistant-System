@@ -105,6 +105,8 @@ class StrictModel(BaseModel):
 
 SourceType = Literal["TRANSCRIPT", "DECISION", "SUMMARY", "ACTION_ITEM"]
 AuthorityClass = Literal[
+    "CANONICAL_MEETING",
+    "PROVISIONAL_SUMMARY",
     "PRIMARY_TRANSCRIPT",
     "CONFIRMED_DECISION",
     "OFFICIAL_ACTION_ITEM",
@@ -121,7 +123,7 @@ class SourceRevision(StrictModel):
 
 
 class CanonicalSourceIdentity(StrictModel):
-    source_type: SourceType = Field(alias="sourceType")
+    source_type: Literal["TRANSCRIPT", "DECISION", "SUMMARY", "ACTION_ITEM", "MEETING"] = Field(alias="sourceType")
     source_id: Uuid = Field(alias="sourceId")
     meeting_id: Uuid = Field(alias="meetingId")
 

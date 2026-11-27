@@ -143,11 +143,14 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
                 AND s.attempt_number = (SELECT MAX(latest.attempt_number)
                   FROM processing_stage_runs latest WHERE latest.processing_job_id=s.processing_job_id
                     AND latest.stage_code=s.stage_code)
-                AND s.metrics->>'contextScope'='WHOLE_MEETING'
+                 AND (s.metrics->>'contextScope'='WHOLE_MEETING'
+                   OR (s.metrics->>'contextScope'='RECONCILED_FALLBACK' AND s.status='SUCCEEDED_WITH_WARNING'
+                       AND s.error_code='CORRECTION_RECONCILED_FALLBACK' AND ?))
                 AND s.metrics->>'outputSha256'=? )
-            """, Boolean.class, result.processingJobId(), TranscriptCorrectionDigest.sha256(result)));
+             """, Boolean.class, result.processingJobId(),
+             result.status()==TranscriptIngestion.Status.READY_WITH_WARNINGS, TranscriptCorrectionDigest.sha256(result)));
         if (!proven) throw new ResponseStatusException(HttpStatus.CONFLICT,
-            "A new transcript publication requires matching successful whole-meeting contextual correction.");
+             "A new transcript publication requires a matching validated correction or reconciliation proof.");
 
         List<String> finalized = this.jdbc.query("""
             SELECT sr.status FROM processing_jobs j JOIN meeting_media m

@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.meetingminutes;
 
 import com.sme.meetingassistant.api.meeting.entity.MeetingStatus;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -24,7 +25,8 @@ public record MinutesSnapshot(
         Transcript transcript,
         List<String> warnings,
         boolean proposalsIncluded,
-        DisplayMetadata displayMetadata) {
+        DisplayMetadata displayMetadata,
+        @JsonInclude(JsonInclude.Include.NON_EMPTY) List<DraftProposal> draftProposals) {
 
     public MinutesSnapshot {
         confirmedDecisions = List.copyOf(confirmedDecisions);
@@ -32,6 +34,7 @@ public record MinutesSnapshot(
         warnings = List.copyOf(warnings);
         displayMetadata = displayMetadata == null
                 ? new DisplayMetadata(Map.of()) : displayMetadata;
+        draftProposals = draftProposals == null ? List.of() : List.copyOf(draftProposals);
     }
 
     /** Compatibility constructor for renderers and fixtures without enrichment. */
@@ -42,8 +45,25 @@ public record MinutesSnapshot(
             List<String> warnings, boolean proposalsIncluded) {
         this(schemaVersion, assembledAt, sourceFingerprint, completeness, meeting, summary,
                 confirmedDecisions, officialActionItems, transcript, warnings,
-                proposalsIncluded, new DisplayMetadata(Map.of()));
+                 proposalsIncluded, new DisplayMetadata(Map.of()), List.of());
     }
+
+    public MinutesSnapshot(int schemaVersion, OffsetDateTime assembledAt, String sourceFingerprint,
+            String completeness, Meeting meeting, Summary summary, List<Decision> confirmedDecisions,
+            List<Action> officialActionItems, Transcript transcript, List<String> warnings,
+            boolean proposalsIncluded, DisplayMetadata displayMetadata) {
+        this(schemaVersion, assembledAt, sourceFingerprint, completeness, meeting, summary, confirmedDecisions,
+            officialActionItems, transcript, warnings, proposalsIncluded, displayMetadata, List.of());
+    }
+
+    public boolean hasUsableContent() {
+        return (summary != null && summary.content() != null && !summary.content().isBlank())
+            || (transcript != null && ("READY".equals(transcript.status()) || "READY_WITH_WARNINGS".equals(transcript.status())))
+            || !confirmedDecisions.isEmpty() || !officialActionItems.isEmpty() || !draftProposals.isEmpty();
+    }
+
+    public record DraftProposal(UUID id, String kind, String text, UUID transcriptId, Long contentRevision,
+            String uncertainty) {}
 
     public record Meeting(UUID id, String title, String description, UUID organizerUserId,
             MeetingStatus status, OffsetDateTime scheduledStartAt, OffsetDateTime scheduledEndAt,
@@ -105,11 +125,20 @@ public record MinutesSnapshot(
     public record CanonicalContent(int schemaVersion, String completeness,
             Meeting meeting, Summary summary, List<Decision> confirmedDecisions,
             List<Action> officialActionItems, Transcript transcript,
-            List<String> warnings, boolean proposalsIncluded) {
+            List<String> warnings, boolean proposalsIncluded,
+            @JsonInclude(JsonInclude.Include.NON_EMPTY) List<DraftProposal> draftProposals) {
+        public CanonicalContent(int schemaVersion, String completeness, Meeting meeting, Summary summary,
+                List<Decision> confirmedDecisions, List<Action> officialActionItems, Transcript transcript,
+                List<String> warnings, boolean proposalsIncluded) {
+            this(schemaVersion,completeness,meeting,summary,confirmedDecisions,officialActionItems,transcript,
+                warnings,proposalsIncluded,List.of());
+        }
+
         public CanonicalContent {
             confirmedDecisions = List.copyOf(confirmedDecisions);
             officialActionItems = List.copyOf(officialActionItems);
             warnings = List.copyOf(warnings);
+            draftProposals = draftProposals == null ? List.of() : List.copyOf(draftProposals);
         }
     }
 }

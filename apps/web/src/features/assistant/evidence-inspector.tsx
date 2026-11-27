@@ -39,6 +39,7 @@ const destinationLabels = {
   SUMMARY: 'assistant:destination_SUMMARY',
   DECISION: 'assistant:destination_DECISION',
   ACTION_ITEM: 'assistant:destination_ACTION_ITEM',
+  MEETING: 'assistant:destination_MEETING',
 }
 
 export function EvidenceInspector({

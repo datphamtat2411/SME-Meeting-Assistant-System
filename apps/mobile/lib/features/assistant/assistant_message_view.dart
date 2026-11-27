@@ -103,8 +103,15 @@ class _AssistantMessageViewState extends State<AssistantMessageView> {
                           : colors.onSurface,
                     ),
                   ),
+                  if (message.limitation case final limitation?)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(_limitationLabel(limitation)),
+                    ),
                   if (message.claims.any(
-                    (claim) => claim.support != AssistantClaimSupport.supported,
+                    (claim) =>
+                        claim.support == AssistantClaimSupport.conflicted ||
+                        claim.support == AssistantClaimSupport.unsupported,
                   ))
                     Padding(
                       padding: const EdgeInsets.only(top: 12),
@@ -121,7 +128,7 @@ class _AssistantMessageViewState extends State<AssistantMessageView> {
                         ],
                       ),
                     ),
-                  if (message.claims.isNotEmpty || message.citations.isNotEmpty)
+                  if (message.citations.isNotEmpty)
                     ExpansionTile(
                       tilePadding: EdgeInsets.zero,
                       childrenPadding: EdgeInsets.zero,
@@ -206,7 +213,8 @@ class _AssistantMessageViewState extends State<AssistantMessageView> {
 String _answerLabel(AssistantAnswerStatus status) => switch (status) {
   AssistantAnswerStatus.grounded => 'Có bằng chứng hỗ trợ',
   AssistantAnswerStatus.partial =>
-    'Bằng chứng chỉ hỗ trợ một phần hoặc xung đột',
+    'Câu trả lời có giới hạn nguồn hoặc diễn giải',
+  AssistantAnswerStatus.conversational => 'Hội thoại',
   AssistantAnswerStatus.insufficientEvidence => 'Không đủ bằng chứng',
   AssistantAnswerStatus.failed => 'Không thể tạo câu trả lời',
 };
@@ -215,6 +223,18 @@ String _supportLabel(AssistantClaimSupport support) => switch (support) {
   AssistantClaimSupport.supported => 'Có nguồn hỗ trợ',
   AssistantClaimSupport.unsupported => 'Chưa có đủ bằng chứng',
   AssistantClaimSupport.conflicted => 'Nguồn có xung đột',
+  AssistantClaimSupport.general => 'Thông tin chung',
+  AssistantClaimSupport.inferred => 'Diễn giải hoặc gợi ý',
+};
+
+String _limitationLabel(String code) => switch (code) {
+  'NO_MEETING_CONTENT_AVAILABLE' => 'Chưa có nội dung cuộc họp khả dụng.',
+  'NO_RELEVANT_INDEXED_EVIDENCE' => 'Không có kết quả phù hợp trong chỉ mục.',
+  'LOW_RELEVANCE_EVIDENCE' => 'Kết quả tìm kiếm có mức liên quan thấp.',
+  'PROVIDER_TIMEOUT' => 'Đã hết thời gian tạo câu trả lời.',
+  'PROVIDER_UNAVAILABLE' => 'Dịch vụ tạo câu trả lời tạm thời không khả dụng.',
+  'SOURCE_INVALIDATED' => 'Nguồn cuộc họp đã thay đổi trong lúc trả lời.',
+  _ => 'Một phần dữ liệu hoặc dịch vụ không khả dụng khi trả lời.',
 };
 
 String _sourceLabel(AssistantSourceType source) => switch (source) {
@@ -222,4 +242,5 @@ String _sourceLabel(AssistantSourceType source) => switch (source) {
   AssistantSourceType.summary => 'Tóm tắt',
   AssistantSourceType.decision => 'Quyết định',
   AssistantSourceType.actionItem => 'Công việc',
+  AssistantSourceType.meeting => 'Thông tin cuộc họp',
 };

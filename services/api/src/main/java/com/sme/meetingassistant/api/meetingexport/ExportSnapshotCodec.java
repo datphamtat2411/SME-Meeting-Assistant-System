@@ -129,8 +129,9 @@ public final class ExportSnapshotCodec {
         if (snapshot == null || snapshot.schemaVersion() != 1
                 || snapshot.meeting() == null
                 || !Objects.equals(snapshot.meeting().id(), meetingId)
-                || snapshot.proposalsIncluded()
-                || !"COMPLETE".equals(snapshot.completeness())
+                 || !java.util.Set.of("COMPLETE","PARTIAL","NEEDS_REVIEW").contains(snapshot.completeness())
+                 || snapshot.proposalsIncluded()!=!snapshot.draftProposals().isEmpty()
+                 || !snapshot.hasUsableContent()
                 || snapshot.summary() == null || snapshot.transcript() == null) {
             throw new IllegalArgumentException("Incomplete or unauthorized-scope export snapshot");
         }
@@ -139,7 +140,7 @@ public final class ExportSnapshotCodec {
                     snapshot.schemaVersion(), snapshot.completeness(), snapshot.meeting(),
                     snapshot.summary(), snapshot.confirmedDecisions(),
                     snapshot.officialActionItems(), snapshot.transcript(),
-                    snapshot.warnings(), snapshot.proposalsIncluded());
+                     snapshot.warnings(), snapshot.proposalsIncluded(), snapshot.draftProposals());
             String computed = sha256(json.writeValueAsBytes(content));
             if (!computed.equals(snapshot.sourceFingerprint())) {
                 throw new IllegalArgumentException("Export source fingerprint mismatch");

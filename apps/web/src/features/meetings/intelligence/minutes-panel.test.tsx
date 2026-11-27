@@ -104,6 +104,16 @@ describe('MinutesPanel canonical document experience', () => {
     const screen = await renderPanel({
       ...validMinutes(),
       proposalsIncluded: true,
+      draftProposals: [
+        {
+          id: '77777777-7777-4777-8777-777777777777',
+          kind: 'DECISION',
+          text: 'Proposal awaiting confirmation.',
+          transcriptId: null,
+          contentRevision: null,
+          uncertainty: null,
+        },
+      ],
     })
     await expect
       .element(
@@ -113,7 +123,7 @@ describe('MinutesPanel canonical document experience', () => {
       )
       .toBeVisible()
     await expect
-      .element(screen.getByText('Not ready for a new official export'))
+      .element(screen.getByText('Draft minutes — not officially approved'))
       .toBeVisible()
   })
 
@@ -130,7 +140,9 @@ describe('MinutesPanel canonical document experience', () => {
     await expect
       .element(screen.getByText('Not recorded – ' + expectedEnd))
       .toBeVisible()
-    await expect.element(screen.getByText('Minutes are complete')).toBeVisible()
+    await expect
+      .element(screen.getByText('Draft minutes — not officially approved'))
+      .toBeVisible()
     const fingerprint = screen.getByText(
       'Source fingerprint: ' + 'a'.repeat(64)
     )
@@ -194,7 +206,7 @@ describe('MinutesPanel canonical document experience', () => {
       { onOpenSummary, onOpenDecisions, onOpenTranscript, onOpenActions }
     )
     await expect
-      .element(screen.getByText('Not ready for a new official export'))
+      .element(screen.getByText('Draft minutes — not officially approved'))
       .toBeVisible()
     await expect
       .element(

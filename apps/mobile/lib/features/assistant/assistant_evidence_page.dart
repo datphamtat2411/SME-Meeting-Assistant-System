@@ -227,6 +227,13 @@ class _AssistantEvidencePageState extends State<AssistantEvidencePage>
   );
 
   Widget _content(AssistantEvidenceArtifact artifact) => switch (artifact) {
+    MeetingEvidence(:final preview) => ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _heading('Thông tin cuộc họp'),
+        if (preview != null) ContentCard(child: SelectableText(preview)),
+      ],
+    ),
     TranscriptEvidence(:final transcript) => ListView.builder(
       padding: const EdgeInsets.all(16),
       itemCount: transcript.segments.length + 1,

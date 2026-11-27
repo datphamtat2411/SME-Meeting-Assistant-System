@@ -57,6 +57,8 @@ final class AssistantEvidenceResolver {
             return switch(key.type()){
                 // Canonical citation does not retain exact segment provenance.
                 case "TRANSCRIPT" -> new Display("Transcript",null,"MEETING_TRANSCRIPT");
+                case "MEETING" -> new Display("Meeting details",preview(meetings.detail(meeting).getDescription()),
+                    "MEETING_OVERVIEW");
                 case "SUMMARY" -> {
                     var summary=summaries.current(meeting);
                     if(!key.id().equals(summary.id())||key.revision()!=summary.versionNumber()

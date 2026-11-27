@@ -30,7 +30,7 @@ public record CorrectedTranscript(UUID jobId,UUID mediaId,String sourceRevision,
             "no-admissible-improvement","canonical-regression-prevented","validation","resource","provider","transport","timeout",
             "authentication","rate_limit","malformed_output","unresolved-speech"),
         "RECONCILIATION",Set.of("candidate-evidence","missing","failed","empty","malformed","duplicate-overlap","conflicting-overlap","unresolved-boundary","unresolved-interval"),
-        "CORRECTION",Set.of("completed-with-warnings","empty-transcript"));
+        "CORRECTION",Set.of("completed-with-warnings","empty-transcript","reconciled-fallback"));
 
     public static CorrectedTranscript validate(byte[] bytes,UUID job,UUID media,String revision,UUID producer,String expectedDigest) {
         if (!sha256(bytes).equals(expectedDigest)) throw WorkerException.invalid();
@@ -93,10 +93,17 @@ public record CorrectedTranscript(UUID jobId,UUID mediaId,String sourceRevision,
                     if(start<s.endMs()) require(unresolvedWarning?s.qualityStatus().equals("UNRESOLVED"):!s.qualityStatus().equals("ACCEPTED"));
                 }
             }
-            validateProvenance(n.get("provenance"));
             var proof=n.get("correctionProof"); fields(proof,"contextScope","promptVersion","outputSha256");
-            choice(proof,"contextScope","WHOLE_MEETING");
+            boolean fallback="RECONCILED_FALLBACK".equals(choice(proof,"contextScope","WHOLE_MEETING","RECONCILED_FALLBACK"));
+            boolean fallbackWarning=false;
+            for (var warning:warnings) {
+                fallbackWarning |= "CORRECTION".equals(warning.path("stage").asString())
+                    && "reconciled-fallback".equals(warning.path("code").asString());
+            }
+            require(fallback==fallbackWarning);
+            validateProvenance(n.get("provenance"),fallback);
             String prompt=string(proof,"promptVersion",80); require(prompt.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,79}"));
+            require(!fallback || "reconciliation-v1".equals(prompt));
             String correction=digest(proof,"outputSha256");
             boolean flagged=!warnings.isEmpty() || segments.stream().anyMatch(s->!s.qualityStatus().equals("ACCEPTED"))
                 || coverage.stream().anyMatch(c->!c.coverageStatus().equals("COVERED"));
@@ -116,6 +123,9 @@ public record CorrectedTranscript(UUID jobId,UUID mediaId,String sourceRevision,
             segments.stream().map(s->new SegmentResult(s.ordinal(),s.startMs(),s.endMs(),s.text(),s.qualityStatus(),null,finalization,null)).toList(),coverage,List.of(),warningCount);
     }
     public String proofJson() { return metadata.get("correctionProof").toString(); }
+    public boolean reconciliationFallback() {
+        return "RECONCILED_FALLBACK".equals(metadata.path("correctionProof").path("contextScope").asString());
+    }
     private static void validateWarning(JsonNode w,long samples) {
         fields(w,"stage","code","startSample","endSample","sourceChunkIds","phase");
         String stage=string(w,"stage",32),code=string(w,"code",80);
@@ -129,7 +139,7 @@ public record CorrectedTranscript(UUID jobId,UUID mediaId,String sourceRevision,
             var wrapper=MAPPER.createObjectNode().set("id",id); token(wrapper,"id",128);
         }
     }
-    private static void validateProvenance(JsonNode p) {
+    private static void validateProvenance(JsonNode p, boolean fallback) {
         fields(p,"pipelineVersion","configurationSha256","components","vadModel","models");
         token(p,"pipelineVersion",80); digest(p,"configurationSha256");
         var names=new HashSet<String>();
@@ -146,7 +156,7 @@ public record CorrectedTranscript(UUID jobId,UUID mediaId,String sourceRevision,
             if(!m.get("resolvedModel").isNull()) token(m,"resolvedModel",256);
             require(models.add(m.get("role").toString()+m.get("provider")+m.get("requestedModel")+m.get("resolvedModel")));
         }
-        require(correction);
+        require(correction != fallback);
     }
     /** Prefix maxima give bounded O(log n) overlap checks even for genuine overlapping intervals. */
     private static final class Intervals {

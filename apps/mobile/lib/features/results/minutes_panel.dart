@@ -132,7 +132,9 @@ class MinutesPanel extends StatelessWidget {
                       },
                     ),
                     _label('Lập lúc', dateLabel(minutes.assembledAt)),
-                    const Text('Tóm tắt AI không đồng nghĩa với phê duyệt.'),
+                    if (minutes.completeness != 'COMPLETE' ||
+                        summary.sourceType == 'AI_GENERATED')
+                      const Text('Bản nháp — chưa được phê duyệt chính thức.'),
                     const SizedBox(height: 8),
                     Text(
                       meeting.title,
@@ -179,6 +181,18 @@ class MinutesPanel extends StatelessWidget {
                       const Text('Chưa có bản tóm tắt phù hợp.'),
                     _warnings(summary.aiWarnings),
                   ]),
+                  if (minutes.draftProposals.isNotEmpty) ...[
+                    const SectionHeading('Đề xuất AI chưa xác nhận'),
+                    for (final proposal in minutes.draftProposals)
+                      _card([
+                        Text(
+                          proposal.kind == 'DECISION'
+                              ? 'Quyết định đề xuất'
+                              : 'Công việc đề xuất',
+                        ),
+                        SelectableText(proposal.text),
+                      ]),
+                  ],
                   SectionHeading(
                     'Quyết định đã xác nhận',
                     subtitle: '${decisions.length} quyết định',

@@ -253,7 +253,7 @@ segments: array, 1..16384 items
 coverage: array, 1..65536 items
 warnings: array, 0..4096 items
 provenance: object described below
-correctionProof: {contextScope: "WHOLE_MEETING", promptVersion: string,
+correctionProof: {contextScope: "WHOLE_MEETING" | "RECONCILED_FALLBACK", promptVersion: string,
                   outputSha256: lowercase SHA-256}
 ```
 
@@ -265,7 +265,7 @@ For each segment/region convert trusted sample offsets with `startMs=floor(start
 
 Segment quality is derived from interval intersections: `UNRESOLVED` if it intersects final unresolved speech or an unresolved reconciliation interval; otherwise `SUSPICIOUS` if it intersects suspicious final coverage or carries reconciliation flags; otherwise `ACCEPTED`. Every `COVERED` speech region must intersect accepted corrected text, and every segment must intersect reported coverage. A mapping that fails these checks is rejected; it is not silently repaired by dropping evidence or upgrading quality.
 
-If the pipeline reports `FAILED`, its result is ineligible even if an object happens to contain corrected text. Require a successful correction result, the complete successful-stage prefix, matching source/sample identity and valid correction proof. A validated result with no nonblank segments is reported as `TRANSCRIPTION_EMPTY` (nonretryable V1), not a fabricated silent transcript. Supporting a successful empty/no-speech transcript requires a separate explicit Core contract change.
+Normally the pipeline must complete correction and provide a matching source/sample identity and digest. When only correction fails after the complete verified reconciliation prefix, the worker may publish the original reconciled selections with `RECONCILED_FALLBACK`, version `reconciliation-v1`, warning `reconciled-fallback`, and no correction model in provenance. Core accepts that proof only for `READY_WITH_WARNINGS`. Failed correction output is never reused. A region without supporting canonical text is marked unresolved. A result with no usable text remains `TRANSCRIPTION_EMPTY`; it is not a fabricated silent transcript.
 
 ### 7.2 Warnings and provenance are first-class, bounded metadata
 

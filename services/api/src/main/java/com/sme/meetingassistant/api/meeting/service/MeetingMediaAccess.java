@@ -28,6 +28,9 @@ public interface MeetingMediaAccess {
     /** Transcript edits are reserved for the current meeting organizer. */
     void requireTranscriptEditAllowed(UUID meetingId, UUID actorId);
 
+    /** Recheck the persisted owner of an already-authorized transcript edit before background refresh. */
+    void requireTranscriptRefreshAllowed(UUID meetingId, UUID actorId);
+
     /** A mapped speaker must be a current participant or the meeting organizer. */
     void requireTranscriptSpeakerMember(UUID meetingId, UUID userId);
 }

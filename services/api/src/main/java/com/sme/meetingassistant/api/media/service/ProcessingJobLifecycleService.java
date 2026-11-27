@@ -82,7 +82,7 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         // its own short transaction, so abandoned attempts cannot invert lock order.
         var configuration=properties.getIntelligence();
         var enabled=configuration.isEnabled() && configuration.isDispatchEnabled()?configuration.getEnabledStages():List.<String>of();
-        var candidates=new java.util.LinkedHashSet<>(repository.terminalDiarizationAwaitingReview(25));
+        var candidates=new java.util.LinkedHashSet<>(repository.diarizationRecoveryCandidates(25));
         candidates.addAll(repository.intelligenceRecoveryCandidates(25,enabled));
         if(transactions!=null) for(UUID job:candidates) {
             try {new TransactionTemplate(transactions).executeWithoutResult(tx->advanceJob(job));}
@@ -160,7 +160,9 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         for(var s:repository.latestIntelligenceStages(jobId)) {
             if(List.of("SUCCEEDED","SUCCEEDED_WITH_WARNING").contains(s.status())) {
                 if(!hasAcceptedResult(jobId,s.stageRunId(),s.stageCode())) return false;
-            } else return "PENDING".equals(s.status()) && s.stageRunId().equals(stageRunId) && s.stageCode().equals(stageCode);
+            } else if (!"FAILED".equals(s.status())) {
+                return "PENDING".equals(s.status()) && s.stageRunId().equals(stageRunId) && s.stageCode().equals(stageCode);
+            }
         }
         return false;
     }
@@ -169,28 +171,29 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     public void advanceJob(UUID jobId) {
         transcriptEvidence.lockDiarizationSource(jobId);
         var job=repository.lockJobForOfflineSource(jobId).orElseThrow();
-        if (job.transcriptReviewRequired() && repository.diarizationBeforeReview(jobId)
-                && !repository.hasAdmittedTranscriptReview(jobId)) {
-            if ("RUNNING".equals(job.status()) && repository.terminalDiarization(jobId)
-                    && transcriptEvidence.latestSuccessfulFinalization(jobId).isPresent()) {
-                repository.awaitTranscriptReview(jobId, job.meetingId(), job.sourceMediaId());
-            }
-            return;
+        if ("RUNNING".equals(job.status()) && repository.diarizationNeedsDispatch(jobId)
+                && transcriptEvidence.latestSuccessfulFinalization(jobId).isPresent()) {
+            dispatchPlannedDiarization(jobId);
         }
         if(!repository.intelligenceUpstreamReady(jobId)) return;
         if(!repository.isDerivedIntelligenceJob(jobId) && !transcriptEvidence.hasFinalizedTranscript(jobId)) return;
+        repository.retireStaleIntelligence(jobId);
         for(var s:repository.latestIntelligenceStages(jobId)) {
             if(List.of("SUCCEEDED","SUCCEEDED_WITH_WARNING").contains(s.status())) {
                 if(!hasAcceptedResult(jobId,s.stageRunId(),s.stageCode()))
                     throw new ProcessingLifecycleConflictException("Intelligence progression requires canonical acceptance evidence.");
-            } else {
+            } else if (!"FAILED".equals(s.status())) {
                 if("PENDING".equals(s.status()) && intelligence!=null && intelligence.canDispatch(s.stageCode()))
                     repository.dispatchIntelligenceStage(jobId,s.stageRunId(),s.stageCode(),UUID.randomUUID());
                 else if("PENDING".equals(s.status())) IntelligenceOperationLog.record("DISPATCH_BLOCKED",jobId,s.stageRunId(),null);
                 return;
             }
         }
-        if("RUNNING".equals(job.status()) && !repository.hasUnfinishedRequiredStages(jobId)) completeJob(jobId);
+        if(List.of("PENDING","QUEUED","RUNNING").contains(job.status())
+                && !repository.hasUnfinishedRequiredStages(jobId)
+                && !repository.finishFailedIntelligence(jobId) && "RUNNING".equals(job.status())) {
+            completeJob(jobId);
+        }
     }
 
     @Override
@@ -267,24 +270,6 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         } else if("DIARIZING".equals(identity.stageCode())) advanceJob(identity.jobId());
     }
 
-    @Override
-    @Transactional
-    public boolean awaitTranscriptReview(UUID jobId, UUID meetingId, UUID mediaId, StageClaim claim) {
-        requireClaim(claim);
-        var identity = repository.stageIdentity(claim.stageRunId());
-        if (!jobId.equals(identity.jobId()) || !"FINALIZING_TRANSCRIPT".equals(identity.stageCode())) {
-            throw new ProcessingLifecycleConflictException(
-                "Only the canonical transcript finalization attempt can open review.");
-        }
-        if (!repository.transcriptReviewRequired(jobId)) return false;
-        if (transcriptEvidence.forFinalization(jobId, claim.stageRunId()).isEmpty()) {
-            throw new ProcessingLifecycleConflictException(
-                "Transcript review requires canonical finalized transcript evidence.");
-        }
-        if (repository.diarizationBeforeReview(jobId)) return false;
-        return repository.awaitTranscriptReview(jobId, meetingId, mediaId);
-    }
-
     private void requireCurrentDiarizationSource(UUID jobId) {
         transcriptEvidence.lockDiarizationSource(jobId);
         repository.requireDiarizationSource(jobId, transcriptEvidence.diarizationSource(jobId).orElse(null));
@@ -304,12 +289,14 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         requireClaim(claim);
         requireCode(errorCode, 96, "errorCode");
         var identity = repository.stageIdentity(claim.stageRunId());
-        if("DIARIZING".equals(identity.stageCode())) transcriptEvidence.lockDiarizationSource(identity.jobId());
+        if("DIARIZING".equals(identity.stageCode()) || isIntelligenceStage(identity.stageCode()))
+            transcriptEvidence.lockDiarizationSource(identity.jobId());
         // The worker/provider summary is untrusted and may contain raw ASR text,
         // provider payloads or credentials. Never persist it as business state.
         this.repository.failStage(claim, errorCode,
             SafeProcessingFailureSummary.forCode(errorCode), retryable);
-        if ("DIARIZING".equals(identity.stageCode())) advanceJob(identity.jobId());
+        if ("DIARIZING".equals(identity.stageCode()) || isIntelligenceStage(identity.stageCode()))
+            advanceJob(identity.jobId());
     }
 
     @Override
@@ -343,7 +330,8 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     public void completeJob(UUID jobId) {
         verifyLatestIntelligenceResults(jobId);
         if (this.repository.isDerivedIntelligenceJob(jobId)) {
-            if (derivedEvidence == null || !derivedEvidence.hasAcceptedSummary(jobId)) {
+            if (repository.derivedIntelligencePlan(jobId).contains("GENERATING_SUMMARY")
+                    && (derivedEvidence == null || !derivedEvidence.hasAcceptedSummary(jobId))) {
                 throw new ProcessingLifecycleConflictException(
                     "Derived Summary job has no accepted successful result.");
             }

@@ -42,7 +42,8 @@ import tools.jackson.databind.ObjectMapper;
  * provider, worker, broker, or object store.
  */
 @ActiveProfiles("test")
-@SpringBootTest(properties = {"app.media.outbox.enabled=false", "app.media.intelligence.regeneration-enabled=true"})
+@SpringBootTest(properties = {"app.media.outbox.enabled=false", "app.media.intelligence.regeneration-enabled=true",
+    "app.media.intelligence.refresh-poll-ms=3600000"})
 @AutoConfigureMockMvc
 @Import(PostgresTestConfiguration.class)
 class TranscriptReviewAdmissionIntegrationTests {
@@ -51,6 +52,7 @@ class TranscriptReviewAdmissionIntegrationTests {
     @Autowired ObjectMapper json;
     @Autowired ProcessingJobLifecycle lifecycle;
     @Autowired TranscriptFinalizationService finalization;
+    @Autowired com.sme.meetingassistant.api.integration.TranscriptIntelligenceRegeneration regeneration;
     @MockitoBean com.sme.meetingassistant.api.media.storage.ObjectStorage storage;
     @MockitoBean com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligence;
 
@@ -111,9 +113,10 @@ class TranscriptReviewAdmissionIntegrationTests {
 
     private TranscriptResult result(UUID stage, String text) {
         return new TranscriptResult(meeting, media, job, stage, "vi", 10_000L,
-            TranscriptIngestion.Status.READY,
+             TranscriptIngestion.Status.READY_WITH_WARNINGS,
             List.of(new SegmentResult(0, 100, 1500, text, "ACCEPTED", null, stage, null)),
-            List.of(new CoverageResult(100, 1500, "COVERED", false, 0, null)),
+             List.of(new CoverageResult(100, 1500, "COVERED", false, 0, null),
+                 new CoverageResult(1600, 4000, "UNRESOLVED_ERROR", false, 0, null)),
             List.of());
     }
 
@@ -137,9 +140,9 @@ class TranscriptReviewAdmissionIntegrationTests {
     }
 
     @Test
-    void finalizationStopsAtReviewAndAcknowledgementAndAdmissionAreIdempotent() throws Exception {
+    void warnedFinalizationCompletesBeforeOptionalAcknowledgementAndReceipt() throws Exception {
         assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",
-            String.class, job)).isEqualTo("WAITING_FOR_REVIEW");
+             String.class, job)).isEqualTo("COMPLETED_WITH_WARNINGS");
         JsonNode transcript = currentTranscript();
         UUID transcriptId = UUID.fromString(transcript.path("id").asText());
         String digest = TranscriptCorrectionDigest.sha256(published);
@@ -173,7 +176,7 @@ class TranscriptReviewAdmissionIntegrationTests {
             .andExpect(status().isAccepted());
 
         assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",
-            String.class, job)).isEqualTo("COMPLETED");
+             String.class, job)).isEqualTo("COMPLETED_WITH_WARNINGS");
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM processing_job_transcript_reviews
             WHERE processing_job_id=? AND admitted_at IS NOT NULL
@@ -181,25 +184,13 @@ class TranscriptReviewAdmissionIntegrationTests {
     }
 
     @Test
-    void regenerationUsesOnlyTheOriginalAdmittedProofAndDoesNotReopenTheTerminalJob() throws Exception {
+    void regenerationUsesCurrentRevisionWithoutReviewAndDoesNotReopenTheTerminalJob() throws Exception {
         JsonNode transcript = currentTranscript();
         String digest = TranscriptCorrectionDigest.sha256(published);
         String body = reviewBody(UUID.fromString(transcript.path("id").asText()),
             transcript.path("contentRevision").asLong(), digest);
         String path = jobPath("/meeting-intelligence/regenerate");
         org.mockito.Mockito.when(intelligence.canDispatch(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
-        mvc.perform(post(path).principal(as(organizer)).header("Idempotency-Key", "regenerate")
-            .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isConflict());
-
-        var acknowledgment = mvc.perform(post(jobPath("/transcript-review/acknowledge"))
-            .principal(as(organizer)).header("Idempotency-Key", "regenerate-review")
-            .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isOk()).andReturn();
-        String reviewId = json.readTree(acknowledgment.getResponse().getContentAsString()).at("/data/reviewId").asText();
-        mvc.perform(post(jobPath("/meeting-intelligence/admit"))
-            .principal(as(organizer)).header("Idempotency-Key", "regenerate-admit")
-            .contentType(MediaType.APPLICATION_JSON)
-            .content(body.substring(0, body.length() - 1) + ",\"reviewId\":\"" + reviewId + "\"}"))
-            .andExpect(status().isAccepted());
         com.sme.meetingassistant.api.support.ImmutableSnapshotObjectFixture.install(storage);
 
         var first = mvc.perform(post(path).principal(as(organizer)).header("Idempotency-Key", "regenerate")
@@ -210,9 +201,9 @@ class TranscriptReviewAdmissionIntegrationTests {
         assertThat(json.readTree(replay.getResponse().getContentAsString()).at("/data/id").asText())
             .isEqualTo(child.toString());
         assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?", String.class, job))
-            .isEqualTo("COMPLETED");
+             .isEqualTo("COMPLETED_WITH_WARNINGS");
         assertThat(jdbc.queryForObject("SELECT origin_review_id FROM processing_mi_regenerations WHERE processing_job_id=?",
-            UUID.class, child)).isEqualTo(UUID.fromString(reviewId));
+             UUID.class, child)).isNull();
         assertThat(jdbc.queryForList("SELECT stage_code FROM processing_stage_runs WHERE processing_job_id=?",
             String.class, child)).containsExactlyInAnyOrder("GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS");
         assertThat(jdbc.queryForList("SELECT event_type FROM outbox_events WHERE aggregate_id=?", String.class, child))
@@ -255,7 +246,7 @@ class TranscriptReviewAdmissionIntegrationTests {
                 .contentType(MediaType.APPLICATION_JSON).content(admissionBody))
             .andExpect(status().isConflict());
         assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",
-            String.class, job)).isEqualTo("WAITING_FOR_REVIEW");
+             String.class, job)).isEqualTo("COMPLETED_WITH_WARNINGS");
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM processing_job_transcript_reviews
             WHERE processing_job_id=? AND admitted_at IS NOT NULL
@@ -301,9 +292,35 @@ class TranscriptReviewAdmissionIntegrationTests {
                 .content(newBody.substring(0, newBody.length() - 1) + ",\"reviewId\":\"" + newReview + "\"}"))
             .andExpect(status().isAccepted());
         assertThat(jdbc.queryForList("""
-            SELECT id FROM processing_job_transcript_reviews
-            WHERE processing_job_id=? AND admitted_at IS NOT NULL
-            """, UUID.class, job)).containsExactly(UUID.fromString(newReview));
+             SELECT id FROM processing_job_transcript_reviews
+             WHERE processing_job_id=? AND admitted_at IS NOT NULL
+             """, UUID.class, job)).containsExactly(UUID.fromString(newReview));
+    }
+
+    @Test
+    void editsCoalesceIntoOneDerivedJobForTheLatestRevision() throws Exception {
+        for (String correction : List.of("Phát hành vào thứ tư.", "Phát hành vào thứ sáu.")) {
+            var transcript = currentTranscript();
+            mvc.perform(patch("/api/v1/meetings/" + meeting + "/transcript/segments/" + segment)
+                .principal(as(organizer)).header("If-Match", transcript.path("segments").get(0).path("etag").asText())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(java.util.Map.of("text",correction))))
+                .andExpect(status().isOk());
+        }
+        org.mockito.Mockito.when(intelligence.canDispatch(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
+        com.sme.meetingassistant.api.support.ImmutableSnapshotObjectFixture.install(storage);
+        jdbc.update("UPDATE transcript_intelligence_refresh SET due_at=clock_timestamp() WHERE meeting_id=?",meeting);
+        regeneration.refreshEditedTranscripts();
+        regeneration.refreshEditedTranscripts();
+
+        UUID child=jdbc.queryForObject("""
+            SELECT id FROM processing_jobs WHERE reprocess_of_job_id=? AND job_type='DERIVED_STAGE_PROCESSING'
+            """,UUID.class,job);
+        assertThat(jdbc.queryForObject("""
+            SELECT content_revision FROM meeting_intelligence_source_snapshots WHERE processing_job_id=?
+            """,Long.class,child)).isEqualTo(currentTranscript().path("contentRevision").asLong());
+        assertThat(jdbc.queryForList("SELECT stage_code FROM processing_stage_runs WHERE processing_job_id=?",String.class,child))
+            .containsExactlyInAnyOrder("GENERATING_SUMMARY","EXTRACTING_DECISIONS","EXTRACTING_ACTION_ITEMS");
     }
 
     @Test
@@ -397,7 +414,7 @@ class TranscriptReviewAdmissionIntegrationTests {
             }
         }
         assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",
-            String.class, job)).isEqualTo("WAITING_FOR_REVIEW");
+             String.class, job)).isEqualTo("COMPLETED_WITH_WARNINGS");
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM processing_job_transcript_reviews
             WHERE processing_job_id=?

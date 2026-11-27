@@ -6,16 +6,7 @@ import { DecisionsPanel } from './intelligence/decisions-panel'
 import { ExportPanel } from './intelligence/export-panel'
 import { MinutesPanel } from './intelligence/minutes-panel'
 import { SummaryPanel } from './intelligence/summary-panel'
-import {
-  TranscriptReviewAdmissionPanel,
-  TranscriptReviewWorkflowStatus,
-} from './intelligence/transcript-review-admission-panel'
-import {
-  TranscriptReviewGateBoundary,
-  useOptionalTranscriptReviewGate,
-} from './intelligence/transcript-review-gate'
 import { TranscriptReviewWorkspace } from './intelligence/transcript-review-workspace'
-import { MeetingSessionBoundary } from './media/meeting-session-context'
 import { ProcessingPanel } from './media/processing-panel'
 import { RecordingPanel } from './media/recording-panel'
 import { UploadPanel } from './media/upload-panel'
@@ -60,7 +51,6 @@ export function MeetingTools({
 }) {
   const { t } = useUiTranslation()
   const { capabilities, identity, participants } = useMeetingWorkspace()
-  const reviewGate = useOptionalTranscriptReviewGate()
 
   if (section === 'recording') {
     if (!capabilities.canReadMeetingContent) return <WorkspaceAccessMessage />
@@ -93,7 +83,7 @@ export function MeetingTools({
 
   if (section === 'transcript') {
     if (!capabilities.canReadMeetingContent) return <WorkspaceAccessMessage />
-    const content = (
+    return (
       <div className='space-y-5'>
         <FeatureSectionHeading
           title={t('workspace:transcriptSection')}
@@ -132,28 +122,7 @@ export function MeetingTools({
           evidenceContentRevision={evidenceContentRevision}
           evidenceReferenceIssue={evidenceReferenceIssue}
         />
-        <TranscriptReviewAdmissionPanel
-          onNavigateToIntelligence={() => onSectionChange?.('intelligence')}
-        />
       </div>
-    )
-    if (reviewGate) return content
-    return (
-      <MeetingSessionBoundary
-        meetingId={meetingId}
-        fallbackCapabilities={{
-          canAdmitProcessing: capabilities.canAdmitProcessing,
-          canReadMedia: capabilities.canReadMedia,
-          canReadProcessing: capabilities.canReadProcessing,
-        }}
-      >
-        <TranscriptReviewGateBoundary
-          meetingId={meetingId}
-          fallbackCanManageReview={capabilities.canAdmitProcessing}
-        >
-          {content}
-        </TranscriptReviewGateBoundary>
-      </MeetingSessionBoundary>
     )
   }
 
@@ -168,9 +137,6 @@ export function MeetingTools({
         {!capabilities.canMutateIntelligence && (
           <ReadOnlyNote>{t('workspace:intelligenceReadOnly')}</ReadOnlyNote>
         )}
-        <TranscriptReviewWorkflowStatus
-          onReview={() => onSectionChange?.('transcript')}
-        />
         <Tabs
           value={intelligenceView}
           activationMode='manual'

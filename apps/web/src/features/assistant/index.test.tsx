@@ -1463,7 +1463,9 @@ describe('AssistantPage', () => {
       )
       .toBeVisible()
     await expect
-      .element(screen.getByText('Partially supported answer'))
+      .element(
+        screen.getByText('Answer with source limitations or interpretation')
+      )
       .toBeVisible()
     await expect
       .element(

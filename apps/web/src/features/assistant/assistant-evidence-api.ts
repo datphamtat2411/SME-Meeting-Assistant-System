@@ -16,11 +16,18 @@ const targets = {
   SUMMARY: 'MEETING_SUMMARY',
   DECISION: 'MEETING_DECISIONS',
   ACTION_ITEM: 'MEETING_ACTION_ITEMS',
+  MEETING: 'MEETING_OVERVIEW',
 } as const
 
 const evidenceSchema = z.object({
   citationId: z.string().min(1),
-  sourceType: z.enum(['TRANSCRIPT', 'SUMMARY', 'DECISION', 'ACTION_ITEM']),
+  sourceType: z.enum([
+    'TRANSCRIPT',
+    'SUMMARY',
+    'DECISION',
+    'ACTION_ITEM',
+    'MEETING',
+  ]),
   sourceId: z.string().uuid(),
   sourceRevision: z.number().int().nonnegative(),
   label: z.string().min(1),
@@ -36,6 +43,7 @@ const evidenceSchema = z.object({
       'MEETING_SUMMARY',
       'MEETING_DECISIONS',
       'MEETING_ACTION_ITEMS',
+      'MEETING_OVERVIEW',
     ]),
     precision: z.literal('SOURCE'),
   }),
@@ -146,5 +154,7 @@ export function evidenceWorkspaceSearch(
       return { section: 'intelligence', intelligenceView: 'decisions' }
     case 'MEETING_ACTION_ITEMS':
       return { section: 'action-items' }
+    case 'MEETING_OVERVIEW':
+      return { section: 'overview' }
   }
 }

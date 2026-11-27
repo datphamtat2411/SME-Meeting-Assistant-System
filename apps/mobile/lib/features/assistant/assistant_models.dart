@@ -43,11 +43,25 @@ enum AssistantMessageRole { user, assistant, systemEvent }
 
 enum AssistantMessageVisibility { visible, sourceUnavailable }
 
-enum AssistantAnswerStatus { grounded, partial, insufficientEvidence, failed }
+enum AssistantAnswerStatus {
+  grounded,
+  partial,
+  conversational,
+  insufficientEvidence,
+  failed,
+}
 
-enum AssistantClaimSupport { supported, unsupported, conflicted }
+enum AssistantClaimSupport {
+  supported,
+  unsupported,
+  conflicted,
+  general,
+  inferred;
 
-enum AssistantSourceType { transcript, summary, decision, actionItem }
+  bool get needsCitation => this != unsupported && this != general;
+}
+
+enum AssistantSourceType { transcript, summary, decision, actionItem, meeting }
 
 enum AssistantTurnState { processing, completed, failed, staleSource }
 
@@ -244,9 +258,7 @@ class _Evidence {
     }
 
     for (final claim in claims) {
-      if (claim.support == AssistantClaimSupport.unsupported
-          ? claim.citationIds.isNotEmpty
-          : claim.citationIds.isEmpty) {
+      if (claim.support.needsCitation != claim.citationIds.isNotEmpty) {
         invalidApiData(response: response);
       }
       if (claim.support == AssistantClaimSupport.conflicted &&
@@ -278,27 +290,36 @@ class _Evidence {
 
   void validateAnswer(AssistantAnswerStatus status, ApiResult response) {
     switch (status) {
-      case AssistantAnswerStatus.insufficientEvidence:
       case AssistantAnswerStatus.failed:
         if (!isEmpty) invalidApiData(response: response);
+      case AssistantAnswerStatus.insufficientEvidence:
+        if (citations.isNotEmpty ||
+            (claims.isNotEmpty &&
+                !claims.any(
+                  (claim) => claim.support == AssistantClaimSupport.unsupported,
+                ))) {
+          invalidApiData(response: response);
+        }
+      case AssistantAnswerStatus.conversational:
+        if (claims.isEmpty ||
+            citations.isNotEmpty ||
+            claims.any(
+              (claim) => claim.support != AssistantClaimSupport.general,
+            )) {
+          invalidApiData(response: response);
+        }
       case AssistantAnswerStatus.grounded:
       case AssistantAnswerStatus.partial:
         if (claims.isEmpty ||
             citations.isEmpty ||
-            !claims.any(
-              (claim) => claim.support != AssistantClaimSupport.unsupported,
-            )) {
+            !claims.any((claim) => claim.support.needsCitation)) {
           invalidApiData(response: response);
         }
         if (status == AssistantAnswerStatus.grounded &&
             claims.any(
-              (claim) => claim.support == AssistantClaimSupport.unsupported,
-            )) {
-          invalidApiData(response: response);
-        }
-        if (status == AssistantAnswerStatus.partial &&
-            claims.every(
-              (claim) => claim.support == AssistantClaimSupport.supported,
+              (claim) =>
+                  claim.support != AssistantClaimSupport.supported &&
+                  claim.support != AssistantClaimSupport.conflicted,
             )) {
           invalidApiData(response: response);
         }
@@ -316,6 +337,7 @@ class AssistantMessage {
     required this.claims,
     required this.citations,
     required this.createdAt,
+    required this.limitation,
   });
 
   final String id;
@@ -326,6 +348,7 @@ class AssistantMessage {
   final List<AssistantClaim> claims;
   final List<AssistantCitation> citations;
   final DateTime createdAt;
+  final String? limitation;
 
   factory AssistantMessage.fromJson(
     Map<String, dynamic> raw, {
@@ -350,8 +373,8 @@ class AssistantMessage {
 
     if (visibility == AssistantMessageVisibility.sourceUnavailable) {
       if (role != AssistantMessageRole.assistant ||
-          (status != AssistantAnswerStatus.grounded &&
-              status != AssistantAnswerStatus.partial) ||
+          status == null ||
+          status == AssistantAnswerStatus.failed ||
           content != null ||
           !evidence.isEmpty) {
         invalidApiData(response: response);
@@ -376,6 +399,7 @@ class AssistantMessage {
       claims: evidence.claims,
       citations: evidence.citations,
       createdAt: requiredTimestamp(raw, 'createdAt', response: response),
+      limitation: optionalString(raw, 'limitation', response: response),
     );
   }
 }
@@ -582,8 +606,7 @@ class AssistantTurn {
           }
         case AssistantTurnState.staleSource:
           if (!statusRead ||
-              (status != AssistantAnswerStatus.grounded &&
-                  status != AssistantAnswerStatus.partial) ||
+              status == AssistantAnswerStatus.failed ||
               answer != null ||
               !evidence.isEmpty) {
             invalidApiData(response: response);
@@ -678,8 +701,7 @@ class AssistantTurnStatus {
             invalidApiData(response: response);
           }
         case AssistantTurnState.staleSource:
-          if (answerStatus != AssistantAnswerStatus.grounded &&
-              answerStatus != AssistantAnswerStatus.partial) {
+          if (answerStatus == AssistantAnswerStatus.failed) {
             invalidApiData(response: response);
           }
         case AssistantTurnState.processing:
@@ -699,6 +721,7 @@ class AssistantResolvedCitation {
     required this.sourceId,
     required this.sourceRevision,
     required this.meetingTitle,
+    required this.preview,
     required this.claimIds,
   });
 
@@ -707,6 +730,7 @@ class AssistantResolvedCitation {
   final String sourceId;
   final int sourceRevision;
   final String meetingTitle;
+  final String? preview;
   final List<String> claimIds;
 
   factory AssistantResolvedCitation.fromResult(
@@ -762,6 +786,7 @@ class AssistantResolvedCitation {
         AssistantSourceType.summary => 'MEETING_SUMMARY',
         AssistantSourceType.decision => 'MEETING_DECISIONS',
         AssistantSourceType.actionItem => 'MEETING_ACTION_ITEMS',
+        AssistantSourceType.meeting => 'MEETING_OVERVIEW',
       };
       if (!seen.add(id) ||
           claims.isEmpty ||
@@ -787,6 +812,7 @@ class AssistantResolvedCitation {
         sourceId: source,
         sourceRevision: revision,
         meetingTitle: meetingTitle,
+        preview: preview,
         claimIds: claims,
       );
     }

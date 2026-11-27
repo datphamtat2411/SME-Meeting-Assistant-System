@@ -150,7 +150,8 @@ public class TranscriptionWorkerService {
             stage=lifecycle.startTranscriptionWorkerStage(job,"CONTEXTUAL_CORRECTION");
         }
         if(!c.stageCode().equals("FINALIZING_TRANSCRIPT")) {
-            lifecycle.completeStage(stage,outcome,null,result.proofJson());
+            lifecycle.completeStage(stage,outcome,result.reconciliationFallback() ? "CORRECTION_RECONCILED_FALLBACK" : null,
+                result.proofJson());
             stage=lifecycle.startTranscriptionWorkerStage(job,"FINALIZING_TRANSCRIPT");
         } else {
             String proof=repository.correctionProof(job);

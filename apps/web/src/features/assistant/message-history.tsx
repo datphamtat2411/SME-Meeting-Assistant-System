@@ -234,6 +234,7 @@ export function ConversationHistory({
 const answerLabels = {
   GROUNDED: 'assistant:GROUNDED',
   PARTIAL: 'assistant:PARTIAL',
+  CONVERSATIONAL: 'assistant:CONVERSATIONAL',
   INSUFFICIENT_EVIDENCE: 'assistant:INSUFFICIENT_EVIDENCE',
   FAILED: 'assistant:FAILED',
 }
@@ -242,6 +243,8 @@ const supportLabels: Record<string, string> = {
   SUPPORTED: 'assistant:SUPPORTED',
   UNSUPPORTED: 'assistant:UNSUPPORTED',
   CONFLICTED: 'assistant:CONFLICTED',
+  GENERAL: 'assistant:GENERAL',
+  INFERRED: 'assistant:INFERRED',
 }
 
 function AssistantMessageCard({
@@ -289,6 +292,13 @@ function AssistantMessageCard({
               {message.content}
             </p>
           )}
+          {message.limitation && (
+            <p className='text-xs text-muted-foreground'>
+              {t(`assistant:limitations.${message.limitation}`, {
+                defaultValue: t('assistant:limitations.degraded'),
+              })}
+            </p>
+          )}
           {!isUser &&
             message.answerStatus === 'INSUFFICIENT_EVIDENCE' &&
             message.citations.length === 0 && (
@@ -296,7 +306,7 @@ function AssistantMessageCard({
                 {t('assistant:noCitations')}
               </p>
             )}
-          {!isUser && message.claims.length > 0 && (
+          {!isUser && message.citations.length > 0 && (
             <details
               className='rounded-lg border px-3 py-2'
               open={

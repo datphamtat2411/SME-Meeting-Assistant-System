@@ -142,12 +142,21 @@ public class IntelligenceResultAcceptance {
                 SELECT COALESCE(MAX(version_number),0)+1
                 FROM meeting_summary_versions WHERE meeting_id=?
                 """,Integer.class,stage.meetingId());
-            Boolean hasCurrent=jdbc.queryForObject("""
-                SELECT EXISTS(SELECT 1 FROM meeting_summary_versions
-                    WHERE meeting_id=? AND is_current)
-                """,Boolean.class,stage.meetingId());
-            // Never displace ANY current Summary, including one produced by AI.
-            boolean promote=evidence.current() && !Boolean.TRUE.equals(hasCurrent);
+            // Refresh machine-generated selections only when their pinned input
+            // is stale. Human-edited selections remain authoritative.
+            UUID replaced=null;
+            if (evidence.current()) {
+                replaced=jdbc.query("""
+                    UPDATE meeting_summary_versions SET is_current=FALSE
+                    WHERE meeting_id=? AND is_current AND source_type='AI_GENERATED'
+                      AND (transcript_id,content_revision) IS DISTINCT FROM (?,?)
+                    RETURNING id
+                    """, (rs, row) -> rs.getObject(1,UUID.class),stage.meetingId(),source.transcript(),source.revision())
+                    .stream().findFirst().orElse(null);
+            }
+            boolean promote=evidence.current() && !Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS(SELECT 1 FROM meeting_summary_versions WHERE meeting_id=? AND is_current)
+                """,Boolean.class,stage.meetingId()));
             UUID summaryId = UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO meeting_summary_versions(
@@ -161,6 +170,7 @@ public class IntelligenceResultAcceptance {
                     ?"READY_WITH_WARNINGS":"READY",
                  promote,AiQualityMetadata.pgArray(payload.warnings()));
             knowledge.request("SUMMARY", summaryId, stage.meetingId());
+            if (replaced!=null) knowledge.request("SUMMARY", replaced, stage.meetingId());
             written=1;
         } else {
             for (var candidate:payload.candidates()) {

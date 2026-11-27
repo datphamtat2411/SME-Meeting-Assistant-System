@@ -553,6 +553,15 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
 
     @Override
     @Transactional(readOnly = true)
+    public void requireTranscriptRefreshAllowed(UUID meetingId, UUID actorId) {
+        if (!users.isActive(actorId) || meetings.findCurrentProcessingStatus(meetingId, actorId)
+                .filter(status -> !"CANCELLED".equals(status)).isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public void requireTranscriptSpeakerMember(UUID meetingId, UUID userId) {
         MeetingEntity meeting = lookup(meetingId);
         if (!meeting.getOrganizerUserId().equals(userId)

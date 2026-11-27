@@ -62,13 +62,10 @@ public class TranscriptFinalizationService {
         // rolls back transcript rows, stage success and job completion together.
         transcripts.publishDuringFinalization(result);
         knowledge.request("TRANSCRIPT", transcripts.publicationId(result.processingJobId()), result.meetingId());
+        knowledge.invalidateStaleTranscriptDependents(result.meetingId());
         String stageOutcome = result.status() == TranscriptIngestion.Status.READY_WITH_WARNINGS
             ? "SUCCEEDED_WITH_WARNING" : "SUCCEEDED";
         lifecycle.completeStage(claim, stageOutcome, null, null);
-        if (lifecycle.awaitTranscriptReview(result.processingJobId(), result.meetingId(),
-                result.sourceMediaId(), claim)) {
-            return;
-        }
         lifecycle.dispatchPlannedDiarization(result.processingJobId());
         lifecycle.advanceJob(result.processingJobId());
     }

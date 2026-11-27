@@ -844,9 +844,16 @@ A separate `/my-action-items` route is not required in the baseline. `GET /actio
 | API-EP-AST-001 | GET | /api/v1/assistant/conversations | List assistant conversations owned/visible to the caller. |
 | API-EP-AST-002 | POST | /api/v1/assistant/conversations | Create an assistant conversation with the approved meeting/global knowledge scope. |
 | API-EP-AST-003 | GET | /api/v1/assistant/conversations/{conversationId} | Retrieve an authorized assistant conversation/history. |
-| API-EP-AST-004 | POST | /api/v1/assistant/conversations/{conversationId}/messages | Submit a user question/message and obtain or initiate the grounded assistant response. |
+| API-EP-AST-004 | POST | /api/v1/assistant/conversations/{conversationId}/messages | Submit a message and obtain or initiate a conversational, grounded, mixed or evidence-limited reply. |
 
 Conversation history MUST NOT widen current authorization. Source citations/evidence returned with assistant answers remain subject to current meeting-content authorization.
+
+`CONVERSATIONAL` answers have general units and no citations. `GROUNDED` and
+`PARTIAL` answers carry verified citations; `PARTIAL` can express degraded
+retrieval, qualified evidence or interpretation. A generated
+`INSUFFICIENT_EVIDENCE` reply may include uncited explanation. `limitation` is
+an optional diagnostic code on message/turn views. A source-dependent reply
+can become unavailable when a contributing revision changes.
 
 ---
 
@@ -917,7 +924,7 @@ AI Core SHALL still enforce the approved retrieval/filtering contract and MUST N
 Internal synchronous AI calls SHALL have explicit timeouts and SHALL fail safely without fabricating an answer when the dependency is unavailable.
 | ID | Method | Path | Purpose |
 | --- | --- | --- | --- |
-| API-EP-INT-001 | POST | /internal/v1/assistant/answers | Generate a grounded assistant answer for an approved caller/query/scope supplied by Core API. |
+| API-EP-INT-001 | POST | /internal/v1/assistant/answers | Generate an Assistant reply for a Core-approved scope, using verified retrieval or bounded canonical source context as appropriate. |
 
 The detailed internal request/response schema remains package/task-level because it may evolve faster than the public client API. Additional internal endpoints MUST be justified by architecture needs; they are not automatically created for every AI pipeline stage.
 

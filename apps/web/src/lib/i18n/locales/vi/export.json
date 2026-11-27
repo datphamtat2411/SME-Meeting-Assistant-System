@@ -34,7 +34,7 @@
   "recoveryDisabled": "Tính năng khôi phục yêu cầu chưa khả dụng.",
   "observationDisabled": "Chưa thể theo dõi trạng thái xuất biên bản.",
   "secureNotConfigured": "Tải xuống an toàn chưa được cấu hình. Liên hệ quản trị viên.",
-  "reviewRequired": "Cần xem xét biên bản trước khi tạo tài liệu xuất chính thức mới.",
+  "reviewRequired": "Tài liệu xuất sẽ được đánh dấu là bản nháp.",
   "proposalsIncluded": "Biên bản có đề xuất AI chưa xác nhận nên chưa đủ điều kiện xuất tài liệu.",
   "refresh": "Cập nhật trạng thái {{format}}",
   "recover": "Khôi phục yêu cầu {{format}}",

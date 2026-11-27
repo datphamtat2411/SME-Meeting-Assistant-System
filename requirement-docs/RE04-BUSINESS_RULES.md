@@ -731,6 +731,14 @@ The system MAY present transcript text with unknown speaker labels.
 
 # 14. Summary Rules
 
+### BR-SUM-007 — Transcript review is optional for derived intelligence
+
+Finalized, usable current transcripts, including partial transcripts and those with unknown speakers, SHALL proceed to configured intelligence and indexing without review or a separate admission. Summary, decision extraction and action-item extraction settle independently; successful stages remain available after another stage fails. Empty proposal batches are valid. Transcript corrections enqueue revision-fenced derived-only work and preserve human-selected summaries and confirmed business records.
+
+### BR-SUM-008 — Draft minutes are available progressively
+
+Permitted readers MAY view and export draft minutes when usable content exists. Missing or stale information remains visible as a limitation. Current AI proposals are displayed separately from confirmed decisions and official action items. Completeness does not express official approval.
+
 ### BR-SUM-001 — Summary is derived from meeting evidence
 
 An AI-generated meeting summary MUST be derived from authorized meeting content, primarily the processed transcript and approved contextual metadata.

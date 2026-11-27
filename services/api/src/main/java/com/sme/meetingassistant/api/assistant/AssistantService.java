@@ -20,10 +20,12 @@ import org.springframework.transaction.TransactionException;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
 
 /** Core-owned admission and result acceptance. Slow inference runs outside DB transactions. */
 @Service
 public final class AssistantService {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AssistantService.class);
     private static final Pattern KEY=Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}");
     private final AssistantStore store;
     private final AssistantAdmissionGuard admission;
@@ -32,6 +34,7 @@ public final class AssistantService {
     private final AssistantSourceVerifier sources;
     private final AssistantAnswerValidator answers;
     private final AssistantEvidenceResolver evidenceResolver;
+    private final AssistantCanonicalContext canonicalContext;
     private final ObjectProvider<AssistantAiGateway> gateway;
     private final ObjectMapper json;
     private final TransactionTemplate tx;
@@ -39,10 +42,12 @@ public final class AssistantService {
 
     AssistantService(AssistantStore store,AssistantAdmissionGuard admission,MeetingMediaAccess access,
             OrganizationalAuthorizationService identity,AssistantSourceVerifier sources,
-            AssistantEvidenceResolver evidenceResolver,ObjectProvider<AssistantAiGateway> gateway,ObjectMapper json,
+            AssistantEvidenceResolver evidenceResolver,AssistantCanonicalContext canonicalContext,
+            ObjectProvider<AssistantAiGateway> gateway,ObjectMapper json,
             PlatformTransactionManager transactions,Environment env) {
         this.store=store;this.admission=admission;this.access=access;this.identity=identity;this.sources=sources;
         this.answers=new AssistantAnswerValidator(sources);this.evidenceResolver=evidenceResolver;
+        this.canonicalContext=canonicalContext;
         this.gateway=gateway;this.json=json;
         this.tx=new TransactionTemplate(transactions);
         this.enabled=env.getProperty("app.assistant.enabled",Boolean.class,false);
@@ -164,7 +169,7 @@ public final class AssistantService {
                     "Assistant message was not found.");
             List<CitationView> citations=store.citations(messageId);
             boolean grounded="GROUNDED".equals(message.answerStatus())||"PARTIAL".equals(message.answerStatus());
-            if(citations.size()>64||grounded==citations.isEmpty())
+            if(citations.size()>64||grounded==citations.isEmpty()||!dependenciesCurrent(diagnostics(message),meeting))
                 throw AssistantEvidenceResolver.stale();
             List<EvidenceView> evidence=evidenceResolver.resolve(meeting,user,citations);
             access.requireReadable(meeting,user);
@@ -285,7 +290,8 @@ public final class AssistantService {
             // Context failures are also terminalized, rather than stranding a leased turn.
             // Only committed dialogue with CURRENT evidence may enter the LLM context.
             List<Map<String,Object>> context=safeContext(conversation.meetingId(),admitted.turn());
-            String payload=request(conversation,user,admitted.turn(),question,context);
+            var canonical=canonicalContext.read(conversation.meetingId(),user,question);
+            String payload=request(conversation,user,admitted.turn(),question,context,canonical);
             access.requireReadable(conversation.meetingId(),user);
             String raw=gateway.getObject().answer(payload);
             access.requireReadable(conversation.meetingId(),user);
@@ -298,10 +304,15 @@ public final class AssistantService {
             // Do not turn a Core persistence outage into an AI call or a
             // synthetic FAILED answer. The durable lease will recover it.
             throw admission.databaseUnavailable();
-        } catch(Exception invalidOrUnavailable) {
-            // Provider exceptions, credentials, text and raw responses are never returned or logged.
-            reply=failed();
+        } catch(AssistantAnswerValidator.InvalidAnswer invalid) {
+            reply=failed("INVALID_GENERATED_RESPONSE");
+        } catch(java.net.http.HttpTimeoutException timeout) {
+            reply=failed("PROVIDER_TIMEOUT");
+        } catch(Exception unavailable) {
+            reply=failed("DEPENDENCY_UNAVAILABLE");
         }
+        if ("FAILED".equals(reply.status()))
+            LOG.warn("assistant.turn.failed turn_id={} code={}",admitted.turn().id(),code(reply.diagnostics(),"failureCode"));
         final ValidatedAnswer accepted=reply;
         try {
             tx.execute(s->{
@@ -311,12 +322,13 @@ public final class AssistantService {
                 store.lockMeetingForEvidence(conversation.meetingId());
                 var current=store.require(conversationId,user,true);
                 access.requireReadable(current.meetingId(),user);
-                ValidatedAnswer toPersist=accepted;
+                ValidatedAnswer toPersist=dependenciesCurrent(accepted.diagnostics(),current.meetingId())
+                    ? accepted : failed("SOURCE_INVALIDATED");
                 for(CitationView citation:accepted.citations()){
                     if(!citation.meetingId().equals(current.meetingId())
                         ||!sources.current(citation.sourceType(),citation.sourceId(),
                             current.meetingId(),citation.sourceRevision())){
-                        toPersist=failed(); // fail closed: never persist an obsolete grounded answer
+                        toPersist=failed("SOURCE_INVALIDATED");
                         break;
                     }
                 }
@@ -415,32 +427,33 @@ public final class AssistantService {
         if(msg==null)throw unavailable();
         if("FAILED".equals(turn.state()))
             return new TurnOutcome(503,new TurnView(turn.id(),"FAILED",turn.userMessageId(),
-                msg.id(),"FAILED",null,List.of(),List.of()));
+                msg.id(),"FAILED",null,List.of(),List.of(),code(diagnostics(msg),"failureCode")));
         MessageView display=view(msg,meeting);
         if(!"VISIBLE".equals(display.visibility()))
             return new TurnOutcome(409,new TurnView(turn.id(),"STALE_SOURCE",turn.userMessageId(),
                 msg.id(),msg.answerStatus(),null,List.of(),List.of()));
         return new TurnOutcome(200,new TurnView(turn.id(),"COMPLETED",turn.userMessageId(),
-            msg.id(),msg.answerStatus(),display.content(),display.claims(),display.citations()));
+            msg.id(),msg.answerStatus(),display.content(),display.claims(),display.citations(),display.limitation()));
     }
 
     private MessageView view(AssistantStore.Message msg,UUID meeting){
         List<CitationView> citations=store.citations(msg.id());
         List<ClaimView> claims=store.claims(msg.claimsJson());
         String visibility="VISIBLE",content=msg.content();
-        if("GROUNDED".equals(msg.answerStatus())||"PARTIAL".equals(msg.answerStatus())){
-            boolean ok=!citations.isEmpty();
+        JsonNode diagnostics=diagnostics(msg);
+        boolean sourced="GROUNDED".equals(msg.answerStatus())||"PARTIAL".equals(msg.answerStatus());
+        boolean ok=!sourced||!citations.isEmpty();
+        try {
+            ok=ok&&dependenciesCurrent(diagnostics,meeting);
             for(CitationView citation:citations){
-                if(!citation.meetingId().equals(meeting)){ok=false;break;}
-                try {
-                    if(!sources.current(citation.sourceType(),citation.sourceId(),meeting,
-                        citation.sourceRevision())){ok=false;break;}
-                } catch(RuntimeException unavailable){ok=false;break;}
+                if(!citation.meetingId().equals(meeting)||!sources.current(citation.sourceType(),
+                        citation.sourceId(),meeting,citation.sourceRevision())){ok=false;break;}
             }
-            if(!ok){visibility="SOURCE_UNAVAILABLE";content=null;claims=List.of();citations=List.of();}
-        }
+        } catch(RuntimeException unavailable){ok=false;}
+        if(!ok){visibility="SOURCE_UNAVAILABLE";content=null;claims=List.of();citations=List.of();}
         return new MessageView(msg.id(),msg.role(),content,msg.answerStatus(),visibility,
-            List.copyOf(claims),List.copyOf(citations),msg.createdAt());
+            List.copyOf(claims),List.copyOf(citations),msg.createdAt(),
+            ok ? code(diagnostics,"FAILED".equals(msg.answerStatus()) ? "failureCode" : "contextLimitation") : null);
     }
 
     private List<Map<String,Object>> safeContext(UUID meeting,AssistantStore.Turn turn){
@@ -451,18 +464,26 @@ public final class AssistantService {
             if("ASSISTANT".equals(msg.role())){
                 MessageView safe=view(msg,meeting);
                 if(!"VISIBLE".equals(safe.visibility())){result.clear();continue;}
-                result.add(Map.of("role","ASSISTANT","content",safe.content(),
-                    "scopeId",turn.conversationId().toString(),"scopeVersion",turn.scopeVersion()));
+                // Re-retrieve facts from their current sources. Copying earlier
+                // grounded prose into dialogue would detach it from its revision.
+                if (("CONVERSATIONAL".equals(safe.answerStatus())
+                        || "INSUFFICIENT_EVIDENCE".equals(safe.answerStatus()))
+                        && diagnostics(msg).path("sourceDependencies").isEmpty()
+                        && safe.content().codePointCount(0,safe.content().length())<=4096) {
+                    result.add(Map.of("role","ASSISTANT","content",safe.content(),
+                        "scopeId",turn.conversationId().toString(),"scopeVersion",turn.scopeVersion()));
+                }
             } else if("USER".equals(msg.role())){
                 result.add(Map.of("role","USER","content",msg.content(),
                     "scopeId",turn.conversationId().toString(),"scopeVersion",turn.scopeVersion()));
             }
         }
-        return List.copyOf(result.subList(Math.max(0,result.size()-6),result.size()));
+        return List.copyOf(result);
     }
 
     private String request(AssistantStore.Conversation conversation,UUID user,AssistantStore.Turn turn,
-                           String question,List<Map<String,Object>> context) throws Exception {
+                           String question,List<Map<String,Object>> context,
+                           List<AssistantCanonicalContext.Item> canonical) throws Exception {
         OffsetDateTime now=OffsetDateTime.now(ZoneOffset.UTC);
         Map<String,Object> scope=new LinkedHashMap<>();
         scope.put("contractVersion","1.0");
@@ -477,15 +498,35 @@ public final class AssistantService {
         scope.put("allowedSourceTypes",List.of());
         return json.writeValueAsString(Map.of(
             "contractVersion","1.0","requestId",turn.id().toString(),"question",question,
-            "authorizedScope",scope,"conversationContext",context));
+             "authorizedScope",scope,"conversationContext",context,
+             "canonicalContext",canonical.stream().map(AssistantCanonicalContext.Item::payload).toList()));
     }
     private static String version(UUID meeting,UUID owner){
         String hash=WorkerJson.sha256(("assistant-v1:"+meeting+":"+owner).getBytes(StandardCharsets.UTF_8));
         return "v1-"+hash.substring(0,32);
     }
     private static ValidatedAnswer failed(){
+        return failed("DEPENDENCY_UNAVAILABLE");
+    }
+    private static ValidatedAnswer failed(String code){
         return new ValidatedAnswer("FAILED","Assistant is temporarily unavailable.",
-            WorkerJson.MAPPER.createArrayNode(),WorkerJson.MAPPER.createObjectNode(),null,List.of(),List.of());
+            WorkerJson.MAPPER.createArrayNode(),WorkerJson.MAPPER.createObjectNode().put("failureCode",code),null,List.of(),List.of());
+    }
+    private static JsonNode diagnostics(AssistantStore.Message message) {
+        return message.diagnosticsJson()==null ? WorkerJson.MAPPER.createObjectNode()
+            : WorkerJson.parse(message.diagnosticsJson().getBytes(StandardCharsets.UTF_8),AssistantAnswerValidator.MAX_BYTES);
+    }
+    private static String code(JsonNode diagnostics,String field) {
+        var value=diagnostics.path(field);
+        return value.isString() && value.asString().matches("[A-Z][A-Z0-9_]{0,95}") ? value.asString() : null;
+    }
+    private boolean dependenciesCurrent(JsonNode diagnostics,UUID meeting) {
+        for(JsonNode dependency:diagnostics.path("sourceDependencies")) {
+            if(!sources.current(dependency.path("type").asString(),
+                    UUID.fromString(dependency.path("id").asString()),meeting,dependency.path("revision").asLong()))
+                return false;
+        }
+        return true;
     }
     private static void validatePage(int page,int size){
         if(page<0||page>10_000||size<1||size>50)

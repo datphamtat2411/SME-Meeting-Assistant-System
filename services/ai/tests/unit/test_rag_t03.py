@@ -470,7 +470,7 @@ def test_missing_source_verification_provider_fails_closed_before_qdrant():
     assert store.calls == 0
 
 
-def test_reranker_failure_is_not_silently_downgraded_to_rrf():
+def test_reranker_failure_preserves_verified_lexically_relevant_rrf_evidence():
     compatibility = _compatibility()
     candidate = _candidate(compatibility, text="kế hoạch phát hành")
     scope = _scope(candidate.provenance.meeting_id)
@@ -484,9 +484,10 @@ def test_reranker_failure_is_not_silently_downgraded_to_rrf():
         RetrievalRequest(contractVersion="1.0", query="Kế hoạch phát hành là gì?", authorizedScope=scope)
     )
 
-    assert result.status is RetrievalStatus.RERANKER_FAILURE
+    assert result.status is RetrievalStatus.EVIDENCE_AVAILABLE
     assert result.failures[0].code == "INFERENCE_FAILED"
-    assert result.evidence == ()
+    assert len(result.evidence) == 1
+    assert result.evidence[0].reranker_score is None
 
 
 def test_weak_or_unrelated_evidence_returns_insufficient_evidence():

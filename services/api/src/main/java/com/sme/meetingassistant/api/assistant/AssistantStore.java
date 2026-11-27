@@ -26,7 +26,7 @@ class AssistantStore {
     record Turn(UUID id,UUID conversationId,String fingerprint,String key,UUID userMessageId,
                 UUID assistantMessageId,String state,UUID token,OffsetDateTime expiresAt,String scopeVersion){}
     record Message(UUID id,UUID conversationId,String role,String content,String answerStatus,
-                   String claimsJson,OffsetDateTime createdAt){}
+                    String claimsJson,String diagnosticsJson,OffsetDateTime createdAt){}
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
@@ -47,7 +47,7 @@ class AssistantStore {
     private static Message message(ResultSet rs,int row) throws SQLException {
         return new Message(rs.getObject("id",UUID.class),rs.getObject("conversation_id",UUID.class),
             rs.getString("role"),rs.getString("content"),rs.getString("answer_status"),
-            rs.getString("answer_claims"),rs.getObject("created_at",OffsetDateTime.class));
+             rs.getString("answer_claims"),rs.getString("answer_diagnostics"),rs.getObject("created_at",OffsetDateTime.class));
     }
     Conversation require(UUID id,UUID actor,boolean lock) {
         List<Conversation> rows=jdbc.query("""
@@ -210,13 +210,15 @@ class AssistantStore {
     Message answer(UUID messageId) {
         if(messageId==null)return null;
         return jdbc.query("""
-            SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,created_at
+             SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,
+                    answer_diagnostics::text AS answer_diagnostics,created_at
               FROM assistant_messages WHERE id=?
             """,AssistantStore::message,messageId).stream().findFirst().orElse(null);
     }
     List<Message> messages(UUID conversation,int offset,int limit){
         List<Message> reversed=jdbc.query("""
-            SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,created_at
+             SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,
+                    answer_diagnostics::text AS answer_diagnostics,created_at
               FROM assistant_messages WHERE conversation_id=?
              ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?
             """,AssistantStore::message,conversation,limit,offset);
@@ -231,7 +233,8 @@ class AssistantStore {
             throw new AssistantDomainException(HttpStatus.NOT_FOUND,"ASSISTANT_HISTORY_ANCHOR_NOT_FOUND",
                 "Assistant history anchor was not found.");
         List<Message> reversed=jdbc.query("""
-            SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,created_at
+             SELECT id,conversation_id,role,content,answer_status,answer_claims::text AS answer_claims,
+                    answer_diagnostics::text AS answer_diagnostics,created_at
               FROM assistant_messages WHERE conversation_id=? AND (created_at,id)<(?,?)
              ORDER BY created_at DESC,id DESC LIMIT ?
             """,AssistantStore::message,conversation,anchors.getFirst(),anchorId,limit);
@@ -242,11 +245,11 @@ class AssistantStore {
     List<Message> context(UUID conversation,UUID currentTurn) {
         return jdbc.query("""
             SELECT m.id,m.conversation_id,m.role,m.content,m.answer_status,
-                   m.answer_claims::text AS answer_claims,m.created_at
+                    m.answer_claims::text AS answer_claims,m.answer_diagnostics::text AS answer_diagnostics,m.created_at
               FROM assistant_turns t JOIN assistant_messages m
                 ON m.id IN (t.user_message_id,t.assistant_message_id)
              WHERE t.conversation_id=? AND t.state='COMPLETED' AND t.id<>?
-             ORDER BY m.created_at DESC,m.id DESC LIMIT 12
+             ORDER BY m.created_at DESC,m.id DESC LIMIT 6
             """,AssistantStore::message,conversation,currentTurn);
     }
     List<CitationView> citations(UUID messageId){
