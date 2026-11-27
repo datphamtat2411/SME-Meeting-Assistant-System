@@ -286,7 +286,7 @@ describe('RecordingPanel', () => {
   it('reports microphone permission failure without creating an upload', async () => {
     const getUserMedia = vi
       .fn()
-      .mockRejectedValue(new Error('permission denied'))
+      .mockRejectedValue(new DOMException('permission denied', 'NotAllowedError'))
     installRecorder({ getUserMedia })
     const screen = await renderPanel()
 
@@ -297,7 +297,9 @@ describe('RecordingPanel', () => {
     expect(getUserMedia).toHaveBeenCalledOnce()
     expect(toastMocks.error).toHaveBeenCalledWith(
       'Microphone access failed',
-      expect.objectContaining({ description: 'permission denied' })
+      expect.objectContaining({
+        description: 'Permission was denied. Check your browser permissions and try again.',
+      })
     )
     expect(mediaMocks.uploadMeetingFile).not.toHaveBeenCalled()
   })
@@ -315,7 +317,9 @@ describe('RecordingPanel', () => {
     expect(track.stop).toHaveBeenCalled()
     expect(toastMocks.error).toHaveBeenCalledWith(
       'Recording could not be started',
-      expect.objectContaining({ description: 'start failed' })
+      expect.objectContaining({
+        description: 'Check the microphone and browser recording support, or import a supported audio file.',
+      })
     )
     expect(mediaMocks.uploadMeetingFile).not.toHaveBeenCalled()
   })

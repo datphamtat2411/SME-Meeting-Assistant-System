@@ -7,6 +7,7 @@ import {
   type RefObject,
 } from 'react'
 import { featureValidationMessage } from '@/lib/i18n/presentation'
+import { mediaErrorMessage } from './media-error-presentation'
 import type { MeetingAuthorizationContextValue } from '../meeting-authorization-context'
 import * as mediaApi from './media-api'
 import type { MeetingMedia } from './media-api'
@@ -59,12 +60,6 @@ function initialPlayback(): PlaybackState {
     pendingSeek: null,
     error: null,
   }
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error
-    ? error.message
-    : featureValidationMessage('media:operationFailed')
 }
 
 export function usePlaybackOwner({
@@ -293,7 +288,7 @@ export function usePlaybackOwner({
           status: 'error',
           isLoading: false,
           pendingSeek: null,
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:sourceLoadFailed'),
         }))
         if (pendingSeek.current?.sourceMediaId === media.id) {
           pendingSeek.current = null
@@ -405,7 +400,7 @@ export function usePlaybackOwner({
       setPlayback((current) => ({
         ...current,
         status: 'error',
-        error: formatError(error),
+        error: mediaErrorMessage(error, 'media:sourcePlayFailed'),
       }))
     }
   }, [isOwnerAuthorized])

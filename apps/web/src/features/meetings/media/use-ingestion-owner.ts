@@ -8,6 +8,7 @@ import {
 import type { QueryClient } from '@tanstack/react-query'
 import { i18n } from '@/lib/i18n'
 import { featureValidationMessage } from '@/lib/i18n/presentation'
+import { mediaErrorMessage } from './media-error-presentation'
 import type { MeetingAuthorizationContextValue } from '../meeting-authorization-context'
 import * as mediaApi from './media-api'
 import type { MediaUploadPhase, MeetingMedia } from './media-api'
@@ -72,12 +73,6 @@ function createIdentity(): string {
     throw new Error('This browser cannot create a safe operation identity.')
   }
   return crypto.randomUUID()
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error
-    ? error.message
-    : featureValidationMessage('media:operationFailed')
 }
 
 function readMediaId(error: unknown): string | null {
@@ -287,7 +282,7 @@ export function useIngestionOwner({
       publishSubmissionOperations()
       if (operation.sourceType === 'RECORDING') {
         setRecordingSubmissionPresentation({
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:uploadFailureHint'),
           uploadPhase: uncertain && mediaId ? 'reconciling' : null,
           uploadStatus: uncertain ? 'uncertain' : 'failed',
           uncertainMediaId: uncertain ? mediaId : null,
@@ -296,7 +291,7 @@ export function useIngestionOwner({
         setImportedMedia((state) => ({
           ...state,
           status: uncertain ? 'uncertain' : 'failed',
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:uploadFailureHint'),
           phase: uncertain && mediaId ? 'reconciling' : null,
           uncertainMediaId: uncertain ? mediaId : null,
         }))
@@ -489,7 +484,7 @@ export function useIngestionOwner({
       } catch (error) {
         setImportedMedia({
           ...initialMediaDraft(),
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:uploadFailureHint'),
         })
       }
     },
@@ -616,7 +611,7 @@ export function useIngestionOwner({
             uploadPhase: definitiveFailure ? null : 'reconciling',
             uploadStatus: definitiveFailure ? 'failed' : 'uncertain',
             uncertainMediaId: definitiveFailure ? null : mediaId,
-            error: formatError(error),
+            error: mediaErrorMessage(error, 'media:uploadFailureHint'),
           })
         } else {
           setImportedMedia((state) => ({
@@ -624,7 +619,7 @@ export function useIngestionOwner({
             phase: definitiveFailure ? null : 'reconciling',
             status: definitiveFailure ? 'failed' : 'uncertain',
             uncertainMediaId: definitiveFailure ? null : mediaId,
-            error: formatError(error),
+            error: mediaErrorMessage(error, 'media:uploadFailureHint'),
           }))
         }
         return null

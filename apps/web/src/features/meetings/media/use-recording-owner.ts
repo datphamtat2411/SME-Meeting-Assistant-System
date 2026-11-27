@@ -6,6 +6,7 @@ import {
   useState,
 } from 'react'
 import { featureValidationMessage } from '@/lib/i18n/presentation'
+import { mediaErrorMessage } from './media-error-presentation'
 import type {
   RecordingArtifact,
   RecordingSessionSnapshot,
@@ -89,12 +90,6 @@ function initialRecording(): RecordingSessionSnapshot {
     uploadStatus: 'idle',
     uncertainMediaId: null,
   }
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error
-    ? error.message
-    : featureValidationMessage('media:operationFailed')
 }
 
 function clearTimer(timer: { current: number | null }) {
@@ -283,12 +278,12 @@ export function useRecordingOwner({
         setRecording({
           ...initialRecording(),
           state: 'failed',
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:microphoneFailureHint'),
         })
         return {
           ok: false,
           reason: 'microphone-failed',
-          description: formatError(error),
+          description: mediaErrorMessage(error, 'media:microphoneFailureHint'),
         }
       }
 
@@ -308,12 +303,12 @@ export function useRecordingOwner({
         setRecording({
           ...initialRecording(),
           state: 'failed',
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:recordingStartHint'),
         })
         return {
           ok: false,
           reason: 'recorder-construction-failed',
-          description: formatError(error),
+          description: mediaErrorMessage(error, 'media:recordingStartHint'),
         }
       }
 
@@ -425,12 +420,12 @@ export function useRecordingOwner({
         setRecording({
           ...initialRecording(),
           state: 'failed',
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:recordingStartHint'),
         })
         return {
           ok: false,
           reason: 'start-failed',
-          description: formatError(error),
+          description: mediaErrorMessage(error, 'media:recordingStartHint'),
         }
       }
     },

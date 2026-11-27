@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { queryOptions } from '@tanstack/react-query'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { MediaPresentationError } from './media-error-presentation'
 
 const mediaStatuses = [
   'PENDING_UPLOAD',
@@ -149,7 +150,7 @@ export type MediaCapabilityFetchOptions = {
   transport?: SignedMediaTransport
 }
 
-export class MediaUploadError extends Error {
+export class MediaUploadError extends MediaPresentationError {
   readonly outcome: 'failed' | 'uncertain'
   readonly mediaId?: string
 
@@ -159,9 +160,18 @@ export class MediaUploadError extends Error {
       outcome?: 'failed' | 'uncertain'
       mediaId?: string
       cause?: unknown
+      presentationKey?: string
+      presentationValues?: Record<string, string | number>
     } = {}
   ) {
-    super(message)
+    super(
+      message,
+      options.presentationKey ??
+        (options.outcome === 'uncertain'
+          ? 'media:uploadOutcomeUncertain'
+          : 'media:uploadFailureHint'),
+      options.presentationValues
+    )
     if (options.cause !== undefined) {
       Object.defineProperty(this, 'cause', {
         configurable: true,
@@ -336,20 +346,31 @@ export function validateMeetingAudioFile(file: File): MediaFileDeclaration {
     filename.includes('/') ||
     filename.includes('\\')
   ) {
-    throw new Error('Choose an audio file with a simple, valid filename.')
+    throw new MediaPresentationError(
+      'Choose an audio file with a simple, valid filename.',
+      'media:invalidFilename'
+    )
   }
 
   const extension = filenameExtension(filename)
   if (extension !== 'wav' && extension !== 'mp3' && extension !== 'm4a') {
-    throw new Error('Choose a WAV, MP3, or AAC M4A recording.')
+    throw new MediaPresentationError(
+      'Choose a WAV, MP3, or AAC M4A recording.',
+      'media:unsupportedFile'
+    )
   }
 
   if (!Number.isSafeInteger(file.size) || file.size <= 0) {
-    throw new Error('Choose a non-empty recording.')
+    throw new MediaPresentationError(
+      'Choose a non-empty recording.',
+      'media:emptyFile'
+    )
   }
   if (file.size > MAX_MEDIA_UPLOAD_BYTES) {
-    throw new Error(
-      `The recording exceeds the ${formatByteLimit(MAX_MEDIA_UPLOAD_BYTES)} upload limit.`
+    throw new MediaPresentationError(
+      `The recording exceeds the ${formatByteLimit(MAX_MEDIA_UPLOAD_BYTES)} upload limit.`,
+      'media:fileTooLarge',
+      { limit: formatByteLimit(MAX_MEDIA_UPLOAD_BYTES) }
     )
   }
 
@@ -359,8 +380,9 @@ export function validateMeetingAudioFile(file: File): MediaFileDeclaration {
     contentType !== 'application/octet-stream' &&
     !uploadMimes[extension].includes(contentType)
   ) {
-    throw new Error(
-      'The browser reported a media type that does not match the filename.'
+    throw new MediaPresentationError(
+      'The browser reported a media type that does not match the filename.',
+      'media:fileTypeMismatch'
     )
   }
 
@@ -416,8 +438,19 @@ function mediaFailure(media: MeetingMedia): MediaUploadError {
           : media.failureCode === 'MEDIA_CONTENT_TYPE_MISMATCH'
             ? 'Core rejected the storage content type for this recording.'
             : 'Core did not accept this media upload.'
+  const presentationKey =
+    media.failureCode === 'MEDIA_FORMAT_UNSUPPORTED'
+      ? 'media:formatRejected'
+      : media.failureCode === 'MEDIA_UNREADABLE'
+        ? 'media:unreadableRejected'
+        : media.failureCode === 'MEDIA_SIZE_INVALID'
+          ? 'media:sizeRejected'
+          : media.failureCode === 'MEDIA_CONTENT_TYPE_MISMATCH'
+            ? 'media:contentTypeRejected'
+            : 'media:uploadNotAccepted'
   return new MediaUploadError(reason, {
     mediaId: media.id,
+    presentationKey,
   })
 }
 
@@ -431,7 +464,10 @@ function isUncertainCoreError(error: unknown): boolean {
 
 function newIdempotencyKey(): string {
   if (typeof crypto?.randomUUID !== 'function') {
-    throw new Error('This browser cannot create a safe operation identity.')
+    throw new MediaPresentationError(
+      'This browser cannot create a safe operation identity.',
+      'media:safeIdentityUnavailable'
+    )
   }
   return crypto.randomUUID()
 }
@@ -500,7 +536,7 @@ async function finalizeMediaUpload(
   }
   throw new MediaUploadError(
     'Core has not confirmed this media as available after finalization.',
-    { outcome: 'uncertain', mediaId }
+    { outcome: 'uncertain', mediaId, presentationKey: 'media:finalizationUnconfirmed' }
   )
 }
 
@@ -515,7 +551,7 @@ async function readMediaForUploadRecovery(
     if (isUncertainCoreError(error)) {
       throw new MediaUploadError(
         'The media recovery status could not be confirmed. Check the same media intent before trying another upload.',
-        { outcome: 'uncertain', mediaId, cause: error }
+        { outcome: 'uncertain', mediaId, cause: error, presentationKey: 'media:recoveryUnconfirmed' }
       )
     }
     throw error
@@ -592,7 +628,7 @@ export async function uploadMeetingFile(
     if (isUncertainCoreError(error)) {
       throw new MediaUploadError(
         'The upload intent outcome is uncertain. Retry this same operation explicitly or choose a new file.',
-        { outcome: 'uncertain', cause: error }
+        { outcome: 'uncertain', cause: error, presentationKey: 'media:intentUncertain' }
       )
     }
     throw error
@@ -604,7 +640,7 @@ export async function uploadMeetingFile(
   if (options.recovery && intent.mediaId !== options.recovery.mediaId) {
     throw new MediaUploadError(
       'Core returned a different media identity for the unresolved submission.',
-      { outcome: 'uncertain', mediaId: options.recovery.mediaId }
+      { outcome: 'uncertain', mediaId: options.recovery.mediaId, presentationKey: 'media:identityMismatch' }
     )
   }
   options.onMediaIdentity?.(intent.mediaId)
@@ -629,7 +665,7 @@ export async function uploadMeetingFile(
       if (isUncertainCoreError(error)) {
         throw new MediaUploadError(
           'The available media replay could not be confirmed by read-back.',
-          { outcome: 'uncertain', mediaId: intent.mediaId, cause: error }
+          { outcome: 'uncertain', mediaId: intent.mediaId, cause: error, presentationKey: 'media:replayUnconfirmed' }
         )
       }
       throw error
@@ -637,7 +673,7 @@ export async function uploadMeetingFile(
     if (media.status !== 'AVAILABLE') {
       throw new MediaUploadError(
         'Core reported an available replay but did not confirm available media.',
-        { outcome: 'uncertain', mediaId: intent.mediaId }
+        { outcome: 'uncertain', mediaId: intent.mediaId, presentationKey: 'media:replayNotAvailable' }
       )
     }
     options.onPhase?.('available')
@@ -649,7 +685,13 @@ export async function uploadMeetingFile(
       intent.status === 'REJECTED'
         ? 'Core rejected this media upload intent.'
         : 'Core reported that this media upload failed.',
-      { mediaId: intent.mediaId }
+      {
+        mediaId: intent.mediaId,
+        presentationKey:
+          intent.status === 'REJECTED'
+            ? 'media:intentRejected'
+            : 'media:intentFailed',
+      }
     )
   }
 
@@ -690,7 +732,7 @@ export async function uploadMeetingFile(
       if (error instanceof CoreApiError && error.status === 409) {
         throw new MediaUploadError(
           'The existing media intent is still pending. Its transfer outcome has not been confirmed; do not create a new upload yet.',
-          { outcome: 'uncertain', mediaId: intent.mediaId, cause: error }
+          { outcome: 'uncertain', mediaId: intent.mediaId, cause: error, presentationKey: 'media:intentPending' }
         )
       }
       throw error
@@ -703,6 +745,7 @@ export async function uploadMeetingFile(
   if (Date.parse(intent.expiresAt) <= Date.now()) {
     throw new MediaUploadError('The media upload capability has expired.', {
       mediaId: intent.mediaId,
+      presentationKey: 'media:uploadCapabilityExpired',
     })
   }
 
@@ -746,7 +789,11 @@ export async function uploadMeetingFile(
   if (!response.ok) {
     throw new MediaUploadError(
       `Object storage upload failed (${response.status}). The file was not finalized.`,
-      { mediaId: intent.mediaId }
+      {
+        mediaId: intent.mediaId,
+        presentationKey: 'media:storageTransferFailed',
+        presentationValues: { status: response.status },
+      }
     )
   }
   options.onPhase?.('storage-uploaded')
@@ -782,7 +829,7 @@ export async function reconcileMeetingMedia(
   }
   throw new MediaUploadError(
     'Core has not confirmed this media as available. Do not upload the same operation again yet.',
-    { outcome: 'uncertain', mediaId }
+    { outcome: 'uncertain', mediaId, presentationKey: 'media:mediaNotConfirmed' }
   )
 }
 
@@ -793,7 +840,10 @@ export async function requestMediaAccess(
 ) {
   const media = await getMeetingMedia(meetingId, mediaId, options.signal)
   if (media.status !== 'AVAILABLE') {
-    throw new Error('Only available media can be opened.')
+    throw new MediaPresentationError(
+      'Only available media can be opened.',
+      'media:availableMediaOnly'
+    )
   }
 
   const response = options.signal
@@ -837,7 +887,10 @@ export async function fetchMediaCapability(
       ...(options.signal ? { signal: options.signal } : {}),
     })
   } catch {
-    throw new Error('The media access capability could not be used.')
+    throw new MediaPresentationError(
+      'The media access capability could not be used.',
+      'media:accessUnavailable'
+    )
   }
   if (!response.ok) {
     throw new Error(`Media access failed (${response.status}).`)
@@ -848,11 +901,17 @@ export async function fetchMediaCapability(
   if (
     !Object.values(uploadMimes).some((types) => types.includes(contentType))
   ) {
-    throw new Error('Media access returned an unsupported content type.')
+    throw new MediaPresentationError(
+      'Media access returned an unsupported content type.',
+      'media:accessUnsupportedType'
+    )
   }
   try {
     return await response.blob()
   } catch {
-    throw new Error('The media response could not be read.')
+    throw new MediaPresentationError(
+      'The media response could not be read.',
+      'media:mediaReadFailed'
+    )
   }
 }
