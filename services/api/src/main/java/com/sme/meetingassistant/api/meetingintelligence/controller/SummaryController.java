@@ -35,6 +35,11 @@ public class SummaryController {
         this.responses = responses;
     }
 
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+            description = "Current summary", useReturnTypeSchema = true,
+            headers = @io.swagger.v3.oas.annotations.headers.Header(name = "ETag",
+                    description = "Exact strong current representation tag for a subsequent If-Match",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(type = "string")))
     @GetMapping
     public ResponseEntity<ApiResponse<SummaryView>> current(@PathVariable UUID meetingId) {
         return privateSummary(service.current(meetingId));
@@ -50,7 +55,10 @@ public class SummaryController {
     }
 
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
-            description = "Current representation updated", useReturnTypeSchema = true)
+            description = "Current representation updated", useReturnTypeSchema = true,
+            headers = @io.swagger.v3.oas.annotations.headers.Header(name = "ETag",
+                    description = "Exact strong current representation tag for a subsequent If-Match",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(type = "string")))
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
             description = "Current business state conflicts with the operation",
             content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
@@ -72,7 +80,10 @@ public class SummaryController {
     }
 
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
-            description = "Current representation updated", useReturnTypeSchema = true)
+            description = "Current representation updated", useReturnTypeSchema = true,
+            headers = @io.swagger.v3.oas.annotations.headers.Header(name = "ETag",
+                    description = "Exact strong current representation tag for a subsequent If-Match",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(type = "string")))
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
             description = "Current business state conflicts with the operation",
             content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",

@@ -8,9 +8,9 @@ a prior tree is not evidence for a changed tree.
 
 | Work package | Implementation / verification boundary |
 |---|---|
-| W6-01 | Scope recommendations recorded below; product-owner approval not inferred. |
-| W6-02 | Generated OpenAPI assertions for canonical admission/observation, idempotency and preconditions; public paths retained. Full consumer inventory remains open. |
-| W6-03 | Versioned V2 Markdown/PDF with pinned assignee display names; legacy V1 retained. |
+| W6-01 | Development-candidate scope disposition recorded in [WAVE-06-DEVELOP-HANDOFF.md](WAVE-06-DEVELOP-HANDOFF.md); final product-owner approval not inferred. |
+| W6-02 | Generated OpenAPI assertions for canonical admission/observation, idempotency, Decision/Summary preconditions, ETags, common error envelopes and retained deprecated discovery route. Repository consumer inventory recorded; external/deployed inventory remains open. |
+| W6-03 | Versioned V2 Markdown/PDF with pinned assignee display names; legacy V1 retained. Worker replacement regression covers multi-assignee V1/V2, including order-only legacy snapshot collision and rejection of altered content. |
 | W6-04 | Git ancestry and unchanged V1–V66 migration blobs checked; tracked Python caches removed; populated V66→V67 regression added. Final CI required. |
 | W6-05 | Processing retry revocation while waiting for DB lock regression added; existing authorization and integrity suites remain enabled. Final CI required. |
 | W6-06 | BLOCKED: PI05-L01–L10 live prerequisites/operator approvals absent; NOT_RUN. |
@@ -64,7 +64,12 @@ activation before accepting V2 intents. Do not roll back to a V1-only worker
 while V2 intents are outstanding; use a compatible forward fix or approved
 restore procedure. Existing READY artifacts are not rewritten. V2 snapshot
 bytes are derived from the verified intake JSON rather than unordered map
-iteration after JVM restart.
+iteration after JVM restart. Existing V1 snapshots may have a different JSON
+object-field order from the same verified intake. The worker preserves the
+immutable existing object only after a bounded read establishes exact complete
+JSON equivalence, including metadata and timestamps, with duplicate fields and
+trailing content rejected. New writes, V2 snapshots, intakes and rendered
+artifacts retain byte-exact checksum verification. No READY artifact is rewritten.
 
 ## Live infrastructure / operational evidence
 
@@ -124,6 +129,14 @@ session. Reduction = (manual active time - assisted active time) / manual active
 time. No 80% claim without measured results.
 
 ## Promotion
+
+The engineering follow-up targets review of an integration candidate into
+`develop`, not release or completion of all product acceptance. See
+[WAVE-06-DEVELOP-HANDOFF.md](WAVE-06-DEVELOP-HANDOFF.md) for the exact scope,
+consumer inventory and remaining operator/human gates. The previous baseline
+`f60bab397f23ed03159a79db618f1d22a498397a` completed all eight workflows;
+those results are historical, not evidence for the follow-up tree.
+
 
 Verify eight workflows on exact candidate SHA, then review current develop
 ancestry again. Known P0/P1 issues block promotion. External acceptance

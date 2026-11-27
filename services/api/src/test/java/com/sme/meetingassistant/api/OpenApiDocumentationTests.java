@@ -68,7 +68,15 @@ class OpenApiDocumentationTests {
   assertResponse(paths, "/api/v1/processing-jobs/{jobId}/retry", "post", "202");
   assertResponse(paths, "/api/v1/processing-jobs/{jobId}/meeting-intelligence/admit", "post", "202");
   assertHeader(paths, "/api/v1/processing-jobs/{jobId}/retry", "post", "Idempotency-Key", true);
-  assertHeader(paths, "/api/v1/action-items/{actionItemId}", "patch", "If-Match", true);
+  String action = "/api/v1/action-items/{actionItemId}";
+  assertHeader(paths, action, "patch", "If-Match", true);
+  for (String command : java.util.List.of("confirm", "reject", "start", "complete", "cancel", "reopen")) {
+   assertHeader(paths, action + "/" + command, "post", "If-Match", true);
+  }
+  assertThat(paths.path("/api/v1/action-items/creation-meetings").path("get")
+    .path("deprecated").asBoolean()).isTrue();
+  assertThat(paths.path("/api/v1/action-items/management-targets").path("get")
+    .path("deprecated").asBoolean()).isFalse();
   assertHeader(paths, "/api/v1/meetings/{meetingId}/transcript/segments/{segmentId}", "patch", "If-Match", true);
  }
 
@@ -85,6 +93,9 @@ class OpenApiDocumentationTests {
   assertVersionedMutation(document, decision + "/reject", "post");
   assertVersionedMutation(document, summary, "patch");
   assertVersionedMutation(document, summary + "/versions/{versionId}/activate", "post");
+  assertResponse(paths, "/api/v1/meetings/{meetingId}/decisions", "post", "201");
+  assertEtag(paths, "/api/v1/meetings/{meetingId}/decisions", "post", "201");
+  assertEtag(paths, summary, "get", "200");
   assertThat(paths.path(decision).path("patch").path("requestBody")
     .path("required").asBoolean()).isTrue();
   assertThat(paths.path(summary).path("patch").path("requestBody")
@@ -94,6 +105,7 @@ class OpenApiDocumentationTests {
  private static void assertVersionedMutation(JsonNode document, String path, String method) {
   JsonNode paths = document.path("paths");
   assertHeader(paths, path, method, "If-Match", true);
+  assertEtag(paths, path, method, "200");
   for (String code : java.util.List.of("200", "409", "412", "428")) {
    assertResponse(paths, path, method, code);
    JsonNode schema = paths.path(path).path(method).path("responses").path(code)
@@ -113,6 +125,12 @@ class OpenApiDocumentationTests {
      && properties.has("data") && properties.has("meta"))
      .as("%s %s HTTP %s documents the common envelope", method, path, code).isTrue();
   }
+ }
+
+ private static void assertEtag(JsonNode paths, String path, String method, String code) {
+  assertThat(paths.path(path).path(method).path("responses").path(code)
+    .path("headers").has("ETag"))
+    .as("%s %s HTTP %s documents the issued ETag", method, path, code).isTrue();
  }
 
  private static void assertResponse(JsonNode paths, String path, String method, String code) {

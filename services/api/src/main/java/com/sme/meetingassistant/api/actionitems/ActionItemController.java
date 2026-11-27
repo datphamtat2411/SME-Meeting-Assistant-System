@@ -85,6 +85,8 @@ public class ActionItemController {
         return responses.successPage(service.assigneeCandidates(caller.requireUserId(), meetingId, q, candidateId, page, size));
     }
 
+    @io.swagger.v3.oas.annotations.Operation(deprecated = true,
+            description = "Retained v1 compatibility projection. New clients use /action-items/management-targets. No removal date is approved.")
     @GetMapping("/creation-meetings")
     public ApiResponse<List<ActionItemView.CreationMeeting>> creationMeetings(
             @RequestParam(required=false) @Size(max=200) String q,

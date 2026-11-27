@@ -45,7 +45,10 @@ public class DecisionController {
     }
 
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201",
-            description = "Decision created", useReturnTypeSchema = true)
+            description = "Decision created", useReturnTypeSchema = true,
+            headers = @io.swagger.v3.oas.annotations.headers.Header(name = "ETag",
+                    description = "Exact strong current representation tag for a subsequent If-Match",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(type = "string")))
     @PostMapping
     public ResponseEntity<ApiResponse<DecisionView>> create(@PathVariable UUID meetingId,
             @Valid @RequestBody CreateDecisionRequest request) {
@@ -53,7 +56,10 @@ public class DecisionController {
     }
 
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
-            description = "Current representation updated", useReturnTypeSchema = true)
+            description = "Current representation updated", useReturnTypeSchema = true,
+            headers = @io.swagger.v3.oas.annotations.headers.Header(name = "ETag",
+                    description = "Exact strong current representation tag for a subsequent If-Match",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(type = "string")))
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
             description = "Current business state conflicts with the operation",
             content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
@@ -76,7 +82,10 @@ public class DecisionController {
     }
 
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
-            description = "Current representation updated", useReturnTypeSchema = true)
+            description = "Current representation updated", useReturnTypeSchema = true,
+            headers = @io.swagger.v3.oas.annotations.headers.Header(name = "ETag",
+                    description = "Exact strong current representation tag for a subsequent If-Match",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(type = "string")))
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
             description = "Current business state conflicts with the operation",
             content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
@@ -98,7 +107,10 @@ public class DecisionController {
     }
 
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
-            description = "Current representation updated", useReturnTypeSchema = true)
+            description = "Current representation updated", useReturnTypeSchema = true,
+            headers = @io.swagger.v3.oas.annotations.headers.Header(name = "ETag",
+                    description = "Exact strong current representation tag for a subsequent If-Match",
+                    schema = @io.swagger.v3.oas.annotations.media.Schema(type = "string")))
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
             description = "Current business state conflicts with the operation",
             content = @io.swagger.v3.oas.annotations.media.Content(mediaType = "application/json",
