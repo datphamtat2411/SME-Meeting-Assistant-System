@@ -41,6 +41,7 @@ class _Repository extends ResultsRepository {
   int reads = 0;
   int minutesReads = 0;
   List<MinutesAction> minutesActions = [];
+  Map<String, String> minutesAssigneeNames = {};
   ApiFailure? historyFailure;
   int historyReads = 0;
   final List<PagedCollection<SummaryVersion>> historyPages = [];
@@ -235,6 +236,7 @@ class _Repository extends ResultsRepository {
       ),
       confirmedDecisions: <MinutesDecision>[],
       officialActionItems: minutesActions,
+      assigneeDisplayNames: minutesAssigneeNames,
       transcript: const MinutesTranscript(
         availability: 'AVAILABLE',
         id: 'transcript-1',
@@ -427,6 +429,7 @@ _mountActionResults(
   MeetingTestHttpClient client, {
   ResultsSection section = ResultsSection.actionItems,
   List<MinutesAction> minutesActions = const [],
+  Map<String, String> minutesAssigneeNames = const {},
 }) async {
   tester.view.physicalSize = const Size(1000, 1400);
   tester.view.devicePixelRatio = 1;
@@ -439,7 +442,9 @@ _mountActionResults(
     appearancePreferences: InMemoryAppearancePreferences(),
     httpClient: client,
   );
-  final repository = _Repository(api)..minutesActions = minutesActions;
+  final repository = _Repository(api)
+    ..minutesActions = minutesActions
+    ..minutesAssigneeNames = minutesAssigneeNames;
   final workspace = ResultsWorkspaceController(
     api: api,
     repository: repository,
@@ -758,6 +763,7 @@ void main() {
       tester,
       client,
       section: ResultsSection.minutes,
+      minutesAssigneeNames: const {'external-user': 'Nguyễn Văn An'},
       minutesActions: [
         MinutesAction(
           id: itemId,
@@ -765,7 +771,7 @@ void main() {
           details: null,
           status: 'OPEN',
           sourceType: 'MANUAL',
-          assigneeUserId: testUserId,
+          assigneeUserId: 'external-user',
           dueDate: null,
           version: 0,
           createdAt: _createdAt,
@@ -790,6 +796,7 @@ void main() {
           )
           .first,
     );
+    expect(find.text('Người phụ trách: Nguyễn Văn An'), findsOneWidget);
     await tester.tap(detail);
     await pumpUntil(
       tester,

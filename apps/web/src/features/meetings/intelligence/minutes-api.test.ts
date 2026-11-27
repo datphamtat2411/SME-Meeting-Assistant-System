@@ -181,6 +181,12 @@ describe('canonical Minutes adapter', () => {
     expect(parseMinutes(partial).warnings).toEqual(['TRANSCRIPT_PROCESSING'])
   })
 
+  it('rejects snapshots that include unreviewed proposals', () => {
+    expect(() =>
+      parseMinutes({ ...validMinutes(), proposalsIncluded: true })
+    ).toThrow(CoreApiError)
+  })
+
   it('rejects malformed fingerprints and unconfirmed work', () => {
     expect(() =>
       parseMinutes({
