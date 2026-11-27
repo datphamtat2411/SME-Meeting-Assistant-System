@@ -184,6 +184,10 @@ export function lengthValidationMessage(
   return `validation.${kind}:${count}`
 }
 
+export function featureValidationMessage(key: string) {
+  return `validation.key:${key}`
+}
+
 export function localizedValidationMessage(
   message: string,
   translate: (key: string, options?: { count: number }) => string = (
@@ -195,6 +199,11 @@ export function localizedValidationMessage(
     return translate('errors:required')
   if (message === INVALID_EMAIL_VALIDATION_MESSAGE)
     return translate('errors:invalidEmail')
+
+  if (message.startsWith('validation.key:')) {
+    const key = message.slice('validation.key:'.length)
+    if (i18n.exists(key, { lng: 'en' })) return translate(key)
+  }
 
   const match = /^validation\.(minLength|maxLength):(0|[1-9]\d*)$/.exec(message)
   if (match) {

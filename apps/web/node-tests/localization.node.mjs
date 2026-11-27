@@ -80,6 +80,15 @@ test('literal UI translation references resolve in both catalogs', () => {
         }
       }
       if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'featureValidationMessage' &&
+        node.arguments[0] &&
+        ts.isStringLiteralLike(node.arguments[0])
+      ) {
+        check(node.arguments[0].text, node.arguments[0])
+      }
+      if (
         ts.isPropertyAssignment(node) &&
         ts.isIdentifier(node.name) &&
         node.name.text === 'titleKey' &&

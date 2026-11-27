@@ -89,7 +89,9 @@ describe('RequestError presentation', () => {
       .element(screen.getByText(i18n.t('errors:authRequired')))
       .toBeVisible()
     await expect
-      .element(screen.getByText('Account exists but its password is incorrect.'))
+      .element(
+        screen.getByText('Account exists but its password is incorrect.')
+      )
       .not.toBeInTheDocument()
   })
 

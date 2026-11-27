@@ -1,8 +1,11 @@
+import { act } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, type RenderResult } from 'vitest-browser-react'
 import { type Locator, userEvent } from 'vitest/browser'
 import { CoreApiError } from '@/lib/core-api'
+import { setUiLanguage } from '@/lib/i18n'
+import { UI_LANGUAGE_STORAGE_KEY } from '@/lib/i18n/language-preference'
 import { UserAuthForm } from './user-auth-form'
 
 const FORM_MESSAGES = {
@@ -46,6 +49,7 @@ describe('UserAuthForm', () => {
   let forgotPasswordLink: Locator
 
   beforeEach(async () => {
+    await setUiLanguage('en')
     vi.clearAllMocks()
     queryClient = new QueryClient()
     signInMock.mockResolvedValue({
@@ -85,6 +89,30 @@ describe('UserAuthForm', () => {
     await expect
       .element(screen.getByText(FORM_MESSAGES.passwordEmpty))
       .toBeInTheDocument()
+    expect(signInMock).not.toHaveBeenCalled()
+  })
+
+  afterEach(async () => {
+    await setUiLanguage('en')
+    localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY)
+  })
+
+  it('updates validation without losing the email or submitting again', async () => {
+    await userEvent.fill(emailInput, 'person@example.com')
+    await userEvent.click(signInButton)
+    await expect
+      .element(screen.getByText(FORM_MESSAGES.passwordEmpty))
+      .toBeVisible()
+    await act(async () => {
+      await setUiLanguage('vi')
+    })
+    await expect
+      .element(screen.getByText('Vui lòng nhập mật khẩu.'))
+      .toBeVisible()
+    await expect.element(emailInput).toHaveValue('person@example.com')
+    await expect
+      .element(screen.getByRole('button', { name: 'Đăng nhập' }))
+      .toBeVisible()
     expect(signInMock).not.toHaveBeenCalled()
   })
 

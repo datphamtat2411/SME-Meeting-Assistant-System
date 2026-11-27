@@ -5,6 +5,8 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Loader2, LogIn } from 'lucide-react'
 import { normalizeCoreApiError, type CoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import { cn } from '@/lib/utils'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -23,9 +25,12 @@ import { signIn } from '../sign-in-api'
 
 const formSchema = z.object({
   email: z.email({
-    error: (iss) => (iss.input === '' ? 'Please enter your email.' : undefined),
+    error: (iss) =>
+      featureValidationMessage(
+        iss.input === '' ? 'auth:emailRequired' : 'auth:invalidEmail'
+      ),
   }),
-  password: z.string().min(1, 'Please enter your password.'),
+  password: z.string().min(1, featureValidationMessage('auth:passwordRequired')),
 })
 
 interface UserAuthFormProps extends React.HTMLAttributes<HTMLFormElement> {
@@ -37,6 +42,7 @@ export function UserAuthForm({
   redirectTo,
   ...props
 }: UserAuthFormProps) {
+  const { t } = useUiTranslation()
   const [isLoading, setIsLoading] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const isSubmitting = useRef(false)
@@ -80,34 +86,24 @@ export function UserAuthForm({
         }
 
         if (!mappedFieldError) {
-          setSubmitError('Please correct the highlighted fields.')
+          setSubmitError('auth:correctFields')
         }
       } else if (apiError.status === 401) {
-        setSubmitError('Invalid email or password.')
+        setSubmitError('auth:invalidCredentials')
       } else if (apiError.status === 403) {
-        setSubmitError('Sign-in was blocked. Refresh the page and try again.')
+        setSubmitError('auth:signInBlocked')
       } else if (apiError.status === 429) {
-        setSubmitError(
-          'Too many sign-in attempts. Please wait a moment and try again.'
-        )
+        setSubmitError('auth:signInThrottled')
       } else if (apiError.code === 'SESSION_COORDINATION_TIMEOUT') {
-        setSubmitError(
-          'Another session operation is still in progress. Try again shortly.'
-        )
+        setSubmitError('auth:sessionBusy')
       } else if (apiError.code === 'RECOVERY_UNAVAILABLE') {
-        setSubmitError(
-          'Secure session coordination is unavailable. Reopen the app in a supported browser.'
-        )
+        setSubmitError('auth:sessionCoordinationUnavailable')
       } else if (apiError.isNetworkError) {
-        setSubmitError(
-          'Unable to connect to the service. Check your connection and try again.'
-        )
+        setSubmitError('auth:connectionFailed')
       } else if (apiError.isServerError) {
-        setSubmitError(
-          'The service is temporarily unavailable. Please try again later.'
-        )
+        setSubmitError('auth:serviceUnavailable')
       } else {
-        setSubmitError('Unable to sign in right now. Please try again.')
+        setSubmitError('auth:signInFailed')
       }
     } finally {
       isSubmitting.current = false
@@ -128,7 +124,7 @@ export function UserAuthForm({
       >
         {submitError ? (
           <Alert variant='destructive'>
-            <AlertDescription>{submitError}</AlertDescription>
+            <AlertDescription>{t(submitError)}</AlertDescription>
           </Alert>
         ) : null}
         <FormField
@@ -136,7 +132,7 @@ export function UserAuthForm({
           name='email'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Email</FormLabel>
+              <FormLabel>{t('auth:email')}</FormLabel>
               <FormControl>
                 <Input
                   placeholder='name@example.com'
@@ -153,7 +149,7 @@ export function UserAuthForm({
           name='password'
           render={({ field }) => (
             <FormItem className='relative'>
-              <FormLabel>Password</FormLabel>
+              <FormLabel>{t('auth:password')}</FormLabel>
               <FormControl>
                 <PasswordInput
                   placeholder='********'
@@ -166,14 +162,14 @@ export function UserAuthForm({
                 to='/forgot-password'
                 className='absolute inset-e-0 -top-0.5 text-sm font-medium text-muted-foreground hover:opacity-75'
               >
-                Forgot password?
+                {t('auth:forgotPassword')}
               </Link>
             </FormItem>
           )}
         />
         <Button type='submit' className='mt-2' disabled={isLoading}>
           {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
-          Sign in
+          {t('auth:signIn')}
         </Button>
       </form>
     </Form>

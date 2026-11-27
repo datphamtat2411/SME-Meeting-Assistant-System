@@ -54,9 +54,7 @@ describe('error pages', () => {
     await act(async () => {
       await setUiLanguage('vi')
     })
-    await expect
-      .element(screen.getByText('Không tìm thấy trang'))
-      .toBeVisible()
+    await expect.element(screen.getByText('Không tìm thấy trang')).toBeVisible()
     await expect.element(screen.getByText('/missing-page')).toBeVisible()
     expect(router.history.location.pathname).toBe('/missing-page')
   })
