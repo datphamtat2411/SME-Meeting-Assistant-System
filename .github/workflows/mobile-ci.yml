@@ -4,12 +4,14 @@ on:
   push:
     branches:
       - develop
+      - 'feat/mobile-reintegration'
       - main
       - 'integration/**'
       - 'mobile/**'
   pull_request:
     branches:
       - develop
+      - 'feat/mobile-reintegration'
       - main
       - 'integration/**'
       - 'mobile/**'

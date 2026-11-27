@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - develop
+      - 'feat/mobile-reintegration'
       - 'api/**'
       - 'integration/**'
       # M05 contains an additive Core API reviewed-source contract.
@@ -15,6 +16,7 @@ on:
   pull_request:
     branches:
       - develop
+      - 'feat/mobile-reintegration'
       - 'api/**'
   workflow_dispatch:
 
