@@ -869,8 +869,7 @@ class _AssistantPageState extends State<AssistantPage>
                 IconButton.filled(
                   tooltip: 'Gửi câu hỏi',
                   onPressed:
-                      state.canSend &&
-                          isValidAssistantQuestion(_input.text)
+                      state.canSend && isValidAssistantQuestion(_input.text)
                       ? _send
                       : null,
                   icon: const Icon(Icons.arrow_upward),

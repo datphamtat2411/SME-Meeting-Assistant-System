@@ -6,8 +6,12 @@ All eight CI workflows passed at the exact verified baseline
 `1715c7c471a4c6c19b7dca4884bc4ac0fdf1f17d` (2026-11-27).
 Wave 03 (INT-06/07) implementation and targeted regression additions are
 recorded in [WAVE-03-RESULTS.md](WAVE-03-RESULTS.md) and the canonical
-[TRANSCRIPT-DECISION-CONTRACT.md](TRANSCRIPT-DECISION-CONTRACT.md). The final
-same-SHA CI gate is pending. Live cross-client and visual acceptance, and
+[TRANSCRIPT-DECISION-CONTRACT.md](TRANSCRIPT-DECISION-CONTRACT.md). All eight workflows passed at
+`0a8332556819ba4a19a0d03f19d4d77ec8d623ab`. Wave 04 (INT-08/09/10) implementation is recorded in
+[WAVE-04-RESULTS.md](WAVE-04-RESULTS.md) and the shared
+[ASSISTANT-INTEGRATION-CONTRACT.md](ASSISTANT-INTEGRATION-CONTRACT.md).
+Wave 04 final CI acceptance is determined by the eight workflow runs on the
+exact final candidate SHA. Live cross-client and visual acceptance, and
 coordinated compatibility-route retirement, remain pending. See [WAVE-02-RESULTS.md](WAVE-02-RESULTS.md) for the original
 implementation baseline, corrective fixture commit, run links and exact
 verification scope. CI results must not be attributed to later commits. The integrated tree originates from a

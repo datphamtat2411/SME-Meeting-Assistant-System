@@ -737,6 +737,9 @@ describe('AssistantPage', () => {
     await selectMeeting(screen)
     const create = screen.getByRole('button', { name: 'Create conversation' })
     await userEvent.click(create)
+    await expect
+      .element(screen.getByText('Assistant admission is limited'))
+      .toBeVisible()
     await expect.element(create).toBeDisabled()
     expect(post.mock.calls).toHaveLength(1)
   })
