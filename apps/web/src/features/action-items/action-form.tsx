@@ -65,6 +65,7 @@ export function ActionForm({
   const [meetingSearch, setMeetingSearch] = useState('')
   const [meetingPage, setMeetingPage] = useState(0)
   const [userSearch, setUserSearch] = useState('')
+  const [userPage, setUserPage] = useState(0)
   const [snapshot, setSnapshot] = useState<
     | (ActionMutationResult & {
         capture: ReturnType<typeof useActionOperationScope>
@@ -121,7 +122,7 @@ export function ActionForm({
       (meetingSearch.trim().length === 0 || meetingSearch.trim().length >= 2),
   })
   const candidates = useQuery({
-    ...assigneeCandidatesQuery(userSearch, meeting),
+    ...assigneeCandidatesQuery(userSearch, meeting, userPage),
     enabled:
       open &&
       Boolean(meeting) &&
@@ -583,6 +584,8 @@ export function ActionForm({
                         setAssigneeLabel('')
                         setMeeting(target.id)
                         setMeetingLabel(target.label)
+                        setUserSearch('')
+                        setUserPage(0)
                       }}
                     >
                       <span className='truncate'>{target.label}</span>
@@ -675,7 +678,10 @@ export function ActionForm({
                   Boolean(unresolvedCreate)
                 }
                 placeholder='Search active organizational users (2+ characters)'
-                onChange={(event) => setUserSearch(event.target.value)}
+                onChange={(event) => {
+                  setUserSearch(event.target.value)
+                  setUserPage(0)
+                }}
               />
             </div>
             {assignee ? (
@@ -745,6 +751,45 @@ export function ActionForm({
                 </p>
               )}
             </div>
+            {assignmentAllowed &&
+              candidates.data &&
+              (candidates.data.page.hasPrevious ||
+                candidates.data.page.hasNext) && (
+                <div className='flex items-center justify-between text-xs'>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    disabled={
+                      !candidates.data.page.hasPrevious ||
+                      candidates.isFetching ||
+                      mutation.isPending ||
+                      Boolean(conflict) ||
+                      Boolean(unresolvedCreate)
+                    }
+                    onClick={() =>
+                      setUserPage((page) => Math.max(0, page - 1))
+                    }
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    disabled={
+                      !candidates.data.page.hasNext ||
+                      candidates.isFetching ||
+                      mutation.isPending ||
+                      Boolean(conflict) ||
+                      Boolean(unresolvedCreate)
+                    }
+                    onClick={() => setUserPage((page) => page + 1)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              )}
             {displayItem?.assignee && !displayItem.assignee.active && (
               <p className='text-sm text-amber-700'>
                 The current assignee is inactive. Authorized reassignment is

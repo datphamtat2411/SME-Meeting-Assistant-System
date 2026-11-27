@@ -127,7 +127,12 @@ export function ActionItemsPage() {
       setFilter(defaultFilter({ official: 'all', assignee: 'all', q: search }))
     } else if (nextView === 'proposals') {
       setFilter(
-        defaultFilter({ official: false, status: 'PROPOSED', q: search })
+        defaultFilter({
+          official: false,
+          status: 'PROPOSED',
+          reviewable: true,
+          q: search,
+        })
       )
     }
   }

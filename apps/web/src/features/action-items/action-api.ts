@@ -105,6 +105,7 @@ export type ActionFilter = {
   q: string
   status: ActionStatus | 'all'
   official: boolean | 'all'
+  reviewable?: boolean
   assignee: 'me' | 'all' | string
   overdue: boolean
   meetingId?: string
@@ -126,6 +127,8 @@ export function serializeActionFilter(
   if (filter.q.trim()) params.q = filter.q.trim()
   if (filter.status !== 'all') params.status = filter.status
   if (filter.official !== 'all') params.official = String(filter.official)
+  if (filter.reviewable !== undefined)
+    params.reviewable = String(filter.reviewable)
   if (filter.assignee !== 'all') params.assignee = filter.assignee
   if (filter.overdue) params.overdue = 'true'
   if (filter.meetingId) params.meetingId = filter.meetingId
