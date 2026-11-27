@@ -48,9 +48,7 @@ describe('processing status presentation', () => {
 describe('processing stage and job labels', () => {
   it('translates known codes and retains unknown future codes', () => {
     const t = i18n.getFixedT('vi')
-    expect(presentProcessingStage('TRANSCRIPTION', t)).toBe(
-      'Nhận dạng lời nói'
-    )
+    expect(presentProcessingStage('TRANSCRIPTION', t)).toBe('Nhận dạng lời nói')
     expect(presentProcessingStage('TRANSCRIPT_REVIEW', t)).toBe(
       'Rà soát bản ghi lời thoại'
     )

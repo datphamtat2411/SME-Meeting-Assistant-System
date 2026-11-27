@@ -1444,10 +1444,9 @@ function TranscriptReviewWorkspaceContent({
                           <Badge
                             variant={statusBadgeVariant(segment.qualityStatus)}
                           >
-                            {t(
-                              `transcript:status_${segment.qualityStatus}`,
-                              { defaultValue: segment.qualityStatus }
-                            )}
+                            {t(`transcript:status_${segment.qualityStatus}`, {
+                              defaultValue: segment.qualityStatus,
+                            })}
                           </Badge>
                         </div>
                         <div className='flex flex-wrap items-center gap-1'>
