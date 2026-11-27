@@ -34,10 +34,12 @@ class AssistantPendingResult {
 
 /// Session-owned intent. The server alone owns canonical messages.
 class AssistantPendingTurn {
-  AssistantPendingTurn(AssistantQuestionRequest input, {DateTime Function()? now})
-    : request = input,
-      conversation = input.conversation,
-      _now = now ?? DateTime.now;
+  AssistantPendingTurn(
+    AssistantQuestionRequest input, {
+    DateTime Function()? now,
+  }) : request = input,
+       conversation = input.conversation,
+       _now = now ?? DateTime.now;
 
   AssistantPendingTurn.discovered(
     this.conversation,
@@ -834,9 +836,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         _hideSelectedHistory(command);
         if (_accessLost(error) &&
             (!_active || conversation?.id != command.conversation.id)) {
-          await _confirmMeetingAccessLoss(
-            command.conversation.meetingId,
-          );
+          await _confirmMeetingAccessLoss(command.conversation.meetingId);
         }
       }
     } finally {
@@ -932,9 +932,7 @@ class AssistantWorkspaceController extends ChangeNotifier {
         _hideSelectedHistory(command);
         if (_accessLost(error) &&
             (!_active || conversation?.id != command.conversation.id)) {
-          await _confirmMeetingAccessLoss(
-            command.conversation.meetingId,
-          );
+          await _confirmMeetingAccessLoss(command.conversation.meetingId);
         }
       }
     } finally {

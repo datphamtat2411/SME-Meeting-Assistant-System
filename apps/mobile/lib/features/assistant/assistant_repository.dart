@@ -204,7 +204,10 @@ class AssistantRepository {
       mutation: false,
       operation: () async {
         final response = await api.get(
-          _path(conversationId) + '/messages/' + messageId.toLowerCase() + '/evidence',
+          _path(conversationId) +
+              '/messages/' +
+              messageId.toLowerCase() +
+              '/evidence',
           sessionScope: sessionScope,
         );
         return AssistantResolvedCitation.fromResult(
@@ -257,7 +260,10 @@ class AssistantRepository {
       mutation: true,
       operation: () async {
         final response = await api.post(
-          _path(conversation.id) + '/turns/' + turnId.toLowerCase() + '/recover',
+          _path(conversation.id) +
+              '/turns/' +
+              turnId.toLowerCase() +
+              '/recover',
           const {},
           timeoutPolicy: submissionTimeoutPolicy,
           sessionScope: sessionScope,

@@ -1392,9 +1392,11 @@ void main() {
       }
       if (path.endsWith('/messages/$_assistantMessageId/evidence')) {
         return meetingApiSuccess(
-          _resolvedEvidence(_citation()
-            ..['sourceType'] = 'SUMMARY'
-            ..['sourceRevision'] = 2),
+          _resolvedEvidence(
+            _citation()
+              ..['sourceType'] = 'SUMMARY'
+              ..['sourceRevision'] = 2,
+          ),
         );
       }
       if (path.endsWith('/summary')) {
@@ -1987,7 +1989,9 @@ void main() {
           }
           if (request.url.queryParameters.containsKey('beforeMessageId')) {
             return meetingApiSuccess(
-              _detail(messages: submitted ? [...older, ...initial.take(2)] : older),
+              _detail(
+                messages: submitted ? [...older, ...initial.take(2)] : older,
+              ),
             );
           }
           return meetingApiSuccess(
@@ -2238,44 +2242,50 @@ void main() {
       },
     );
 
-    test('discovers a remote pending turn and explicitly recovers by ID', () async {
-      var recovered = false;
-      var writes = 0;
-      final repository = await _repository(
-        MeetingTestHttpClient((request) async {
-          final path = request.url.path;
-          if (path.endsWith('/conversations')) return meetingApiSuccess([]);
-          if (path.endsWith('/turns/$_turnId/recover')) {
-            expect(request.method, 'POST');
-            expect(request.headers['idempotency-key'], isNull);
-            writes++;
-            recovered = true;
-            return meetingApiSuccess(_turn());
-          }
-          expect(request.method, 'GET');
-          return meetingApiSuccess(
-            _detail(
-              messages: recovered ? [_userMessage(), _message()] : [_userMessage()],
-            )..['pendingTurn'] = recovered
-                ? null
-                : _turnStatus(leaseStatus: 'EXPIRED'),
-          );
-        }),
-      );
-      final controller = AssistantWorkspaceController(repository);
-      addTearDown(controller.dispose);
-      controller.setActive(true);
-      await controller.open(_typedConversation());
-      expect(controller.pending?.request, isNull);
-      expect(controller.pending?.turn?.turnId, _turnId);
-      expect(controller.canSend, isFalse);
-      expect(controller.canRetryPending, isTrue);
-      expect(writes, 0);
-      await controller.retryPending();
-      expect(writes, 1);
-      expect(controller.pending, isNull);
-      expect(controller.messages.length, 2);
-    });
+    test(
+      'discovers a remote pending turn and explicitly recovers by ID',
+      () async {
+        var recovered = false;
+        var writes = 0;
+        final repository = await _repository(
+          MeetingTestHttpClient((request) async {
+            final path = request.url.path;
+            if (path.endsWith('/conversations')) return meetingApiSuccess([]);
+            if (path.endsWith('/turns/$_turnId/recover')) {
+              expect(request.method, 'POST');
+              expect(request.headers['idempotency-key'], isNull);
+              writes++;
+              recovered = true;
+              return meetingApiSuccess(_turn());
+            }
+            expect(request.method, 'GET');
+            return meetingApiSuccess(
+              _detail(
+                  messages: recovered
+                      ? [_userMessage(), _message()]
+                      : [_userMessage()],
+                )
+                ..['pendingTurn'] = recovered
+                    ? null
+                    : _turnStatus(leaseStatus: 'EXPIRED'),
+            );
+          }),
+        );
+        final controller = AssistantWorkspaceController(repository);
+        addTearDown(controller.dispose);
+        controller.setActive(true);
+        await controller.open(_typedConversation());
+        expect(controller.pending?.request, isNull);
+        expect(controller.pending?.turn?.turnId, _turnId);
+        expect(controller.canSend, isFalse);
+        expect(controller.canRetryPending, isTrue);
+        expect(writes, 0);
+        await controller.retryPending();
+        expect(writes, 1);
+        expect(controller.pending, isNull);
+        expect(controller.messages.length, 2);
+      },
+    );
 
     test('definitively rejected questions can be edited', () async {
       final repository = await _repository(
@@ -2308,7 +2318,7 @@ void main() {
             return meetingApiSuccess([]);
           }
           if (request.url.path.endsWith('/turns') ||
-                request.url.path.endsWith('/turns/$_turnId')) {
+              request.url.path.endsWith('/turns/$_turnId')) {
             reads++;
             return meetingApiSuccess(_turnStatus(leaseStatus: 'ACTIVE'));
           }

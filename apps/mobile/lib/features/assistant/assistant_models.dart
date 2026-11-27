@@ -448,7 +448,8 @@ class AssistantConversationDetail {
             response: response,
             conversationId: conversation.id,
           );
-    if (pending != null && pending.turn.state != AssistantTurnState.processing) {
+    if (pending != null &&
+        pending.turn.state != AssistantTurnState.processing) {
       invalidApiData(response: response);
     }
     return AssistantConversationDetail._(
@@ -680,9 +681,15 @@ class AssistantResolvedCitation {
   }) {
     final raw = response.objectData();
     if (response.statusCode != 200 ||
-        !sameAssistantIdentity(_uuid(raw, 'conversationId', response), conversationId) ||
+        !sameAssistantIdentity(
+          _uuid(raw, 'conversationId', response),
+          conversationId,
+        ) ||
         !sameAssistantIdentity(_uuid(raw, 'messageId', response), messageId) ||
-        !sameAssistantIdentity(_uuid(raw, 'meetingId', response), expected.meetingId)) {
+        !sameAssistantIdentity(
+          _uuid(raw, 'meetingId', response),
+          expected.meetingId,
+        )) {
       invalidApiData(response: response);
     }
     final entries = requireJsonObjectArray(raw['evidence'], response: response);
@@ -709,7 +716,11 @@ class AssistantResolvedCitation {
       );
       requiredIdentifier(entry, 'label', response: response);
       final preview = optionalString(entry, 'preview', response: response);
-      final navigation = requiredObject(entry, 'navigation', response: response);
+      final navigation = requiredObject(
+        entry,
+        'navigation',
+        response: response,
+      );
       final expectedTarget = switch (type) {
         AssistantSourceType.transcript => 'MEETING_TRANSCRIPT',
         AssistantSourceType.summary => 'MEETING_SUMMARY',
@@ -720,8 +731,10 @@ class AssistantResolvedCitation {
           claims.isEmpty ||
           (preview != null && preview.runes.length > 500) ||
           (type == AssistantSourceType.transcript && preview != null) ||
-          requiredString(navigation, 'target', response: response) != expectedTarget ||
-          requiredString(navigation, 'precision', response: response) != 'SOURCE') {
+          requiredString(navigation, 'target', response: response) !=
+              expectedTarget ||
+          requiredString(navigation, 'precision', response: response) !=
+              'SOURCE') {
         invalidApiData(response: response);
       }
       if (id != expected.citationId) continue;

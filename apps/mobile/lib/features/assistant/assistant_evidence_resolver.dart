@@ -20,7 +20,6 @@ class AssistantEvidenceTarget {
   final String conversationId;
   final String messageId;
   final AssistantCitation citation;
-
 }
 
 enum AssistantEvidenceIssue {
@@ -158,10 +157,7 @@ class AssistantEvidenceResolver {
           decision.meetingId,
           decision.version,
         );
-        artifact = DecisionEvidence(
-          decision,
-          meetingTitle: proof.meetingTitle,
-        );
+        artifact = DecisionEvidence(decision, meetingTitle: proof.meetingTitle);
       case AssistantSourceType.actionItem:
         final snapshot = await actionItems.detail(
           citation.sourceId,
@@ -175,12 +171,7 @@ class AssistantEvidenceResolver {
             AssistantEvidenceIssue.unavailable,
           );
         }
-        _requireSource(
-          citation,
-          item.id,
-          item.meetingId,
-          item.version,
-        );
+        _requireSource(citation, item.id, item.meetingId, item.version);
         artifact = ActionItemEvidence(item, meetingTitle: proof.meetingTitle);
     }
 
@@ -222,7 +213,9 @@ class AssistantEvidenceResolver {
             AssistantEvidenceIssue.meetingUnavailable,
           );
         }
-        throw const AssistantEvidenceFailure(AssistantEvidenceIssue.unavailable);
+        throw const AssistantEvidenceFailure(
+          AssistantEvidenceIssue.unavailable,
+        );
       }
       rethrow;
     }
