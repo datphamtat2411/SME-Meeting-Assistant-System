@@ -95,5 +95,6 @@
   "validDates": "Nhập ngày hợp lệ.",
   "dateMissing": "Ngày đã chọn không tồn tại trong múi giờ báo cáo.",
   "validRange": "Nhập ngày bắt đầu và kết thúc hợp lệ.",
-  "maxPeriod": "Kỳ báo cáo không được vượt quá 366 ngày."
+  "maxPeriod": "Kỳ báo cáo không được vượt quá 366 ngày.",
+  "verifyingWorkspace": "Đang xác minh không gian làm việc…"
 }

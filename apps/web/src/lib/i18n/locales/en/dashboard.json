@@ -95,5 +95,6 @@
   "validDates": "Enter valid calendar dates.",
   "dateMissing": "The selected date does not exist in the reporting timezone.",
   "validRange": "Enter a valid start and end date.",
-  "maxPeriod": "The reporting period must not exceed 366 days."
+  "maxPeriod": "The reporting period must not exceed 366 days.",
+  "verifyingWorkspace": "Verifying your workspace…"
 }

@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useBlocker } from '@tanstack/react-router'
@@ -83,6 +84,7 @@ const defaultFilter = (
 })
 
 export function ActionItemsPage() {
+  const { t } = useUiTranslation()
   const [view, setView] = useState<ActionView>('my')
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<ActionFilter>(
@@ -113,7 +115,7 @@ export function ActionItemsPage() {
       if (blockUnresolvedActionCreation(protection)) return true
       return (
         protection === 'dirty' &&
-        !window.confirm('Unsaved Action Item work may be lost. Leave anyway?')
+        !window.confirm(t('action-items:unsaved'))
       )
     },
   })
@@ -155,19 +157,18 @@ export function ActionItemsPage() {
         <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
           <div>
             <p className='text-sm font-medium text-primary'>
-              Meeting follow-up
+              {t('action-items:followUp')}
             </p>
             <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
-              Action Items
+              {t('action-items:title')}
             </h1>
             <p className='mt-2 max-w-2xl text-muted-foreground'>
-              Review proposals separately from official organizational work,
-              then track each obligation to completion.
+              {t('action-items:pageHint')}
             </p>
           </div>
           {managementCapability.data?.canCreate === true && (
             <Button onClick={openCreate}>
-              <Plus className='size-4' /> Add official work
+              <Plus className='size-4' /> {t('action-items:addWork')}
             </Button>
           )}
         </div>
@@ -177,21 +178,21 @@ export function ActionItemsPage() {
               <div className='flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between'>
                 <div>
                   <CardTitle className='flex items-center gap-2'>
-                    <ListChecks className='size-5' /> Follow-up workspace
+                    <ListChecks className='size-5' /> {t('action-items:workspace')}
                   </CardTitle>
                   <CardDescription>
-                    All collections are filtered and paginated by Core.
+                    {t('action-items:serverPagination')}
                   </CardDescription>
                 </div>
                 <p className='text-sm text-muted-foreground'>
-                  No local page filtering or sorting
+                  {t('action-items:noLocalFiltering')}
                 </p>
               </div>
               <TabsList className='mt-3 w-fit flex-wrap'>
-                <TabsTrigger value='my'>My official work</TabsTrigger>
-                <TabsTrigger value='visible'>Visible work</TabsTrigger>
-                <TabsTrigger value='proposals'>Review proposals</TabsTrigger>
-                <TabsTrigger value='history'>History</TabsTrigger>
+                <TabsTrigger value='my'>{t('action-items:myWork')}</TabsTrigger>
+                <TabsTrigger value='visible'>{t('action-items:visibleWork')}</TabsTrigger>
+                <TabsTrigger value='proposals'>{t('action-items:reviewProposals')}</TabsTrigger>
+                <TabsTrigger value='history'>{t('action-items:history')}</TabsTrigger>
               </TabsList>
             </CardHeader>
             <CardContent className='p-4 sm:p-6'>
@@ -218,10 +219,10 @@ export function ActionItemsPage() {
                   }}
                   emptyMessage={
                     view === 'proposals'
-                      ? 'No proposals await review.'
+                      ? t('action-items:noProposals')
                       : view === 'my'
-                        ? 'You have no official Action Items.'
-                        : 'No Action Items are visible in this authorized scope.'
+                        ? t('action-items:noMyItems')
+                        : t('action-items:noVisible')
                   }
                 />
               )}
@@ -248,6 +249,7 @@ function HistoryView({
   search: string
   onSelect: (item: ActionItem) => void
 }) {
+  const { t } = useUiTranslation()
   const [donePage, setDonePage] = useState(0)
   const [cancelledPage, setCancelledPage] = useState(0)
   const [rejectedPage, setRejectedPage] = useState(0)
@@ -278,19 +280,19 @@ function HistoryView({
   return (
     <div className='space-y-6'>
       <HistoryCollection
-        title='Completed official work'
+        title={t('action-items:completedWork')}
         result={done}
         onPageChange={setDonePage}
         onSelect={onSelect}
       />
       <HistoryCollection
-        title='Cancelled official work'
+        title={t('action-items:cancelledWork')}
         result={cancelledOfficial}
         onPageChange={setCancelledPage}
         onSelect={onSelect}
       />
       <HistoryCollection
-        title='Rejected proposals'
+        title={t('action-items:rejectedProposals')}
         result={rejected}
         onPageChange={setRejectedPage}
         onSelect={onSelect}
@@ -310,13 +312,13 @@ function HistoryCollection({
   result: ReturnType<typeof useActionPage>
   onSelect: (item: ActionItem) => void
 }) {
+  const { t } = useUiTranslation()
   return (
     <section className='space-y-2'>
       <div>
         <h3 className='font-semibold'>{title}</h3>
         <p className='text-sm text-muted-foreground'>
-          Historical records remain read-only when Core reports a terminal
-          state.
+          {t('action-items:historicalReadOnly')}
         </p>
       </div>
       <ActionTable
@@ -343,6 +345,7 @@ function ActionCollection({
   onSelect: (item: ActionItem) => void
   emptyMessage: string
 }) {
+  const { t } = useUiTranslation()
   const result = useActionPage(filter)
 
   return (
@@ -358,8 +361,8 @@ function ActionCollection({
           <Search className='absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground' />
           <Input
             className='pl-9'
-            placeholder='Search titles or details…'
-            aria-label='Search action items'
+            placeholder={t('action-items:searchPlaceholder')}
+            aria-label={t('action-items:search')}
             value={search}
             onChange={(event) => onSearch(event.target.value)}
           />
@@ -371,12 +374,12 @@ function ActionCollection({
           }
         >
           <SelectTrigger className='w-full lg:w-40'>
-            <SelectValue placeholder='Status' />
+            <SelectValue placeholder={t('action-items:status')} />
           </SelectTrigger>
           <SelectContent>
             {statuses.map((status) => (
               <SelectItem key={status} value={status}>
-                {status === 'all' ? 'All statuses' : status.replace(/_/g, ' ')}
+                {status === 'all' ? t('action-items:allStatuses') : t(`action-items:status_${status}`)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -386,13 +389,13 @@ function ActionCollection({
           onValueChange={(value) => onChange({ sort: value as ActionSort })}
         >
           <SelectTrigger className='w-full lg:w-40'>
-            <SelectValue placeholder='Sort' />
+            <SelectValue placeholder={t('action-items:sort')} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value='createdAt,desc'>Newest</SelectItem>
-            <SelectItem value='dueDate,asc'>Due date</SelectItem>
-            <SelectItem value='status,asc'>Status</SelectItem>
-            <SelectItem value='title,asc'>Title</SelectItem>
+            <SelectItem value='createdAt,desc'>{t('action-items:newest')}</SelectItem>
+            <SelectItem value='dueDate,asc'>{t('action-items:dueDate')}</SelectItem>
+            <SelectItem value='status,asc'>{t('action-items:status')}</SelectItem>
+            <SelectItem value='title,asc'>{t('action-items:itemTitle')}</SelectItem>
           </SelectContent>
         </Select>
         <div className='flex items-center gap-2'>
@@ -401,7 +404,7 @@ function ActionCollection({
             checked={filter.overdue}
             onCheckedChange={(value) => onChange({ overdue: value })}
           />
-          <Label htmlFor='global-overdue'>Overdue</Label>
+          <Label htmlFor='global-overdue'>{t('action-items:overdue')}</Label>
         </div>
       </div>
       <ActionTable
@@ -422,7 +425,7 @@ function useActionPage(filter: ActionFilter) {
 function ActionTable({
   result,
   onSelect,
-  emptyMessage = 'No Action Items found.',
+  emptyMessage,
   onPageChange,
 }: {
   result: ReturnType<typeof useActionPage>
@@ -430,6 +433,7 @@ function ActionTable({
   emptyMessage?: string
   onPageChange?: (page: number) => void
 }) {
+  const { t } = useUiTranslation()
   const { query, filter } = result
   const lastPage = query.data
     ? Math.max(0, query.data.page.totalPages - 1)
@@ -443,19 +447,19 @@ function ActionTable({
       <RequestError error={query.error} retry={() => void query.refetch()} />
     )
   if (!query.data.items.length && filter.page === 0)
-    return <RequestEmpty title={emptyMessage} />
+    return <RequestEmpty title={emptyMessage ?? t('action-items:noItems')} />
   return (
     <div className='space-y-4'>
       <div className='overflow-x-auto rounded-md border'>
         <Table className='min-w-[900px]'>
           <TableHeader>
             <TableRow>
-              <TableHead>Action</TableHead>
-              <TableHead>Source meeting</TableHead>
-              <TableHead>Responsible</TableHead>
-              <TableHead>Due</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className='text-end'>Commands</TableHead>
+              <TableHead>{t('action-items:action')}</TableHead>
+              <TableHead>{t('action-items:sourceMeeting')}</TableHead>
+              <TableHead>{t('action-items:responsible')}</TableHead>
+              <TableHead>{t('action-items:due')}</TableHead>
+              <TableHead>{t('action-items:status')}</TableHead>
+              <TableHead className='text-end'>{t('action-items:commands')}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -474,17 +478,17 @@ function ActionTable({
                   </p>
                   <div className='mt-1 flex flex-wrap gap-1'>
                     <Badge variant={item.isOfficial ? 'secondary' : 'outline'}>
-                      {item.isOfficial ? 'Official' : 'Proposal'}
+                      {item.isOfficial ? t('action-items:official') : t('action-items:proposal')}
                     </Badge>
                     {item.overdue && (
-                      <Badge variant='destructive'>Overdue</Badge>
+                      <Badge variant='destructive'>{t('action-items:overdue')}</Badge>
                     )}
                   </div>
                 </TableCell>
                 <TableCell className='whitespace-normal'>
                   {item.meeting.restricted ? (
                     <span className='text-muted-foreground'>
-                      Restricted meeting
+                      {t('action-items:restrictedMeeting')}
                     </span>
                   ) : (
                     <Link
@@ -501,11 +505,11 @@ function ActionTable({
                     <span
                       className={!item.assignee.active ? 'text-amber-700' : ''}
                     >
-                      {item.assignee.displayName ?? 'Unnamed user'}
-                      {!item.assignee.active && ' · inactive'}
+                      {item.assignee.displayName ?? t('action-items:unnamed')}
+                      {!item.assignee.active && t('action-items:inactiveSuffix')}
                     </span>
                   ) : (
-                    <span className='text-muted-foreground'>Unassigned</span>
+                    <span className='text-muted-foreground'>{t('action-items:unassigned')}</span>
                   )}
                 </TableCell>
                 <TableCell>
@@ -521,7 +525,7 @@ function ActionTable({
                           : 'outline'
                     }
                   >
-                    {item.status.replace(/_/g, ' ')}
+                    {t(`action-items:status_${item.status}`)}
                   </Badge>
                 </TableCell>
                 <TableCell className='text-end'>
@@ -533,7 +537,7 @@ function ActionTable({
                         variant='ghost'
                         onClick={() => onSelect(item)}
                       >
-                        Edit
+                        {t('action-items:edit')}
                       </Button>
                     )}
                   </div>
@@ -544,7 +548,7 @@ function ActionTable({
         </Table>
       </div>
       <div className='flex items-center justify-between text-sm text-muted-foreground'>
-        <span>{query.data.page.totalElements} record(s)</span>
+        <span>{t('action-items:records', { count: query.data.page.totalElements })}</span>
         <div className='flex items-center gap-2'>
           <Button
             variant='outline'
@@ -552,16 +556,16 @@ function ActionTable({
             disabled={!query.data.page.hasPrevious || filter.page === 0}
             onClick={() => onPageChange?.(filter.page - 1)}
           >
-            Previous
+            {t('action-items:previous')}
           </Button>
-          Page {filter.page + 1}
+          {t('action-items:page', { page: filter.page + 1 })}
           <Button
             variant='outline'
             size='sm'
             disabled={!query.data.page.hasNext}
             onClick={() => onPageChange?.(filter.page + 1)}
           >
-            Next
+            {t('action-items:next')}
           </Button>
         </div>
       </div>

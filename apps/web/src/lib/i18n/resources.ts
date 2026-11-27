@@ -1,3 +1,4 @@
+import enActionItems from './locales/en/action-items.json'
 import enAuth from './locales/en/auth.json'
 import enCalendar from './locales/en/calendar.json'
 import enCommon from './locales/en/common.json'
@@ -10,6 +11,7 @@ import enNavigation from './locales/en/navigation.json'
 import enRooms from './locales/en/rooms.json'
 import enSettings from './locales/en/settings.json'
 import enStatus from './locales/en/status.json'
+import viActionItems from './locales/vi/action-items.json'
 import viAuth from './locales/vi/auth.json'
 import viCalendar from './locales/vi/calendar.json'
 import viCommon from './locales/vi/common.json'
@@ -25,6 +27,7 @@ import viStatus from './locales/vi/status.json'
 
 export const resources = {
   en: {
+    'action-items': enActionItems,
     auth: enAuth,
     calendar: enCalendar,
     common: enCommon,
@@ -39,6 +42,7 @@ export const resources = {
     status: enStatus,
   },
   vi: {
+    'action-items': viActionItems,
     auth: viAuth,
     calendar: viCalendar,
     common: viCommon,
