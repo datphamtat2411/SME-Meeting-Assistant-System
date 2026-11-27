@@ -14,6 +14,7 @@ import {
   Users,
 } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -59,6 +60,7 @@ export function LiveMeetingPage({ meetingId }: { meetingId: string }) {
 }
 
 function LiveMeetingContent({ meetingId }: { meetingId: string }) {
+  const { t } = useUiTranslation()
   const queryClient = useQueryClient()
   const session = useMeetingSession()
   const sharedAuthorization = useOptionalMeetingAuthorization()
@@ -100,7 +102,7 @@ function LiveMeetingContent({ meetingId }: { meetingId: string }) {
         <Button asChild variant='ghost' className='-ms-3 w-fit'>
           <Link to='/meetings'>
             <ArrowLeft />
-            Back to Meetings
+            {t('workspace:live_backToMeetings')}
           </Link>
         </Button>
 
@@ -173,6 +175,7 @@ function LiveMeetingDetail({
   canReadMedia: boolean
   media: MeetingMedia[]
 }) {
+  const { t } = useUiTranslation()
   const { timezone, locale } = useRegionalPresentation()
   const { meeting, etag } = detail
   const isLive = meeting.status === 'IN_PROGRESS'
@@ -196,7 +199,7 @@ function LiveMeetingDetail({
           <div className='min-w-0 space-y-3'>
             <div className='flex flex-wrap items-center gap-2'>
               <MeetingStatusBadge status={meeting.status} />
-              <Badge variant='outline'>Live route</Badge>
+              <Badge variant='outline'>{t('workspace:live_liveRoute')}</Badge>
             </div>
             <div>
               <h1 className='text-2xl font-bold tracking-tight sm:text-3xl'>
@@ -204,8 +207,8 @@ function LiveMeetingDetail({
               </h1>
               <p className='mt-2 max-w-3xl text-muted-foreground'>
                 {isLive
-                  ? 'Conduct the meeting here while capture remains an explicit, reviewable operation. Ending the meeting does not submit audio or start processing.'
-                  : lifecycleDescription(meeting.status)}
+                  ? t('workspace:live_conduct')
+                  : lifecycleDescription(meeting.status, t)}
               </p>
             </div>
           </div>
@@ -216,7 +219,7 @@ function LiveMeetingDetail({
                 params={{ meetingId: meeting.id }}
               >
                 <FileText />
-                View meeting workspace
+                {t('workspace:live_viewWorkspace')}
               </Link>
             </Button>
             {isLive && isOrganizer && (
@@ -242,7 +245,9 @@ function LiveMeetingDetail({
           </span>
           <span className='inline-flex items-center gap-1.5'>
             <MapPin className='size-4' />
-            {meeting.roomId ? 'Room assigned' : 'Room not assigned'}
+            {meeting.roomId
+              ? t('workspace:live_roomAssigned')
+              : t('workspace:live_roomNotAssigned')}
           </span>
         </div>
       </section>
@@ -256,18 +261,18 @@ function LiveMeetingDetail({
                   <CardTitle className='flex items-center gap-2'>
                     <Radio className='size-4 text-emerald-600 dark:text-emerald-400' />
                     {isLive
-                      ? 'Meeting is live'
-                      : lifecycleTitle(meeting.status)}
+                      ? t('workspace:live_meetingLive')
+                      : lifecycleTitle(meeting.status, t)}
                   </CardTitle>
                   {!isLive && (
                     <h2 className='sr-only'>
-                      {lifecycleTitle(meeting.status)}
+                      {lifecycleTitle(meeting.status, t)}
                     </h2>
                   )}
                   <CardDescription className='mt-1'>
                     {isLive
-                      ? 'Meeting time and recording time are tracked independently.'
-                      : lifecycleDetail(meeting)}
+                      ? t('workspace:live_separateDuration')
+                      : lifecycleDetail(meeting, t)}
                   </CardDescription>
                 </div>
                 <div className='rounded-full bg-background p-2 shadow-sm'>
@@ -281,22 +286,23 @@ function LiveMeetingDetail({
             </CardHeader>
             <CardContent className='grid gap-4 p-5 sm:grid-cols-3'>
               <LiveMetric
-                label='Meeting duration'
+                label={t('workspace:live_meetingDuration')}
                 value={
                   isLive && meeting.startedAt ? (
                     <LiveElapsed startedAt={Date.parse(meeting.startedAt)} />
                   ) : meeting.startedAt && meeting.endedAt ? (
                     formatElapsedBetween(
                       Date.parse(meeting.startedAt),
-                      Date.parse(meeting.endedAt)
+                      Date.parse(meeting.endedAt),
+                      t
                     )
                   ) : (
-                    'Not available'
+                    t('workspace:live_notAvailable')
                   )
                 }
               />
               <LiveMetric
-                label='Scheduled window'
+                label={t('workspace:live_scheduledWindow')}
                 value={formatSchedule(
                   meeting.scheduledStartAt,
                   meeting.scheduledEndAt,
@@ -305,15 +311,15 @@ function LiveMeetingDetail({
                 )}
               />
               <LiveMetric
-                label='Recording'
+                label={t('workspace:live_recordingMetric')}
                 value={
                   !canReadMedia
-                    ? 'Not available'
+                    ? t('workspace:live_notAvailable')
                     : isLive
-                      ? recordingMetric(recording)
+                      ? recordingMetric(recording, t)
                       : reviewableRecording
-                        ? recordingMetric(recording)
-                        : 'Review in workspace'
+                        ? recordingMetric(recording, t)
+                        : t('workspace:live_reviewInWorkspace')
                 }
               />
             </CardContent>
@@ -331,12 +337,12 @@ function LiveMeetingDetail({
                 <Mic className='mt-0.5 size-5 text-muted-foreground' />
                 <div>
                   <p className='font-medium'>
-                    Recording is organizer controlled
+                    {t('workspace:live_organizerRecording')}
                   </p>
                   <p className='mt-1 text-sm text-muted-foreground'>
                     {isLive
-                      ? 'You can follow the live meeting, but only the organizer can capture and submit source audio.'
-                      : 'Return to the meeting workspace to review submitted source media.'}
+                      ? t('workspace:live_organizerOnly')
+                      : t('workspace:live_reviewSubmittedMedia')}
                   </p>
                 </div>
               </CardContent>
@@ -350,10 +356,10 @@ function LiveMeetingDetail({
             <CardHeader className='border-b'>
               <CardTitle className='flex items-center gap-2'>
                 <Users className='size-4 text-primary' />
-                Meeting participants
+                {t('workspace:live_meetingParticipants')}
               </CardTitle>
               <CardDescription>
-                Participant identities are shown only when supplied by Core.
+                {t('workspace:live_participantIdentity')}
               </CardDescription>
             </CardHeader>
             <CardContent className='space-y-3 pt-5'>
@@ -365,8 +371,8 @@ function LiveMeetingDetail({
                   >
                     <span className='text-muted-foreground'>
                       {participant.userId === meeting.organizerUserId
-                        ? 'Organizer'
-                        : 'Participant'}
+                        ? t('workspace:live_organizer')
+                        : t('workspace:live_participant')}
                     </span>
                     <span className='text-end font-medium'>
                       {participant.displayName?.trim() || participant.userId}
@@ -375,7 +381,9 @@ function LiveMeetingDetail({
                 ))
               ) : (
                 <div className='flex items-center justify-between gap-3 text-sm'>
-                  <span className='text-muted-foreground'>Organizer</span>
+                  <span className='text-muted-foreground'>
+                    {t('workspace:live_organizer')}
+                  </span>
                   <span className='text-end font-medium'>
                     {currentUserId === meeting.organizerUserId
                       ? (currentUserName ?? meeting.organizerUserId)
@@ -384,8 +392,7 @@ function LiveMeetingDetail({
                 </div>
               )}
               <p className='text-sm text-muted-foreground'>
-                Remote presence and speaking activity are not provided by the
-                current meeting contract.
+                {t('workspace:live_presenceUnavailable')}
               </p>
             </CardContent>
           </Card>
@@ -394,7 +401,7 @@ function LiveMeetingDetail({
               <CardContent className='flex flex-col items-center justify-center px-6 py-8 text-center'>
                 <FileText className='size-6 text-primary' />
                 <p className='mt-3 text-sm leading-6 text-muted-foreground'>
-                  {lifecycleDetail(meeting)}
+                  {lifecycleDetail(meeting, t)}
                 </p>
                 <Button asChild variant='outline' className='mt-5'>
                   <Link
@@ -402,7 +409,7 @@ function LiveMeetingDetail({
                     params={{ meetingId: meeting.id }}
                   >
                     <ArrowLeft />
-                    Return to the meeting workspace
+                    {t('workspace:live_returnWorkspace')}
                   </Link>
                 </Button>
               </CardContent>
@@ -417,10 +424,11 @@ function LiveMeetingDetail({
 }
 
 function LifecycleSummary({ meeting }: { meeting: MeetingView }) {
+  const { t } = useUiTranslation()
   const timestamps: Array<[string, string | null]> = [
-    ['Started', meeting.startedAt],
-    ['Ended', meeting.endedAt],
-    ['Cancelled', meeting.cancelledAt],
+    ['workspace:live_started', meeting.startedAt],
+    ['workspace:live_ended', meeting.endedAt],
+    ['workspace:live_cancelled', meeting.cancelledAt],
   ]
   const visibleTimestamps = timestamps.filter(
     (timestamp): timestamp is [string, string] => Boolean(timestamp[1])
@@ -431,9 +439,9 @@ function LifecycleSummary({ meeting }: { meeting: MeetingView }) {
   return (
     <Card>
       <CardHeader className='border-b'>
-        <CardTitle>Lifecycle record</CardTitle>
+        <CardTitle>{t('workspace:live_lifecycleRecord')}</CardTitle>
         <CardDescription>
-          Timestamps reflect the authoritative Core API record.
+          {t('workspace:live_lifecycleTimestamps')}
         </CardDescription>
       </CardHeader>
       <CardContent className='space-y-4 pt-5'>
@@ -442,7 +450,7 @@ function LifecycleSummary({ meeting }: { meeting: MeetingView }) {
             key={label}
             className='flex items-start justify-between gap-4 text-sm'
           >
-            <span className='text-muted-foreground'>{label}</span>
+            <span className='text-muted-foreground'>{t(label)}</span>
             <span className='font-medium'>
               <RegionalTimestamp value={value} />
             </span>
@@ -450,7 +458,9 @@ function LifecycleSummary({ meeting }: { meeting: MeetingView }) {
         ))}
         {meeting.cancellationReason && (
           <div className='flex items-start justify-between gap-4 text-sm'>
-            <span className='text-muted-foreground'>Cancellation reason</span>
+            <span className='text-muted-foreground'>
+              {t('workspace:live_cancellationReason')}
+            </span>
             <span className='max-w-[65%] text-end font-medium'>
               {meeting.cancellationReason}
             </span>
@@ -462,6 +472,7 @@ function LifecycleSummary({ meeting }: { meeting: MeetingView }) {
 }
 
 function LivePlaybackSources({ media }: { media: MeetingMedia[] }) {
+  const { t } = useUiTranslation()
   const session = useMeetingSession()
   const available = media.filter((item) => item.status === 'AVAILABLE')
   if (available.length === 0 && session.playback.kind === 'idle') return null
@@ -469,10 +480,9 @@ function LivePlaybackSources({ media }: { media: MeetingMedia[] }) {
   return (
     <Card>
       <CardHeader className='border-b'>
-        <CardTitle>Shared audio playback</CardTitle>
+        <CardTitle>{t('workspace:live_sharedPlayback')}</CardTitle>
         <CardDescription>
-          Playback remains bound to the selected meeting source while moving
-          between Detail and Live Meeting.
+          {t('workspace:live_sharedPlaybackDescription')}
         </CardDescription>
       </CardHeader>
       <CardContent className='space-y-3 pt-5'>
@@ -498,8 +508,8 @@ function LivePlaybackSources({ media }: { media: MeetingMedia[] }) {
                 >
                   {session.playback.isLoading &&
                   session.playback.sourceMediaId === source.id
-                    ? 'Opening…'
-                    : 'Select source'}
+                    ? t('workspace:live_opening')
+                    : t('workspace:live_selectSource')}
                 </Button>
               </div>
             ))}
@@ -511,64 +521,76 @@ function LivePlaybackSources({ media }: { media: MeetingMedia[] }) {
   )
 }
 
+type Translate = ReturnType<typeof useUiTranslation>['t']
+
 function recordingMetric(
-  recording: ReturnType<typeof useMeetingSession>['recording']
+  recording: ReturnType<typeof useMeetingSession>['recording'],
+  t: Translate
 ): string {
   switch (recording.state) {
     case 'requesting-permission':
-      return 'Requesting microphone'
+      return t('workspace:live_requestingMic')
     case 'recording':
-      return `Recording · ${formatDuration(recording.durationMs)}`
+      return t('workspace:live_recordingDuration', {
+        duration: formatDuration(recording.durationMs),
+      })
     case 'stopping':
-      return 'Finalizing capture'
+      return t('workspace:live_finalizingCapture')
     case 'completed':
-      if (recording.uploadStatus === 'submitting') return 'Submitting'
-      if (recording.uploadStatus === 'uncertain') return 'Submission uncertain'
-      if (recording.uploadStatus === 'failed') return 'Submission failed'
-      return 'Completed audio ready'
+      if (recording.uploadStatus === 'submitting')
+        return t('workspace:live_submitting')
+      if (recording.uploadStatus === 'uncertain')
+        return t('workspace:live_submissionUncertain')
+      if (recording.uploadStatus === 'failed')
+        return t('workspace:live_submissionFailed')
+      return t('workspace:live_completedAudio')
     case 'failed':
-      return 'Capture or submission failed'
+      return t('workspace:live_captureSubmissionFailed')
     default:
-      return 'Ready to start'
+      return t('workspace:live_readyToStart')
   }
 }
 
-function lifecycleDescription(status: MeetingView['status']) {
+function lifecycleDescription(status: MeetingView['status'], t: Translate) {
   if (status === 'SCHEDULED') {
-    return 'This meeting is scheduled and is not currently live.'
+    return t('workspace:live_scheduledNotLive')
   }
   if (status === 'ENDED') {
-    return 'This meeting has ended and cannot be reopened as a live session.'
+    return t('workspace:live_endedNotLive')
   }
   if (status === 'CANCELLED') {
-    return 'This meeting was cancelled and cannot be opened as a live session.'
+    return t('workspace:live_cancelledNotLive')
   }
-  return 'This meeting is a draft and is not currently live.'
+  return t('workspace:live_draftNotLive')
 }
 
-function lifecycleTitle(status: MeetingView['status']) {
-  if (status === 'SCHEDULED') return 'Meeting has not started'
-  if (status === 'ENDED') return 'Meeting has ended'
-  if (status === 'CANCELLED') return 'Meeting is cancelled'
-  return 'Meeting is a draft'
+function lifecycleTitle(status: MeetingView['status'], t: Translate) {
+  if (status === 'SCHEDULED') return t('workspace:live_notStarted')
+  if (status === 'ENDED') return t('workspace:live_meetingEnded')
+  if (status === 'CANCELLED') return t('workspace:live_meetingCancelled')
+  return t('workspace:live_meetingDraft')
 }
 
-function lifecycleDetail(meeting: MeetingView) {
+function lifecycleDetail(meeting: MeetingView, t: Translate) {
   if (meeting.status === 'SCHEDULED') {
-    return 'Return to the meeting workspace to review schedule details and available lifecycle actions.'
+    return t('workspace:live_reviewSchedule')
   }
   if (meeting.status === 'ENDED') {
-    return 'Return to the meeting workspace to review the completed lifecycle record.'
+    return t('workspace:live_reviewLifecycle')
   }
   if (meeting.status === 'CANCELLED') {
-    return 'No live session or lifecycle mutation is available for this meeting.'
+    return t('workspace:live_noLiveMutation')
   }
-  return 'Return to the meeting workspace to review this draft.'
+  return t('workspace:live_reviewDraft')
 }
 
-function formatElapsedBetween(startedAt: number, endedAt: number): string {
+function formatElapsedBetween(
+  startedAt: number,
+  endedAt: number,
+  t: Translate
+): string {
   if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) {
-    return 'Not available'
+    return t('workspace:live_notAvailable')
   }
   return formatDuration(Math.max(0, endedAt - startedAt))
 }
@@ -584,13 +606,14 @@ function formatDuration(durationMs: number): string {
 }
 
 function LiveElapsed({ startedAt }: { startedAt: number }) {
+  const { t } = useUiTranslation()
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     if (!Number.isFinite(startedAt)) return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [startedAt])
-  if (!Number.isFinite(startedAt)) return 'Not available'
+  if (!Number.isFinite(startedAt)) return t('workspace:live_notAvailable')
   return formatDuration(Math.max(0, now - startedAt))
 }
 
@@ -618,21 +641,22 @@ function LiveMeetingError({
   error: unknown
   onRetry: () => void
 }) {
+  const { t } = useUiTranslation()
   const apiError = normalizeCoreApiError(error)
   const isNotFound = apiError.status === 404
   const isForbidden = apiError.status === 403
   const title = isNotFound
-    ? 'Meeting not found or unavailable'
+    ? t('workspace:live_notFound')
     : isForbidden
-      ? 'Access denied'
-      : 'Unable to load meeting details'
+      ? t('workspace:live_accessDenied')
+      : t('workspace:live_detailLoadFailed')
   const description = isNotFound
-    ? 'This meeting was not found or is unavailable to your session.'
+    ? t('workspace:live_notFoundDescription')
     : isForbidden
-      ? 'Your session does not have access to this meeting.'
+      ? t('workspace:live_deniedDescription')
       : apiError.isNetworkError
-        ? 'The Core API could not be reached. Check the connection and try again.'
-        : 'The meeting details could not be verified. Try again.'
+        ? t('workspace:live_networkDescription')
+        : t('workspace:live_verifyFailed')
 
   return (
     <Card>
@@ -648,7 +672,7 @@ function LiveMeetingError({
         </p>
         <Button className='mt-6' onClick={onRetry}>
           <RefreshCw />
-          Retry
+          {t('workspace:live_retry')}
         </Button>
       </CardContent>
     </Card>
@@ -662,6 +686,7 @@ function LiveMeetingAccessState({
   status: string
   onRetry: () => void
 }) {
+  const { t } = useUiTranslation()
   const denied =
     status === 'confirmed-authorization-denial' ||
     status === 'confirmed-authentication-loss'
@@ -670,15 +695,16 @@ function LiveMeetingAccessState({
       <CardContent className='flex flex-col items-center justify-center px-6 py-16 text-center'>
         <AlertCircle className='size-10 text-destructive' />
         <h1 className='mt-4 text-xl font-semibold'>
-          {denied ? 'Meeting access denied' : 'Unable to verify meeting access'}
+          {denied
+            ? t('workspace:live_meetingAccessDenied')
+            : t('workspace:live_meetingAccessUnverified')}
         </h1>
         <p className='mt-2 max-w-lg text-sm text-muted-foreground'>
-          Protected Live Meeting details and controls remain hidden until the
-          shared meeting authorization context is established.
+          {t('workspace:live_protected')}
         </p>
         <Button className='mt-6' onClick={onRetry}>
           <RefreshCw />
-          Retry verification
+          {t('workspace:live_retryVerification')}
         </Button>
       </CardContent>
     </Card>
@@ -686,8 +712,13 @@ function LiveMeetingAccessState({
 }
 
 function LiveMeetingSkeleton() {
+  const { t } = useUiTranslation()
   return (
-    <div role='status' aria-label='Loading live meeting' className='space-y-6'>
+    <div
+      role='status'
+      aria-label={t('workspace:live_loading')}
+      className='space-y-6'
+    >
       <Skeleton className='h-10 w-3/4 max-w-2xl' />
       <Skeleton className='h-5 w-96 max-w-full' />
       <Skeleton className='h-56 w-full rounded-xl' />

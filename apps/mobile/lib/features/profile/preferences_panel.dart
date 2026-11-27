@@ -36,7 +36,7 @@ String preferenceFieldLabel(PreferenceField field) => switch (field) {
   PreferenceField.meetingEmail => 'Email cuộc họp',
   PreferenceField.actionItemEmail => 'Email phân công công việc',
   PreferenceField.timezone => 'Múi giờ ưu tiên',
-  PreferenceField.locale => 'Ngôn ngữ ưu tiên',
+  PreferenceField.locale => 'Định dạng vùng',
 };
 
 String _valueLabel(Object? value) => switch (value) {
@@ -101,7 +101,7 @@ class PreferencesPanel extends StatelessWidget {
           Text('Mong muốn: ${_valueLabel(intent.value)}'),
           if (controller.failure != null)
             Text(
-              controller.failure!.message,
+              profileFailureLabel(controller.failure!),
               style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
           if (checking)
@@ -220,7 +220,7 @@ class PreferencesPanel extends StatelessWidget {
                   Semantics(
                     header: true,
                     child: Text(
-                      'Thiết lập khu vực',
+                      'Tùy chọn vùng',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                   ),
@@ -247,7 +247,7 @@ class PreferencesPanel extends StatelessWidget {
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.language_outlined),
-                    title: const Text('Ngôn ngữ ưu tiên'),
+                    title: const Text('Định dạng vùng'),
                     subtitle: Text(
                       _subtitle(
                         PreferenceField.locale,
@@ -264,8 +264,8 @@ class PreferencesPanel extends StatelessWidget {
                     padding: const EdgeInsets.only(top: 8),
                     child: Text(
                       'Các tùy chọn này được lưu cho tài khoản. Ứng dụng '
-                      'hiện hiển thị giờ theo thiết bị; ngôn ngữ ưu tiên '
-                      'chưa điều khiển giao diện hoặc email.',
+                      'hiện hiển thị giờ theo thiết bị. Định dạng vùng '
+                      'không thay đổi ngôn ngữ giao diện hoặc email.',
                       style: TextStyle(
                         fontSize: 12,
                         color: Theme.of(context).colorScheme.onSurfaceVariant,

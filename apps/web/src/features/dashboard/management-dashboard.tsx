@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, ListChecks, TriangleAlert } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+} from '@/lib/i18n/presentation'
 import { formatPresentationInstant } from '@/lib/presentation-time'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
@@ -28,20 +33,21 @@ const selectClass =
   'h-9 w-full rounded-md border bg-background px-3 text-sm focus-visible:outline-2 focus-visible:outline-primary'
 
 const metricLabels: Record<string, string> = {
-  MEETING_COUNTS: 'Meeting counts',
-  PROCESSING_OUTCOMES: 'AI processing outcomes',
-  COMPLETION_RATE: 'Completion rate',
+  MEETING_COUNTS: 'dashboard:meetingCounts',
+  PROCESSING_OUTCOMES: 'dashboard:processingOutcomes',
+  COMPLETION_RATE: 'dashboard:completionRate',
 }
 const reasonLabels: Record<string, string> = {
   MEETING_ORGANIZATIONAL_REPORTING_SCOPE_NOT_APPROVED:
-    'Organizational meeting attribution is not yet approved.',
+    'dashboard:attributionNotApproved',
   AI_PROCESSING_REPORTING_SCOPE_AND_TAXONOMY_NOT_APPROVED:
-    'Processing reporting scope and categories are not yet approved.',
+    'dashboard:processingNotApproved',
   PRODUCT_DENOMINATOR_AND_COHORT_POLICY_NOT_APPROVED:
-    'The completion-rate denominator and cohort policy are not yet approved.',
+    'dashboard:completionNotApproved',
 }
 
 export function ManagementDashboard({ identity }: { identity: AuthContext }) {
+  const { t } = useUiTranslation()
   if (identity.globalRole !== 'DEPARTMENT_MANAGER') return null
   const access = getMemberDirectoryAccess(identity)
   if (
@@ -51,9 +57,9 @@ export function ManagementDashboard({ identity }: { identity: AuthContext }) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Management overview</CardTitle>
+          <CardTitle>{t('dashboard:management')}</CardTitle>
           <p className='text-sm text-muted-foreground'>
-            No active organizational management scope is available.
+            {t('dashboard:noScope')}
           </p>
         </CardHeader>
       </Card>
@@ -69,6 +75,7 @@ function ManagementReport({
   identity: AuthContext
   access: AuthorizedMemberDirectoryAccess
 }) {
+  const { t } = useUiTranslation()
   const { locale } = useRegionalPresentation()
   const numberFormat = new Intl.NumberFormat(locale)
   const queryClient = useQueryClient()
@@ -118,14 +125,12 @@ function ManagementReport({
   function applyFilters() {
     try {
       if (unitId && !availableUnits.some((unit) => unit.id === unitId)) {
-        throw new Error('Select an available managed organizational unit.')
+        throw new Error(featureValidationMessage('dashboard:selectUnit'))
       }
       let period
       if (preset === 'custom') {
         if (!timezone) {
-          throw new Error(
-            'Verify the reporting timezone before using custom dates.'
-          )
+          throw new Error(featureValidationMessage('dashboard:verifyZone'))
         }
         period = customPeriod(start, end, timezone)
       } else {
@@ -145,7 +150,9 @@ function ManagementReport({
       }
     } catch (error) {
       setFilterError(
-        error instanceof Error ? error.message : 'Invalid filters.'
+        error instanceof Error
+          ? error.message
+          : featureValidationMessage('dashboard:invalidFilters')
       )
     }
   }
@@ -180,20 +187,19 @@ function ManagementReport({
 
   const statuses = data
     ? [
-        { label: 'Open', count: data.actionItems.open },
-        { label: 'In progress', count: data.actionItems.inProgress },
-        { label: 'Completed', count: data.actionItems.done },
-        { label: 'Cancelled', count: data.actionItems.cancelled },
+        { label: 'dashboard:open', count: data.actionItems.open },
+        { label: 'dashboard:inProgress', count: data.actionItems.inProgress },
+        { label: 'dashboard:completed', count: data.actionItems.done },
+        { label: 'dashboard:cancelled', count: data.actionItems.cancelled },
       ]
     : []
   const max = Math.max(1, ...statuses.map((status) => status.count))
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Management overview</CardTitle>
+        <CardTitle>{t('dashboard:management')}</CardTitle>
         <p className='text-sm text-muted-foreground'>
-          Current status of official action items created during the applied
-          reporting period, within your managed units.
+          {t('dashboard:reportHint')}
         </p>
       </CardHeader>
       <CardContent className='space-y-5'>
@@ -206,28 +212,28 @@ function ManagementReport({
         >
           <div className='grid gap-3 sm:grid-cols-2'>
             <label className='space-y-1 text-sm font-medium'>
-              <span>Reporting period</span>
+              <span>{t('dashboard:period')}</span>
               <select
                 className={selectClass}
                 value={preset}
                 onChange={(event) => setPreset(event.target.value)}
               >
-                <option value='7'>Last 7 days</option>
-                <option value='30'>Last 30 days</option>
-                <option value='90'>Last 90 days</option>
+                <option value='7'>{t('dashboard:last7')}</option>
+                <option value='30'>{t('dashboard:last30')}</option>
+                <option value='90'>{t('dashboard:last90')}</option>
                 <option value='custom' disabled={!timezone}>
-                  Custom dates
+                  {t('dashboard:customDates')}
                 </option>
               </select>
             </label>
             <label className='space-y-1 text-sm font-medium'>
-              <span>Organizational scope</span>
+              <span>{t('dashboard:orgScope')}</span>
               <select
                 className={selectClass}
                 value={unitId}
                 onChange={(event) => setUnitId(event.target.value)}
               >
-                <option value=''>All managed units</option>
+                <option value=''>{t('dashboard:allUnits')}</option>
                 {availableUnits.map((unit) => (
                   <option key={unit.id} value={unit.id}>
                     {unit.name}
@@ -238,21 +244,21 @@ function ManagementReport({
           </div>
           {units.isError && (
             <div className='text-sm text-muted-foreground'>
-              Unit names are unavailable. Aggregate reporting remains available.
+              {t('dashboard:unitNamesUnavailable')}
               <Button
                 type='button'
                 size='sm'
                 variant='link'
                 onClick={() => void units.refetch()}
               >
-                Retry unit lookup
+                {t('dashboard:retryLookup')}
               </Button>
             </div>
           )}
           {preset === 'custom' && (
             <div className='grid gap-3 sm:grid-cols-2'>
               <label className='space-y-1 text-sm font-medium'>
-                <span>Start date</span>
+                <span>{t('dashboard:startDate')}</span>
                 <Input
                   type='date'
                   value={start}
@@ -261,7 +267,7 @@ function ManagementReport({
                 />
               </label>
               <label className='space-y-1 text-sm font-medium'>
-                <span>End date (inclusive)</span>
+                <span>{t('dashboard:endDate')}</span>
                 <Input
                   type='date'
                   value={end}
@@ -270,105 +276,113 @@ function ManagementReport({
                 />
               </label>
               <p className='text-xs text-muted-foreground sm:col-span-2'>
-                Calendar dates use {timezone ?? 'the reporting timezone'}.
+                {t('dashboard:calendarZone', {
+                  zone: timezone ?? t('dashboard:reportZoneFallback'),
+                })}
               </p>
             </div>
           )}
           {filterError && (
             <p role='alert' className='text-sm text-destructive'>
-              {filterError}
+              {localizedValidationMessage(filterError, t)}
             </p>
           )}
           <div className='flex flex-wrap gap-2'>
-            <Button type='submit'>Apply filters</Button>
+            <Button type='submit'>{t('dashboard:applyFilters')}</Button>
             <Button
               type='button'
               variant='outline'
               disabled={report.isFetching}
               onClick={refreshReport}
             >
-              Refresh applied report
+              {t('dashboard:refreshReport')}
             </Button>
           </div>
         </form>
         {report.isError ? (
           <RequestError error={report.error} retry={retryReport} />
         ) : report.isPending || !data ? (
-          <RequestLoading label='Loading management report…' />
+          <RequestLoading label={t('dashboard:loadingReport')} />
         ) : (
           <>
             <div className='space-y-1 text-xs text-muted-foreground'>
               <p>
-                Applied period:{' '}
-                {formatPresentationInstant(
-                  data.period.fromInclusive,
-                  data.timezone,
-                  locale
-                )}{' '}
-                to{' '}
-                {formatPresentationInstant(
-                  data.period.toExclusive,
-                  data.timezone,
-                  locale
-                )}{' '}
-                (exclusive)
+                {t('dashboard:appliedPeriod', {
+                  from: formatPresentationInstant(
+                    data.period.fromInclusive,
+                    data.timezone,
+                    locale
+                  ),
+                  to: formatPresentationInstant(
+                    data.period.toExclusive,
+                    data.timezone,
+                    locale
+                  ),
+                })}
               </p>
               <p>
-                Reporting timezone: {data.timezone} · As of{' '}
-                {formatPresentationInstant(data.asOf, data.timezone, locale)}
+                {t('dashboard:reportAsOf', {
+                  zone: data.timezone,
+                  date: formatPresentationInstant(
+                    data.asOf,
+                    data.timezone,
+                    locale
+                  ),
+                })}
               </p>
               <p>
-                Scope:{' '}
+                {t('dashboard:scope')}{' '}
                 {applied.orgUnitId
                   ? (availableUnits.find(
                       (unit) => unit.id === applied.orgUnitId
-                    )?.name ?? 'Selected managed unit')
-                  : 'All managed units'}{' '}
+                    )?.name ?? t('dashboard:selectedUnit'))
+                  : t('dashboard:allUnits')}{' '}
                 ({numberFormat.format(data.scope.organizationalUnitIds.length)})
               </p>
-              {report.isFetching && <p role='status'>Refreshing report…</p>}
+              {report.isFetching && (
+                <p role='status'>{t('dashboard:refreshingReport')}</p>
+              )}
             </div>
             <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
               <Metric
-                label='Official actions'
+                label={t('dashboard:officialActions')}
                 value={data.actionItems.totalOfficial}
                 icon={ListChecks}
               />
               <Metric
-                label='Pending'
+                label={t('dashboard:pending')}
                 value={data.actionItems.open + data.actionItems.inProgress}
                 icon={ListChecks}
               />
               <Metric
-                label='Completed'
+                label={t('dashboard:completed')}
                 value={data.actionItems.done}
                 icon={CheckCircle2}
               />
               <Metric
-                label='Overdue'
+                label={t('dashboard:overdue')}
                 value={data.actionItems.overdue}
                 icon={TriangleAlert}
               />
             </div>
             {data.actionItems.totalOfficial === 0 && (
               <p className='text-sm text-muted-foreground'>
-                No official action items were created in the applied period and
-                scope.
+                {t('dashboard:noOfficial')}
               </p>
             )}
             <section
               className='space-y-3'
-              aria-label='Action item status distribution'
+              aria-label={t('dashboard:distribution')}
             >
               <h3 className='text-sm font-semibold'>
-                Action item status distribution
+                {t('dashboard:distribution')}
               </h3>
               {statuses.map((status) => (
                 <div
                   key={status.label}
                   className='grid grid-cols-[7rem_1fr_auto] items-center gap-3 text-sm'
                 >
-                  <span>{status.label}</span>
+                  <span>{t(status.label)}</span>
                   <div
                     className='h-3 overflow-hidden rounded bg-muted'
                     aria-hidden='true'
@@ -384,18 +398,18 @@ function ManagementReport({
                 </div>
               ))}
               <p className='text-xs text-muted-foreground'>
-                Overdue is a subset of pending work, not a separate lifecycle
-                state.
+                {t('dashboard:overdueHint')}
               </p>
             </section>
             {data.unavailableMetrics.length > 0 && (
               <section className='space-y-2 border-t pt-4'>
-                <h3 className='text-sm font-semibold'>Reporting limitations</h3>
+                <h3 className='text-sm font-semibold'>
+                  {t('dashboard:limitations')}
+                </h3>
                 {data.unavailableMetrics.map(({ metric, reason }) => (
                   <p key={metric} className='text-sm text-muted-foreground'>
-                    {metricLabels[metric] ?? 'Additional metric'}:{' '}
-                    {reasonLabels[reason] ??
-                      'Unavailable under the current reporting policy.'}
+                    {t(metricLabels[metric] ?? 'dashboard:additionalMetric')}:{' '}
+                    {t(reasonLabels[reason] ?? 'dashboard:unavailablePolicy')}
                   </p>
                 ))}
               </section>

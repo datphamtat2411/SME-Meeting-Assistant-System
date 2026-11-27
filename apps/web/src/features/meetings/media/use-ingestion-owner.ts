@@ -6,9 +6,12 @@ import {
   useState,
 } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
+import { i18n } from '@/lib/i18n'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import type { MeetingAuthorizationContextValue } from '../meeting-authorization-context'
 import * as mediaApi from './media-api'
 import type { MediaUploadPhase, MeetingMedia } from './media-api'
+import { mediaErrorMessage } from './media-error-presentation'
 import type { MediaDraftState } from './meeting-session-types'
 import type {
   RecordingArtifactHandle,
@@ -70,10 +73,6 @@ function createIdentity(): string {
     throw new Error('This browser cannot create a safe operation identity.')
   }
   return crypto.randomUUID()
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : 'The operation failed.'
 }
 
 function readMediaId(error: unknown): string | null {
@@ -283,7 +282,7 @@ export function useIngestionOwner({
       publishSubmissionOperations()
       if (operation.sourceType === 'RECORDING') {
         setRecordingSubmissionPresentation({
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:uploadFailureHint'),
           uploadPhase: uncertain && mediaId ? 'reconciling' : null,
           uploadStatus: uncertain ? 'uncertain' : 'failed',
           uncertainMediaId: uncertain ? mediaId : null,
@@ -292,7 +291,7 @@ export function useIngestionOwner({
         setImportedMedia((state) => ({
           ...state,
           status: uncertain ? 'uncertain' : 'failed',
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:uploadFailureHint'),
           phase: uncertain && mediaId ? 'reconciling' : null,
           uncertainMediaId: uncertain ? mediaId : null,
         }))
@@ -311,7 +310,7 @@ export function useIngestionOwner({
       legacyAllowed?: boolean
     ): Promise<MeetingMedia | null> => {
       if (!canSubmit(legacyAllowed)) {
-        const message = 'Media submission is no longer authorized.'
+        const message = featureValidationMessage('media:submissionUnauthorized')
         if (draft === 'recording') {
           setRecordingSubmissionPresentation({ error: message })
         } else {
@@ -413,8 +412,9 @@ export function useIngestionOwner({
             operation.status = 'uncertain'
             operation.execution = null
             publishSubmissionOperations()
-            const message =
-              'The submission was cancelled before its server outcome was confirmed.'
+            const message = featureValidationMessage(
+              'media:submissionCancelledUncertain'
+            )
             if (draft === 'recording') {
               setRecordingSubmissionPresentation({
                 uploadStatus: 'uncertain',
@@ -463,8 +463,7 @@ export function useIngestionOwner({
       if (current.artifactId && isArtifactLocked(current.artifactId)) {
         setImportedMedia((state) => ({
           ...state,
-          error:
-            'Choose a different file only after the current submission outcome is resolved.',
+          error: featureValidationMessage('media:changeFileBlocked'),
         }))
         return
       }
@@ -485,7 +484,7 @@ export function useIngestionOwner({
       } catch (error) {
         setImportedMedia({
           ...initialMediaDraft(),
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:uploadFailureHint'),
         })
       }
     },
@@ -500,9 +499,7 @@ export function useIngestionOwner({
       if (!operation || operation.status !== 'uncertain') return
       const acknowledged =
         typeof window.confirm !== 'function' ||
-        window.confirm(
-          'The previous server outcome is unresolved. Starting an independent submission may create another media resource. Continue?'
-        )
+        window.confirm(i18n.t('media:confirmIndependentSubmission'))
       if (!acknowledged) return
       operation.execution?.controller.abort()
       operation.execution = null
@@ -614,7 +611,7 @@ export function useIngestionOwner({
             uploadPhase: definitiveFailure ? null : 'reconciling',
             uploadStatus: definitiveFailure ? 'failed' : 'uncertain',
             uncertainMediaId: definitiveFailure ? null : mediaId,
-            error: formatError(error),
+            error: mediaErrorMessage(error, 'media:uploadFailureHint'),
           })
         } else {
           setImportedMedia((state) => ({
@@ -622,7 +619,7 @@ export function useIngestionOwner({
             phase: definitiveFailure ? null : 'reconciling',
             status: definitiveFailure ? 'failed' : 'uncertain',
             uncertainMediaId: definitiveFailure ? null : mediaId,
-            error: formatError(error),
+            error: mediaErrorMessage(error, 'media:uploadFailureHint'),
           }))
         }
         return null
@@ -666,8 +663,7 @@ export function useIngestionOwner({
       operation.execution = null
       operation.status = 'uncertain'
       changed = true
-      const message =
-        'Submission is paused while meeting authorization is being verified.'
+      const message = featureValidationMessage('media:submissionPaused')
       if (operation.sourceType === 'RECORDING') {
         setRecordingSubmissionPresentation({
           uploadStatus: 'uncertain',

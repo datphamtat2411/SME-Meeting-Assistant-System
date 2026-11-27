@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import {
   assistantAccessError,
   captureAssistantCreationAccess,
@@ -291,12 +292,14 @@ export function useAssistantConversation(
       return
     const normalized = normalizeAssistantQuestion(question)
     if (isBlankAssistantQuestion(normalized)) {
-      setQuestionValidationError('Enter a question before submitting.')
+      setQuestionValidationError(
+        featureValidationMessage('assistant:questionRequired')
+      )
       return
     }
     if (assistantQuestionLength(normalized) > ASSISTANT_QUESTION_LIMIT) {
       setQuestionValidationError(
-        'Questions must be at most 4096 Unicode code points.'
+        featureValidationMessage('assistant:questionLimit')
       )
       return
     }

@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
 import { Mic, Play, Square, Upload } from 'lucide-react'
 import { toast } from 'sonner'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import { localizedValidationMessage } from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   MeetingSessionBoundary,
   useMeetingSession,
   type RecordingCaptureState,
+  type RecordingStartResult,
 } from './meeting-session-context'
 import { PlaybackControls } from './playback-controls'
 
@@ -19,14 +22,32 @@ function formatDuration(durationMs: number): string {
   )}`
 }
 
-function captureStateLabel(state: RecordingCaptureState): string | null {
+type Translate = ReturnType<typeof useUiTranslation>['t']
+
+const recordingStartErrorKeys: Record<
+  Extract<RecordingStartResult, { ok: false }>['reason'],
+  string
+> = {
+  unavailable: 'media:recordingUnavailable',
+  active: 'media:recordingAlreadyActive',
+  'unsupported-format': 'media:unsupportedRecorder',
+  'microphone-unsupported': 'media:microphoneUnsupported',
+  'microphone-failed': 'media:microphoneFailed',
+  'recorder-construction-failed': 'media:recorderConstructionFailed',
+  'start-failed': 'media:recordingStartFailed',
+}
+
+function captureStateLabel(
+  state: RecordingCaptureState,
+  t: Translate
+): string | null {
   switch (state) {
     case 'requesting-permission':
-      return 'Requesting microphone permission…'
+      return t('media:requestPermission')
     case 'stopping':
-      return 'Finalizing the local recording…'
+      return t('media:finalizingLocal')
     case 'failed':
-      return 'Recording failed.'
+      return t('media:recordingFailed')
     default:
       return null
   }
@@ -58,6 +79,7 @@ function RecordingPanelContent({
   canRecordAudio: boolean
   canSubmitMedia: boolean
 }) {
+  const { t } = useUiTranslation()
   const session = useMeetingSession()
   const { recording } = session
   const { stopRecording } = session
@@ -80,15 +102,18 @@ function RecordingPanelContent({
   async function begin() {
     const result = await session.startRecording(canRecordAudio)
     if (!result.ok) {
+      const title = i18n.t(recordingStartErrorKeys[result.reason])
       if (
-        result.title === 'Microphone access failed' ||
-        result.title === 'Recording could not be started'
+        result.reason === 'microphone-failed' ||
+        result.reason === 'start-failed'
       ) {
-        toast.error(result.title, {
-          description: result.description,
+        toast.error(title, {
+          description: result.description
+            ? localizedValidationMessage(result.description)
+            : undefined,
         })
       } else {
-        toast.error(result.title)
+        toast.error(title)
       }
     }
   }
@@ -96,14 +121,16 @@ function RecordingPanelContent({
   async function submit() {
     const media = await session.submitRecording(canSubmitMedia)
     if (media) {
-      toast.success('Recording is available for processing', {
-        description: `${media.originalFilename} was finalized by Core.`,
+      toast.success(i18n.t('media:recordingAvailable'), {
+        description: i18n.t('media:mediaFinalized', {
+          filename: media.originalFilename,
+        }),
       })
     } else if (!canSubmitMedia) {
-      toast.error('Recording submission is no longer authorized')
+      toast.error(i18n.t('media:recordingUnauthorized'))
     } else if (recording.error) {
-      toast.error('Recording upload failed', {
-        description: recording.error,
+      toast.error(i18n.t('media:recordingUploadFailed'), {
+        description: localizedValidationMessage(recording.error),
       })
     }
   }
@@ -114,14 +141,14 @@ function RecordingPanelContent({
     try {
       const media = await session.reconcileRecording()
       if (media) {
-        toast.success('Recording is available for processing')
+        toast.success(i18n.t('media:recordingAvailable'))
       }
     } finally {
       setCheckingUpload(false)
     }
   }
 
-  const stateLabel = captureStateLabel(recording.state)
+  const stateLabel = captureStateLabel(recording.state, t)
   const completed = recording.artifact && recording.state === 'completed'
   const hasReconciliationTarget =
     recording.uploadStatus === 'uncertain' &&
@@ -132,11 +159,10 @@ function RecordingPanelContent({
       <CardHeader>
         <CardTitle className='flex items-center gap-2'>
           <Mic className='size-5' />
-          Record meeting audio
+          {t('media:recordingTitle')}
         </CardTitle>
         <p className='text-sm text-muted-foreground'>
-          Capture starts only after explicit microphone consent. Review the
-          completed AAC-in-M4A artifact before submitting it to Core.
+          {t('media:recordingDescription')}
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
@@ -149,8 +175,8 @@ function RecordingPanelContent({
             >
               <Square className='size-4' />
               {recording.state === 'stopping'
-                ? 'Finalizing…'
-                : 'Stop recording'}
+                ? t('media:finalizing')
+                : t('media:stopRecording')}
             </Button>
           ) : canRecordAudio && !completed ? (
             <Button
@@ -160,12 +186,12 @@ function RecordingPanelContent({
             >
               <Mic className='size-4' />
               {recording.state === 'requesting-permission'
-                ? 'Requesting…'
-                : 'Start recording'}
+                ? t('media:requesting')
+                : t('media:startRecording')}
             </Button>
           ) : !completed ? (
             <span className='text-sm text-muted-foreground'>
-              New recording is not available for the current meeting state.
+              {t('media:newRecordingUnavailable')}
             </span>
           ) : null}
           {isRecording && (
@@ -173,7 +199,7 @@ function RecordingPanelContent({
               role='status'
               className='text-sm font-medium text-destructive'
             >
-              <span>Recording in progress…</span>{' '}
+              <span>{t('media:recordingInProgress')}</span>{' '}
               <span>{formatDuration(recording.durationMs)}</span>
             </span>
           )}
@@ -184,16 +210,16 @@ function RecordingPanelContent({
             className='rounded-lg border bg-muted/20 p-3'
             aria-label={
               recording.audioAnalysisAvailable
-                ? 'Live microphone activity'
-                : 'Microphone activity unavailable'
+                ? t('media:micActivityLive')
+                : t('media:micActivityUnavailable')
             }
           >
             <div className='flex items-center justify-between gap-3 text-xs text-muted-foreground'>
-              <span>Microphone activity</span>
+              <span>{t('media:micActivity')}</span>
               <span>
                 {recording.audioAnalysisAvailable
                   ? `${Math.round(recording.microphoneLevel * 100)}%`
-                  : 'Unavailable in this browser'}
+                  : t('media:browserUnavailable')}
               </span>
             </div>
             <div className='mt-2 flex h-8 items-end gap-1' aria-hidden='true'>
@@ -228,23 +254,23 @@ function RecordingPanelContent({
         )}
         {recording.error && recording.state !== 'failed' && (
           <p role='alert' className='text-sm text-destructive'>
-            {recording.error}
+            {localizedValidationMessage(recording.error, t)}
           </p>
         )}
         {recording.uploadPhase && (
           <p role='status' className='text-sm text-muted-foreground'>
             {recording.uploadPhase === 'intent-created'
-              ? 'Upload intent created.'
+              ? t('media:intentCreated')
               : recording.uploadPhase === 'storage-uploading'
-                ? 'Uploading the captured file…'
+                ? t('media:uploadingCapture')
                 : recording.uploadPhase === 'storage-uploaded'
-                  ? 'Storage upload completed.'
+                  ? t('media:storageUploaded')
                   : recording.uploadPhase === 'finalizing'
-                    ? 'Core is inspecting and finalizing the recording…'
+                    ? t('media:finalizingRecording')
                     : recording.uploadPhase === 'reconciling'
-                      ? 'Checking the authoritative Core media status…'
+                      ? t('media:reconciling')
                       : recording.uploadPhase === 'available'
-                        ? 'Media is available for processing.'
+                        ? t('media:mediaReady')
                         : null}
           </p>
         )}
@@ -253,13 +279,11 @@ function RecordingPanelContent({
           <div className='space-y-3 rounded-lg border bg-muted/10 p-4'>
             <div className='flex flex-wrap items-center justify-between gap-2'>
               <div>
-                <p className='font-medium'>
-                  Captured recording ready for review
-                </p>
+                <p className='font-medium'>{t('media:captureReady')}</p>
                 <p className='text-sm text-muted-foreground'>
                   {formatDuration(recording.artifact.durationMs)} ·{' '}
-                  {(recording.artifact.file.size / 1048576).toFixed(1)} MB
-                  {' captured (M4A/AAC declaration)'}
+                  {(recording.artifact.file.size / 1048576).toFixed(1)} MB{' '}
+                  {t('media:capturedDeclaration')}
                 </p>
               </div>
               {recording.artifact.previewUrl && (
@@ -270,7 +294,7 @@ function RecordingPanelContent({
                   onClick={session.playLocalRecording}
                 >
                   <Play className='size-4' />
-                  Use shared player
+                  {t('media:sharedPlayer')}
                 </Button>
               )}
             </div>
@@ -280,13 +304,12 @@ function RecordingPanelContent({
                 <PlaybackControls />
               ) : (
                 <p className='text-sm text-muted-foreground'>
-                  Select “Use shared player” to preview this recording.
+                  {t('media:sharedPlayerHint')}
                 </p>
               )
             ) : (
               <p className='text-sm text-muted-foreground'>
-                This browser cannot create a local preview URL. The recording
-                can still be submitted.
+                {t('media:previewUnavailable')}
               </p>
             )}
             <div className='flex flex-wrap gap-2'>
@@ -301,10 +324,10 @@ function RecordingPanelContent({
               >
                 <Upload className='size-4' />
                 {recording.uploadStatus === 'submitting'
-                  ? 'Submitting…'
+                  ? t('media:submitting')
                   : recording.uploadStatus === 'uncertain'
-                    ? 'Retry submission'
-                    : 'Submit recording'}
+                    ? t('media:retrySubmission')
+                    : t('media:submitRecording')}
               </Button>
               {hasReconciliationTarget && (
                 <>
@@ -313,14 +336,16 @@ function RecordingPanelContent({
                     disabled={checkingUpload}
                     onClick={() => void checkUploadStatus()}
                   >
-                    {checkingUpload ? 'Checking…' : 'Check upload status'}
+                    {checkingUpload
+                      ? t('media:checking')
+                      : t('media:checkUploadStatus')}
                   </Button>
                   <Button
                     variant='ghost'
                     disabled={checkingUpload}
                     onClick={session.startNewRecordingSubmission}
                   >
-                    Start a new submission
+                    {t('media:newSubmission')}
                   </Button>
                 </>
               )}
@@ -329,7 +354,7 @@ function RecordingPanelContent({
                 disabled={recording.state !== 'completed'}
                 onClick={session.discardRecording}
               >
-                Discard
+                {t('media:discard')}
               </Button>
             </div>
           </div>

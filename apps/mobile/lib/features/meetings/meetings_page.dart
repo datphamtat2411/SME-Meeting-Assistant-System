@@ -1,9 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:sme_meeting_assistant/core/api_response.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/core/ui_presentation.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 import 'package:sme_meeting_assistant/features/calendar/calendar_page.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
@@ -382,6 +382,5 @@ class _MeetingsPageState extends State<MeetingsPage> {
     },
   );
 
-  String _failureMessage(Object? error) =>
-      error is ApiFailure ? error.message : 'Đã xảy ra lỗi không mong muốn.';
+  String _failureMessage(Object? error) => apiFailureLabel(error);
 }

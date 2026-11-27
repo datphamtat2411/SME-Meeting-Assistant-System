@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { i18n } from '@/lib/i18n'
 import {
   formatMinutesDuration,
   minutesStatusLabel,
@@ -21,5 +22,15 @@ describe('Minutes presentation', () => {
     expect(formatMinutesDuration(null)).toBe('Not available')
     expect(formatMinutesDuration(3661000)).toBe('1h 1m 1s')
     expect(formatMinutesDuration(0)).toBe('0 ms')
+  })
+
+  it('localizes warnings and statuses without changing their identity', () => {
+    const translate = (key: string, options?: { value: string }) =>
+      i18n.t(key, { ...options, lng: 'vi' })
+    expect(minutesStatusLabel('NEEDS_REVIEW', translate)).toBe('Cần xem xét')
+    expect(minutesWarning('TRANSCRIPT_FAILED', translate)).toBe(
+      'Xử lý bản ghi lời thoại thất bại.'
+    )
+    expect(minutesWarning('FUTURE_WARNING', translate)).toBe('FUTURE_WARNING')
   })
 })

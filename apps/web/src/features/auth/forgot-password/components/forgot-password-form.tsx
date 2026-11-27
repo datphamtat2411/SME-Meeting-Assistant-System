@@ -2,6 +2,8 @@ import { z } from 'zod'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Loader2, Mail, MailCheck } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import { cn } from '@/lib/utils'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -21,9 +23,9 @@ const recoverySchema = z.object({
   email: z
     .string()
     .trim()
-    .min(1, 'Enter your organization email.')
-    .max(320, 'Enter a valid email address.')
-    .pipe(z.email({ error: 'Enter a valid email address.' })),
+    .min(1, featureValidationMessage('auth:organizationEmailRequired'))
+    .max(320, featureValidationMessage('auth:validEmail'))
+    .pipe(z.email({ error: featureValidationMessage('auth:validEmail') })),
 })
 
 type RecoveryFields = z.infer<typeof recoverySchema>
@@ -32,6 +34,7 @@ export function ForgotPasswordForm({
   className,
   ...props
 }: React.ComponentProps<'form'>) {
+  const { t } = useUiTranslation()
   const submission = useAccountFlowSubmission('recovery')
   const form = useForm<RecoveryFields>({
     resolver: zodResolver(recoverySchema),
@@ -45,7 +48,10 @@ export function ForgotPasswordForm({
     )
     if (result === 'completed') form.reset()
     else if (result?.field === 'email') {
-      form.setError('email', { type: 'server', message: result.message })
+      form.setError('email', {
+        type: 'server',
+        message: featureValidationMessage(result.messageKey),
+      })
     }
   }
 
@@ -59,10 +65,9 @@ export function ForgotPasswordForm({
           className='grid justify-items-center gap-2 text-center'
         >
           <MailCheck className='size-8 text-primary' aria-hidden='true' />
-          <p className='font-medium'>Check your email</p>
+          <p className='font-medium'>{t('auth:checkInbox')}</p>
           <p className='text-sm text-muted-foreground'>
-            If an eligible account exists for this email address, password reset
-            instructions will be sent. Check your inbox and spam folder.
+            {t('auth:neutralRecoveryResult')}
           </p>
         </div>
         <Button
@@ -72,7 +77,7 @@ export function ForgotPasswordForm({
             submission.reset()
           }}
         >
-          Use a different email
+          {t('auth:useDifferentEmail')}
         </Button>
       </div>
     )
@@ -92,7 +97,7 @@ export function ForgotPasswordForm({
           name='email'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Organization email</FormLabel>
+              <FormLabel>{t('auth:organizationEmail')}</FormLabel>
               <FormControl>
                 <Input
                   type='email'
@@ -108,7 +113,9 @@ export function ForgotPasswordForm({
         />
         {submission.failure && !submission.failure.field && (
           <Alert variant='destructive'>
-            <AlertDescription>{submission.failure.message}</AlertDescription>
+            <AlertDescription>
+              {t(submission.failure.messageKey)}
+            </AlertDescription>
           </Alert>
         )}
         <Button
@@ -118,10 +125,10 @@ export function ForgotPasswordForm({
         >
           {submission.pending ? <Loader2 className='animate-spin' /> : <Mail />}
           {submission.pending
-            ? 'Requesting…'
+            ? t('auth:requesting')
             : submission.failure?.kind === 'unavailable'
-              ? 'Try again'
-              : 'Send recovery link'}
+              ? t('auth:tryAgain')
+              : t('auth:sendRecoveryLink')}
         </Button>
       </form>
     </Form>

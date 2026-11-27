@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
@@ -8,6 +9,7 @@ import { ManagementDashboard } from './management-dashboard'
 import { PersonalDashboard } from './personal-dashboard'
 
 export function Dashboard() {
+  const { t } = useUiTranslation()
   const verification = useCurrentUserVerification()
   const identity = verification.identity
   return (
@@ -35,7 +37,7 @@ export function Dashboard() {
             retry={() => void verification.query.refetch()}
           />
         ) : (
-          <RequestLoading label='Verifying your workspace…' />
+          <RequestLoading label={t('dashboard:verifyingWorkspace')} />
         )}
       </Main>
     </>

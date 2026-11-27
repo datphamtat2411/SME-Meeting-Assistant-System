@@ -5,6 +5,12 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -68,6 +74,7 @@ export function AccountForm() {
 }
 
 function AccountEditor({ preferences }: { preferences: Preferences }) {
+  const { t, i18n } = useUiTranslation()
   const qc = useQueryClient()
   const form = useForm<RegionalDraft>({
     resolver: zodResolver(schema),
@@ -88,6 +95,11 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
   const timezone = useWatch({ control: form.control, name: 'timezone' })
   const locale = useWatch({ control: form.control, name: 'locale' })
   const zones = useMemo(() => timezoneOptions(), [])
+  const uiLanguage = i18n.resolvedLanguage ?? 'en'
+  const formatLocaleLabel = useCallback(
+    (value: string) => localeLabel(value, uiLanguage),
+    [uiLanguage]
+  )
   const preview = resolveRegionalPreferences({ timezone, locale })
   const reference = new Date('2026-01-15T09:30:00Z')
   const changed =
@@ -139,7 +151,9 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
       clearErrors()
     } catch (error) {
       if (isSettingsSessionCurrent(generation)) {
-        setError('root', { message: normalizeCoreApiError(error).message })
+        setError('root', {
+          message: requestErrorFormMessage(normalizeCoreApiError(error)),
+        })
       }
     } finally {
       setRefreshing(false)
@@ -152,7 +166,7 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
     if (dirtyFields.timezone && data.timezone !== preferences.timezone) {
       if (data.timezone !== null && !isTimezoneSelection(data.timezone)) {
         setError('timezone', {
-          message: 'Select a valid IANA timezone identifier.',
+          message: featureValidationMessage('settings:invalidTimezone'),
         })
         return
       }
@@ -160,7 +174,9 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
     }
     if (dirtyFields.locale && data.locale !== preferences.locale) {
       if (data.locale !== null && !isLocaleTag(data.locale)) {
-        setError('locale', { message: 'Enter a valid regional locale.' })
+        setError('locale', {
+          message: featureValidationMessage('settings:invalidLocale'),
+        })
         return
       }
       patch.locale = data.locale
@@ -174,7 +190,7 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
       const latest =
         qc.getQueryData<Preferences>(preferencesQueryKey) ?? confirmed
       reset(regionalDraft(latest))
-      toast.success('Account preferences saved')
+      toast.success(t('settings:accountSaved'))
     } catch (error) {
       if (!isSettingsSessionCurrent(input.generation)) return
       const failure = normalizeCoreApiError(error)
@@ -189,8 +205,8 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
       setReconcile(uncertain)
       setError('root', {
         message: uncertain
-          ? 'The save outcome is uncertain. Refresh saved preferences before retrying.'
-          : failure.message,
+          ? featureValidationMessage('settings:saveUncertain')
+          : requestErrorFormMessage(failure),
       })
     }
   }
@@ -198,15 +214,15 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(save)} className='max-w-xl space-y-6'>
-        <h3 className='font-medium'>Regional preferences</h3>
+        <h3 className='font-medium'>{t('settings:regionalPreferences')}</h3>
         <FormField
           control={form.control}
           name='timezone'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Time zone</FormLabel>
+              <FormLabel>{t('settings:timezone')}</FormLabel>
               <RegionalPicker
-                label='Time zone'
+                label={t('settings:timezone')}
                 value={field.value}
                 onChange={field.onChange}
                 options={zones}
@@ -215,8 +231,7 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
                 disabled={busy}
               />
               <FormDescription>
-                Choose a preferred time zone or use your browser default. The
-                server validates time zone identifiers.
+                {t('settings:timezoneDescription')}
               </FormDescription>
               <FormMessage />
             </FormItem>
@@ -227,28 +242,27 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
           name='locale'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Regional format</FormLabel>
+              <FormLabel>{t('settings:regionalFormat')}</FormLabel>
               <RegionalPicker
-                label='Regional format'
+                label={t('settings:regionalFormat')}
                 value={field.value}
                 onChange={field.onChange}
                 options={localeOptions}
-                formatLabel={localeLabel}
+                formatLabel={formatLocaleLabel}
                 validateCustom={isLocaleTag}
                 disabled={busy}
               />
               <FormDescription>
-                Choose date, time and number formats, not the interface
-                language.
+                {t('settings:regionalDescription')}
               </FormDescription>
               <FormMessage />
             </FormItem>
           )}
         />
         <section className='space-y-3 rounded-lg border bg-muted/30 p-4'>
-          <h3 className='text-sm font-medium'>Format preview</h3>
+          <h3 className='text-sm font-medium'>{t('settings:formatPreview')}</h3>
           <dl className='grid grid-cols-[auto_1fr] gap-2 text-sm'>
-            <dt className='text-muted-foreground'>Date</dt>
+            <dt className='text-muted-foreground'>{t('settings:date')}</dt>
             <dd>
               {new Intl.DateTimeFormat(preview.locale, {
                 dateStyle: 'long',
@@ -256,14 +270,14 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
                 timeZone: preview.timezone,
               }).format(reference)}
             </dd>
-            <dt className='text-muted-foreground'>Time</dt>
+            <dt className='text-muted-foreground'>{t('settings:time')}</dt>
             <dd>
               {new Intl.DateTimeFormat(preview.locale, {
                 timeStyle: 'short',
                 timeZone: preview.timezone,
               }).format(reference)}
             </dd>
-            <dt className='text-muted-foreground'>Number</dt>
+            <dt className='text-muted-foreground'>{t('settings:number')}</dt>
             <dd>
               {new Intl.NumberFormat(preview.locale, {
                 minimumFractionDigits: 2,
@@ -272,22 +286,22 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
           </dl>
           {(preview.timezoneFallback || preview.localeFallback) && (
             <p role='status' className='text-sm text-muted-foreground'>
-              Your browser cannot use one of the selected values. The preview
-              uses {preview.timezone} and {preview.locale} without changing
-              saved preferences.
+              {t('settings:regionalFallback', {
+                timezone: preview.timezone,
+                locale: preview.locale,
+              })}
             </p>
           )}
         </section>
         <p className='text-sm text-muted-foreground'>
-          Saved time zone: {preferences.timezone ?? 'Browser default'}. Saved
-          regional format: {preferences.locale ?? 'Browser default'}. These
-          settings control how dates, numbers and schedules are displayed. New
-          scheduling editors use the saved effective timezone; existing meeting
-          instants are never changed.
+          {t('settings:savedRegional', {
+            timezone: preferences.timezone ?? t('settings:browserDefault'),
+            locale: preferences.locale ?? t('settings:browserDefault'),
+          })}
         </p>
         {form.formState.errors.root?.message && (
           <p role='alert' className='text-sm text-destructive'>
-            {form.formState.errors.root.message}
+            {localizedValidationMessage(form.formState.errors.root.message, t)}
           </p>
         )}
         {reconcile && (
@@ -297,12 +311,14 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
             disabled={busy}
             onClick={() => void refresh(false)}
           >
-            Refresh saved preferences
+            {t('settings:refreshPreferences')}
           </Button>
         )}
         <div className='flex flex-wrap gap-2'>
           <Button type='submit' disabled={!changed || busy || reconcile}>
-            {mutation.isPending ? 'Saving…' : 'Save preferences'}
+            {mutation.isPending
+              ? t('settings:saving')
+              : t('settings:savePreferences')}
           </Button>
           <Button
             type='button'
@@ -313,7 +329,7 @@ function AccountEditor({ preferences }: { preferences: Preferences }) {
               else reset(regionalDraft(preferences))
             }}
           >
-            Discard
+            {t('settings:discard')}
           </Button>
         </div>
       </form>

@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { act, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { coreApi } from '@/lib/core-api'
+import { setUiLanguage } from '@/lib/i18n'
 import { MediaUploadError } from './media-api'
 import { UploadPanel } from './upload-panel'
 
@@ -140,6 +141,28 @@ describe('UploadPanel', () => {
       availableAt: '2030-01-01T00:00:01Z',
       failureCode: null,
     })
+  })
+
+  it('keeps the selected file when the UI language changes', async () => {
+    const screen = await renderPanel()
+    try {
+      await userEvent.upload(
+        screen.getByLabelText('Select WAV, MP3, or AAC M4A audio file'),
+        new File(['wav'], 'meeting.wav', { type: 'audio/wav' })
+      )
+      await act(async () => {
+        await setUiLanguage('vi')
+      })
+      await expect.element(screen.getByText('meeting.wav')).toBeInTheDocument()
+      await expect
+        .element(screen.getByRole('button', { name: 'Tải lên và hoàn tất' }))
+        .toBeEnabled()
+      expect(mediaMocks.uploadMeetingFile).not.toHaveBeenCalled()
+    } finally {
+      await act(async () => {
+        await setUiLanguage('en')
+      })
+    }
   })
 
   it('retains the selected file after an uncertain operation', async () => {

@@ -5,6 +5,8 @@ import {
   useRef,
   useState,
 } from 'react'
+import { featureValidationMessage } from '@/lib/i18n/presentation'
+import { mediaErrorMessage } from './media-error-presentation'
 import type {
   RecordingArtifact,
   RecordingSessionSnapshot,
@@ -88,10 +90,6 @@ function initialRecording(): RecordingSessionSnapshot {
     uploadStatus: 'idle',
     uncertainMediaId: null,
   }
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : 'The operation failed.'
 }
 
 function clearTimer(timer: { current: number | null }) {
@@ -230,9 +228,8 @@ export function useRecordingOwner({
       if (!canRecord(legacyAllowed)) {
         return {
           ok: false,
-          title: 'Recording is not available',
-          description:
-            'The current meeting state or authorization does not allow capture.',
+          reason: 'unavailable',
+          description: featureValidationMessage('media:captureNotAllowed'),
         }
       }
       if (
@@ -245,22 +242,22 @@ export function useRecordingOwner({
       ) {
         return {
           ok: false,
-          title: 'Recording is already active or awaiting review.',
+          reason: 'active',
         }
       }
       const mimeType = supportedRecordingMimeType()
       if (!mimeType) {
         return {
           ok: false,
-          title: 'This browser cannot record the supported AAC-in-M4A format.',
-          description: 'Use the WAV, MP3, or M4A file import path instead.',
+          reason: 'unsupported-format',
+          description: featureValidationMessage('media:supportedFileInstead'),
         }
       }
       if (!navigator.mediaDevices?.getUserMedia) {
         return {
           ok: false,
-          title: 'This browser cannot request microphone access.',
-          description: 'Use the supported-file import path instead.',
+          reason: 'microphone-unsupported',
+          description: featureValidationMessage('media:supportedFileImport'),
         }
       }
 
@@ -281,12 +278,12 @@ export function useRecordingOwner({
         setRecording({
           ...initialRecording(),
           state: 'failed',
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:microphoneFailureHint'),
         })
         return {
           ok: false,
-          title: 'Microphone access failed',
-          description: formatError(error),
+          reason: 'microphone-failed',
+          description: mediaErrorMessage(error, 'media:microphoneFailureHint'),
         }
       }
 
@@ -306,12 +303,12 @@ export function useRecordingOwner({
         setRecording({
           ...initialRecording(),
           state: 'failed',
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:recordingStartHint'),
         })
         return {
           ok: false,
-          title: 'This browser cannot start the supported AAC-in-M4A recorder.',
-          description: formatError(error),
+          reason: 'recorder-construction-failed',
+          description: mediaErrorMessage(error, 'media:recordingStartHint'),
         }
       }
 
@@ -334,8 +331,7 @@ export function useRecordingOwner({
           ) {
             setRecording((current) => ({
               ...current,
-              error:
-                'Microphone access ended. The captured portion is being finalized.',
+              error: featureValidationMessage('media:recordingAccessEnded'),
             }))
             instance.stop()
           }
@@ -354,8 +350,7 @@ export function useRecordingOwner({
         setRecording((current) => ({
           ...current,
           state: 'failed',
-          error:
-            'The browser recorder failed. Use the supported-file import path instead.',
+          error: featureValidationMessage('media:recorderFailed'),
         }))
       }
       instance.onstop = () => {
@@ -378,8 +373,7 @@ export function useRecordingOwner({
           setRecording({
             ...initialRecording(),
             state: 'failed',
-            error:
-              'The recorder produced no supported AAC-in-M4A audio. Use the supported-file import path instead.',
+            error: featureValidationMessage('media:recordingEmpty'),
           })
           return
         }
@@ -426,12 +420,12 @@ export function useRecordingOwner({
         setRecording({
           ...initialRecording(),
           state: 'failed',
-          error: formatError(error),
+          error: mediaErrorMessage(error, 'media:recordingStartHint'),
         })
         return {
           ok: false,
-          title: 'Recording could not be started',
-          description: formatError(error),
+          reason: 'start-failed',
+          description: mediaErrorMessage(error, 'media:recordingStartHint'),
         }
       }
     },
@@ -482,8 +476,7 @@ export function useRecordingOwner({
     if (isSubmissionLocked(artifact.artifactId)) {
       setRecording((current) => ({
         ...current,
-        error:
-          'This recording cannot be discarded while submission outcome is pending or uncertain.',
+        error: featureValidationMessage('media:discardBlocked'),
       }))
       return
     }

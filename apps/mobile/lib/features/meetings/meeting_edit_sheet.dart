@@ -1,10 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/app_theme.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/core/ui_presentation.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_editing.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
@@ -388,9 +388,7 @@ class _MeetingEditSheetState extends State<MeetingEditSheet>
                         Padding(
                           padding: const EdgeInsets.only(top: 8),
                           child: Text(
-                            state.failure is ApiFailure
-                                ? (state.failure! as ApiFailure).message
-                                : state.failure.toString(),
+                            apiFailureLabel(state.failure),
                             style: const TextStyle(color: Palette.red),
                           ),
                         ),

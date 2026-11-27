@@ -1323,7 +1323,7 @@ void main() {
       await tester.tap(find.byTooltip('Tạo quyết định'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'Retain this draft');
-      await tester.tap(find.text('Đính kèm bằng chứng transcript'));
+      await tester.tap(find.text('Đính kèm bằng chứng từ bản ghi'));
       await tester.pump();
       await tester.tap(find.text('Tiếp tục'));
       await tester.pumpAndSettle();
@@ -1443,7 +1443,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Transcript').first);
+    await tester.tap(find.text('Bản ghi lời thoại').first);
     await tester.pumpAndSettle();
     expect(
       find.text('Chưa có bằng chứng để đánh giá độ bao phủ.'),

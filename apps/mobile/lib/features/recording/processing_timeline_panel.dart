@@ -6,8 +6,10 @@ import 'package:flutter/material.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/widgets.dart';
+import '../../core/ui_presentation.dart';
 import 'media_contracts.dart';
 import 'processing_manager.dart';
+import 'processing_presentation.dart';
 import '../meetings/meeting_foundation.dart';
 
 class ProcessingTimelinePanel extends StatefulWidget {
@@ -223,9 +225,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
       return MessagePanel(
         icon: Icons.cloud_off_outlined,
         title: 'Không thể tải dữ liệu',
-        description: failure is ApiFailure
-            ? (failure as ApiFailure).message
-            : 'Đã xảy ra lỗi không mong muốn.',
+        description: apiFailureLabel(failure),
         onRetry: reload,
       );
     }
@@ -261,16 +261,23 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                       const SizedBox(width: 9),
                       Expanded(
                         child: Text(
-                          item.currentStage ?? 'AI processing',
+                          item.currentStage == null
+                              ? processingJobTypeLabel(item.jobType)
+                              : processingStageLabel(item.currentStage),
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
                       ),
-                      StatePill(item.status.wireValue),
+                      Flexible(
+                        child: StatePill(
+                          item.status.wireValue,
+                          label: processingJobStatusLabel(item.status),
+                        ),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 9),
                   Text(
-                    'Job ID: ' + item.id,
+                    'Mã tác vụ: ${item.id}',
                     style: const TextStyle(fontSize: 11, color: Palette.muted),
                   ),
                   ...item.stageRuns.map(
@@ -285,7 +292,8 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                           ),
                           Expanded(
                             child: Text(
-                              step.stageCode + ' · ' + step.status.wireValue,
+                              '${processingStageLabel(step.stageCode)} · '
+                              '${processingStageStatusLabel(step.status)}',
                               style: const TextStyle(fontSize: 12),
                             ),
                           ),
@@ -297,7 +305,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Text(
-                        item.warningSummary!,
+                        processingWarningLabel(item.warningSummary!),
                         style: const TextStyle(color: Palette.amber),
                       ),
                     ),
@@ -305,14 +313,17 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Text(
-                        item.errorSummary!,
+                        processingFailureLabel(
+                          item.errorCode,
+                          item.errorSummary,
+                        ),
                         style: const TextStyle(color: Palette.red),
                       ),
                     ),
                   if (handoff != null && widget.onReviewRequested != null)
                     OutlinedButton(
                       onPressed: () => widget.onReviewRequested!(handoff),
-                      child: const Text('Mở duyệt bản ghi'),
+                      child: const Text('Mở rà soát bản ghi'),
                     ),
                   if (item.retryable)
                     Align(
@@ -324,7 +335,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                                 retrying
                             ? null
                             : () => retry(item),
-                        child: const Text('Thử lại xử lý'),
+                        child: const Text('Thử xử lý lại'),
                       ),
                     ),
                 ],

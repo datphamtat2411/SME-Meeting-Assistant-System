@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { CircleCheck } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -23,24 +24,22 @@ import {
 } from '../session/session-revalidation'
 
 export function PasswordReset() {
+  const { t } = useUiTranslation()
   return (
     <AuthLayout>
       <Card className='max-w-sm gap-4 sm:min-w-sm'>
         <CardHeader>
           <CardTitle className='text-lg tracking-tight'>
-            Reset your password
+            {t('auth:resetTitle')}
           </CardTitle>
-          <CardDescription>
-            Choose a new password using the single-use recovery link from your
-            email. Recovery links expire 30 minutes after issuance.
-          </CardDescription>
+          <CardDescription>{t('auth:resetDescription')}</CardDescription>
         </CardHeader>
         <CardContent>
           <PasswordResetWorkflow />
         </CardContent>
         <CardFooter>
           <Link to='/forgot-password' className='text-sm underline'>
-            Request a new reset link
+            {t('auth:newResetLink')}
           </Link>
         </CardFooter>
       </Card>
@@ -49,6 +48,7 @@ export function PasswordReset() {
 }
 
 function PasswordResetWorkflow() {
+  const { t } = useUiTranslation()
   const { capability, clearCapability } = useAccountCapability()
   const [outcome, setOutcome] = useState<'ready' | 'completed' | 'uncertain'>(
     'ready'
@@ -74,10 +74,7 @@ function PasswordResetWorkflow() {
   if (!capability) {
     return (
       <Alert variant='destructive'>
-        <AlertDescription>
-          This link is missing or invalid. Reopen the original recovery email or
-          request a new reset link.
-        </AlertDescription>
+        <AlertDescription>{t('auth:invalidResetLink')}</AlertDescription>
       </Alert>
     )
   }
@@ -103,6 +100,7 @@ function focusResult(element: HTMLDivElement | null) {
 }
 
 function ResetResult({ confirmed }: { confirmed: boolean }) {
+  const { t } = useUiTranslation()
   const session = useSessionRevalidation()
 
   return (
@@ -115,50 +113,44 @@ function ResetResult({ confirmed }: { confirmed: boolean }) {
           className='grid justify-items-center gap-2 text-center'
         >
           <CircleCheck className='size-8 text-primary' aria-hidden='true' />
-          <p className='font-medium'>Password reset complete</p>
+          <p className='font-medium'>{t('auth:resetCompleted')}</p>
           <p className='text-sm text-muted-foreground'>
-            Your password was set successfully. Previous sessions for that
-            account have been revoked.
+            {t('auth:resetCompletedDescription')}
           </p>
         </div>
       ) : (
         <Alert variant='destructive' tabIndex={-1} ref={focusResult}>
-          <AlertDescription>
-            The password change may already have completed. Try signing in with
-            the password you selected, or request a fresh recovery link.
-          </AlertDescription>
+          <AlertDescription>{t('auth:resetUncertainResult')}</AlertDescription>
         </Alert>
       )}
       {session === 'checking' ? (
         <p className='text-sm text-muted-foreground' aria-live='polite'>
-          Checking your session…
+          {t('auth:checkingSession')}
         </p>
       ) : session === 'unavailable' || session === 'denied' ? (
         <div className='grid gap-2'>
           <p className='text-sm text-muted-foreground' aria-live='polite'>
-            Your browser session could not be verified. Protected access remains
-            unavailable until verification succeeds.
+            {t('auth:sessionVerificationFailed')}
           </p>
           <Button onClick={() => void retrySessionRevalidation()}>
-            Retry session verification
+            {t('auth:retryVerification')}
           </Button>
           <Button asChild variant='outline'>
-            <Link to='/sign-in'>Go to sign in</Link>
+            <Link to='/sign-in'>{t('auth:goToSignIn')}</Link>
           </Button>
         </div>
       ) : session === 'verified' ? (
         <div className='grid gap-2'>
           <p className='text-sm text-muted-foreground'>
-            A valid session remains in this browser. Return to your workspace
-            and sign out there if you want to sign in as another account.
+            {t('auth:existingSession')}
           </p>
           <Button asChild>
-            <Link to='/'>Return to workspace</Link>
+            <Link to='/'>{t('auth:returnWorkspace')}</Link>
           </Button>
         </div>
       ) : (
         <Button asChild>
-          <Link to='/sign-in'>Continue to sign in</Link>
+          <Link to='/sign-in'>{t('auth:continueSignIn')}</Link>
         </Button>
       )}
     </div>

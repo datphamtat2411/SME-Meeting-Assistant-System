@@ -1,3 +1,5 @@
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import { localizedValidationMessage } from '@/lib/i18n/presentation'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -17,31 +19,31 @@ import type {
 import type { MemberSnapshot } from './member-api'
 
 function actionLabel(action: MemberLifecycleAction): string {
-  if (action === 'deactivate') return 'Deactivate account'
-  if (action === 'reactivate') return 'Reactivate account'
-  return 'Reissue setup'
+  if (action === 'deactivate') return i18n.t('members:deactivateAccount')
+  if (action === 'reactivate') return i18n.t('members:reactivateAccount')
+  return i18n.t('members:reissueSetup')
 }
 
 function actionTitle(action: MemberLifecycleAction): string {
-  if (action === 'deactivate') return 'Deactivate member account?'
-  if (action === 'reactivate') return 'Reactivate member account?'
-  return 'Reissue secure setup?'
+  if (action === 'deactivate') return i18n.t('members:deactivateQuestion')
+  if (action === 'reactivate') return i18n.t('members:reactivateQuestion')
+  return i18n.t('members:reissueQuestion')
 }
 
 function actionDescription(action: MemberLifecycleAction): string {
   if (action === 'deactivate') {
-    return 'Deactivation prevents the account from authenticating while preserving historical meetings and account data. It does not delete the member.'
+    return i18n.t('members:deactivateHelp')
   }
   if (action === 'reactivate') {
-    return 'Reactivation is available only after the member has completed secure credential setup. The Core API remains authoritative.'
+    return i18n.t('members:reactivateHelp')
   }
-  return 'A new secure account-setup process will be requested. No password is created or shown in this interface.'
+  return i18n.t('members:reissueHelp')
 }
 
 function stateLabel(status: MemberSnapshot['member']['accountStatus']) {
-  if (status === 'ACTIVE') return 'Active'
-  if (status === 'INACTIVE') return 'Inactive'
-  return 'Pending setup'
+  if (status === 'ACTIVE') return i18n.t('members:active')
+  if (status === 'INACTIVE') return i18n.t('members:inactive')
+  return i18n.t('members:pendingSetup')
 }
 
 export function MemberLifecycleDialog({
@@ -74,6 +76,7 @@ export function MemberLifecycleDialog({
   ) => void
   onConfirm: (operationId: number) => void
 }) {
+  const { t } = useUiTranslation()
   const open = session !== null
   const snapshot = session?.snapshot
   const reviewRequired =
@@ -103,51 +106,53 @@ export function MemberLifecycleDialog({
               size='sm'
               onClick={onRetryAuthorization}
             >
-              Retry verification
+              {t('members:retryVerification')}
             </Button>
           </div>
         )}
         {session?.phase === 'loading' ? (
           <>
             <AlertDialogHeader>
-              <AlertDialogTitle>Preparing member operation</AlertDialogTitle>
+              <AlertDialogTitle>
+                {t('members:preparingOperation')}
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                Loading the authoritative account state and concurrency token
-                before asking for confirmation.
+                {t('members:loadingConfirmation')}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <div role='status' className='py-5 text-sm text-muted-foreground'>
-              Loading current member details…
+              {t('members:loadingCurrentDetails')}
             </div>
             <AlertDialogFooter>
               <AlertDialogCancel disabled={saving && !reviewRequired}>
-                Cancel
+                {t('members:cancel')}
               </AlertDialogCancel>
             </AlertDialogFooter>
           </>
         ) : session?.status === 'error' ? (
           <>
             <AlertDialogHeader>
-              <AlertDialogTitle>
-                Member details could not be loaded
-              </AlertDialogTitle>
+              <AlertDialogTitle>{t('members:detailError')}</AlertDialogTitle>
               <AlertDialogDescription>
-                This lifecycle operation is unavailable until the current member
-                state and ETag can be verified.
+                {t('members:lifecycleUnavailable')}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <p role='alert' className='text-sm text-destructive'>
-              {session.loadError ?? 'The member detail request failed.'}
+              {session.loadError
+                ? localizedValidationMessage(session.loadError, t)
+                : t('members:detailFailed')}
             </p>
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={saving}>Close</AlertDialogCancel>
+              <AlertDialogCancel disabled={saving}>
+                {t('members:close')}
+              </AlertDialogCancel>
               <Button
                 disabled={!authorizationVerified}
                 onClick={() =>
                   onRetrySnapshot(session.memberId, session.operationId)
                 }
               >
-                Retry member details
+                {t('members:retryDetails')}
               </Button>
             </AlertDialogFooter>
           </>
@@ -164,29 +169,35 @@ export function MemberLifecycleDialog({
             {snapshot && (
               <dl className='grid gap-3 rounded-md border bg-muted/30 p-3 text-sm sm:grid-cols-2'>
                 <div>
-                  <dt className='text-muted-foreground'>Name</dt>
+                  <dt className='text-muted-foreground'>{t('members:name')}</dt>
                   <dd className='font-medium'>{snapshot.member.displayName}</dd>
                 </div>
                 <div>
-                  <dt className='text-muted-foreground'>Email</dt>
+                  <dt className='text-muted-foreground'>
+                    {t('members:email')}
+                  </dt>
                   <dd className='font-medium break-all'>
                     {snapshot.member.email}
                   </dd>
                 </div>
                 <div>
-                  <dt className='text-muted-foreground'>Current lifecycle</dt>
+                  <dt className='text-muted-foreground'>
+                    {t('members:currentLifecycle')}
+                  </dt>
                   <dd className='font-medium'>
                     {stateLabel(snapshot.member.accountStatus)}
                   </dd>
                 </div>
                 <div>
-                  <dt className='text-muted-foreground'>Role</dt>
+                  <dt className='text-muted-foreground'>
+                    {t('members:roleLabel')}
+                  </dt>
                   <dd className='font-medium'>
                     {snapshot.member.globalRole === 'DEPARTMENT_MANAGER'
-                      ? 'Department manager'
+                      ? t('members:departmentManager')
                       : snapshot.member.globalRole === 'ADMINISTRATOR'
-                        ? 'Administrator'
-                        : 'Employee'}
+                        ? t('members:administrator')
+                        : t('members:employee')}
                   </dd>
                 </div>
               </dl>
@@ -200,21 +211,24 @@ export function MemberLifecycleDialog({
                     : 'border-destructive/30 bg-destructive/5'
                 }`}
               >
-                <p>{feedback.message}</p>
+                <p>{localizedValidationMessage(feedback.message, t)}</p>
                 {feedback.reconciliationError && (
                   <p className='text-destructive'>
-                    {feedback.reconciliationError}
+                    {localizedValidationMessage(
+                      feedback.reconciliationError,
+                      t
+                    )}
                   </p>
                 )}
                 {feedback.reconciliationLoading && (
                   <p role='status' className='text-muted-foreground'>
-                    Loading latest authoritative state…
+                    {t('members:loadingLatestState')}
                   </p>
                 )}
                 {reviewedSnapshot && (
                   <div className='space-y-2 rounded-md border bg-background p-3'>
                     <p className='font-medium'>
-                      Latest state:{' '}
+                      {t('members:latestState')}
                       {stateLabel(reviewedSnapshot.member.accountStatus)}
                     </p>
                     <p className='break-all'>
@@ -241,7 +255,7 @@ export function MemberLifecycleDialog({
                             )
                           }
                         >
-                          Review and confirm lifecycle operation
+                          {t('members:reviewLifecycle')}
                         </Button>
                       )}
                   </div>
@@ -259,15 +273,17 @@ export function MemberLifecycleDialog({
                       onClick={() => onRetryVerification(session.operationId)}
                     >
                       {feedback?.reconciliationLoading
-                        ? 'Loading latest member…'
-                        : 'Reload latest for review'}
+                        ? t('members:loadingLatest')
+                        : t('members:reloadLatest')}
                     </Button>
                   </>
                 )}
               </div>
             )}
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={saving}>Cancel</AlertDialogCancel>
+              <AlertDialogCancel disabled={saving}>
+                {t('members:cancel')}
+              </AlertDialogCancel>
               <AlertDialogAction
                 disabled={
                   saving ||
@@ -283,7 +299,7 @@ export function MemberLifecycleDialog({
                 }}
               >
                 {saving
-                  ? 'Working…'
+                  ? t('members:working')
                   : actionLabel(session?.action ?? 'deactivate')}
               </AlertDialogAction>
             </AlertDialogFooter>

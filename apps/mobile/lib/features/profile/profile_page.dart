@@ -359,12 +359,12 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
 
 String profileRoleLabel(AuthGlobalRole role) => switch (role) {
   AuthGlobalRole.employee => 'Nhân viên',
-  AuthGlobalRole.departmentManager => 'Trưởng bộ phận',
+  AuthGlobalRole.departmentManager => 'Trưởng phòng',
   AuthGlobalRole.administrator => 'Quản trị viên',
 };
 
 String profileStatusLabel(AuthAccountStatus status) => switch (status) {
-  AuthAccountStatus.pendingSetup => 'Chờ thiết lập',
+  AuthAccountStatus.pendingSetup => 'Chờ kích hoạt',
   AuthAccountStatus.active => 'Đang hoạt động',
   AuthAccountStatus.inactive => 'Không hoạt động',
 };

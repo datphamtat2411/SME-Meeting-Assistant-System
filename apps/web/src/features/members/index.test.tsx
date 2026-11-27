@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { setUiLanguage } from '@/lib/i18n'
 import { SearchProvider } from '@/context/search-provider'
 import { ThemeProvider } from '@/context/theme-provider'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -1510,9 +1511,26 @@ describe('Members directory', () => {
     await expect.element(resolve).toBeDisabled()
     await userEvent.click(
       screen.getByRole('radio', {
-        name: /your intended value.*DEPARTMENT_MANAGER/i,
+        name: /your intended value.*department manager/i,
       })
     )
+    await setUiLanguage('vi')
+    await expect
+      .element(
+        screen.getByRole('radio', {
+          name: /giá trị bạn muốn lưu.*trưởng phòng/i,
+        })
+      )
+      .toBeChecked()
+    await expect
+      .element(
+        screen.getByRole('radio', {
+          name: /giá trị trên máy chủ.*quản trị viên/i,
+        })
+      )
+      .toBeVisible()
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    await setUiLanguage('en')
     await expect
       .element(screen.getByText(/grants being assigned: Product/i))
       .toBeVisible()

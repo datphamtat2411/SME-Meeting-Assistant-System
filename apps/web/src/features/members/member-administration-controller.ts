@@ -10,6 +10,11 @@ import {
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import {
   currentUserQueryKey,
   type AuthContext,
@@ -85,11 +90,13 @@ class ObsoleteMemberOperationError extends Error {
   }
 }
 
-const snapshotVerificationDeferredMessage =
-  'Current administration access could not be verified while loading the member. The protected response was discarded; verify access and retry the authoritative snapshot.'
+const snapshotVerificationDeferredMessage = featureValidationMessage(
+  'members:recovery_snapshotDeferred'
+)
 
-const submissionAuthorizationBlockedMessage =
-  'Current administration access changed before the request was sent. No mutation was dispatched; verify access and review the preserved values before trying again.'
+const submissionAuthorizationBlockedMessage = featureValidationMessage(
+  'members:recovery_submissionBlocked'
+)
 
 export type MemberEditorSubmit =
   | {
@@ -157,9 +164,9 @@ function statusMutationName(
 }
 
 function lifecycleSuccessMessage(action: MemberLifecycleAction): string {
-  if (action === 'deactivate') return 'Account deactivated'
-  if (action === 'reactivate') return 'Account reactivated'
-  return 'New secure setup process requested'
+  if (action === 'deactivate') return i18n.t('members:recovery_deactivated')
+  if (action === 'reactivate') return i18n.t('members:recovery_reactivated')
+  return i18n.t('members:recovery_reissued')
 }
 
 export function useMemberAdministrationController({
@@ -428,9 +435,7 @@ export function useMemberAdministrationController({
           !currentIdentity ||
           !canManageMemberTarget(currentIdentity, snapshot.member)
         ) {
-          throw new Error(
-            'The current account can no longer manage this member.'
-          )
+          throw new Error(featureValidationMessage('members:recovery_noManage'))
         }
         dispatchOperation({
           type: 'SNAPSHOT_LOADED',
@@ -465,7 +470,7 @@ export function useMemberAdministrationController({
           operationId,
           contextKey,
           requestId: request.requestId,
-          error: normalizeCoreApiError(error).message,
+          error: requestErrorFormMessage(normalizeCoreApiError(error)),
         })
       } finally {
         getRequests().completeRequest(request)
@@ -514,7 +519,7 @@ export function useMemberAdministrationController({
           !canPerformMemberLifecycle(currentIdentity, snapshot.member, action)
         ) {
           throw new Error(
-            'This lifecycle operation is no longer eligible for the current account or member state.'
+            featureValidationMessage('members:recovery_ineligibleOperation')
           )
         }
         dispatchOperation({
@@ -550,7 +555,7 @@ export function useMemberAdministrationController({
           operationId,
           contextKey,
           requestId: request.requestId,
-          error: normalizeCoreApiError(error).message,
+          error: requestErrorFormMessage(normalizeCoreApiError(error)),
         })
       } finally {
         getRequests().completeRequest(request)
@@ -794,8 +799,8 @@ export function useMemberAdministrationController({
       })
       toast.success(
         result.mutation.type === 'created'
-          ? 'Account provisioned; secure setup is still required'
-          : 'Member updated'
+          ? i18n.t('members:recovery_provisioned')
+          : i18n.t('members:recovery_updated')
       )
     },
     onError: async (error, input) => {
@@ -825,7 +830,8 @@ export function useMemberAdministrationController({
         outcome,
         message: memberOperationErrorMessage(
           error,
-          input.mode === 'create' ? 'create' : 'edit'
+          input.mode === 'create' ? 'create' : 'edit',
+          featureValidationMessage
         ),
         fieldErrors: normalized.fieldErrors,
         ...(input.mode === 'create'
@@ -957,7 +963,11 @@ export function useMemberAdministrationController({
       const normalized = normalizeCoreApiError(error)
       const baseFeedback: MemberOperationFeedback = {
         outcome,
-        message: memberOperationErrorMessage(error, input.action),
+        message: memberOperationErrorMessage(
+          error,
+          input.action,
+          featureValidationMessage
+        ),
         fieldErrors: normalized.fieldErrors,
       }
       if (
@@ -1318,9 +1328,8 @@ export function useMemberAdministrationController({
         values: resolved.values,
       })
       if (Object.keys(resolved.patch).length === 0) {
-        toast.success('Member is already up to date', {
-          description:
-            'The reviewed server state already contains the retained changes. No additional update was sent.',
+        toast.success(i18n.t('members:recovery_upToDate'), {
+          description: i18n.t('members:recovery_noUpdate'),
         })
       }
     },

@@ -1,6 +1,10 @@
 import { z } from 'zod'
 import { queryOptions } from '@tanstack/react-query'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import {
+  featureValidationMessage,
+  lengthValidationMessage,
+} from '@/lib/i18n/presentation'
 
 export const myProfileSchema = z.object({
   id: z.string().uuid(),
@@ -14,8 +18,8 @@ export const myProfileSchema = z.object({
 export const displayNameSchema = z
   .string()
   .trim()
-  .min(1, 'Enter your name.')
-  .max(200)
+  .min(1, featureValidationMessage('settings:nameRequired'))
+  .max(200, lengthValidationMessage('maxLength', 200))
 export type MyProfile = z.infer<typeof myProfileSchema>
 export type ProfileSnapshot = { profile: MyProfile; etag: string }
 export const profileQueryKey = ['me', 'profile'] as const

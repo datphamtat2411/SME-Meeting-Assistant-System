@@ -2,6 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  localizedValidationMessage,
+  operationErrorFormMessage,
+  UiPresentationError,
+} from '@/lib/i18n/presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -29,6 +35,7 @@ export function TranscriptPanel({
   meetingId: string
   canCorrectTranscript: boolean
 }) {
+  const { t } = useUiTranslation()
   const qc = useQueryClient()
   const canCorrectRef = useRef(canCorrectTranscript)
   useEffect(() => {
@@ -47,9 +54,10 @@ export function TranscriptPanel({
   const mutation = useMutation({
     mutationFn: () => {
       if (!canCorrectRef.current) {
-        throw new Error('Transcript correction is no longer authorized.')
+        throw new UiPresentationError('transcript:correctionUnauthorized')
       }
-      if (!editing) throw new Error('No transcript segment selected')
+      if (!editing)
+        throw new UiPresentationError('transcript:noSegmentSelected')
       return correctTranscriptSegment(
         meetingId,
         editing,
@@ -58,14 +66,16 @@ export function TranscriptPanel({
       )
     },
     onSuccess: () => {
-      toast.success('Correction saved')
+      toast.success(i18n.t('transcript:correctionSaved'))
       setEditing(null)
       setReason('')
       invalidateMeetingArtifacts(qc, meetingId, { transcript: true })
     },
     onError: (error) => {
-      toast.error('Unable to correct transcript', {
-        description: error instanceof Error ? error.message : undefined,
+      toast.error(i18n.t('transcript:correctionFailed'), {
+        description: localizedValidationMessage(
+          operationErrorFormMessage(error)
+        ),
       })
       void transcript.refetch()
     },
@@ -73,20 +83,19 @@ export function TranscriptPanel({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Transcript</CardTitle>
+        <CardTitle>{t('transcript:title')}</CardTitle>
         <p className='text-sm text-muted-foreground'>
-          Timeline text is derived from corrected ASR output. Human edits are
-          versioned.
+          {t('transcript:description')}
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
         {transcript.isPending ? (
-          <RequestLoading label='Loading transcript…' />
+          <RequestLoading label={t('transcript:loading')} />
         ) : transcript.isError ? (
           normalizeCoreApiError(transcript.error).status === 404 ? (
             <RequestEmpty
-              title='Transcript not available yet'
-              description='Process a recording to generate a transcript.'
+              title={t('transcript:unavailable')}
+              description={t('transcript:processFirst')}
             />
           ) : (
             <RequestError
@@ -97,21 +106,32 @@ export function TranscriptPanel({
         ) : (
           <>
             <div className='flex flex-wrap items-center gap-2 text-sm'>
-              <Badge variant='outline'>{transcript.data.status}</Badge>
-              <span>Version {transcript.data.versionNumber}</span>
-              <span>Revision {transcript.data.contentRevision}</span>
+              <Badge variant='outline'>
+                {t(`transcript:status_${transcript.data.status}`, {
+                  defaultValue: transcript.data.status,
+                })}
+              </Badge>
+              <span>
+                {t('transcript:version', {
+                  number: transcript.data.versionNumber,
+                })}
+              </span>
+              <span>
+                {t('transcript:revision', {
+                  number: transcript.data.contentRevision,
+                })}
+              </span>
             </div>
             {coverage.data &&
               coverage.data.some(
                 (region) => region.coverageStatus !== 'COVERED'
               ) && (
                 <div className='rounded-lg border border-amber-300 p-3 text-sm text-amber-700 dark:text-amber-300'>
-                  Unresolved or suspicious speech coverage exists. Review the
-                  source audio before relying on this transcript.
+                  {t('transcript:coverageWarning')}
                 </div>
               )}
             {!transcript.data.segments.length ? (
-              <RequestEmpty title='No transcript segments' />
+              <RequestEmpty title={t('transcript:empty')} />
             ) : (
               <div className='max-h-[540px] space-y-3 overflow-auto'>
                 {transcript.data.segments.map((segment) => (
@@ -122,9 +142,14 @@ export function TranscriptPanel({
                           {timecode(segment.startMs)}–{timecode(segment.endMs)}
                         </span>
                         <strong>
-                          {segment.speakerLabel || 'Unknown speaker'}
+                          {segment.speakerLabel ||
+                            t('transcript:unknownSpeaker')}
                         </strong>
-                        <Badge variant='outline'>{segment.qualityStatus}</Badge>
+                        <Badge variant='outline'>
+                          {t(`transcript:status_${segment.qualityStatus}`, {
+                            defaultValue: segment.qualityStatus,
+                          })}
+                        </Badge>
                       </div>
                       {canCorrectTranscript && (
                         <Button
@@ -137,7 +162,7 @@ export function TranscriptPanel({
                             setReason('')
                           }}
                         >
-                          Correct
+                          {t('transcript:correct')}
                         </Button>
                       )}
                     </div>
@@ -150,7 +175,7 @@ export function TranscriptPanel({
                         className='mt-3 space-y-2'
                       >
                         <Label htmlFor={'segment-' + segment.id}>
-                          Corrected text
+                          {t('transcript:correctedText')}
                         </Label>
                         <Textarea
                           id={'segment-' + segment.id}
@@ -160,7 +185,7 @@ export function TranscriptPanel({
                           onChange={(e) => setText(e.target.value)}
                         />
                         <Label htmlFor='correction-reason'>
-                          Reason (optional)
+                          {t('transcript:reason')}
                         </Label>
                         <Input
                           id='correction-reason'
@@ -173,7 +198,7 @@ export function TranscriptPanel({
                             size='sm'
                             disabled={mutation.isPending || !editing.etag}
                           >
-                            Save
+                            {t('transcript:save')}
                           </Button>
                           <Button
                             type='button'
@@ -181,7 +206,7 @@ export function TranscriptPanel({
                             variant='outline'
                             onClick={() => setEditing(null)}
                           >
-                            Cancel
+                            {t('transcript:cancel')}
                           </Button>
                         </div>
                       </form>

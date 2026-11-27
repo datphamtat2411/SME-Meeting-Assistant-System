@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { i18n, setUiLanguage } from './index'
 import {
   DEFAULT_UI_LANGUAGE,
@@ -64,6 +64,41 @@ describe('UI localization', () => {
     await setUiLanguage('en')
     expect(i18n.t('navigation:meetings')).toBe('Meetings')
     expect(document.documentElement.lang).toBe('en')
+  })
+
+  it('uses Vietnamese for a new browser and preserves explicit English', () => {
+    localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY)
+    expect(DEFAULT_UI_LANGUAGE).toBe('vi')
+    expect(readUiLanguage()).toBe('vi')
+    localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en')
+    expect(readUiLanguage()).toBe('en')
+    localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'vi')
+    expect(readUiLanguage()).toBe('vi')
+  })
+
+  it('falls back to Vietnamese when storage is unavailable', () => {
+    const getItem = vi
+      .spyOn(Storage.prototype, 'getItem')
+      .mockImplementation(() => {
+        throw new Error('Storage unavailable')
+      })
+    try {
+      expect(readUiLanguage()).toBe('vi')
+    } finally {
+      getItem.mockRestore()
+    }
+  })
+
+  it('registers all on-disk language namespaces', () => {
+    const files = Object.keys(import.meta.glob('./locales/*/*.json'))
+    for (const language of ['en', 'vi'] as const) {
+      const prefix = `./locales/${language}/`
+      const namespaces = files
+        .filter((file) => file.startsWith(prefix))
+        .map((file) => file.slice(prefix.length).replace(/\.json$/, ''))
+        .sort()
+      expect(Object.keys(resources[language]).sort()).toEqual(namespaces)
+    }
   })
 
   it('rejects invalid saved language values', () => {

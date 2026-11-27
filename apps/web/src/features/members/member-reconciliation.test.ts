@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { i18n } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+} from '@/lib/i18n/presentation'
 import type { AuthContext } from '@/features/auth/session/current-user'
 import type { Member, MemberSnapshot } from './member-api'
 import { buildMemberPatchPayload, normalizeManagerScope } from './member-form'
@@ -302,14 +307,25 @@ describe('member edit reconciliation', () => {
     )
 
     expect(result.conflicts).toContain('managerScopeUnitIds')
-    expect(
-      resolveMemberEditReconciliation(result, {
-        managerScopeUnitIds: 'intent',
-      })
-    ).toMatchObject({
-      status: 'invalid',
-      message: expect.stringMatching(/separate.*role|role.*separately/i),
+    const incompatible = resolveMemberEditReconciliation(result, {
+      managerScopeUnitIds: 'intent',
     })
+    expect(incompatible).toEqual({
+      status: 'invalid',
+      message: featureValidationMessage('members:recovery_incompatibleScope'),
+    })
+    if (incompatible.status !== 'invalid')
+      throw new Error('Expected incompatible manager scope to be rejected')
+    expect(
+      localizedValidationMessage(incompatible.message, (key) =>
+        i18n.t(key, { lng: 'en' })
+      )
+    ).toMatch(/separate.*role|role.*separately/i)
+    expect(
+      localizedValidationMessage(incompatible.message, (key) =>
+        i18n.t(key, { lng: 'vi' })
+      )
+    ).toContain('nâng vai trò riêng')
     expect(
       resolveMemberEditReconciliation(result, {
         managerScopeUnitIds: 'server',

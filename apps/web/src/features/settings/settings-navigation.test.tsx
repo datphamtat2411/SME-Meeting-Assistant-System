@@ -682,7 +682,12 @@ describe('settings navigation and cleanup', () => {
 
     await expect
       .element(screen.getByRole('alert'))
-      .toHaveTextContent('Profile service unavailable')
+      .toHaveTextContent(
+        'The service is temporarily unavailable. Please try again later.'
+      )
+    await expect
+      .element(screen.getByText('Profile service unavailable'))
+      .not.toBeInTheDocument()
     await expect
       .element(screen.getByRole('textbox', { name: 'Display name' }))
       .not.toBeInTheDocument()

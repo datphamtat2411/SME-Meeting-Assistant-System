@@ -1,4 +1,5 @@
 import { CalendarDays, FileDown, MapPin, Users } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
 import type { AuthContext } from '@/features/auth/session/current-user'
@@ -40,6 +41,7 @@ export function MeetingWorkspaceHeader({
   onEdit: () => void
   onExportMinutes?: () => void
 }) {
+  const { t } = useUiTranslation()
   const { timezone, locale } = useRegionalPresentation()
   return (
     <section className='space-y-5'>
@@ -67,12 +69,12 @@ export function MeetingWorkspaceHeader({
             />
             {capabilities.canReadMeetingContent && onExportMinutes && (
               <Button type='button' variant='outline' onClick={onExportMinutes}>
-                <FileDown className='size-4' /> Export minutes
+                <FileDown className='size-4' /> {t('workspace:exportMinutes')}
               </Button>
             )}
             {canEdit && (
               <Button type='button' variant='outline' onClick={onEdit}>
-                Edit meeting
+                {t('workspace:editMeeting')}
               </Button>
             )}
           </div>
@@ -89,7 +91,7 @@ export function MeetingWorkspaceHeader({
           </span>
           <span className='inline-flex items-center gap-1.5'>
             <MapPin className='size-4' />
-            {formatRoomLabel(room)}
+            {formatRoomLabel(room, t)}
           </span>
         </div>
       </div>
@@ -106,22 +108,22 @@ export function MeetingWorkspaceHeader({
           <div className='min-w-0'>
             <p className='font-medium'>
               {capabilities.canReadMeetingContent
-                ? formatParticipantSummary(participants)
-                : 'Participant details unavailable'}
+                ? formatParticipantSummary(participants, t)
+                : t('workspace:participantDetailsUnavailable')}
             </p>
             <p className='truncate text-sm text-muted-foreground'>
               {!capabilities.canReadMeetingContent
-                ? 'Active membership is required to view the participant list.'
+                ? t('workspace:participantMembershipRequired')
                 : participants.isError
-                  ? 'Participant memberships could not be loaded.'
-                  : formatParticipantNames(participants.data ?? [])}
+                  ? t('workspace:participantMembershipLoadFailed')
+                  : formatParticipantNames(participants.data ?? [], t)}
             </p>
           </div>
         </div>
         <div className='text-sm text-muted-foreground sm:text-end'>
-          <span>Organized by </span>
+          <span>{t('workspace:organizedBy')} </span>
           <span className='font-medium text-foreground'>
-            {formatOrganizerLabel(organizer)}
+            {formatOrganizerLabel(organizer, t)}
           </span>
         </div>
       </div>
@@ -129,34 +131,43 @@ export function MeetingWorkspaceHeader({
   )
 }
 
-function formatRoomLabel(room: WorkspaceLookupState<RoomFilterOption>) {
-  if (!room.hasId) return 'Room not assigned'
-  if (room.isError) return 'Room unavailable'
-  if (room.isPending) return 'Loading room'
-  return room.data?.name ?? 'Room unavailable'
+type Translate = ReturnType<typeof useUiTranslation>['t']
+
+function formatRoomLabel(
+  room: WorkspaceLookupState<RoomFilterOption>,
+  t: Translate
+) {
+  if (!room.hasId) return t('workspace:roomNotAssigned')
+  if (room.isError) return t('meetings:roomUnavailable')
+  if (room.isPending) return t('workspace:loadingRoom')
+  return room.data?.name ?? t('meetings:roomUnavailable')
 }
 
 function formatOrganizerLabel(
-  organizer: WorkspaceLookupState<OrganizerFilterOption>
+  organizer: WorkspaceLookupState<OrganizerFilterOption>,
+  t: Translate
 ) {
-  if (organizer.isError) return 'Organizer unavailable'
-  if (organizer.isPending) return 'Loading organizer'
-  return organizer.data?.name ?? 'Organizer unavailable'
+  if (organizer.isError) return t('workspace:organizerUnavailable')
+  if (organizer.isPending) return t('workspace:loadingOrganizer')
+  return organizer.data?.name ?? t('workspace:organizerUnavailable')
 }
 
-function formatParticipantSummary(state: WorkspaceParticipantState) {
-  if (state.isPending) return 'Loading participants'
-  if (state.isError) return 'Participants unavailable'
+function formatParticipantSummary(
+  state: WorkspaceParticipantState,
+  t: Translate
+) {
+  if (state.isPending) return t('workspace:loadingParticipants')
+  if (state.isError) return t('workspace:participantsUnavailable')
   const activeCount = classifyParticipantMemberships(state.data ?? []).active
     .length
-  return `${activeCount} active participant${activeCount === 1 ? '' : 's'}`
+  return t('workspace:activeParticipants', { count: activeCount })
 }
 
-function formatParticipantNames(participants: ParticipantView[]) {
+function formatParticipantNames(participants: ParticipantView[], t: Translate) {
   const names = classifyParticipantMemberships(participants)
     .active.map((participant) => participant.displayName?.trim())
     .filter((name): name is string => Boolean(name))
-  if (!names.length) return 'Names are shown only when projected by Core API.'
+  if (!names.length) return t('workspace:participantNamesUnavailable')
   return names.slice(0, 3).join(', ') + (names.length > 3 ? ', …' : '')
 }
 

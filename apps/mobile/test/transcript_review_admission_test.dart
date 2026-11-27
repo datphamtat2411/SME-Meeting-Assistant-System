@@ -214,7 +214,7 @@ void main() {
       await tester.pump();
       expect(processingTab.hitTestable(), findsOneWidget);
       await tester.tap(processingTab);
-      final handoff = find.text('Mở duyệt bản ghi');
+      final handoff = find.text('Mở rà soát bản ghi');
       await pumpUntil(
         tester,
         () => handoff.evaluate().isNotEmpty,
@@ -226,7 +226,7 @@ void main() {
       await tester.tap(handoff);
       final acknowledge = find.widgetWithText(
         OutlinedButton,
-        'Xác nhận đã duyệt transcript',
+        'Xác nhận đã rà soát bản ghi',
       );
       final admit = find.widgetWithText(
         FilledButton,

@@ -1,4 +1,4 @@
-import { Fragment, StrictMode, useState } from 'react'
+import { act, Fragment, StrictMode, useState } from 'react'
 import { AxiosHeaders } from 'axios'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -11,6 +11,7 @@ import {
   resetCsrfToken,
   setCsrfToken,
 } from '@/lib/core-api'
+import { setUiLanguage } from '@/lib/i18n'
 import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import {
   beginAuthLifecycleLogout,
@@ -608,6 +609,34 @@ describe('AssistantPage', () => {
       .element(screen.getByRole('textbox', { name: 'Assistant question' }))
       .toHaveValue('Cuộc họp đã thống nhất những quyết định nào?')
     expect(post).not.toHaveBeenCalled()
+  })
+
+  it('switches language without changing a draft question or sending it', async () => {
+    setupReads({ detail: createConversationDetail() })
+    const post = vi.spyOn(coreApi, 'post')
+    const screen = await renderPage()
+    await openConversation(screen)
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Assistant question' }),
+      'Câu hỏi chưa gửi'
+    )
+
+    try {
+      await act(async () => {
+        await setUiLanguage('vi')
+      })
+      await expect
+        .element(screen.getByRole('textbox', { name: 'Câu hỏi cho trợ lý AI' }))
+        .toHaveValue('Câu hỏi chưa gửi')
+      await expect
+        .element(screen.getByRole('button', { name: 'Hỏi trợ lý AI' }))
+        .toBeVisible()
+      expect(post).not.toHaveBeenCalled()
+    } finally {
+      await act(async () => {
+        await setUiLanguage('en')
+      })
+    }
   })
 
   it('keeps structured discovery independent of the selected conversation', async () => {

@@ -1,4 +1,5 @@
 import { ShieldAlert, Plus } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
@@ -23,6 +24,7 @@ export function RoomsPage({
   search: RoomDirectorySearch
   onSearchChange: SearchChange
 }) {
+  const { t } = useUiTranslation()
   const directory = useRoomDirectoryController({ search, onSearchChange })
   const operation = useRoomOperationController({
     accessKey: directory.accessKey,
@@ -32,8 +34,8 @@ export function RoomsPage({
   const { verification } = directory
   const authorizationMessage =
     verification.status === 'background-verification'
-      ? 'Verifying current room-management access. Room changes are paused until verification completes.'
-      : 'Current room-management access could not be verified. Your draft is preserved; verify access before submitting.'
+      ? t('rooms:verifyAccess')
+      : t('rooms:verifyFailed')
 
   return (
     <>
@@ -44,13 +46,13 @@ export function RoomsPage({
         <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
           <div>
             <p className='text-sm font-medium text-primary'>
-              Meeting operations
+              {t('rooms:operations')}
             </p>
             <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
-              Meeting Rooms
+              {t('rooms:title')}
             </h1>
             <p className='mt-2 max-w-2xl text-muted-foreground'>
-              Browse meeting rooms and manage room details.
+              {t('rooms:description')}
             </p>
           </div>
           {directory.canManage && (
@@ -59,7 +61,7 @@ export function RoomsPage({
               onClick={operation.startCreate}
             >
               <Plus aria-hidden='true' className='size-4' />
-              Add room
+              {t('rooms:add')}
             </Button>
           )}
         </div>
@@ -71,8 +73,8 @@ export function RoomsPage({
           >
             <span>
               {verification.status === 'background-verification'
-                ? 'Verifying current room-management access. Existing form state is preserved; submissions are paused.'
-                : 'Current room-management access could not be verified. Existing form state is preserved; verify access before submitting.'}
+                ? t('rooms:verifyForm')
+                : t('rooms:verifyFormFailed')}
             </span>
             {!directory.identityVerified && !directory.identityError && (
               <Button
@@ -80,7 +82,7 @@ export function RoomsPage({
                 variant='outline'
                 onClick={() => void verification.query.refetch()}
               >
-                Retry verification
+                {t('rooms:retryVerification')}
               </Button>
             )}
             {verification.query.isError && (
@@ -89,7 +91,7 @@ export function RoomsPage({
                 variant='outline'
                 onClick={() => void verification.query.refetch()}
               >
-                Retry verification
+                {t('rooms:retryVerification')}
               </Button>
             )}
           </div>
@@ -102,23 +104,21 @@ export function RoomsPage({
               retry={() => void verification.query.refetch()}
             />
           ) : (
-            <RequestLoading label='Verifying room-directory access…' />
+            <RequestLoading label={t('rooms:verifyDirectory')} />
           )
         ) : !directory.canReadDirectory ? (
           <div
             role='alert'
             className='rounded-lg border border-amber-500/40 bg-amber-500/5 p-5 text-sm text-muted-foreground'
           >
-            Room records are hidden until the current authorization can be
-            verified. Retry verification to continue.
+            {t('rooms:hidden')}
           </div>
         ) : (
           <>
             {!directory.canManage && (
               <p className='flex items-center gap-2 text-sm text-muted-foreground'>
                 <ShieldAlert aria-hidden='true' className='size-4 shrink-0' />
-                Room changes require administrator permission. Only active rooms
-                are included in this catalog for assignment eligibility.
+                {t('rooms:adminOnly')}
               </p>
             )}
             <RoomDirectoryPresentation

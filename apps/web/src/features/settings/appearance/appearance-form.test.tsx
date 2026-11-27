@@ -1,8 +1,11 @@
+import { act } from 'react'
 import { clearCookies } from '@/test-utils/cookies'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { getCookie, setCookie } from '@/lib/cookies'
+import { i18n, setUiLanguage } from '@/lib/i18n'
+import { UI_LANGUAGE_STORAGE_KEY } from '@/lib/i18n/language-preference'
 import { FontProvider, useFont } from '@/context/font-provider'
 import { ThemeProvider, useTheme } from '@/context/theme-provider'
 import { AppearanceForm } from './appearance-form'
@@ -23,7 +26,36 @@ function ExternalControls() {
 }
 
 describe('Appearance draft and applied state', () => {
-  beforeEach(() => clearCookies())
+  beforeEach(async () => {
+    clearCookies()
+    await setUiLanguage('en')
+  })
+
+  afterEach(async () => {
+    await setUiLanguage('en')
+    localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY)
+  })
+
+  it('keeps an unapplied theme selection through a language switch', async () => {
+    const screen = await render(
+      <ThemeProvider defaultTheme='light'>
+        <FontProvider>
+          <AppearanceForm />
+        </FontProvider>
+      </ThemeProvider>
+    )
+    await userEvent.click(screen.getByRole('radio', { name: 'Dark' }))
+    await act(async () => {
+      await setUiLanguage('vi')
+    })
+    await expect
+      .element(screen.getByRole('radio', { name: i18n.t('dark') }))
+      .toBeChecked()
+    const save = screen.getByRole('button', { name: 'Cập nhật tùy chọn' })
+    await expect.element(save).toBeEnabled()
+    await userEvent.click(save)
+    expect(getCookie('vite-ui-theme')).toBe('dark')
+  })
 
   it('tracks external changes without overwriting unrelated settings', async () => {
     const screen = await render(

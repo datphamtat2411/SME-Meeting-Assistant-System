@@ -5,6 +5,12 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -40,14 +46,13 @@ type NotificationDraft = z.infer<typeof schema>
 const fields = [
   {
     name: 'meetingEmailEnabled',
-    label: 'Meeting emails',
-    description:
-      'Invitations, participant changes, rescheduling and cancellations.',
+    label: 'settings:meetingEmails',
+    description: 'settings:meetingEmailsDescription',
   },
   {
     name: 'actionItemEmailEnabled',
-    label: 'Action item emails',
-    description: 'Notifications when work is assigned or reassigned to you.',
+    label: 'settings:actionEmails',
+    description: 'settings:actionEmailsDescription',
   },
 ] as const
 
@@ -77,6 +82,7 @@ export function NotificationsForm() {
 }
 
 function NotificationEditor({ preferences }: { preferences: Preferences }) {
+  const { t } = useUiTranslation()
   const qc = useQueryClient()
   const form = useForm<NotificationDraft>({
     resolver: zodResolver(schema),
@@ -138,7 +144,9 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
       clearErrors()
     } catch (error) {
       if (isSettingsSessionCurrent(generation)) {
-        setError('root', { message: normalizeCoreApiError(error).message })
+        setError('root', {
+          message: requestErrorFormMessage(normalizeCoreApiError(error)),
+        })
       }
     } finally {
       setRefreshing(false)
@@ -162,7 +170,7 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
       const latest =
         qc.getQueryData<Preferences>(preferencesQueryKey) ?? confirmed
       reset(notificationDraft(latest))
-      toast.success('Notification preferences saved')
+      toast.success(t('settings:notificationsSaved'))
     } catch (error) {
       if (!isSettingsSessionCurrent(input.generation)) return
       const failure = normalizeCoreApiError(error)
@@ -177,8 +185,8 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
       setReconcile(uncertain)
       setError('root', {
         message: uncertain
-          ? 'The save outcome is uncertain. Refresh saved preferences before retrying.'
-          : failure.message,
+          ? featureValidationMessage('settings:saveUncertain')
+          : requestErrorFormMessage(failure),
       })
     }
   }
@@ -186,7 +194,7 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(save)} className='max-w-xl space-y-6'>
-        <h3 className='font-medium'>Optional email notifications</h3>
+        <h3 className='font-medium'>{t('settings:optionalEmails')}</h3>
         {fields.map(({ name, label, description }) => (
           <FormField
             key={name}
@@ -195,8 +203,8 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
             render={({ field }) => (
               <FormItem className='flex items-start justify-between gap-4 rounded-lg border p-4'>
                 <div className='space-y-1'>
-                  <FormLabel>{label}</FormLabel>
-                  <FormDescription>{description}</FormDescription>
+                  <FormLabel>{t(label)}</FormLabel>
+                  <FormDescription>{t(description)}</FormDescription>
                   <FormMessage />
                 </div>
                 <FormControl>
@@ -215,22 +223,24 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
           />
         ))}
         <p className='text-sm text-muted-foreground'>
-          Turning off optional emails does not affect your meeting participation
-          or assigned work. Preferences control email eligibility and do not
-          guarantee delivery.
+          {t('settings:optionalEmailsDescription')}
         </p>
         <section className='space-y-3 border-t pt-6'>
-          <h3 className='font-medium'>Required communications</h3>
+          <h3 className='font-medium'>
+            {t('settings:requiredCommunications')}
+          </h3>
           <div className='space-y-1 rounded-lg border bg-muted/30 p-4'>
-            <p className='text-sm font-medium'>Account and security emails</p>
+            <p className='text-sm font-medium'>
+              {t('settings:securityEmails')}
+            </p>
             <p className='text-sm text-muted-foreground'>
-              Essential account and security communications cannot be disabled.
+              {t('settings:securityEmailsDescription')}
             </p>
           </div>
         </section>
         {form.formState.errors.root?.message && (
           <p role='alert' className='text-sm text-destructive'>
-            {form.formState.errors.root.message}
+            {localizedValidationMessage(form.formState.errors.root.message, t)}
           </p>
         )}
         {reconcile && (
@@ -240,12 +250,14 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
             disabled={busy}
             onClick={() => void refresh(false)}
           >
-            Refresh saved preferences
+            {t('settings:refreshPreferences')}
           </Button>
         )}
         <div className='flex flex-wrap gap-2'>
           <Button type='submit' disabled={!changed || busy || reconcile}>
-            {mutation.isPending ? 'Saving…' : 'Save notifications'}
+            {mutation.isPending
+              ? t('settings:saving')
+              : t('settings:saveNotifications')}
           </Button>
           <Button
             type='button'
@@ -256,7 +268,7 @@ function NotificationEditor({ preferences }: { preferences: Preferences }) {
               else reset(notificationDraft(preferences))
             }}
           >
-            Discard
+            {t('settings:discard')}
           </Button>
         </div>
       </form>

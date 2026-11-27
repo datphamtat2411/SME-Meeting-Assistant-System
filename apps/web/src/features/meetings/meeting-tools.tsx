@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MeetingActionsPanel } from '@/features/action-items/meeting-actions-panel'
@@ -57,6 +58,7 @@ export function MeetingTools({
     contentRevision?: number
   ) => void
 }) {
+  const { t } = useUiTranslation()
   const { capabilities, identity, participants } = useMeetingWorkspace()
   const reviewGate = useOptionalTranscriptReviewGate()
 
@@ -65,14 +67,11 @@ export function MeetingTools({
     return (
       <div className='space-y-5'>
         <FeatureSectionHeading
-          title='Recording & source media'
-          description='Capture or add a source recording, review available files, and open processing details when needed.'
+          title={t('workspace:recordingSection')}
+          description={t('workspace:recordingSectionDescription')}
         />
         {!capabilities.canSubmitMedia && (
-          <ReadOnlyNote>
-            Source media is available to review. Only the meeting organizer can
-            add a recording or request processing.
-          </ReadOnlyNote>
+          <ReadOnlyNote>{t('workspace:recordingReadOnly')}</ReadOnlyNote>
         )}
         <RecordingPanel
           meetingId={meetingId}
@@ -97,14 +96,11 @@ export function MeetingTools({
     const content = (
       <div className='space-y-5'>
         <FeatureSectionHeading
-          title='Transcript & speakers'
-          description='Review the available transcript and its speaker identities. Results appear only when Core confirms they exist.'
+          title={t('workspace:transcriptSection')}
+          description={t('workspace:transcriptSectionDescription')}
         />
         {!capabilities.canCorrectTranscript && (
-          <ReadOnlyNote>
-            You can review this transcript. Corrections and speaker mapping are
-            organizer operations.
-          </ReadOnlyNote>
+          <ReadOnlyNote>{t('workspace:transcriptReadOnly')}</ReadOnlyNote>
         )}
         {evidenceReturn === 'decisions' && capabilities.canReadIntelligence && (
           <Button
@@ -113,7 +109,7 @@ export function MeetingTools({
               onSectionChange?.('intelligence', false, 'decisions')
             }
           >
-            Back to Decisions
+            {t('workspace:backToDecisions')}
           </Button>
         )}
         {evidenceReturn === 'action-items' &&
@@ -122,7 +118,7 @@ export function MeetingTools({
               variant='outline'
               onClick={() => onSectionChange?.('action-items')}
             >
-              Back to Action Items
+              {t('workspace:backToActions')}
             </Button>
           )}
         <TranscriptReviewWorkspace
@@ -166,14 +162,11 @@ export function MeetingTools({
     return (
       <div className='space-y-5'>
         <FeatureSectionHeading
-          title='Meeting intelligence'
-          description='Review confirmed meeting results and their current source state. AI proposals remain distinct from approved records.'
+          title={t('workspace:intelligenceSection')}
+          description={t('workspace:intelligenceSectionDescription')}
         />
         {!capabilities.canMutateIntelligence && (
-          <ReadOnlyNote>
-            You can review available results. Editing, review, and regeneration
-            operations are available to the meeting organizer.
-          </ReadOnlyNote>
+          <ReadOnlyNote>{t('workspace:intelligenceReadOnly')}</ReadOnlyNote>
         )}
         <TranscriptReviewWorkflowStatus
           onReview={() => onSectionChange?.('transcript')}
@@ -186,12 +179,14 @@ export function MeetingTools({
           }
         >
           <TabsList
-            aria-label='Intelligence views'
+            aria-label={t('workspace:intelligenceViews')}
             className='w-full justify-start sm:w-fit'
           >
-            <TabsTrigger value='summary'>Summary</TabsTrigger>
-            <TabsTrigger value='decisions'>Decisions</TabsTrigger>
-            <TabsTrigger value='minutes'>Minutes</TabsTrigger>
+            <TabsTrigger value='summary'>{t('workspace:summary')}</TabsTrigger>
+            <TabsTrigger value='decisions'>
+              {t('workspace:decisions')}
+            </TabsTrigger>
+            <TabsTrigger value='minutes'>{t('workspace:minutes')}</TabsTrigger>
           </TabsList>
           <TabsContent value='summary'>
             {intelligenceView === 'summary' && (
@@ -267,8 +262,8 @@ export function MeetingTools({
     return (
       <div className='space-y-5'>
         <FeatureSectionHeading
-          title='Action items'
-          description='Track official work and review eligible proposals. Assignment and scoped management permissions are enforced by Core.'
+          title={t('workspace:actionSection')}
+          description={t('workspace:actionSectionDescription')}
         />
         <MeetingActionsPanel
           meetingId={meetingId}
@@ -310,12 +305,13 @@ function ReadOnlyNote({ children }: { children: React.ReactNode }) {
 }
 
 function WorkspaceAccessMessage() {
+  const { t } = useUiTranslation()
   return (
     <div
       role='status'
       className='rounded-lg border border-dashed px-4 py-6 text-sm text-muted-foreground'
     >
-      Meeting membership must be verified before this section can be opened.
+      {t('workspace:membershipRequired')}
     </div>
   )
 }

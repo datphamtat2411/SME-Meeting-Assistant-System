@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { Loader2, RotateCcw } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -30,6 +31,7 @@ interface LogoutStatusProps {
 }
 
 export function LogoutStatus({ state, onRetry }: LogoutStatusProps) {
+  const { t } = useUiTranslation()
   const isPending = state === 'pending'
   return (
     <Card className='max-w-sm gap-4'>
@@ -39,12 +41,12 @@ export function LogoutStatus({ state, onRetry }: LogoutStatusProps) {
           role='heading'
           aria-level={1}
         >
-          {isPending ? 'Signing you out' : 'Sign-out could not be confirmed'}
+          {isPending ? t('auth:signingOut') : t('auth:signOutUncertain')}
         </CardTitle>
         <CardDescription>
           {isPending
-            ? 'Your sign-out is still being completed. Sign-in remains unavailable until the server confirms it.'
-            : 'Server sign-out could not be confirmed. Retry to safely complete sign-out before signing in again.'}
+            ? t('auth:signingOutDescription')
+            : t('auth:signOutUncertainDescription')}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -55,7 +57,7 @@ export function LogoutStatus({ state, onRetry }: LogoutStatusProps) {
           onClick={onRetry ?? (() => void retryAuthLifecycleLogout())}
         >
           {isPending ? <Loader2 className='animate-spin' /> : <RotateCcw />}
-          Retry sign out
+          {t('auth:retrySignOut')}
         </Button>
       </CardContent>
     </Card>

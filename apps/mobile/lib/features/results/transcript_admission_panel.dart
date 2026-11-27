@@ -59,7 +59,7 @@ class TranscriptAdmissionPanel extends StatelessWidget {
       } else {
         showSuccess(
           context,
-          'Đã xác nhận transcript. Chọn tiếp tục để xử lý kết quả AI.',
+          'Đã xác nhận rà soát bản ghi. Chọn tiếp tục để xử lý kết quả AI.',
         );
       }
     } catch (error) {
@@ -106,7 +106,7 @@ class TranscriptAdmissionPanel extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Duyệt transcript trước khi xử lý AI',
+                'Rà soát bản ghi trước khi xử lý AI',
                 style: TextStyle(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
@@ -121,7 +121,7 @@ class TranscriptAdmissionPanel extends StatelessWidget {
                 )
               else if (!sourceCurrent)
                 const Text(
-                  'Cần transcript đã hoàn tất và coverage của đúng tác vụ. '
+                  'Cần bản ghi đã hoàn tất và độ bao phủ của đúng tác vụ. '
                   'Làm mới dữ liệu trước khi xác nhận.',
                 )
               else if (ready)
@@ -131,7 +131,7 @@ class TranscriptAdmissionPanel extends StatelessWidget {
                 )
               else
                 const Text(
-                  'Kiểm tra nội dung, đoạn chưa chắc chắn và vùng coverage. '
+                  'Kiểm tra nội dung, đoạn chưa chắc chắn và độ bao phủ lời thoại. '
                   'Xác nhận bản đã xem trước khi tiếp tục phân tích.',
                 ),
               if (sourceCurrent &&
@@ -140,7 +140,7 @@ class TranscriptAdmissionPanel extends StatelessWidget {
                         (region) => region.status != 'COVERED',
                       )))
                 const Text(
-                  'Transcript có cảnh báo. Hãy xem lại các vùng được đánh dấu.',
+                  'Bản ghi có cảnh báo. Hãy xem lại các vùng được đánh dấu.',
                 ),
               const SizedBox(height: 12),
               if (operation?.admitted == true)
@@ -166,7 +166,7 @@ class TranscriptAdmissionPanel extends StatelessWidget {
                           transcript,
                         )
                       : null,
-                  child: const Text('Xác nhận đã duyệt transcript'),
+                  child: const Text('Xác nhận đã rà soát bản ghi'),
                 ),
                 FilledButton(
                   onPressed: canAct && sourceCurrent && ready

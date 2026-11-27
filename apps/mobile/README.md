@@ -30,6 +30,13 @@ verifies Flutter/Dart and JDK versions, resolves dependencies with
 `pubspec.lock` enforced, and runs `python3 tool/validate_native_config.py`.
 It does not run `flutter create` or overwrite native source.
 
+### Vietnamese UI
+
+Mobile is Vietnamese-only. The built-in Flutter widgets use `vi-VN`; account
+regional preferences remain independent of the UI language. See
+[Mobile localization](docs/LOCALIZATION.md) for terminology, status/error
+presentation, and regression-test conventions shared with Web.
+
 ### Local verification
 
 Run from `apps/mobile` after bootstrap. Adjust `JAVA_HOME` to the JDK 17 path on
@@ -84,7 +91,8 @@ allowed only by the debug manifest.
 
 `.github/workflows/mobile-ci.yml` runs the required **Mobile / Android
 verification** job on `ubuntu-24.04` for pull requests and pushes to Mobile,
-integration, `develop`, and `main` branches, and supports manual dispatch. It
+integration, `feat/vietnamese-ui`, `develop`, and `main` branches, and supports
+manual dispatch. It
 reads Flutter from `.fvmrc`, sets up JDK 17, uses the runner Android SDK,
 enforces the lockfile, runs native validation, formatting, analysis, the full
 Flutter test suite with coverage, and builds a debug APK. No backend or release

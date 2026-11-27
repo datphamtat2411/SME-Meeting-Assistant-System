@@ -51,6 +51,7 @@ export default defineConfig(({ mode }) => {
       include: ['react-dom/client'],
     },
     test: {
+      setupFiles: ['./src/test-utils/browser-setup.ts'],
       silent: 'passed-only',
       unstubEnvs: true,
       passWithNoTests: false,

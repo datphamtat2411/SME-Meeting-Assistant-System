@@ -1,4 +1,5 @@
 import { MapPin, Pencil, Search, Users } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -42,14 +43,15 @@ import {
 const pageSizeChoices = [10, 20, 50, 100]
 
 const roomSortLabels: Record<(typeof roomSortFields)[number], string> = {
-  code: 'Room code',
-  name: 'Name',
-  capacity: 'Capacity',
-  status: 'Status',
-  createdAt: 'Date created',
+  code: 'rooms:code',
+  name: 'rooms:name',
+  capacity: 'rooms:capacity',
+  status: 'rooms:status',
+  createdAt: 'rooms:createdAt',
 }
 
 function RoomStatusBadge({ status }: { status: Room['status'] }) {
+  const { t } = useUiTranslation()
   return (
     <Badge
       variant='outline'
@@ -59,24 +61,26 @@ function RoomStatusBadge({ status }: { status: Room['status'] }) {
           : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300'
       }
     >
-      {status === 'ACTIVE' ? 'Active' : 'Inactive'}
+      {status === 'ACTIVE' ? t('rooms:active') : t('rooms:inactive')}
     </Badge>
   )
 }
 
 function RoomLocation({ room }: { room: Room }) {
+  const { t } = useUiTranslation()
   return (
     <div className='flex min-w-32 items-center gap-2'>
       <MapPin
         aria-hidden='true'
         className='size-4 shrink-0 text-muted-foreground'
       />
-      <span>{room.location || 'Not set'}</span>
+      <span>{room.location || t('rooms:notSet')}</span>
     </div>
   )
 }
 
 function RoomCapacity({ room }: { room: Room }) {
+  const { t } = useUiTranslation()
   const { locale } = useRegionalPresentation()
   return (
     <div className='flex items-center gap-2'>
@@ -86,7 +90,7 @@ function RoomCapacity({ room }: { room: Room }) {
       />
       <span>
         {room.capacity === null
-          ? 'Not set'
+          ? t('rooms:notSet')
           : room.capacity.toLocaleString(locale)}
       </span>
     </div>
@@ -111,6 +115,7 @@ export function RoomDirectoryPresentation({
   onEdit,
   onDeactivate,
 }: RoomDirectoryPresentationProps) {
+  const { t } = useUiTranslation()
   const {
     criteria,
     directory,
@@ -124,11 +129,9 @@ export function RoomDirectoryPresentation({
     <Card className='overflow-hidden'>
       <CardHeader className='gap-4 border-b'>
         <div>
-          <CardTitle>Room directory</CardTitle>
+          <CardTitle>{t('rooms:directory')}</CardTitle>
           <CardDescription className='mt-1'>
-            {canManage
-              ? 'Search and review active or inactive room records.'
-              : 'Search active room records eligible for meeting assignments. Status does not indicate real-time availability.'}
+            {canManage ? t('rooms:adminDirectory') : t('rooms:userDirectory')}
           </CardDescription>
         </div>
         <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
@@ -141,8 +144,8 @@ export function RoomDirectoryPresentation({
               value={searchDraft}
               onChange={(event) => updateSearchDraft(event.target.value)}
               maxLength={200}
-              placeholder='Search room name or code'
-              aria-label='Search rooms'
+              placeholder={t('rooms:searchPlaceholder')}
+              aria-label={t('rooms:search')}
               className='pl-9'
             />
           </div>
@@ -150,7 +153,7 @@ export function RoomDirectoryPresentation({
             <>
               <div className='space-y-1.5'>
                 <span className='text-xs font-medium text-muted-foreground'>
-                  Lifecycle status
+                  {t('rooms:lifecycle')}
                 </span>
                 <Select
                   value={criteria.status ?? 'all'}
@@ -161,19 +164,23 @@ export function RoomDirectoryPresentation({
                     })
                   }
                 >
-                  <SelectTrigger aria-label='Filter by room status'>
+                  <SelectTrigger aria-label={t('rooms:filterStatus')}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value='all'>All statuses</SelectItem>
-                    <SelectItem value='ACTIVE'>Active</SelectItem>
-                    <SelectItem value='INACTIVE'>Inactive</SelectItem>
+                    <SelectItem value='all'>
+                      {t('rooms:allStatuses')}
+                    </SelectItem>
+                    <SelectItem value='ACTIVE'>{t('rooms:active')}</SelectItem>
+                    <SelectItem value='INACTIVE'>
+                      {t('rooms:inactive')}
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className='space-y-1.5'>
                 <span className='text-xs font-medium text-muted-foreground'>
-                  Sort rooms
+                  {t('rooms:sort')}
                 </span>
                 <Select
                   value={criteria.sort}
@@ -181,16 +188,20 @@ export function RoomDirectoryPresentation({
                     onSearchChange({ sort: value as RoomSort })
                   }
                 >
-                  <SelectTrigger aria-label='Sort rooms'>
+                  <SelectTrigger aria-label={t('rooms:sort')}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     {roomSortFields.flatMap((field) => [
                       <SelectItem key={`${field},asc`} value={`${field},asc`}>
-                        {roomSortLabels[field]} · ascending
+                        {t('rooms:ascending', {
+                          field: t(roomSortLabels[field]),
+                        })}
                       </SelectItem>,
                       <SelectItem key={`${field},desc`} value={`${field},desc`}>
-                        {roomSortLabels[field]} · descending
+                        {t('rooms:descending', {
+                          field: t(roomSortLabels[field]),
+                        })}
                       </SelectItem>,
                     ])}
                   </SelectContent>
@@ -201,12 +212,12 @@ export function RoomDirectoryPresentation({
         </div>
         <div className='flex flex-wrap items-center justify-between gap-3'>
           <label className='flex items-center gap-2 text-sm text-muted-foreground'>
-            Rows per page
+            {t('rooms:rows')}
             <Select
               value={String(criteria.size)}
               onValueChange={(value) => onSearchChange({ size: Number(value) })}
             >
-              <SelectTrigger aria-label='Rows per page' className='w-24'>
+              <SelectTrigger aria-label={t('rooms:rows')} className='w-24'>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -225,14 +236,14 @@ export function RoomDirectoryPresentation({
           </label>
           {directory.isFetching && !directory.isPending && (
             <span role='status' className='text-xs text-muted-foreground'>
-              Updating room results…
+              {t('rooms:updating')}
             </span>
           )}
         </div>
       </CardHeader>
       <CardContent className='space-y-4 p-0'>
         {directory.isPending ? (
-          <RequestLoading label='Loading rooms…' />
+          <RequestLoading label={t('rooms:loading')} />
         ) : directory.isError ? (
           <div className='p-4'>
             <RequestError
@@ -245,10 +256,10 @@ export function RoomDirectoryPresentation({
             <RequestEmpty
               title={
                 criteria.q || criteria.status
-                  ? 'No rooms match these filters'
-                  : 'No rooms are found'
+                  ? t('rooms:emptyFiltered')
+                  : t('rooms:empty')
               }
-              description='Try another search or adjust the room filters.'
+              description={t('rooms:emptyHelp')}
             />
           </div>
         ) : (
@@ -256,14 +267,16 @@ export function RoomDirectoryPresentation({
             <Table className='min-w-[900px]'>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Code</TableHead>
-                  <TableHead>Room</TableHead>
-                  <TableHead>Location</TableHead>
-                  <TableHead>Capacity</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Notes</TableHead>
+                  <TableHead>{t('rooms:tableCode')}</TableHead>
+                  <TableHead>{t('rooms:tableRoom')}</TableHead>
+                  <TableHead>{t('rooms:location')}</TableHead>
+                  <TableHead>{t('rooms:capacity')}</TableHead>
+                  <TableHead>{t('rooms:status')}</TableHead>
+                  <TableHead>{t('rooms:notes')}</TableHead>
                   {canManage && (
-                    <TableHead className='text-end'>Actions</TableHead>
+                    <TableHead className='text-end'>
+                      {t('rooms:actions')}
+                    </TableHead>
                   )}
                 </TableRow>
               </TableHeader>
@@ -296,21 +309,25 @@ export function RoomDirectoryPresentation({
                               <Button
                                 variant='ghost'
                                 size='sm'
-                                aria-label={`Edit ${room.name}`}
+                                aria-label={t('rooms:editRoom', {
+                                  name: room.name,
+                                })}
                                 disabled={!identityVerified || operationsBusy}
                                 onClick={() => onEdit(room)}
                               >
                                 <Pencil aria-hidden='true' className='size-4' />
-                                Edit
+                                {t('rooms:edit')}
                               </Button>
                               <Button
                                 variant='ghost'
                                 size='sm'
-                                aria-label={`Deactivate ${room.name}`}
+                                aria-label={t('rooms:deactivateRoom', {
+                                  name: room.name,
+                                })}
                                 disabled={!identityVerified || operationsBusy}
                                 onClick={() => onDeactivate(room)}
                               >
-                                Deactivate
+                                {t('rooms:deactivate')}
                               </Button>
                             </>
                           )}
@@ -327,16 +344,19 @@ export function RoomDirectoryPresentation({
         {directory.data && (
           <div className='flex flex-col gap-3 border-t px-4 py-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between'>
             <span>
-              {directory.data.pagination.totalElements}{' '}
-              {directory.data.pagination.totalElements === 1 ? 'room' : 'rooms'}
+              {t('rooms:totalRooms', {
+                count: directory.data.pagination.totalElements,
+              })}
               {directory.isPlaceholderData && (
-                <span role='status'> · Updating results…</span>
+                <span role='status'>{t('rooms:updatingResults')}</span>
               )}
             </span>
             <div className='flex items-center justify-between gap-3 sm:justify-end'>
               <span>
-                Page {directory.data.pagination.page + 1} of{' '}
-                {Math.max(directory.data.pagination.totalPages, 1)}
+                {t('page', {
+                  current: directory.data.pagination.page + 1,
+                  total: Math.max(directory.data.pagination.totalPages, 1),
+                })}
               </span>
               <div className='flex gap-2'>
                 <Button
@@ -352,7 +372,7 @@ export function RoomDirectoryPresentation({
                     })
                   }
                 >
-                  Previous
+                  {t('rooms:previous')}
                 </Button>
                 <Button
                   size='sm'
@@ -367,7 +387,7 @@ export function RoomDirectoryPresentation({
                     })
                   }
                 >
-                  Next
+                  {t('rooms:next')}
                 </Button>
               </div>
             </div>

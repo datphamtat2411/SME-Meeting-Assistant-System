@@ -1,8 +1,10 @@
+import { act } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError } from '@/lib/core-api'
+import { setUiLanguage } from '@/lib/i18n'
 import { ProcessingPanel } from './processing-panel'
 
 const apiMocks = vi.hoisted(() => ({
@@ -249,6 +251,45 @@ describe('ProcessingPanel', () => {
       .toBeInTheDocument()
     expect(apiMocks.requestProcessing).toHaveBeenCalledOnce()
     resolveAdmission(confirmedJob)
+  })
+
+  it('keeps a pending admission intact when the UI language changes', async () => {
+    let resolveAdmission!: (value: unknown) => void
+    apiMocks.requestProcessing.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveAdmission = resolve
+        })
+    )
+    const screen = await renderPanel()
+    try {
+      await chooseSource(screen, 'first.wav')
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Start processing' })
+      )
+      await expect
+        .element(screen.getByText('Processing admission is in progress.'))
+        .toBeInTheDocument()
+      const request = apiMocks.requestProcessing.mock.calls[0]
+      await act(async () => {
+        await setUiLanguage('vi')
+      })
+      await expect
+        .element(screen.getByText('Yêu cầu xử lý đang được thực hiện.'))
+        .toBeInTheDocument()
+      expect(apiMocks.requestProcessing).toHaveBeenCalledOnce()
+      expect(apiMocks.requestProcessing.mock.calls[0]).toEqual(request)
+      resolveAdmission(confirmedJob)
+      await expect.poll(() => toastMocks.success.mock.calls.length).toBe(1)
+      expect(toastMocks.success).toHaveBeenCalledWith(
+        'Tác vụ xử lý đã vào hàng đợi'
+      )
+    } finally {
+      resolveAdmission?.(confirmedJob)
+      await act(async () => {
+        await setUiLanguage('en')
+      })
+    }
   })
 
   it('shows confirmed retry success', async () => {

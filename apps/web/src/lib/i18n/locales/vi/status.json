@@ -11,5 +11,10 @@
     "EMPLOYEE": "Nhân viên",
     "DEPARTMENT_MANAGER": "Trưởng phòng",
     "ADMINISTRATOR": "Quản trị viên"
+  },
+  "account": {
+    "ACTIVE": "Đang hoạt động",
+    "INACTIVE": "Không hoạt động",
+    "PENDING_SETUP": "Chờ kích hoạt"
   }
 }

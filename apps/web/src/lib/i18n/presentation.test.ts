@@ -5,6 +5,10 @@ import {
   INVALID_EMAIL_VALIDATION_MESSAGE,
   REQUIRED_VALIDATION_MESSAGE,
   errorCodeKey,
+  featureValidationMessage,
+  operationErrorFormMessage,
+  requestErrorFormMessage,
+  UiPresentationError,
   lengthValidationMessage,
   localizedValidationMessage,
   meetingStatusKey,
@@ -50,6 +54,82 @@ describe('localized presentation mappings', () => {
     expect(requestErrorKey({ code: 'MALFORMED_RESPONSE' })).toBe(
       'errors:malformedResponse'
     )
+  })
+
+  it('renders a retained feature message and its values in the current language', async () => {
+    const key = 'meetings:participant_removeMismatch'
+    const name = 'Nguyễn Văn A'
+    const marker = featureValidationMessage(key, { name })
+    await setUiLanguage('en')
+    const english = localizedValidationMessage(marker)
+    expect(english).toContain(name)
+    expect(english).toContain('No mutation was retried.')
+    await setUiLanguage('vi')
+    const vietnamese = localizedValidationMessage(marker)
+    expect(vietnamese).toContain(name)
+    expect(vietnamese).toContain('Không gửi lại yêu cầu thay đổi.')
+    expect(vietnamese).not.toBe(english)
+    expect(localizedValidationMessage('validation.params:{bad')).toBe(
+      'validation.params:{bad'
+    )
+    const malformed =
+      'validation.params:["meetings:participant_removeMismatch",{"name":{}}]'
+    expect(localizedValidationMessage(malformed)).toBe(malformed)
+    expect(localizedValidationMessage('validation.key:missing:key')).toBe(
+      'validation.key:missing:key'
+    )
+  })
+
+  it('preserves owned local error markers and keeps public conflict details', async () => {
+    const local = new UiPresentationError('action-items:noChanges')
+    const message = operationErrorFormMessage(local)
+    await setUiLanguage('vi')
+    expect(localizedValidationMessage(message)).toBe(
+      'Không có thay đổi công việc để lưu.'
+    )
+    expect(
+      requestErrorFormMessage({
+        status: 409,
+        code: 'RESOURCE_CONFLICT',
+        message: 'Room is already reserved.',
+      })
+    ).toBe('Room is already reserved.')
+    expect(
+      localizedValidationMessage(
+        requestErrorFormMessage({
+          status: 403,
+          message: 'Private account detail',
+        })
+      )
+    ).toBe(i18n.t('errors:forbidden'))
+  })
+
+  it('keeps server diagnostics out of retained form messages', async () => {
+    const diagnostic = 'Upstream failure: internal-host.example.test'
+    for (const [status, key] of [
+      [500, 'errors:internal'],
+      [502, 'errors:serviceUnavailable'],
+      [503, 'errors:serviceUnavailable'],
+      [504, 'errors:gatewayTimeout'],
+      [599, 'errors:internal'],
+    ] as const) {
+      const marker = requestErrorFormMessage({
+        status,
+        message: diagnostic,
+        isServerError: true,
+      })
+      expect(marker).toBe(featureValidationMessage(key))
+      await setUiLanguage('en')
+      expect(localizedValidationMessage(marker)).toBe(i18n.t(key))
+      await setUiLanguage('vi')
+      expect(localizedValidationMessage(marker)).toBe(i18n.t(key))
+    }
+    expect(
+      requestErrorFormMessage({
+        message: diagnostic,
+        isServerError: true,
+      })
+    ).toBe(featureValidationMessage('errors:internal'))
   })
 
   it('localizes a stable validation marker, not arbitrary text', async () => {

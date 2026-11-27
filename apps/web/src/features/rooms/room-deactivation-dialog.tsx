@@ -1,4 +1,9 @@
 import { useState } from 'react'
+import { useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+} from '@/lib/i18n/presentation'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -49,6 +54,7 @@ export function RoomDeactivationDialog({
   onRestartFromLatest: (snapshot: RoomSnapshot, operationId: number) => void
   onConfirm: (snapshot: RoomSnapshot, operationId: number) => void
 }) {
+  const { t } = useUiTranslation()
   const [latestSnapshot, setLatestSnapshot] = useState<RoomSnapshot | null>(
     null
   )
@@ -66,7 +72,7 @@ export function RoomDeactivationDialog({
       setLatestError(
         error instanceof Error
           ? error.message
-          : 'The latest room state could not be loaded.'
+          : featureValidationMessage('rooms:latestLoadError')
       )
     } finally {
       setLatestLoading(false)
@@ -102,85 +108,94 @@ export function RoomDeactivationDialog({
               size='sm'
               onClick={onRetryAuthorization}
             >
-              Retry verification
+              {t('rooms:retryVerification')}
             </Button>
           </div>
         )}
         {session?.phase === 'loading' ? (
           <>
             <AlertDialogHeader>
-              <AlertDialogTitle>Preparing room deactivation</AlertDialogTitle>
+              <AlertDialogTitle>
+                {t('rooms:preparingDeactivate')}
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                Loading the authoritative room state and concurrency token
-                before asking for confirmation.
+                {t('rooms:loadingConfirmation')}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <div role='status' className='py-5 text-sm text-muted-foreground'>
-              Loading current room details…
+              {t('rooms:loadingCurrentDetails')}
             </div>
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={saving}>Cancel</AlertDialogCancel>
+              <AlertDialogCancel disabled={saving}>
+                {t('rooms:cancel')}
+              </AlertDialogCancel>
             </AlertDialogFooter>
           </>
         ) : session?.phase === 'error' ? (
           <>
             <AlertDialogHeader>
-              <AlertDialogTitle>
-                Room details could not be loaded
-              </AlertDialogTitle>
+              <AlertDialogTitle>{t('rooms:detailsError')}</AlertDialogTitle>
               <AlertDialogDescription>
-                Deactivation is unavailable until the current room and ETag can
-                be verified.
+                {t('rooms:deactivateUnavailable')}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <p role='alert' className='text-sm text-destructive'>
-              {session.loadError ?? 'The room detail request failed.'}
+              {session.loadError
+                ? localizedValidationMessage(session.loadError, t)
+                : t('rooms:detailRequestFailed')}
             </p>
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={saving}>Close</AlertDialogCancel>
+              <AlertDialogCancel disabled={saving}>
+                {t('rooms:close')}
+              </AlertDialogCancel>
               <Button
                 disabled={!authorizationVerified}
                 onClick={() =>
                   onRetrySnapshot(session.roomId, session.operationId)
                 }
               >
-                Retry room details
+                {t('rooms:retryDetails')}
               </Button>
             </AlertDialogFooter>
           </>
         ) : (
           <>
             <AlertDialogHeader>
-              <AlertDialogTitle>Deactivate room?</AlertDialogTitle>
+              <AlertDialogTitle>
+                {t('rooms:deactivateQuestion')}
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                Deactivation prevents future room assignments and preserves
-                historical meeting references. It does not cancel, reschedule,
-                or change existing reservations; the Core API applies the
-                authoritative reservation rules.
+                {t('rooms:deactivateHelp')}
               </AlertDialogDescription>
             </AlertDialogHeader>
             {snapshot && (
               <dl className='grid gap-3 rounded-md border bg-muted/30 p-3 text-sm sm:grid-cols-2'>
                 <div>
-                  <dt className='text-muted-foreground'>Room code</dt>
+                  <dt className='text-muted-foreground'>{t('rooms:code')}</dt>
                   <dd className='font-mono font-medium'>
                     {snapshot.room.code}
                   </dd>
                 </div>
                 <div>
-                  <dt className='text-muted-foreground'>Name</dt>
+                  <dt className='text-muted-foreground'>{t('rooms:name')}</dt>
                   <dd className='font-medium'>{snapshot.room.name}</dd>
                 </div>
                 <div>
-                  <dt className='text-muted-foreground'>Current lifecycle</dt>
+                  <dt className='text-muted-foreground'>
+                    {t('rooms:currentLifecycle')}
+                  </dt>
                   <dd className='font-medium'>
-                    {snapshot.room.status === 'ACTIVE' ? 'Active' : 'Inactive'}
+                    {snapshot.room.status === 'ACTIVE'
+                      ? t('rooms:active')
+                      : t('rooms:inactive')}
                   </dd>
                 </div>
                 <div>
-                  <dt className='text-muted-foreground'>Location</dt>
+                  <dt className='text-muted-foreground'>
+                    {t('rooms:location')}
+                  </dt>
                   <dd className='font-medium'>
-                    {snapshot.room.location ?? 'Not set'}
+                    {snapshot.room.location ?? t('rooms:notSet')}
                   </dd>
                 </div>
               </dl>
@@ -194,20 +209,23 @@ export function RoomDeactivationDialog({
                     : 'border-destructive/30 bg-destructive/5'
                 }`}
               >
-                <p>{feedback.message}</p>
+                <p>{localizedValidationMessage(feedback.message, t)}</p>
                 {feedback.reconciliationError && (
                   <p role='alert' className='text-destructive'>
-                    {feedback.reconciliationError}
+                    {localizedValidationMessage(
+                      feedback.reconciliationError,
+                      t
+                    )}
                   </p>
                 )}
                 {reviewedSnapshot && (
                   <div className='space-y-2 rounded-md border bg-background p-3'>
                     <p className='font-medium'>
-                      Latest server state is{' '}
-                      {reviewedSnapshot.room.status === 'ACTIVE'
-                        ? 'active'
-                        : 'inactive'}
-                      .
+                      {t(
+                        reviewedSnapshot.room.status === 'ACTIVE'
+                          ? 'rooms:latestActive'
+                          : 'rooms:latestInactive'
+                      )}
                     </p>
                     <p>
                       <span className='font-mono'>
@@ -229,12 +247,11 @@ export function RoomDeactivationDialog({
                           )
                         }
                       >
-                        Use latest state and review confirmation
+                        {t('rooms:reviewConfirmation')}
                       </Button>
                     ) : (
                       <p className='text-muted-foreground'>
-                        The current state is verified, but the result of the
-                        original request cannot be attributed.
+                        {t('rooms:outcomeUnattributed')}
                       </p>
                     )}
                   </div>
@@ -249,12 +266,14 @@ export function RoomDeactivationDialog({
                       onClick={() => void reloadLatest(snapshot.room.id)}
                     >
                       {latestLoading
-                        ? 'Loading latest room…'
-                        : 'Reload latest for review'}
+                        ? t('rooms:loadingLatest')
+                        : t('rooms:reloadLatest')}
                     </Button>
                     {latestError && (
                       <div className='space-y-2'>
-                        <p className='text-destructive'>{latestError}</p>
+                        <p className='text-destructive'>
+                          {localizedValidationMessage(latestError, t)}
+                        </p>
                         <Button
                           type='button'
                           variant='outline'
@@ -262,17 +281,17 @@ export function RoomDeactivationDialog({
                           disabled={latestLoading || !authorizationVerified}
                           onClick={() => void reloadLatest(snapshot.room.id)}
                         >
-                          Retry latest room
+                          {t('rooms:retryLatest')}
                         </Button>
                       </div>
                     )}
                     {latestSnapshot && (
                       <div className='space-y-2 rounded-md border bg-background p-3'>
                         <p className='font-medium'>
-                          Latest authoritative state:{' '}
+                          {t('rooms:latestStateColon')}
                           {latestSnapshot.room.status === 'ACTIVE'
-                            ? 'Active'
-                            : 'Inactive'}
+                            ? t('rooms:active')
+                            : t('rooms:inactive')}
                         </p>
                         <p>
                           <span className='font-mono'>
@@ -281,7 +300,8 @@ export function RoomDeactivationDialog({
                           · {latestSnapshot.room.name}
                         </p>
                         <p className='text-muted-foreground'>
-                          {latestSnapshot.room.location ?? 'Location not set'}
+                          {latestSnapshot.room.location ??
+                            t('rooms:locationNotSet')}
                         </p>
                         {latestSnapshot.room.status === 'ACTIVE' ? (
                           <Button
@@ -297,12 +317,11 @@ export function RoomDeactivationDialog({
                               )
                             }
                           >
-                            Use latest state and review confirmation
+                            {t('rooms:reviewConfirmation')}
                           </Button>
                         ) : (
                           <p className='text-muted-foreground'>
-                            This room is already inactive; another deactivation
-                            is not available.
+                            {t('rooms:alreadyInactive')}
                           </p>
                         )}
                       </div>
@@ -312,7 +331,9 @@ export function RoomDeactivationDialog({
               </div>
             )}
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={saving}>Cancel</AlertDialogCancel>
+              <AlertDialogCancel disabled={saving}>
+                {t('rooms:cancel')}
+              </AlertDialogCancel>
               <AlertDialogAction
                 disabled={
                   saving ||
@@ -333,7 +354,9 @@ export function RoomDeactivationDialog({
                   }
                 }}
               >
-                {saving ? 'Deactivating…' : 'Deactivate room'}
+                {saving
+                  ? t('rooms:deactivating')
+                  : t('rooms:deactivateRoomButton')}
               </AlertDialogAction>
             </AlertDialogFooter>
           </>

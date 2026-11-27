@@ -1,5 +1,6 @@
 import { type FormEvent } from 'react'
 import { AlertTriangle, ExternalLink } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -38,6 +39,7 @@ export function DecisionCard({
   onEdit: () => void
   onEvidenceNavigate?: EvidenceNavigate
 }) {
+  const { t } = useUiTranslation()
   return (
     <article
       className={`space-y-3 rounded-lg border p-4 ${
@@ -46,30 +48,45 @@ export function DecisionCard({
     >
       <div className='flex flex-wrap items-center gap-2'>
         <Badge variant={statusVariant(decision.status)}>
-          {decision.status}
+          {t(`decisions:value_${decision.status}`, {
+            defaultValue: decision.status,
+          })}
         </Badge>
-        <Badge variant='outline'>{decision.sourceType}</Badge>
+        <Badge variant='outline'>
+          {t(`decisions:value_${decision.sourceType}`, {
+            defaultValue: decision.sourceType,
+          })}
+        </Badge>
         <span className='text-xs text-muted-foreground'>
-          Created <RegionalTimestamp value={decision.createdAt} />
+          {t('decisions:created')}{' '}
+          <RegionalTimestamp value={decision.createdAt} />
         </span>
         {decision.isStale && (
-          <Badge variant='destructive'>Stale evidence</Badge>
+          <Badge variant='destructive'>{t('decisions:stale')}</Badge>
         )}
       </div>
       <p className='text-sm leading-7 whitespace-pre-wrap'>
         {decision.content}
       </p>
       <div className='flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground'>
-        <span>{decision.evidenceSegmentIds.length} evidence reference(s)</span>
+        <span>
+          {t('decisions:evidenceCount', {
+            count: decision.evidenceSegmentIds.length,
+          })}
+        </span>
         {decision.contentRevision !== null && (
-          <span>Transcript revision {decision.contentRevision}</span>
+          <span>
+            {t('decisions:revision', { revision: decision.contentRevision })}
+          </span>
         )}
         {decision.aiUncertainty && (
-          <span>AI uncertainty: {decision.aiUncertainty}</span>
+          <span>
+            {t('decisions:uncertainty', { value: decision.aiUncertainty })}
+          </span>
         )}
         {decision.aiProducer?.model && (
           <span>
-            Producer: {decision.aiProducer.provider ?? 'AI'} ·{' '}
+            {t('decisions:producer')} {decision.aiProducer.provider ?? 'AI'} ·{' '}
             {decision.aiProducer.model}
           </span>
         )}
@@ -97,11 +114,12 @@ export function DecisionCard({
                   )
                 }
               >
-                Evidence {index + 1} <ExternalLink />
+                {t('decisions:evidenceNumber', { number: index + 1 })}{' '}
+                <ExternalLink />
               </Button>
             ) : (
               <span key={segmentId} className='text-xs text-muted-foreground'>
-                Evidence {index + 1}
+                {t('decisions:evidenceNumber', { number: index + 1 })}
               </span>
             )
           )}
@@ -111,12 +129,12 @@ export function DecisionCard({
         <div className='flex flex-wrap gap-2'>
           {decision.status === 'PROPOSED' && (
             <Button size='sm' variant='outline' onClick={onReview}>
-              Review proposal
+              {t('decisions:reviewProposal')}
             </Button>
           )}
           {decision.status === 'CONFIRMED' && !editing && (
             <Button size='sm' variant='ghost' onClick={onEdit}>
-              Correct content
+              {t('decisions:correct')}
             </Button>
           )}
         </div>
@@ -150,29 +168,38 @@ export function ReviewPanel({
   onUseLatest: () => void
   onEvidenceNavigate?: EvidenceNavigate
 }) {
+  const { t } = useUiTranslation()
   return (
     <section className='space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-4'>
       <div>
-        <h3 className='font-semibold'>Proposal review</h3>
+        <h3 className='font-semibold'>{t('decisions:proposalReview')}</h3>
         <p className='text-sm text-muted-foreground'>
-          Confirming makes this an official organizational decision. Rejecting
-          preserves the AI proposal as historical record.
+          {t('decisions:proposalDescription')}
         </p>
       </div>
       <p className='text-sm leading-7 whitespace-pre-wrap'>
         {decision.content}
       </p>
       <div className='flex flex-wrap gap-2'>
-        <Badge variant='outline'>{decision.sourceType}</Badge>
         <Badge variant='outline'>
-          Revision {decision.contentRevision ?? 'unavailable'}
+          {t(`decisions:value_${decision.sourceType}`, {
+            defaultValue: decision.sourceType,
+          })}
+        </Badge>
+        <Badge variant='outline'>
+          {t('decisions:reviewRevision', {
+            revision:
+              decision.contentRevision ?? t('decisions:unavailableRevision'),
+          })}
         </Badge>
         {decision.isStale && (
-          <Badge variant='destructive'>Stale evidence</Badge>
+          <Badge variant='destructive'>{t('decisions:stale')}</Badge>
         )}
       </div>
       {decision.aiUncertainty && (
-        <p className='text-sm'>AI uncertainty: {decision.aiUncertainty}</p>
+        <p className='text-sm'>
+          {t('decisions:uncertainty', { value: decision.aiUncertainty })}
+        </p>
       )}
       {decision.aiWarnings?.map((warning, index) => (
         <p key={index} className='text-sm text-muted-foreground'>
@@ -182,12 +209,12 @@ export function ReviewPanel({
       {evidenceSegments.length > 0 && (
         <div className='space-y-2 rounded-md border bg-background p-3'>
           <h4 className='text-sm font-medium'>
-            Supporting transcript evidence
+            {t('decisions:supportingEvidence')}
           </h4>
           {evidenceSegments.map((segment) => (
             <div key={segment.id}>
               <p className='text-xs text-muted-foreground'>
-                Segment {segment.ordinal + 1}
+                {t('decisions:segment', { number: segment.ordinal + 1 })}
               </p>
               <p className='text-sm whitespace-pre-wrap'>{segment.text}</p>
             </div>
@@ -199,31 +226,31 @@ export function ReviewPanel({
           role='alert'
           className='space-y-2 rounded-md border border-amber-300/70 p-3 text-sm'
         >
-          <p>This review is no longer actionable. No action was replayed.</p>
+          <p>{t('decisions:reviewBlocked')}</p>
           {conflict ? (
             <>
-              <p>Latest status: {conflict.status}</p>
+              <p>
+                {t('decisions:latestStatus')}{' '}
+                {t(`decisions:value_${conflict.status}`, {
+                  defaultValue: conflict.status,
+                })}
+              </p>
               <p className='whitespace-pre-wrap'>{conflict.content}</p>
               {conflict.status === 'PROPOSED' && (
                 <Button size='sm' variant='outline' onClick={onUseLatest}>
-                  Use latest review snapshot
+                  {t('decisions:useLatestReview')}
                 </Button>
               )}
             </>
           ) : (
-            <p>
-              The record could not be verified on the refreshed page. Close this
-              review and reopen it from the authorized collection.
-            </p>
+            <p>{t('decisions:unverified')}</p>
           )}
         </div>
       )}
       {confirmationBlocked && (
         <p className='flex gap-2 text-sm text-amber-700'>
           <AlertTriangle className='mt-0.5 size-4 shrink-0' />
-          Confirmation is unavailable because the evidence is missing, stale,
-          unsafe, or could not be verified against the current transcript.
-          Rejection remains available.
+          {t('decisions:confirmBlocked')}
         </p>
       )}
       <div className='flex flex-wrap gap-2'>
@@ -231,17 +258,17 @@ export function ReviewPanel({
           disabled={pending || confirmationBlocked || blocked}
           onClick={onConfirm}
         >
-          Confirm decision
+          {t('decisions:confirm')}
         </Button>
         <Button
           variant='outline'
           disabled={pending || blocked}
           onClick={onReject}
         >
-          Reject proposal
+          {t('decisions:reject')}
         </Button>
         <Button size='sm' variant='ghost' disabled={pending} onClick={onClose}>
-          Close review
+          {t('decisions:closeReview')}
         </Button>
         {decision.transcriptId &&
           decision.evidenceSegmentIds.map((segmentId, index) =>
@@ -259,7 +286,7 @@ export function ReviewPanel({
                   )
                 }
               >
-                Open evidence {index + 1}
+                {t('decisions:openEvidence', { number: index + 1 })}
               </Button>
             ) : null
           )}
@@ -289,6 +316,7 @@ export function EditDecisionPanel({
   onCancel: () => void
   onUseLatest: () => void
 }) {
+  const { t } = useUiTranslation()
   return (
     <form
       className='space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-4'
@@ -298,10 +326,9 @@ export function EditDecisionPanel({
       }}
     >
       <div>
-        <h3 className='font-semibold'>Correct confirmed decision</h3>
+        <h3 className='font-semibold'>{t('decisions:correctConfirmed')}</h3>
         <p className='text-sm text-muted-foreground'>
-          Only content changes are submitted. Status, evidence, provenance, and
-          meeting ownership remain server-controlled.
+          {t('decisions:correctDescription')}
         </p>
       </div>
       {blocked && (
@@ -309,32 +336,31 @@ export function EditDecisionPanel({
           role='alert'
           className='space-y-2 rounded-md border border-amber-300/70 p-3 text-sm'
         >
-          <p>
-            The correction cannot be submitted until the latest decision has
-            been reviewed. Your draft is preserved.
-          </p>
-          <p className='font-medium'>Reviewed content</p>
+          <p>{t('decisions:correctionBlocked')}</p>
+          <p className='font-medium'>{t('decisions:reviewedContent')}</p>
           <p className='whitespace-pre-wrap'>{decision.content}</p>
           {conflict ? (
             <>
-              <p className='font-medium'>Latest content · {conflict.status}</p>
+              <p className='font-medium'>
+                {t('decisions:latestContent')} ·{' '}
+                {t(`decisions:value_${conflict.status}`, {
+                  defaultValue: conflict.status,
+                })}
+              </p>
               <p className='whitespace-pre-wrap'>{conflict.content}</p>
               {conflict.status === 'CONFIRMED' && (
                 <Button size='sm' variant='outline' onClick={onUseLatest}>
-                  Use latest as baseline
+                  {t('decisions:useBaseline')}
                 </Button>
               )}
             </>
           ) : (
-            <p>
-              Locate the decision in the refreshed collection and select Correct
-              content to review its latest snapshot.
-            </p>
+            <p>{t('decisions:locateLatest')}</p>
           )}
         </div>
       )}
       <Textarea
-        aria-label='Confirmed decision content'
+        aria-label={t('decisions:confirmedContent')}
         rows={4}
         maxLength={5_000}
         value={draft}
@@ -343,7 +369,7 @@ export function EditDecisionPanel({
       />
       <div className='flex flex-wrap justify-end gap-2'>
         <Button type='submit' disabled={pending || blocked || !draft.trim()}>
-          {pending ? 'Saving…' : 'Save correction'}
+          {pending ? t('decisions:saving') : t('decisions:saveCorrection')}
         </Button>
         <Button
           type='button'
@@ -351,11 +377,11 @@ export function EditDecisionPanel({
           disabled={pending}
           onClick={onCancel}
         >
-          Cancel
+          {t('decisions:cancel')}
         </Button>
       </div>
       <p className='text-xs text-muted-foreground'>
-        Editing decision v{decision.version}
+        {t('decisions:editing', { version: decision.version })}
       </p>
     </form>
   )
@@ -392,20 +418,20 @@ export function CreateDecisionPanel({
   onCancel: () => void
   segments: Array<{ id: string; ordinal: number; text: string }>
 }) {
+  const { t } = useUiTranslation()
   return (
     <form
       className='space-y-4 rounded-lg border border-primary/40 bg-primary/5 p-4'
       onSubmit={onSubmit}
     >
       <div>
-        <h3 className='font-semibold'>New confirmed decision</h3>
+        <h3 className='font-semibold'>{t('decisions:newDecision')}</h3>
         <p className='text-sm text-muted-foreground'>
-          This creates an official human decision. Supporting evidence is
-          optional and must come from the current authorized transcript.
+          {t('decisions:newDescription')}
         </p>
       </div>
       <Textarea
-        aria-label='New decision content'
+        aria-label={t('decisions:newContent')}
         rows={4}
         maxLength={5_000}
         value={content}
@@ -413,13 +439,13 @@ export function CreateDecisionPanel({
         onChange={(event) => onContentChange(event.target.value)}
       />
       {transcriptPending ? (
-        <RequestLoading label='Loading current transcript evidence…' />
+        <RequestLoading label={t('decisions:loadingEvidence')} />
       ) : transcriptError ? (
         <RequestError error={transcriptError} />
       ) : transcript ? (
         <fieldset className='space-y-2'>
           <legend className='text-sm font-medium'>
-            Supporting evidence ({evidence.length} / 50)
+            {t('decisions:selectionCount', { count: evidence.length })}
           </legend>
           <div className='max-h-64 space-y-2 overflow-auto rounded-md border bg-background p-3'>
             {segments.length ? (
@@ -439,7 +465,7 @@ export function CreateDecisionPanel({
               ))
             ) : (
               <span className='text-sm text-muted-foreground'>
-                No transcript segments are available for selection.
+                {t('decisions:noSegments')}
               </span>
             )}
           </div>
@@ -447,7 +473,7 @@ export function CreateDecisionPanel({
       ) : null}
       <div className='flex flex-wrap justify-end gap-2'>
         <Button type='submit' disabled={pending || blocked || !content.trim()}>
-          {pending ? 'Creating…' : 'Create confirmed decision'}
+          {pending ? t('decisions:creating') : t('decisions:create')}
         </Button>
         <Button
           type='button'
@@ -455,7 +481,7 @@ export function CreateDecisionPanel({
           disabled={pending}
           onClick={onCancel}
         >
-          Cancel
+          {t('decisions:cancel')}
         </Button>
       </div>
     </form>

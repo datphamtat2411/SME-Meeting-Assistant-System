@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
 import { getPageNumbers } from '@/lib/utils'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -66,6 +67,7 @@ import { formatMeetingSchedule as formatSchedule } from './data/meeting-schedule
 const route = getRouteApi('/_authenticated/meetings/')
 
 export function MeetingsPage() {
+  const { t } = useUiTranslation()
   const regional = useRegionalPresentation()
   const search = route.useSearch()
   const navigate = route.useNavigate()
@@ -89,13 +91,13 @@ export function MeetingsPage() {
       void queryClient.invalidateQueries({
         queryKey: ['rooms', 'availability'],
       })
-      toast.success('Meeting scheduled', {
-        description: 'The meeting was successfully scheduled.',
+      toast.success(t('meetings:scheduledToast'), {
+        description: t('meetings:scheduledToastDescription'),
       })
       return
     }
-    toast.success('Meeting saved as draft', {
-      description: 'The meeting was saved as DRAFT and has not been scheduled.',
+    toast.success(t('meetings:draftToast'), {
+      description: t('meetings:draftToastDescription'),
     })
   }
 
@@ -169,19 +171,18 @@ export function MeetingsPage() {
         <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
           <div>
             <p className='text-sm font-medium text-primary'>
-              Meeting management
+              {t('meetings:management')}
             </p>
             <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
-              Meetings
+              {t('navigation:meetings')}
             </h1>
             <p className='mt-2 max-w-2xl text-muted-foreground'>
-              Find a meeting and review its schedule, participants, and current
-              lifecycle.
+              {t('meetings:description')}
             </p>
           </div>
           <Button type='button' onClick={() => setIsCreateOpen(true)}>
             <Plus />
-            New Meeting
+            {t('meetings:newMeeting')}
           </Button>
         </div>
 
@@ -195,23 +196,25 @@ export function MeetingsPage() {
           <CardHeader className='border-b'>
             <div className='flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between'>
               <div>
-                <CardTitle>All meetings</CardTitle>
+                <CardTitle>{t('meetings:allMeetings')}</CardTitle>
                 <CardDescription>
                   {meetingsQuery.isPending
-                    ? 'Loading accessible meetings.'
-                    : `${totalMeetings} meeting${totalMeetings === 1 ? '' : 's'} in your accessible workspace.`}
+                    ? t('meetings:loadingAccessible')
+                    : t('meetings:accessibleCount', { count: totalMeetings })}
                 </CardDescription>
               </div>
               <div className='flex items-center gap-2 text-sm text-muted-foreground'>
                 {isRefreshing && (
                   <span role='status' className='flex items-center gap-1.5'>
                     <RefreshCw className='size-3.5 animate-spin' />
-                    Refreshing
+                    {t('meetings:refreshing')}
                   </span>
                 )}
                 {meetingsQuery.data && (
                   <p>
-                    Showing {formatMeetingRange(meetingsQuery.data.pagination)}
+                    {t('meetings:showing', {
+                      range: formatMeetingRange(meetingsQuery.data.pagination),
+                    })}
                   </p>
                 )}
               </div>
@@ -290,16 +293,19 @@ function MeetingsTable({
   totalMeetings: number
   hasActiveFilters: boolean
 }) {
+  const { t } = useUiTranslation()
   if (!totalMeetings) {
     return (
       <EmptyState
         title={
-          hasActiveFilters ? 'No meetings found.' : 'No accessible meetings.'
+          hasActiveFilters
+            ? t('meetings:noMeetings')
+            : t('meetings:noAccessibleMeetings')
         }
         description={
           hasActiveFilters
-            ? 'Try adjusting your search or filters.'
-            : 'Meetings you can access will appear here.'
+            ? t('meetings:adjustFilters')
+            : t('meetings:accessibleDescription')
         }
       />
     )
@@ -308,8 +314,8 @@ function MeetingsTable({
   if (!meetingRows.length) {
     return (
       <EmptyState
-        title='No meetings found.'
-        description='This page has no rows. Try returning to the first page.'
+        title={t('meetings:noMeetings')}
+        description={t('meetings:emptyPage')}
       />
     )
   }
@@ -319,12 +325,12 @@ function MeetingsTable({
       <Table className='min-w-[980px]'>
         <TableHeader>
           <TableRow>
-            <TableHead className='w-[25%]'>Meeting</TableHead>
-            <TableHead>Schedule</TableHead>
-            <TableHead>Room</TableHead>
-            <TableHead>Participants</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead className='text-end'>Actions</TableHead>
+            <TableHead className='w-[25%]'>{t('meetings:meeting')}</TableHead>
+            <TableHead>{t('meetings:schedule')}</TableHead>
+            <TableHead>{t('meetings:room')}</TableHead>
+            <TableHead>{t('meetings:participants')}</TableHead>
+            <TableHead>{t('meetings:status')}</TableHead>
+            <TableHead className='text-end'>{t('meetings:actions')}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -338,6 +344,7 @@ function MeetingsTable({
 }
 
 function MeetingRow({ meeting }: { meeting: MeetingListItem }) {
+  const { t } = useUiTranslation()
   const { timezone, locale } = useRegionalPresentation()
   const display = getMeetingDisplay(meeting)
   const room = getRoomDisplay(meeting, display)
@@ -354,7 +361,9 @@ function MeetingRow({ meeting }: { meeting: MeetingListItem }) {
             {meeting.title}
           </Link>
           <p className='text-xs text-muted-foreground'>
-            Organized by {display.organizerName || 'Unknown organizer'}
+            {t('meetings:organizedBy', {
+              name: display.organizerName || t('meetings:unknownOrganizer'),
+            })}
           </p>
         </div>
       </TableCell>
@@ -405,7 +414,7 @@ function MeetingRow({ meeting }: { meeting: MeetingListItem }) {
                 params={{ meetingId: meeting.id }}
               >
                 <Radio />
-                Live
+                {t('meetings:live')}
               </Link>
             </Button>
           )}
@@ -413,9 +422,9 @@ function MeetingRow({ meeting }: { meeting: MeetingListItem }) {
             <Link
               to='/meetings/$meetingId'
               params={{ meetingId: meeting.id }}
-              aria-label={`View ${meeting.title}`}
+              aria-label={t('meetings:viewMeeting', { title: meeting.title })}
             >
-              View
+              {t('view')}
               <ArrowUpRight />
             </Link>
           </Button>
@@ -438,6 +447,7 @@ function MeetingsPagination({
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
 }) {
+  const { t } = useUiTranslation()
   const totalPages = pagination.totalPages
   const currentPage = Math.min(Math.max(page, 1), Math.max(totalPages, 1))
   const pageNumbers = getPageNumbers(currentPage, totalPages)
@@ -446,10 +456,10 @@ function MeetingsPagination({
     <div className='flex flex-col gap-3 border-t p-4 sm:flex-row sm:items-center sm:justify-between'>
       <div className='flex items-center gap-2 text-sm font-medium'>
         <span>
-          Page {currentPage} of {Math.max(totalPages, 1)}
+          {t('page', { current: currentPage, total: Math.max(totalPages, 1) })}
         </span>
         <span className='text-muted-foreground'>
-          ({pagination.totalElements} total)
+          {t('meetings:total', { count: pagination.totalElements })}
         </span>
       </div>
       <div className='flex flex-wrap items-center justify-end gap-2'>
@@ -457,13 +467,16 @@ function MeetingsPagination({
           value={String(pageSize)}
           onValueChange={(value) => onPageSizeChange(Number(value))}
         >
-          <SelectTrigger className='h-8 w-20' aria-label='Meetings per page'>
+          <SelectTrigger
+            className='h-8 w-20'
+            aria-label={t('meetings:meetingsPerPage')}
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent side='top'>
             {[10, 20, 50, 100].map((size) => (
               <SelectItem key={size} value={String(size)}>
-                {size} / page
+                {t('meetings:perPage', { count: size })}
               </SelectItem>
             ))}
           </SelectContent>
@@ -472,7 +485,7 @@ function MeetingsPagination({
           type='button'
           variant='outline'
           size='icon'
-          aria-label='Go to first page'
+          aria-label={t('firstPage')}
           onClick={() => onPageChange(1)}
           disabled={currentPage <= 1}
         >
@@ -482,7 +495,7 @@ function MeetingsPagination({
           type='button'
           variant='outline'
           size='icon'
-          aria-label='Go to previous page'
+          aria-label={t('previousPage')}
           onClick={() => onPageChange(currentPage - 1)}
           disabled={currentPage <= 1}
         >
@@ -502,7 +515,7 @@ function MeetingsPagination({
               type='button'
               variant={currentPage === pageNumber ? 'default' : 'outline'}
               size='icon'
-              aria-label={`Go to page ${pageNumber}`}
+              aria-label={t('goPage', { page: pageNumber })}
               onClick={() => onPageChange(pageNumber)}
             >
               {pageNumber}
@@ -513,7 +526,7 @@ function MeetingsPagination({
           type='button'
           variant='outline'
           size='icon'
-          aria-label='Go to next page'
+          aria-label={t('nextPage')}
           onClick={() => onPageChange(currentPage + 1)}
           disabled={currentPage >= totalPages}
         >
@@ -523,7 +536,7 @@ function MeetingsPagination({
           type='button'
           variant='outline'
           size='icon'
-          aria-label='Go to last page'
+          aria-label={t('lastPage')}
           onClick={() => onPageChange(totalPages)}
           disabled={currentPage >= totalPages}
         >
@@ -535,20 +548,21 @@ function MeetingsPagination({
 }
 
 function MeetingsTableSkeleton() {
+  const { t } = useUiTranslation()
   return (
-    <div className='overflow-x-auto' aria-label='Loading meetings'>
+    <div className='overflow-x-auto' aria-label={t('meetings:loadingMeetings')}>
       <Table className='min-w-[980px]'>
         <TableHeader>
           <TableRow>
             {[
-              'Meeting',
-              'Schedule',
-              'Room',
-              'Participants',
-              'Status',
-              'Actions',
+              'meetings:meeting',
+              'meetings:schedule',
+              'meetings:room',
+              'meetings:participants',
+              'meetings:status',
+              'meetings:actions',
             ].map((heading) => (
-              <TableHead key={heading}>{heading}</TableHead>
+              <TableHead key={heading}>{t(heading)}</TableHead>
             ))}
           </TableRow>
         </TableHeader>
@@ -575,27 +589,26 @@ function MeetingListError({
   error: unknown
   onRetry: () => void
 }) {
+  const { t } = useUiTranslation()
   const apiError = normalizeCoreApiError(error)
   const accessDenied = apiError.status === 403
 
   return (
     <Alert variant='destructive' className='m-4'>
       <AlertTitle>
-        {accessDenied
-          ? 'Meeting access denied'
-          : 'Meetings could not be loaded'}
+        {accessDenied ? t('meetings:accessDenied') : t('meetings:loadFailed')}
       </AlertTitle>
       <AlertDescription>
         <p>
           {accessDenied
-            ? 'Your account is not authorized to view the meeting list.'
+            ? t('meetings:accessDeniedDescription')
             : apiError.isNetworkError
-              ? 'The Core API could not be reached. Check the connection and try again.'
-              : 'The meeting list request failed. No local or mock data was used.'}
+              ? t('meetings:networkFailed')
+              : t('meetings:listFailed')}
         </p>
         {!accessDenied && (
           <Button type='button' variant='outline' size='sm' onClick={onRetry}>
-            Try again
+            {t('meetings:tryAgain')}
           </Button>
         )}
       </AlertDescription>
@@ -631,40 +644,55 @@ function hasMeetingFilters(search: MeetingListSearch) {
 }
 
 function formatMeetingRange(pagination: MeetingPagination) {
-  if (!pagination.totalElements) return '0 of 0'
+  if (!pagination.totalElements) return i18n.t('meetings:emptyRange')
   const first = pagination.page * pagination.size + 1
   const last = Math.min(pagination.totalElements, first + pagination.size - 1)
-  return `${first}-${last} of ${pagination.totalElements}`
+  return i18n.t('meetings:range', {
+    first,
+    last,
+    total: pagination.totalElements,
+  })
 }
 
 function formatParticipantCount(display: MeetingDisplay) {
-  return `${display.participantCount} participant${
-    display.participantCount === 1 ? '' : 's'
-  }`
+  return i18n.t('meetings:participantCount', {
+    count: display.participantCount,
+  })
 }
 
 function formatParticipantPreview(display: MeetingDisplay) {
   if (!display.participantPreview.length) {
     return display.participantCount === 0
-      ? 'No participants'
-      : 'Participant preview unavailable'
+      ? i18n.t('meetings:noParticipants')
+      : i18n.t('meetings:participantPreviewUnavailable')
   }
 
   const names = display.participantPreview
     .slice(0, 2)
-    .map((participant) => participant.displayName || 'Unknown participant')
+    .map(
+      (participant) =>
+        participant.displayName || i18n.t('meetings:unknownParticipant')
+    )
   const remaining = Math.max(display.participantCount - names.length, 0)
 
-  return remaining ? `${names.join(', ')} +${remaining} more` : names.join(', ')
+  return remaining
+    ? i18n.t('meetings:participantPreviewMore', {
+        names: names.join(', '),
+        count: remaining,
+      })
+    : names.join(', ')
 }
 
 function getRoomDisplay(meeting: MeetingListItem, display: MeetingDisplay) {
   if (!meeting.roomId) {
-    return { name: 'Room unassigned', location: 'No room location' }
+    return {
+      name: i18n.t('meetings:roomUnassigned'),
+      location: i18n.t('meetings:noRoomLocation'),
+    }
   }
 
   return {
-    name: display.roomName || 'Room unavailable',
-    location: display.roomLocation || 'Location unavailable',
+    name: display.roomName || i18n.t('meetings:roomUnavailable'),
+    location: display.roomLocation || i18n.t('meetings:locationUnavailable'),
   }
 }

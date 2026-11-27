@@ -1,8 +1,9 @@
-import { StrictMode, useState } from 'react'
+import { act, StrictMode, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
+import { setUiLanguage } from '@/lib/i18n'
 import { MediaUploadError } from './media-api'
 import { RecordingPanel } from './recording-panel'
 
@@ -148,6 +149,36 @@ describe('RecordingPanel', () => {
     )
   })
 
+  it('changes recording controls without restarting microphone capture', async () => {
+    const { getUserMedia, track, recorder } = installRecorder()
+    const screen = await renderPanel()
+    try {
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Start recording' })
+      )
+      await expect
+        .element(screen.getByText('Recording in progress…'))
+        .toBeInTheDocument()
+      await act(async () => {
+        await setUiLanguage('vi')
+      })
+      await expect.element(screen.getByText('Đang ghi âm…')).toBeInTheDocument()
+      expect(getUserMedia).toHaveBeenCalledOnce()
+      expect(recorder.instances).toHaveLength(1)
+      expect(track.stop).not.toHaveBeenCalled()
+      await userEvent.click(screen.getByRole('button', { name: 'Dừng ghi âm' }))
+      await expect
+        .element(screen.getByText('Bản ghi âm đã sẵn sàng để kiểm tra'))
+        .toBeInTheDocument()
+      expect(track.stop).toHaveBeenCalled()
+      expect(mediaMocks.uploadMeetingFile).not.toHaveBeenCalled()
+    } finally {
+      await act(async () => {
+        await setUiLanguage('en')
+      })
+    }
+  })
+
   it('starts, stops, and retains explicit submission through StrictMode effect replay', async () => {
     const { getUserMedia, track, recorder } = installRecorder()
     const screen = await renderPanel(true)
@@ -255,7 +286,9 @@ describe('RecordingPanel', () => {
   it('reports microphone permission failure without creating an upload', async () => {
     const getUserMedia = vi
       .fn()
-      .mockRejectedValue(new Error('permission denied'))
+      .mockRejectedValue(
+        new DOMException('permission denied', 'NotAllowedError')
+      )
     installRecorder({ getUserMedia })
     const screen = await renderPanel()
 
@@ -266,7 +299,10 @@ describe('RecordingPanel', () => {
     expect(getUserMedia).toHaveBeenCalledOnce()
     expect(toastMocks.error).toHaveBeenCalledWith(
       'Microphone access failed',
-      expect.objectContaining({ description: 'permission denied' })
+      expect.objectContaining({
+        description:
+          'Permission was denied. Check your browser permissions and try again.',
+      })
     )
     expect(mediaMocks.uploadMeetingFile).not.toHaveBeenCalled()
   })
@@ -284,7 +320,10 @@ describe('RecordingPanel', () => {
     expect(track.stop).toHaveBeenCalled()
     expect(toastMocks.error).toHaveBeenCalledWith(
       'Recording could not be started',
-      expect.objectContaining({ description: 'start failed' })
+      expect.objectContaining({
+        description:
+          'Check the microphone and browser recording support, or import a supported audio file.',
+      })
     )
     expect(mediaMocks.uploadMeetingFile).not.toHaveBeenCalled()
   })

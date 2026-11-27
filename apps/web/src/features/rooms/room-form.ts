@@ -1,4 +1,8 @@
 import { z } from 'zod'
+import {
+  featureValidationMessage,
+  lengthValidationMessage,
+} from '@/lib/i18n/presentation'
 import type { Room } from './room-api'
 
 const maxRoomCapacity = 2_147_483_647
@@ -17,22 +21,25 @@ const capacityInputSchema = z
       )
     },
     {
-      message:
-        'Capacity must be a positive whole number within the supported range.',
+      message: featureValidationMessage('rooms:capacityInvalid'),
     }
   )
 
 export const roomFormSchema = z.object({
-  code: z.string().trim().min(1, 'Room code is required.').max(64),
+  code: z
+    .string()
+    .trim()
+    .min(1, featureValidationMessage('rooms:codeRequired'))
+    .max(64, lengthValidationMessage('maxLength', 64)),
   name: z
     .string()
     .trim()
-    .min(1, 'Room name is required.')
-    .max(160, 'Room name must be 160 characters or fewer.'),
+    .min(1, featureValidationMessage('rooms:nameRequired'))
+    .max(160, featureValidationMessage('rooms:nameTooLong')),
   location: z
     .string()
     .trim()
-    .max(255, 'Location must be 255 characters or fewer.'),
+    .max(255, featureValidationMessage('rooms:locationTooLong')),
   capacity: capacityInputSchema,
   notes: z.string().trim(),
 })

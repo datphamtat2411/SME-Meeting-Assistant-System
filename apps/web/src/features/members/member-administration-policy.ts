@@ -12,7 +12,10 @@ export type MemberLifecycleAction =
   | 'account-setup/reissue'
 
 export class MemberPolicyError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly messageKey?: string
+  ) {
     super(message)
     this.name = 'MemberPolicyError'
   }
@@ -102,19 +105,22 @@ function assertAuthorizedActiveUnit(
   if (!unitId) {
     if (required) {
       throw new MemberPolicyError(
-        'Select an active organizational unit within your management scope.'
+        'Select an active organizational unit within your management scope.',
+        'members:recovery_activeUnit'
       )
     }
     return
   }
   if (!isUnitInActorManagementScope(actor, unitId)) {
     throw new MemberPolicyError(
-      'The selected organizational unit is outside your management scope.'
+      'The selected organizational unit is outside your management scope.',
+      'members:recovery_unitOutside'
     )
   }
   if (units && !hasUnit(units, unitId)) {
     throw new MemberPolicyError(
-      'Refresh the authorized organizational units before submitting this assignment.'
+      'Refresh the authorized organizational units before submitting this assignment.',
+      'members:recovery_refreshUnits'
     )
   }
 }
@@ -127,7 +133,8 @@ function assertAuthorizedScopeUnits(
   if (!scopeIds || scopeIds.length === 0) return
   if (!units) {
     throw new MemberPolicyError(
-      'Refresh the authorized organizational units before replacing manager scope.'
+      'Refresh the authorized organizational units before replacing manager scope.',
+      'members:recovery_refreshScope'
     )
   }
   for (const unitId of scopeIds) {
@@ -142,14 +149,16 @@ export function assertMemberCreateAllowed(
 ): void {
   if (!canProvisionMember(actor)) {
     throw new MemberPolicyError(
-      'Your current account cannot provision organizational members.'
+      'Your current account cannot provision organizational members.',
+      'members:recovery_cannotProvision'
     )
   }
 
   if (isDepartmentManager(actor)) {
     if ('globalRole' in payload || 'managerScopeUnitIds' in payload) {
       throw new MemberPolicyError(
-        'Department managers can provision employees only.'
+        'Department managers can provision employees only.',
+        'members:recovery_employeeOnly'
       )
     }
     assertAuthorizedActiveUnit(actor, payload.primaryOrgUnitId, units, true)
@@ -159,7 +168,8 @@ export function assertMemberCreateAllowed(
   const role = payload.globalRole ?? 'EMPLOYEE'
   if (role !== 'DEPARTMENT_MANAGER' && 'managerScopeUnitIds' in payload) {
     throw new MemberPolicyError(
-      'Manager scope can only be submitted for a department manager.'
+      'Manager scope can only be submitted for a department manager.',
+      'members:recovery_managerScopeOnly'
     )
   }
   assertAuthorizedActiveUnit(actor, payload.primaryOrgUnitId, units, false)
@@ -174,14 +184,16 @@ export function assertMemberPatchAllowed(
 ): void {
   if (!canManageMemberTarget(actor, member)) {
     throw new MemberPolicyError(
-      'The target member is outside your current management scope.'
+      'The target member is outside your current management scope.',
+      'members:recovery_targetOutside'
     )
   }
 
   if (isDepartmentManager(actor)) {
     if ('globalRole' in payload || 'managerScopeUnitIds' in payload) {
       throw new MemberPolicyError(
-        'Department managers cannot change global roles or manager scope.'
+        'Department managers cannot change global roles or manager scope.',
+        'members:recovery_cannotChangeRole'
       )
     }
     if ('primaryOrgUnitId' in payload) {
@@ -193,7 +205,8 @@ export function assertMemberPatchAllowed(
   const nextRole = payload.globalRole ?? member.globalRole
   if ('managerScopeUnitIds' in payload && nextRole !== 'DEPARTMENT_MANAGER') {
     throw new MemberPolicyError(
-      'Manager scope can only be submitted for a department manager.'
+      'Manager scope can only be submitted for a department manager.',
+      'members:recovery_managerScopeOnly'
     )
   }
   if ('primaryOrgUnitId' in payload) {

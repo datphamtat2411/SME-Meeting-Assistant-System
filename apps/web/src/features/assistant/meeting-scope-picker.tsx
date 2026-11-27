@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -16,6 +17,7 @@ export function MeetingScopePicker({
   selectedMeetingTitle?: string
   onMeetingChange: (meetingId: string) => void
 }) {
+  const { t } = useUiTranslation()
   const { input, setInput, page, setPage, meetingsQuery, applySearch } =
     useAssistantScopeDiscovery()
   const meetings = meetingsQuery.isSuccess ? meetingsQuery.data.meetings : []
@@ -26,17 +28,17 @@ export function MeetingScopePicker({
   return (
     <div className='space-y-2'>
       <label className='space-y-1.5 text-sm font-medium'>
-        <span>Meeting scope</span>
+        <span>{t('assistant:scope')}</span>
         <select
-          aria-label='Assistant meeting'
+          aria-label={t('assistant:meetingSelect')}
           className='flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50'
           value={selectedMeetingId ?? ''}
           onChange={(event) => onMeetingChange(event.target.value)}
         >
-          <option value=''>Select an authorized meeting</option>
+          <option value=''>{t('assistant:selectMeeting')}</option>
           {selectedOutsidePage && (
             <option value={selectedMeetingId}>
-              {selectedMeetingTitle || 'Selected meeting'}
+              {selectedMeetingTitle || t('assistant:selectedMeeting')}
             </option>
           )}
           {meetings.map((meeting) => (
@@ -54,49 +56,53 @@ export function MeetingScopePicker({
         }}
       >
         <Input
-          aria-label='Find meeting scope'
-          placeholder='Find an authorized meeting'
+          aria-label={t('assistant:findScope')}
+          placeholder={t('assistant:findAuthorized')}
           value={input}
           onChange={(event) => setInput(event.target.value)}
         />
         <Button type='submit' variant='outline'>
-          Find
+          {t('assistant:find')}
         </Button>
       </form>
       {meetingsQuery.isPending ? (
-        <RequestLoading label='Loading meeting scopes…' />
+        <RequestLoading label={t('assistant:loadingScopes')} />
       ) : meetingsQuery.isError ? (
         <RequestError
           error={meetingsQuery.error}
           retry={() => void meetingsQuery.refetch()}
         />
       ) : !meetings.length ? (
-        <RequestEmpty title='No matching meeting scopes' />
+        <RequestEmpty title={t('assistant:noScopes')} />
       ) : null}
       {meetingsQuery.isSuccess && (
         <div className='flex items-center justify-between gap-2 text-xs text-muted-foreground'>
-          <span>{meetingsQuery.data.pagination.totalElements} meeting(s)</span>
+          <span>
+            {t('assistant:meetingCount', {
+              count: meetingsQuery.data.pagination.totalElements,
+            })}
+          </span>
           <div className='flex items-center gap-1'>
             <Button
               type='button'
               size='sm'
               variant='outline'
-              aria-label='Previous meeting scope page'
+              aria-label={t('assistant:previousScope')}
               disabled={!meetingsQuery.data.pagination.hasPrevious}
               onClick={() => setPage(page - 1)}
             >
-              Previous
+              {t('assistant:previous')}
             </Button>
             <span>{page}</span>
             <Button
               type='button'
               size='sm'
               variant='outline'
-              aria-label='Next meeting scope page'
+              aria-label={t('assistant:nextScope')}
               disabled={!meetingsQuery.data.pagination.hasNext}
               onClick={() => setPage(page + 1)}
             >
-              Next
+              {t('assistant:next')}
             </Button>
           </div>
         </div>

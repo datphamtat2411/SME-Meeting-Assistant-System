@@ -35,5 +35,16 @@
   "minLength_one": "Enter at least {{count}} character.",
   "minLength_other": "Enter at least {{count}} characters.",
   "maxLength_one": "Enter no more than {{count}} character.",
-  "maxLength_other": "Enter no more than {{count}} characters."
+  "maxLength_other": "Enter no more than {{count}} characters.",
+  "forbiddenPageTitle": "Access Forbidden",
+  "forbiddenPageDescription": "You don't have necessary permission to view this resource.",
+  "generalPageTitle": "Oops! Something went wrong :')",
+  "generalPageDescription": "We apologize for the inconvenience. Please try again later.",
+  "maintenancePageTitle": "Website is under maintenance!",
+  "maintenancePageDescription": "The site is not available at the moment. We'll be back online shortly.",
+  "unauthorizedPageTitle": "Unauthorized Access",
+  "unauthorizedPageDescription": "Please log in with the appropriate credentials to access this resource.",
+  "notFoundPageTitle": "Page not found",
+  "notFoundRoutePrefix": "The route",
+  "notFoundRouteSuffix": "is not available in this workspace."
 }

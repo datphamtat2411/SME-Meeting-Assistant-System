@@ -5,6 +5,7 @@ import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/app_theme.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/core/ui_presentation.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 import 'package:sme_meeting_assistant/features/assistant/assistant_page.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_detail_controller.dart';
@@ -197,7 +198,9 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: Text(title),
-          content: Text('$detail\n\nTrạng thái hiện tại: ${meeting.status}.'),
+          content: Text(
+            '$detail\n\nTrạng thái hiện tại: ${meetingStatusLabel(meeting.status)}.',
+          ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
@@ -223,7 +226,9 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('$detail\n\nTrạng thái hiện tại: ${meeting.status}.'),
+              Text(
+                '$detail\n\nTrạng thái hiện tại: ${meetingStatusLabel(meeting.status)}.',
+              ),
               const SizedBox(height: 12),
               TextField(
                 controller: reason,
@@ -714,8 +719,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
     },
   );
 
-  String _failureMessage(Object? error) =>
-      error is ApiFailure ? error.message : 'Đã xảy ra lỗi không mong muốn.';
+  String _failureMessage(Object? error) => apiFailureLabel(error);
 
   void _openTranscriptReview(TranscriptReviewHandoff handoff) {
     if (!mounted ||

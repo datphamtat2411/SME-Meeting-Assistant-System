@@ -1,4 +1,8 @@
 import { normalizeCoreApiError } from '@/lib/core-api'
+import {
+  featureValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import type { AuthorizedMemberDirectoryAccess } from './member-access-policy'
 import {
   memberDetail,
@@ -30,19 +34,19 @@ function creationVerificationMessage(
 ): string {
   if (result.status === 'found') {
     return result.metadataMatches
-      ? 'A visible account has the submitted normalized email and matching metadata. The request may have succeeded, but no second request was sent.'
-      : 'A visible account has the submitted normalized email but different metadata. Review that account before deciding what to do.'
+      ? featureValidationMessage('members:recovery_visibleMatches')
+      : featureValidationMessage('members:recovery_visibleDiffers')
   }
   return result.visibilityLimited
-    ? 'No matching account is visible in your current management scope. This does not establish that the email is globally unused or that the original request failed.'
-    : 'No matching account was found in the authoritative directory. The original request was not confirmed; review the preserved draft before explicitly deciding whether to retry.'
+    ? featureValidationMessage('members:recovery_scopeLimited')
+    : featureValidationMessage('members:recovery_notFoundDirectory')
 }
 
 function editReconciliationMessage(
   reconciliation: ReturnType<typeof reconcileMemberEdit>
 ): string {
   if (reconciliation.conflicts.length > 0) {
-    return 'The latest member state contains field conflicts. Compare the server values with your intended changes and resolve each conflict before continuing.'
+    return featureValidationMessage('members:recovery_fieldConflicts')
   }
   const fields = Object.values(reconciliation.fields)
   const hasIntent = fields.some((field) => field.userChanged)
@@ -58,12 +62,12 @@ function editReconciliationMessage(
   )
   if (hasIntent && intendedValuesArePresent) {
     return hasServerChanges
-      ? 'The latest member state already contains your intended values and also includes independent server changes. No second request was sent; review the current state before continuing.'
-      : 'The latest member state already contains your intended values. The request may have succeeded, but the result cannot be attributed and no second request was sent.'
+      ? featureValidationMessage('members:recovery_presentIndependent')
+      : featureValidationMessage('members:recovery_present')
   }
   return hasServerChanges
-    ? 'The latest member state includes independent server changes. Your intended changes are preserved for review against this version.'
-    : 'Review the latest authoritative member state before deciding what to do.'
+    ? featureValidationMessage('members:recovery_independent')
+    : featureValidationMessage('members:recovery_reviewLatest')
 }
 
 interface MemberEditorRecovery {
@@ -96,8 +100,9 @@ export function createMemberEditorRecovery(
     )
   }
 
-  const verificationDeferredMessage =
-    'Current administration access could not be verified while checking the request outcome. The protected response was discarded; verify access and reload the authoritative state before continuing.'
+  const verificationDeferredMessage = featureValidationMessage(
+    'members:recovery_verificationDeferred'
+  )
 
   async function verifyCreation(input: {
     operationId: number
@@ -176,12 +181,15 @@ export function createMemberEditorRecovery(
         })
         return
       }
+      const failure = normalizeCoreApiError(error)
       dependencies.dispatch({
         type: 'VERIFICATION_FAILED',
         operationId: input.operationId,
         contextKey: input.contextKey,
         requestId: request.requestId,
-        error: normalizeCoreApiError(error).message,
+        error: failure.isNetworkError
+          ? featureValidationMessage('members:recovery_directoryUnavailable')
+          : requestErrorFormMessage(failure),
       })
     } finally {
       dependencies.requests.completeRequest(request)
@@ -274,7 +282,7 @@ export function createMemberEditorRecovery(
         operationId: input.operationId,
         contextKey: input.contextKey,
         requestId: request.requestId,
-        error: normalizeCoreApiError(error).message,
+        error: requestErrorFormMessage(normalizeCoreApiError(error)),
       })
     } finally {
       dependencies.requests.completeRequest(request)

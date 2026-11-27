@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/api_model_validation.dart';
 import 'package:sme_meeting_assistant/core/paged_collection.dart';
+import 'package:sme_meeting_assistant/core/ui_presentation.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 
 const int meetingCandidatePageSize = 20;
@@ -605,9 +606,7 @@ class _ParticipantPickerDialogState extends State<ParticipantPickerDialog> {
       return MessagePanel(
         icon: Icons.cloud_off_outlined,
         title: 'Không thể tìm người tham gia',
-        description: state.failure is ApiFailure
-            ? (state.failure! as ApiFailure).message
-            : 'Đã xảy ra lỗi khi tìm kiếm.',
+        description: apiFailureLabel(state.failure),
         onRetry: _controller.retry,
       );
     }

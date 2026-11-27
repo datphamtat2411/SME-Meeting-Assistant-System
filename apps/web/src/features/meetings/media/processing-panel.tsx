@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { CoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -16,11 +17,17 @@ import {
   RequestError,
   RequestLoading,
 } from '@/components/request-state'
+import { processingErrorDescription } from './media-error-presentation'
 import {
   MeetingSessionBoundary,
   useMeetingSession,
 } from './meeting-session-context'
-import { presentProcessingStatus } from './processing-status-presentation'
+import {
+  presentProcessingFailure,
+  presentProcessingJobType,
+  presentProcessingStage,
+  presentProcessingStatus,
+} from './processing-status-presentation'
 
 function isUncertainProcessingError(error: unknown): boolean {
   return error instanceof CoreApiError && error.recoveryOutcome === 'uncertain'
@@ -73,6 +80,7 @@ function ProcessingPanelContent({
 }) {
   const admissionAllowed = canAdmitProcessing ?? canManageProcessing ?? false
   const recoveryAllowed = canRecoverProcessing ?? canManageProcessing ?? false
+  const { t } = useUiTranslation()
   const session = useMeetingSession()
   const processing = session.processing
   const jobs = processing.jobs
@@ -102,19 +110,18 @@ function ProcessingPanelContent({
     }
     try {
       const result = await processing.admit(mediaId)
-      if (result.status === 'confirmed') toast.success('Processing job queued')
+      if (result.status === 'confirmed')
+        toast.success(i18n.t('processing:jobQueued'))
     } catch (error) {
       const uncertain = isUncertainProcessingError(error)
       toast.error(
         uncertain
-          ? 'Processing request outcome is uncertain'
-          : 'Processing request rejected',
+          ? i18n.t('processing:admissionUncertain')
+          : i18n.t('processing:admissionRejected'),
         {
           description: uncertain
-            ? 'Refresh the job list to check the server state. Do not start a different operation until this outcome is understood.'
-            : error instanceof Error
-              ? error.message
-              : undefined,
+            ? i18n.t('processing:admissionUncertainHint')
+            : processingErrorDescription(error),
         }
       )
     }
@@ -125,20 +132,18 @@ function ProcessingPanelContent({
     try {
       const result = await processing.reprocess(jobId, sourceMediaId)
       if (result.status === 'confirmed') {
-        toast.success('Reprocessing job queued')
+        toast.success(i18n.t('processing:reprocessQueued'))
       }
     } catch (error) {
       const uncertain = isUncertainProcessingError(error)
       toast.error(
         uncertain
-          ? 'Reprocessing outcome is uncertain'
-          : 'Reprocessing request rejected',
+          ? i18n.t('processing:reprocessUncertain')
+          : i18n.t('processing:reprocessRejected'),
         {
           description: uncertain
-            ? 'Refresh processing jobs before starting another operation.'
-            : error instanceof Error
-              ? error.message
-              : undefined,
+            ? i18n.t('processing:reprocessUncertainHint')
+            : processingErrorDescription(error),
         }
       )
     }
@@ -150,16 +155,19 @@ function ProcessingPanelContent({
     try {
       const result = await processing.retry(jobId, stageCode)
       if (result.status === 'confirmed')
-        toast.success('Processing retry accepted')
+        toast.success(i18n.t('processing:retryAccepted'))
     } catch (error) {
       const uncertain = isUncertainProcessingError(error)
-      toast.error(uncertain ? 'Retry outcome is uncertain' : 'Retry rejected', {
-        description: uncertain
-          ? 'Check the current job before deciding what to do next. Do not start an independent retry until this outcome is understood.'
-          : error instanceof Error
-            ? error.message
-            : undefined,
-      })
+      toast.error(
+        uncertain
+          ? i18n.t('processing:retryUncertain')
+          : i18n.t('processing:retryRejected'),
+        {
+          description: uncertain
+            ? i18n.t('processing:retryUncertainHint')
+            : processingErrorDescription(error),
+        }
+      )
     }
   }
 
@@ -178,25 +186,23 @@ function ProcessingPanelContent({
       if (result.status !== 'confirmed') return
       toast.success(
         operation.kind === 'admission'
-          ? 'Processing job queued'
+          ? i18n.t('processing:jobQueued')
           : operation.kind === 'reprocessing'
-            ? 'Reprocessing job queued'
+            ? i18n.t('processing:reprocessQueued')
             : operation.kind === 'summary-regeneration'
-              ? 'Summary regeneration accepted'
-              : 'Processing retry accepted'
+              ? i18n.t('processing:summaryRegenerationAccepted')
+              : i18n.t('processing:retryAccepted')
       )
     } catch (error) {
       const uncertain = isUncertainProcessingError(error)
       toast.error(
         uncertain
-          ? 'Processing outcome is still uncertain'
-          : 'Recovery rejected',
+          ? i18n.t('processing:recoveryUncertain')
+          : i18n.t('processing:recoveryRejected'),
         {
           description: uncertain
-            ? 'Check current server status before starting an independent operation.'
-            : error instanceof Error
-              ? error.message
-              : undefined,
+            ? i18n.t('processing:recoveryUncertainHint')
+            : processingErrorDescription(error),
         }
       )
     }
@@ -205,34 +211,32 @@ function ProcessingPanelContent({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>AI processing</CardTitle>
+        <CardTitle>{t('processing:title')}</CardTitle>
         <p className='text-sm text-muted-foreground'>
-          Long-running ASR and intelligence run asynchronously. An accepted job
-          is not a completed transcript.
+          {t('processing:description')}
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
         {processing.reviewCommandBlocked && (
           <p role='status' className='text-sm text-muted-foreground'>
-            Transcript review has unresolved work. Resolve it in the Transcript
-            section before issuing a processing command.
+            {t('processing:reviewBlocked')}
           </p>
         )}
         {unresolvedOperations.length > 0 && (
           <div
             role='region'
-            aria-label='Unresolved processing operations'
+            aria-label={t('processing:unresolvedOperations')}
             className='space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3'
           >
             {unresolvedOperations.map((operation) => {
               const label =
                 operation.kind === 'admission'
-                  ? 'Processing admission'
+                  ? t('processing:admission')
                   : operation.kind === 'reprocessing'
-                    ? 'Reprocessing'
+                    ? t('processing:reprocessing')
                     : operation.kind === 'summary-regeneration'
-                      ? 'Summary regeneration'
-                      : 'Processing retry'
+                      ? t('processing:summaryRegeneration')
+                      : t('processing:retry')
               const observingSummary =
                 operation.kind === 'summary-regeneration' &&
                 Boolean(operation.jobId) &&
@@ -249,29 +253,36 @@ function ProcessingPanelContent({
                     >
                       {observingSummary
                         ? processing.summaryObservationStatus === 'unavailable'
-                          ? 'Regeneration admitted; status unavailable.'
-                          : 'Regeneration admitted; tracking exact job.'
+                          ? t('processing:regenerationUnavailable')
+                          : t('processing:regenerationTracking')
                         : operation.status === 'pending'
-                          ? `${label} is in progress.`
-                          : `${label} outcome is uncertain.`}
+                          ? t('processing:operationPending', { label })
+                          : t('processing:operationUncertain', { label })}
                     </p>
                     <p className='text-xs text-muted-foreground'>
                       {observingSummary
-                        ? 'Refresh the admitted job without repeating the generation request.'
+                        ? t('processing:refreshRegenerationHint')
                         : operation.status === 'uncertain'
-                          ? 'Check current server status. Matching server data alone does not confirm this operation.'
-                          : 'Wait for this operation to settle before issuing another command.'}
+                          ? t('processing:uncertainObservationHint')
+                          : t('processing:waitForOperation')}
                     </p>
                     {operation.sourceMediaId && (
                       <p className='text-xs text-muted-foreground'>
-                        Source media: {operation.sourceMediaId}
+                        {t('processing:sourceMedia', {
+                          id: operation.sourceMediaId,
+                        })}
                       </p>
                     )}
                     {operation.jobId && (
                       <p className='text-xs text-muted-foreground'>
-                        Job: {operation.jobId}
+                        {t('processing:jobId', { id: operation.jobId })}
                         {operation.stageCode
-                          ? ` · Stage: ${operation.stageCode}`
+                          ? t('processing:stageSuffix', {
+                              stage: presentProcessingStage(
+                                operation.stageCode,
+                                t
+                              ),
+                            })
                           : ''}
                       </p>
                     )}
@@ -287,7 +298,7 @@ function ProcessingPanelContent({
                         void processing.refreshSummaryObservation?.()
                       }
                     >
-                      Refresh regeneration status
+                      {t('processing:refreshRegeneration')}
                     </Button>
                   ) : (
                     operation.status === 'uncertain' && (
@@ -297,8 +308,8 @@ function ProcessingPanelContent({
                         onClick={() => void recoverOperation(operation)}
                       >
                         {operation.replayPermitted
-                          ? 'Replay original request'
-                          : 'Check current server status'}
+                          ? t('processing:replayOriginal')
+                          : t('processing:checkServerStatus')}
                       </Button>
                     )
                   )}
@@ -323,7 +334,7 @@ function ProcessingPanelContent({
                 disabled={hasUnresolvedOperation}
               >
                 <SelectTrigger className='max-w-sm min-w-48'>
-                  <SelectValue placeholder='Select finalized source' />
+                  <SelectValue placeholder={t('processing:selectSource')} />
                 </SelectTrigger>
                 <SelectContent>
                   {initialSources.map((source) => (
@@ -337,7 +348,7 @@ function ProcessingPanelContent({
                 disabled={!mediaId || hasUnresolvedOperation}
                 onClick={() => void submitProcessing()}
               >
-                Start processing
+                {t('processing:start')}
               </Button>
             </div>
           )}
@@ -347,8 +358,8 @@ function ProcessingPanelContent({
           <RequestError error={jobs.error} retry={() => void jobs.refetch()} />
         ) : !jobs.data || jobs.data.length === 0 ? (
           <RequestEmpty
-            title='No processing jobs'
-            description='Upload and finalize a recording before requesting processing.'
+            title={t('processing:noJobs')}
+            description={t('processing:noJobsHint')}
           />
         ) : (
           <div className='space-y-3'>
@@ -359,9 +370,10 @@ function ProcessingPanelContent({
                   role='status'
                   className='rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-700'
                 >
-                  A different processing workflow is currently actionable:
-                  {` ${presentProcessingStatus(actionableJob.status).label}`}.
-                  The selected historical attempt remains visible below.
+                  {t('processing:differentActionable', {
+                    status: presentProcessingStatus(actionableJob.status, t)
+                      .label,
+                  })}
                 </p>
               )}
             {jobs.data.map((job) => (
@@ -374,36 +386,52 @@ function ProcessingPanelContent({
                 <div className='flex flex-wrap items-center justify-between gap-2'>
                   <div>
                     <span className='font-medium'>
-                      {job.jobType} · {job.currentStage || 'Pending'}
+                      {presentProcessingJobType(job.jobType, t)} ·{' '}
+                      {job.currentStage
+                        ? presentProcessingStage(job.currentStage, t)
+                        : t('processing:pending')}
                     </span>
                     <p className='text-xs text-muted-foreground'>
-                      Attempt {job.retryCount + 1} · {job.id}
+                      {t('processing:attempt', {
+                        attempt: job.retryCount + 1,
+                        id: job.id,
+                      })}
                     </p>
                   </div>
                   <Badge variant='outline'>
-                    {presentProcessingStatus(job.status).label}
+                    {presentProcessingStatus(job.status, t).label}
                   </Badge>
                 </div>
                 <p className='text-xs text-muted-foreground'>
-                  Source media: {job.sourceMediaId}
+                  {t('processing:sourceMedia', { id: job.sourceMediaId })}
                 </p>
                 {job.reprocessOfJobId && (
                   <p className='text-xs text-muted-foreground'>
-                    Reprocessing attempt based on {job.reprocessOfJobId}
+                    {t('processing:reprocessBasedOn', {
+                      id: job.reprocessOfJobId,
+                    })}
                   </p>
                 )}
                 {job.status === 'WAITING_FOR_REVIEW' && (
                   <p role='status' className='text-sm text-amber-600'>
-                    Human review is required before downstream intelligence can
-                    continue. Open Transcript to review the source.
+                    {t('processing:reviewRequired')}
                   </p>
                 )}
                 {job.warningSummary && (
-                  <p className='text-xs text-amber-600'>{job.warningSummary}</p>
+                  <p className='text-xs text-amber-600'>
+                    {t('processing:warningDetail', {
+                      detail: job.warningSummary,
+                    })}
+                  </p>
                 )}
                 {job.errorCode && (
                   <p className='text-xs text-destructive'>
-                    {job.errorCode}: {job.errorSummary || 'Processing failed'}
+                    {job.errorCode}:{' '}
+                    {presentProcessingFailure(
+                      job.errorCode,
+                      job.errorSummary,
+                      t
+                    )}
                   </p>
                 )}
                 {job.stageRuns.length > 0 && (
@@ -414,16 +442,23 @@ function ProcessingPanelContent({
                         className='flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground'
                       >
                         <span>
-                          {stage.stageCode} · attempt {stage.attemptNumber}
+                          {t('processing:stageAttempt', {
+                            stage: presentProcessingStage(stage.stageCode, t),
+                            attempt: stage.attemptNumber,
+                          })}
                         </span>
                         <Badge variant='secondary'>
                           {stage.status === 'COMPLETED'
-                            ? 'Completed'
+                            ? t('processing:stageCompleted')
                             : stage.status === 'RUNNING'
-                              ? 'Running'
+                              ? t('processing:stageRunning')
                               : stage.status === 'FAILED'
-                                ? 'Failed'
-                                : stage.status}
+                                ? t('processing:stageFailed')
+                                : stage.status === 'PENDING'
+                                  ? t('processing:pending')
+                                  : stage.status === 'CANCELLED'
+                                    ? t('processing:cancelled')
+                                    : stage.status}
                         </Badge>
                       </div>
                     ))}
@@ -438,7 +473,7 @@ function ProcessingPanelContent({
                       disabled={hasUnresolvedOperation}
                       onClick={() => void submitRetry(job.id)}
                     >
-                      Retry job
+                      {t('processing:retryJob')}
                     </Button>
                   )}
                 <Button
@@ -447,15 +482,14 @@ function ProcessingPanelContent({
                   onClick={() => processing.selectProcessingJob(job.id)}
                 >
                   {selectedJobId === job.id
-                    ? 'Observing this attempt'
-                    : 'Observe this attempt'}
+                    ? t('processing:observing')
+                    : t('processing:observe')}
                 </Button>
                 {job.status === 'FAILED' &&
                   !job.retryable &&
                   job.stageRuns.some((stage) => stage.status === 'FAILED') && (
                     <p className='text-xs text-muted-foreground'>
-                      Core has not projected job-level retry eligibility for
-                      this failed stage.
+                      {t('processing:retryEligibilityUnknown')}
                     </p>
                   )}
                 {admissionAllowed &&
@@ -471,7 +505,7 @@ function ProcessingPanelContent({
                         void submitReprocessing(job.id, job.sourceMediaId)
                       }
                     >
-                      Start new reprocessing attempt
+                      {t('processing:newAttempt')}
                     </Button>
                   )}
               </div>

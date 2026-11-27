@@ -6,6 +6,7 @@ import 'package:sme_meeting_assistant/core/app_theme.dart';
 import 'package:sme_meeting_assistant/core/meeting_models.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/core/paged_collection.dart';
+import 'package:sme_meeting_assistant/core/ui_presentation.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_scheduling.dart';
@@ -458,9 +459,7 @@ class _RoomPickerDialogState extends State<RoomPickerDialog> {
       return MessagePanel(
         icon: Icons.cloud_off_outlined,
         title: 'Không thể tải danh sách phòng',
-        description: state.failure is ApiFailure
-            ? (state.failure! as ApiFailure).message
-            : 'Đã xảy ra lỗi khi tải phòng.',
+        description: apiFailureLabel(state.failure),
         onRetry: _controller.retry,
       );
     }
@@ -759,9 +758,7 @@ class _SchedulePreviewCardState extends State<SchedulePreviewCard> {
               const LinearProgressIndicator(),
             if (state.phase == SchedulePreviewPhase.failed)
               Text(
-                state.failure is ApiFailure
-                    ? (state.failure! as ApiFailure).message
-                    : 'Không thể kiểm tra lịch trình.',
+                apiFailureLabel(state.failure),
                 style: const TextStyle(color: Palette.red),
               ),
             if (outdated)

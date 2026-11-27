@@ -13,6 +13,7 @@ import 'results_workspace_controller.dart';
 import 'transcript_evidence_navigation.dart';
 import 'results_presentation.dart';
 import 'results_models.dart';
+import 'result_status_presentation.dart';
 
 class DecisionsReviewPanel extends StatefulWidget {
   const DecisionsReviewPanel({super.key, required this.workspace});
@@ -104,8 +105,8 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                               ),
                               if (previousDraft.source != null)
                                 Text(
-                                  'Transcript cũ: ${previousDraft.source!.id}, '
-                                  'revision '
+                                  'Bản ghi cũ: ${previousDraft.source!.id}, '
+                                  'lần chỉnh sửa '
                                   '${previousDraft.source!.contentRevision}',
                                 ),
                             ],
@@ -120,7 +121,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                       final decision = observed[index - 1];
                       return ListTile(
                         title: Text(decision.content),
-                        subtitle: Text(decision.status),
+                        subtitle: Text(decisionStatusLabel(decision.status)),
                         contentPadding: EdgeInsets.zero,
                       );
                     },
@@ -201,7 +202,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                   final decision = observed[index - 1];
                   return ListTile(
                     title: Text(decision.content),
-                    subtitle: Text(decision.status),
+                    subtitle: Text(decisionStatusLabel(decision.status)),
                     contentPadding: EdgeInsets.zero,
                   );
                 },
@@ -286,7 +287,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
           source.etag == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Chưa thể tải transcript để chọn bằng chứng.'),
+            content: Text('Chưa thể tải bản ghi để chọn bằng chứng.'),
           ),
         );
         return;
@@ -366,17 +367,20 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                     const Text(
                       'Nguồn hoặc quyết định đã đổi. Hãy mở lại để đối chiếu.',
                     ),
-                  StatePill(decision.status),
+                  StatePill(
+                    decision.status,
+                    label: decisionStatusLabel(decision.status),
+                  ),
                   SelectableText(decision.content),
                   ..._provenance(decision),
                   const Divider(),
-                  const Text('Bằng chứng transcript'),
+                  const Text('Bằng chứng từ bản ghi'),
                   if (decision.evidenceSegmentIds.isEmpty)
                     const Text('Không có bằng chứng đính kèm.'),
                   if (decision.evidenceSegmentIds.isNotEmpty &&
                       !evidence.hasCompatibleSource)
                     const Text(
-                      'Không còn nguồn transcript tương thích hoặc nguồn chưa tải được.',
+                      'Không còn nguồn bản ghi tương thích hoặc nguồn chưa tải được.',
                     ),
                   for (final id in decision.evidenceSegmentIds)
                     _evidenceTile(dialog, evidence, id),
@@ -477,12 +481,12 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
         '$speaker · ${segment.startMs ~/ 1000}s–${segment.endMs ~/ 1000}s'
         '\n${switch (review.quality(segment)) {
           DecisionEvidenceQuality.unsafe => 'Cần đối chiếu chất lượng',
-          DecisionEvidenceQuality.unknown => 'Chưa đủ thông tin coverage',
+          DecisionEvidenceQuality.unknown => 'Chưa đủ thông tin độ bao phủ',
           DecisionEvidenceQuality.reviewable => 'Có thể đối chiếu',
         }}',
       ),
       trailing: IconButton(
-        tooltip: 'Mở transcript',
+        tooltip: 'Mở bản ghi lời thoại',
         icon: const Icon(Icons.open_in_new),
         onPressed: () => Navigator.pop(dialog, 'segment:$id'),
       ),
@@ -512,10 +516,9 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       Text(
         'Người từ chối: ${widget.workspace.meetingIdentityLabel(decision.rejectedByUserId) ?? 'Chưa rõ tên'}',
       ),
-    if (decision.stale)
-      const Text('Nguồn transcript đã thay đổi; cần đối chiếu.'),
+    if (decision.stale) const Text('Nguồn bản ghi đã thay đổi; cần đối chiếu.'),
     if (decision.contentRevision != null)
-      Text('Revision nguồn: ${decision.contentRevision}'),
+      Text('Lần chỉnh sửa nguồn: ${decision.contentRevision}'),
     if (decision.aiUncertainty == 'MATERIAL')
       const Text('Có bất định đáng kể về bằng chứng.'),
     for (final warning in decision.aiWarnings)
@@ -718,13 +721,16 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        StatePill(decision.status),
+                        StatePill(
+                          decision.status,
+                          label: decisionStatusLabel(decision.status),
+                        ),
                         SelectableText(decision.content),
                         Text(
                           '${decision.evidenceSegmentIds.length} đoạn bằng chứng',
                         ),
                         if (decision.stale)
-                          const Text('Nguồn transcript cần đối chiếu lại.'),
+                          const Text('Nguồn bản ghi cần đối chiếu lại.'),
                         TextButton(
                           onPressed: () => unawaited(inspect(decision)),
                           child: const Text('Xem và đối chiếu'),
@@ -789,7 +795,7 @@ class _DecisionContentDialogState extends State<_DecisionContentDialog> {
           if (widget.allowEvidence)
             CheckboxListTile(
               value: _attach,
-              title: const Text('Đính kèm bằng chứng transcript'),
+              title: const Text('Đính kèm bằng chứng từ bản ghi'),
               onChanged: (value) => setState(() => _attach = value ?? false),
             ),
         ],
@@ -845,7 +851,7 @@ class _DecisionEvidencePickerState extends State<_DecisionEvidencePicker> {
               '${segment.startMs ~/ 1000}s · '
               '${switch (decisionEvidenceQuality(widget.projection, segment)) {
                 DecisionEvidenceQuality.reviewable => 'Có thể đối chiếu',
-                DecisionEvidenceQuality.unknown => 'Chưa đủ thông tin coverage',
+                DecisionEvidenceQuality.unknown => 'Chưa đủ thông tin độ bao phủ',
                 DecisionEvidenceQuality.unsafe => 'Cần đối chiếu chất lượng',
               }}',
             ),

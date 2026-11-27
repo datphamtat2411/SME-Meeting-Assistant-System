@@ -1,4 +1,5 @@
 import { ShieldAlert, UserRound } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
@@ -27,6 +28,7 @@ export function MembersPage({
   search: MemberDirectorySearch
   onSearchChange: SearchChange
 }) {
+  const { t } = useUiTranslation()
   const directory = useMemberDirectoryController({ search, onSearchChange })
   const administration = useMemberAdministrationController({
     access: directory.access,
@@ -39,8 +41,8 @@ export function MembersPage({
   const { verification } = directory
   const authorizationMessage =
     verification.status === 'background-verification'
-      ? 'Verifying current administration access. Member changes are paused until verification completes.'
-      : 'Current administration access could not be verified. Your draft is preserved; verify access before submitting.'
+      ? t('members:verifyAccess')
+      : t('members:verifyFailed')
 
   return (
     <>
@@ -50,13 +52,14 @@ export function MembersPage({
       <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
         <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
           <div>
-            <p className='text-sm font-medium text-primary'>Administration</p>
+            <p className='text-sm font-medium text-primary'>
+              {t('members:administration')}
+            </p>
             <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
-              Members
+              {t('members:title')}
             </h1>
             <p className='mt-2 max-w-2xl text-muted-foreground'>
-              Search organizational accounts and the management scope available
-              to your role.
+              {t('members:description')}
             </p>
           </div>
           {directory.identityResolved &&
@@ -66,7 +69,7 @@ export function MembersPage({
                 onClick={administration.startCreate}
               >
                 <UserRound className='size-4' />
-                Add member
+                {t('members:add')}
               </Button>
             )}
         </div>
@@ -78,15 +81,15 @@ export function MembersPage({
           >
             <span>
               {verification.status === 'background-verification'
-                ? 'Verifying current administration access. Existing form state is preserved; submissions are paused.'
-                : 'Current administration access could not be verified. Existing form state is preserved; verify access before submitting.'}
+                ? t('members:verifyForm')
+                : t('members:verifyFormFailed')}
             </span>
             <Button
               size='sm'
               variant='outline'
               onClick={() => void verification.query.refetch()}
             >
-              Retry verification
+              {t('members:retryVerification')}
             </Button>
           </div>
         )}
@@ -98,19 +101,17 @@ export function MembersPage({
               retry={() => void verification.query.refetch()}
             />
           ) : (
-            <RequestLoading label='Verifying member-directory access…' />
+            <RequestLoading label={t('members:verifyDirectory')} />
           )
         ) : directory.access.type === 'unresolved' ? (
-          <RequestLoading label='Verifying member-directory scope…' />
+          <RequestLoading label={t('members:verifyScope')} />
         ) : directory.access.type === 'denied' ? (
           <div
             role='alert'
             className='flex items-start gap-3 rounded-lg border p-5 text-muted-foreground'
           >
             <ShieldAlert className='mt-0.5 size-5 shrink-0' />
-            <p>
-              Member directory access requires an authorized management scope.
-            </p>
+            <p>{t('members:scopeRequired')}</p>
           </div>
         ) : directory.access.type === 'empty-scope' ? (
           <CardlessEmptyScope />
@@ -119,8 +120,7 @@ export function MembersPage({
             role='alert'
             className='rounded-lg border border-amber-500/40 bg-amber-500/5 p-5 text-sm text-muted-foreground'
           >
-            Member records are hidden until the current authorization can be
-            verified. Retry verification to continue.
+            {t('members:hidden')}
           </div>
         ) : (
           <MemberDirectoryPresentation
@@ -199,18 +199,18 @@ export function MembersPage({
 }
 
 function CardlessEmptyScope() {
+  const { t } = useUiTranslation()
   return (
     <div className='overflow-hidden rounded-lg border'>
       <div className='border-b p-6'>
-        <h2 className='font-semibold'>Member directory</h2>
+        <h2 className='font-semibold'>{t('members:directory')}</h2>
         <p className='mt-1 text-sm text-muted-foreground'>
-          The directory is limited to organizational units explicitly granted to
-          your account.
+          {t('members:scopeHelp')}
         </p>
       </div>
       <RequestEmpty
-        title='No members in scope'
-        description='No organizational units are granted for member management.'
+        title={t('members:noScope')}
+        description={t('members:noScopeHelp')}
       />
     </div>
   )

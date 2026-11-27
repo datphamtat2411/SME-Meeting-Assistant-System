@@ -80,12 +80,31 @@ test('literal UI translation references resolve in both catalogs', () => {
         }
       }
       if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'featureValidationMessage' &&
+        node.arguments[0] &&
+        ts.isStringLiteralLike(node.arguments[0])
+      ) {
+        check(node.arguments[0].text, node.arguments[0])
+      }
+      if (
         ts.isPropertyAssignment(node) &&
         ts.isIdentifier(node.name) &&
         node.name.text === 'titleKey' &&
         ts.isStringLiteralLike(node.initializer)
       ) {
         check(node.initializer.text, node.initializer)
+      }
+      // Feature-owned mapping tables can contain keys outside a t() call.
+      if (
+        usesUiTranslation &&
+        ts.isStringLiteralLike(node) &&
+        /^[\w-]+:[\w.-]+$/.test(node.text) &&
+        Object.hasOwn(catalogs[0], node.text.split(':')[0]) &&
+        !node.text.endsWith('_')
+      ) {
+        check(node.text, node)
       }
       // The centralized presentation module also returns literal keys.
       if (
@@ -101,4 +120,35 @@ test('literal UI translation references resolve in both catalogs', () => {
   }
 
   assert.deepEqual(missing, [], 'Missing UI translation keys')
+})
+
+test('known dynamic status and source keys resolve without fallback', () => {
+  const groups = [
+    ['status:meeting.', ['DRAFT', 'SCHEDULED', 'IN_PROGRESS', 'ENDED', 'CANCELLED']],
+    ['status:role.', ['EMPLOYEE', 'DEPARTMENT_MANAGER', 'ADMINISTRATOR']],
+    ['status:account.', ['ACTIVE', 'INACTIVE', 'PENDING_SETUP']],
+    ['action-items:status_', ['PROPOSED', 'OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED']],
+    ['decisions:value_', ['PROPOSED', 'CONFIRMED', 'REJECTED', 'AI_EXTRACTED', 'MANUAL', 'HUMAN_CREATED']],
+    ['transcript:status_', ['READY', 'READY_WITH_WARNINGS', 'FAILED', 'HIGH', 'ACCEPTED', 'SUSPICIOUS', 'UNRESOLVED_ERROR']],
+    ['transcript:reviewGate_status_', ['READY', 'READY_WITH_WARNINGS', 'FAILED', 'PROCESSING']],
+    ['summary:status_', ['AI_GENERATED', 'HUMAN_EDIT', 'READY', 'READY_WITH_WARNINGS', 'FAILED']],
+    ['export:status_', ['PENDING', 'GENERATING', 'READY', 'FAILED']],
+    ['media:mediaStatus_', ['PENDING_UPLOAD', 'AVAILABLE', 'REJECTED', 'FAILED']],
+    ['workspace:completeness_', ['COMPLETE', 'PARTIAL', 'NEEDS_REVIEW']],
+    ['assistant:meetingStatus_', ['DRAFT', 'SCHEDULED', 'IN_PROGRESS', 'ENDED', 'CANCELLED']],
+    ['action-items:meetingPanel_status_', ['PROPOSED', 'OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED']],
+  ]
+  for (const [prefix, values] of groups) {
+    for (const value of values) {
+      const key = prefix + value
+      for (const [index, catalog] of catalogs.entries()) {
+        assert.ok(hasTranslation(catalog, key), `${languages[index]}: ${key}`)
+      }
+    }
+  }
+})
+
+test('static document metadata matches the Vietnamese startup default', () => {
+  const html = readFileSync('index.html', 'utf8')
+  assert.match(html, /<html lang="vi">/)
 })

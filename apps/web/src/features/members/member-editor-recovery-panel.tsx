@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import { localizedValidationMessage, roleKey } from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import type {
   MemberEditorSession,
@@ -14,25 +16,41 @@ import {
 import type { OrganizationalUnit } from './organization-api'
 
 function fieldLabel(field: MemberEditableField): string {
-  if (field === 'displayName') return 'Display name'
-  if (field === 'primaryOrgUnitId') return 'Primary organizational unit'
-  if (field === 'globalRole') return 'Global role'
-  return 'Manager scope'
+  if (field === 'displayName') return i18n.t('members:displayName')
+  if (field === 'primaryOrgUnitId') return i18n.t('members:primaryUnit')
+  if (field === 'globalRole') return i18n.t('members:globalRole')
+  return i18n.t('members:managerScope')
 }
 
 function displayEditableValue(
+  field: MemberEditableField,
   value: unknown,
   units: readonly OrganizationalUnit[]
 ): string {
+  if (
+    field === 'globalRole' &&
+    (value === 'EMPLOYEE' ||
+      value === 'DEPARTMENT_MANAGER' ||
+      value === 'ADMINISTRATOR')
+  ) {
+    return i18n.t(roleKey(value))
+  }
+  if (
+    field === 'primaryOrgUnitId' &&
+    typeof value === 'string' &&
+    value !== ''
+  ) {
+    return units.find((unit) => unit.id === value)?.name ?? value
+  }
   if (Array.isArray(value)) {
     return value.length > 0
       ? value
           .map((id) => units.find((unit) => unit.id === id)?.name ?? id)
           .join(', ')
-      : 'None'
+      : i18n.t('members:none')
   }
   return value === null || value === '' || value === undefined
-    ? 'Not assigned'
+    ? i18n.t('members:notAssigned')
     : String(value)
 }
 
@@ -40,31 +58,33 @@ function memberSummary(member: Member) {
   return (
     <dl className='grid gap-3 rounded-md border bg-muted/30 p-3 text-sm sm:grid-cols-2'>
       <div>
-        <dt className='text-muted-foreground'>Name</dt>
+        <dt className='text-muted-foreground'>{i18n.t('members:name')}</dt>
         <dd className='font-medium'>{member.displayName}</dd>
       </div>
       <div>
-        <dt className='text-muted-foreground'>Email</dt>
+        <dt className='text-muted-foreground'>{i18n.t('members:email')}</dt>
         <dd className='font-medium break-all'>{member.email}</dd>
       </div>
       <div>
-        <dt className='text-muted-foreground'>Role</dt>
+        <dt className='text-muted-foreground'>{i18n.t('members:roleLabel')}</dt>
         <dd className='font-medium'>
           {member.globalRole === 'DEPARTMENT_MANAGER'
-            ? 'Department manager'
+            ? i18n.t('members:departmentManager')
             : member.globalRole === 'ADMINISTRATOR'
-              ? 'Administrator'
-              : 'Employee'}
+              ? i18n.t('members:administrator')
+              : i18n.t('members:employee')}
         </dd>
       </div>
       <div>
-        <dt className='text-muted-foreground'>Account status</dt>
+        <dt className='text-muted-foreground'>
+          {i18n.t('members:accountStatusLabel')}
+        </dt>
         <dd className='font-medium'>
           {member.accountStatus === 'PENDING_SETUP'
-            ? 'Pending secure setup'
+            ? i18n.t('members:pendingSecureSetup')
             : member.accountStatus === 'ACTIVE'
-              ? 'Active'
-              : 'Inactive'}
+              ? i18n.t('members:active')
+              : i18n.t('members:inactive')}
         </dd>
       </div>
     </dl>
@@ -88,6 +108,7 @@ function MemberConflictResolution({
     choices: MemberConflictChoices
   ) => void
 }) {
+  const { t } = useUiTranslation()
   const [choices, setChoices] = useState<MemberConflictChoices>({})
   const decision = resolveMemberEditReconciliation(reconciliation, choices)
   const requiredReviews =
@@ -106,11 +127,9 @@ function MemberConflictResolution({
   return (
     <div className='space-y-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3'>
       <div>
-        <p className='font-medium'>Review retained changes</p>
+        <p className='font-medium'>{t('members:reviewRetained')}</p>
         <p className='text-sm text-muted-foreground'>
-          Compare the authoritative state with your original intent. Resolve
-          conflicts and dependent role/scope changes before continuing. No
-          second update is sent until you continue from this reviewed version.
+          {t('members:reviewRetainedHelp')}
         </p>
       </div>
       {reconciliation.conflicts.map((field) => {
@@ -131,10 +150,10 @@ function MemberConflictResolution({
               />
               <span>
                 <span className='block text-xs text-muted-foreground'>
-                  Server value
+                  {t('members:serverValue')}
                 </span>
                 <span className='block break-words'>
-                  {displayEditableValue(comparison.latest, units)}
+                  {displayEditableValue(field, comparison.latest, units)}
                 </span>
               </span>
             </label>
@@ -149,10 +168,10 @@ function MemberConflictResolution({
               />
               <span>
                 <span className='block text-xs text-muted-foreground'>
-                  Your intended value
+                  {t('members:intendedValue')}
                 </span>
                 <span className='block break-words'>
-                  {displayEditableValue(comparison.intended, units)}
+                  {displayEditableValue(field, comparison.intended, units)}
                 </span>
               </span>
             </label>
@@ -174,10 +193,12 @@ function MemberConflictResolution({
           />
           <span>
             <span className='block font-medium'>
-              I understand this demotion removes all current manager grants
+              {t('members:understandDemotion')}
             </span>
             <span className='block text-muted-foreground'>
-              Grants being removed: {latestGrants || 'None'}
+              {t('members:grantsRemoved', {
+                grants: latestGrants || t('members:none'),
+              })}
             </span>
           </span>
         </label>
@@ -197,10 +218,12 @@ function MemberConflictResolution({
           />
           <span>
             <span className='block font-medium'>
-              I understand this assigns manager access to the selected units
+              {t('members:understandScope')}
             </span>
             <span className='block text-muted-foreground'>
-              Grants being assigned: {intendedGrants || 'None'}
+              {t('members:grantsAssigned', {
+                grants: intendedGrants || t('members:none'),
+              })}
             </span>
           </span>
         </label>
@@ -215,8 +238,8 @@ function MemberConflictResolution({
         }
       >
         {reconciliation.conflicts.length > 0
-          ? 'Resolve conflicts and continue'
-          : 'Keep intended changes and continue'}
+          ? t('members:resolveConflicts')
+          : t('members:keepChanges')}
       </Button>
     </div>
   )
@@ -249,6 +272,7 @@ export function MemberEditorRecoveryPanel({
     choices: MemberConflictChoices
   ) => void
 }) {
+  const { t } = useUiTranslation()
   if (!session) return null
   const reviewRequired =
     session.phase === 'verification-required' ||
@@ -275,19 +299,21 @@ export function MemberEditorRecoveryPanel({
               : 'border-destructive/30 bg-destructive/5'
           }`}
         >
-          <p>{feedback.message}</p>
+          <p>{localizedValidationMessage(feedback.message, t)}</p>
           {feedback.reconciliationError && (
-            <p className='text-destructive'>{feedback.reconciliationError}</p>
+            <p className='text-destructive'>
+              {localizedValidationMessage(feedback.reconciliationError, t)}
+            </p>
           )}
           {feedback.reconciliationLoading && (
             <p role='status' className='text-muted-foreground'>
-              Loading authoritative state for review…
+              {t('members:loadingReview')}
             </p>
           )}
           {feedback.creationReconciliation?.status === 'found' && (
             <div className='rounded-md border bg-background p-3'>
               <p className='font-medium'>
-                Matching authorized account:{' '}
+                {t('members:matchingAccount')}
                 {feedback.creationReconciliation.member.displayName}
               </p>
               <p className='break-all text-muted-foreground'>
@@ -296,15 +322,13 @@ export function MemberEditorRecoveryPanel({
             </div>
           )}
           {feedback.creationReconciliation?.status === 'not-found' && (
-            <p className='text-muted-foreground'>
-              No matching account was visible in the authorized directory.
-            </p>
+            <p className='text-muted-foreground'>{t('members:noMatch')}</p>
           )}
         </div>
       )}
       {reviewedSnapshot && session.mode === 'edit' && (
         <div className='space-y-2 rounded-md border bg-muted/30 p-3 text-sm'>
-          <p className='font-medium'>Latest authoritative member state</p>
+          <p className='font-medium'>{t('members:latestMemberState')}</p>
           {memberSummary(reviewedSnapshot.member)}
           <div className='flex flex-wrap gap-2'>
             <Button
@@ -316,7 +340,7 @@ export function MemberEditorRecoveryPanel({
                 onDiscardEdit(session.operationId, reviewedSnapshot.etag)
               }
             >
-              Discard my edits and restart from latest
+              {t('members:discardEdits')}
             </Button>
           </div>
         </div>
@@ -344,7 +368,7 @@ export function MemberEditorRecoveryPanel({
             disabled={feedback?.reconciliationLoading}
             onClick={() => onRetryVerification(session.operationId)}
           >
-            Retry verification
+            {t('members:retryVerification')}
           </Button>
           {feedback?.creationReconciliation?.status === 'not-found' && (
             <Button
@@ -353,7 +377,7 @@ export function MemberEditorRecoveryPanel({
               size='sm'
               onClick={() => onReviewCreationDraft(session.operationId)}
             >
-              Review preserved draft
+              {t('members:reviewDraft')}
             </Button>
           )}
           {foundCreation && (
@@ -365,7 +389,7 @@ export function MemberEditorRecoveryPanel({
                 onReviewExistingAccount(foundCreation.member.email)
               }
             >
-              Review existing account
+              {t('members:reviewAccount')}
             </Button>
           )}
           <Button
@@ -374,7 +398,7 @@ export function MemberEditorRecoveryPanel({
             size='sm'
             onClick={onReviewDirectory}
           >
-            Review members
+            {t('members:reviewMembers')}
           </Button>
         </div>
       )}
@@ -388,8 +412,8 @@ export function MemberEditorRecoveryPanel({
             onClick={() => onRetryVerification(session.operationId)}
           >
             {feedback?.reconciliationLoading
-              ? 'Loading latest member…'
-              : 'Reload latest for review'}
+              ? t('members:loadingLatest')
+              : t('members:reloadLatest')}
           </Button>
         </div>
       )}

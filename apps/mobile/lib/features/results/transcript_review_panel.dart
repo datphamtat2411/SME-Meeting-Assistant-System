@@ -10,6 +10,7 @@ import 'transcript_admission_panel.dart';
 import 'results_workspace_controller.dart';
 import 'results_presentation.dart';
 import 'results_models.dart';
+import 'result_status_presentation.dart';
 
 class TranscriptReviewPanel extends StatefulWidget {
   const TranscriptReviewPanel({
@@ -112,7 +113,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
       workspace: widget.workspace,
       epoch: epoch,
       builder: (dialog) => AlertDialog(
-        title: const Text('Chỉnh sửa đoạn transcript'),
+        title: const Text('Chỉnh sửa đoạn lời thoại'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -170,7 +171,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
         epoch: epoch,
         reason: reason.isEmpty ? null : reason,
       ),
-      successText: 'Đã cập nhật transcript.',
+      successText: 'Đã cập nhật bản ghi lời thoại.',
     );
     if (saved) widget.workspace.clearDraft(draftKey, epoch);
   }
@@ -185,13 +186,6 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
       .replaceAllMapped(RegExp('[ỳýỵỷỹ]'), (_) => 'y')
       .replaceAll('đ', 'd');
 
-  String _qualityLabel(String quality) => switch (quality) {
-    'ACCEPTED' => 'Đã chấp nhận',
-    'SUSPICIOUS' => 'Cần kiểm tra',
-    'UNRESOLVED' => 'Chưa giải quyết',
-    _ => quality,
-  };
-
   void _focusRegion(
     TranscriptReviewProjection projection,
     TranscriptCoverageRegion region,
@@ -204,7 +198,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
         .firstOrNull;
     if (segment == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Không có đoạn transcript tại vùng này.')),
+        const SnackBar(content: Text('Không có lời thoại tại vùng này.')),
       );
       return;
     }
@@ -231,9 +225,9 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
     if (coverage == null) {
       return MessagePanel(
         title: widget.workspace.coverage.phase == ResultsResourcePhase.loading
-            ? 'Đang tải thông tin coverage'
-            : 'Chưa có coverage phù hợp với transcript hiện tại',
-        description: 'Chưa thể đánh giá độ bao phủ của bản transcript này.',
+            ? 'Đang tải thông tin độ bao phủ'
+            : 'Chưa có thông tin độ bao phủ phù hợp với bản ghi hiện tại',
+        description: 'Chưa thể đánh giá độ bao phủ của bản ghi này.',
         onRetry: _refreshReview,
       );
     }
@@ -324,7 +318,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                   : null,
               tooltip: segment.etag == null
                   ? 'Thiếu phiên bản máy chủ; chỉ có thể đọc'
-                  : 'Chỉnh sửa đoạn transcript',
+                  : 'Chỉnh sửa đoạn lời thoại',
             ),
           ],
         ),
@@ -334,7 +328,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
             padding: const EdgeInsets.only(top: 8),
             child: StatePill(
               segment.quality,
-              label: _qualityLabel(segment.quality),
+              label: transcriptQualityLabel(segment.quality),
             ),
           ),
       ],
@@ -358,7 +352,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
               ),
             resultsResourceMessage(
               resource,
-              label: 'Transcript',
+              label: 'Bản ghi lời thoại',
               onRetry: () => widget.workspace.loadTranscript(force: true),
             ),
           ],
@@ -457,7 +451,9 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                           (value) => DropdownMenuItem(
                             value: value,
                             child: Text(
-                              value == 'Tất cả' ? value : _qualityLabel(value),
+                              value == 'Tất cả'
+                                  ? value
+                                  : transcriptQualityLabel(value),
                             ),
                           ),
                         )
@@ -482,10 +478,10 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           SectionHeading(
-                            'Transcript',
+                            'Bản ghi lời thoại',
                             subtitle:
                                 '${transcript.segments.length} đoạn phát biểu · '
-                                'bản ${transcript.versionNumber} · ${transcript.status}',
+                                'bản ${transcript.versionNumber} · ${transcriptStatusLabel(transcript.status)}',
                           ),
                           resultsRefreshNotice(
                             resource,
@@ -500,7 +496,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                             ),
                           if (transcript.segments.isEmpty)
                             const MessagePanel(
-                              title: 'Transcript trống theo dữ liệu chuẩn',
+                              title: 'Bản ghi lời thoại chưa có nội dung',
                             ),
                           if (transcript.segments.isNotEmpty && visible.isEmpty)
                             const MessagePanel(

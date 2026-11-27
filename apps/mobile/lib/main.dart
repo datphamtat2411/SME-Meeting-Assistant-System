@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/api_client.dart';
 import 'core/app_config.dart';
@@ -56,12 +57,15 @@ class ConfigurationErrorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'SME Meeting Assistant',
+    locale: const Locale('vi', 'VN'),
+    supportedLocales: const [Locale('vi', 'VN')],
+    localizationsDelegates: GlobalMaterialLocalizations.delegates,
     debugShowCheckedModeBanner: false,
     theme: AppTheme.light(),
     home: Scaffold(
       body: SafeArea(
         child: Center(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 520),
@@ -76,7 +80,7 @@ class ConfigurationErrorApp extends StatelessWidget {
                     style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 10),
-                  Text(error.message, textAlign: TextAlign.center),
+                  Text(error.presentationMessage, textAlign: TextAlign.center),
                   const SizedBox(height: 16),
                   const Text(
                     'Hãy kiểm tra cấu hình và khởi động lại ứng dụng.',
@@ -224,6 +228,9 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
       return MaterialApp(
         key: ValueKey(scope),
         title: 'SME Meeting Assistant',
+        locale: const Locale('vi', 'VN'),
+        supportedLocales: const [Locale('vi', 'VN')],
+        localizationsDelegates: GlobalMaterialLocalizations.delegates,
         debugShowCheckedModeBanner: false,
         theme: AppTheme.light(),
         darkTheme: AppTheme.dark(),

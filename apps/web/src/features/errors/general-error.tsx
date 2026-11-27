@@ -1,4 +1,5 @@
 import { useRouter } from '@tanstack/react-router'
+import { useUiTranslation } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { ErrorRecoveryActions } from '@/components/layout/authenticated-route-fallback'
 
@@ -12,6 +13,7 @@ export function GeneralError({
   minimal = false,
   reset,
 }: GeneralErrorProps) {
+  const { t } = useUiTranslation()
   const router = useRouter()
 
   const retry = () => {
@@ -25,9 +27,9 @@ export function GeneralError({
         {!minimal && (
           <h1 className='text-[7rem] leading-tight font-bold'>500</h1>
         )}
-        <span className='font-medium'>Oops! Something went wrong {`:')`}</span>
+        <span className='font-medium'>{t('errors:generalPageTitle')}</span>
         <p className='text-center text-muted-foreground'>
-          We apologize for the inconvenience. <br /> Please try again later.
+          {t('errors:generalPageDescription')}
         </p>
         {!minimal && <ErrorRecoveryActions retry={retry} />}
       </div>

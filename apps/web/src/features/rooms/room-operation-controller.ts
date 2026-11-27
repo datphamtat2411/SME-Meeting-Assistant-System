@@ -8,6 +8,11 @@ import {
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  requestErrorFormMessage,
+} from '@/lib/i18n/presentation'
 import {
   classifyRoomMutationOutcome,
   createRoom,
@@ -156,7 +161,7 @@ function reducer(
           session: {
             ...state.session,
             status: 'error',
-            loadError: 'This room is no longer active and cannot be edited.',
+            loadError: featureValidationMessage('rooms:noLongerActiveEdit'),
           },
         }
       }
@@ -194,7 +199,7 @@ function reducer(
           session: {
             ...state.session,
             phase: 'error',
-            loadError: 'This room is no longer active.',
+            loadError: featureValidationMessage('rooms:noLongerActive'),
           },
         }
       }
@@ -253,10 +258,10 @@ function editReconciliationMessage(
   reconciliation: RoomEditReconciliation
 ): string {
   if (reconciliation.latest.room.status !== 'ACTIVE') {
-    return 'The latest authoritative room state is inactive. Room metadata cannot be edited until the room is active.'
+    return featureValidationMessage('rooms:latestInactiveEdit')
   }
   if (reconciliation.conflicts.length > 0) {
-    return 'The latest room state contains field conflicts. Compare the server values with your intended changes and resolve each conflict before continuing.'
+    return featureValidationMessage('rooms:reconcileConflicts')
   }
 
   const fields = Object.values(reconciliation.fields)
@@ -273,16 +278,16 @@ function editReconciliationMessage(
 
   if (hasIntent && intendedValuesArePresent) {
     return hasServerChanges
-      ? 'The latest room state already contains your intended values and also includes independent server changes. No second request was sent; review the current state before continuing.'
-      : 'The latest room state already contains your intended values. The request may have succeeded, but the result cannot be attributed and no second request was sent.'
+      ? featureValidationMessage('rooms:alreadyContainsIndependent')
+      : featureValidationMessage('rooms:alreadyContains')
   }
   if (latestMatchesOriginal && hasIntent) {
-    return 'The latest room state still matches the original reviewed version. The submitted changes were not confirmed; review them before deciding what to do.'
+    return featureValidationMessage('rooms:matchesOriginal')
   }
   if (hasServerChanges) {
-    return 'The latest room state includes independent server changes. Your intended changes are preserved for review against this version.'
+    return featureValidationMessage('rooms:independentChanges')
   }
-  return 'Review the latest authoritative room state before deciding what to do.'
+  return featureValidationMessage('rooms:reviewLatestState')
 }
 
 function latestMatchesIntent(reconciliation: RoomEditReconciliation): boolean {
@@ -368,7 +373,7 @@ export function useRoomOperationController({
           type: 'editor-snapshot-failed',
           operationId,
           contextKey,
-          error: normalizeCoreApiError(error).message,
+          error: requestErrorFormMessage(normalizeCoreApiError(error)),
         })
       } finally {
         if (snapshotController.current === controller) {
@@ -399,7 +404,7 @@ export function useRoomOperationController({
           type: 'deactivation-snapshot-failed',
           operationId,
           contextKey,
-          error: normalizeCoreApiError(error).message,
+          error: requestErrorFormMessage(normalizeCoreApiError(error)),
         })
       } finally {
         if (snapshotController.current === controller) {
@@ -521,7 +526,9 @@ export function useRoomOperationController({
       await synchronizeRoomCaches(queryClient, result.mutation)
       if (!isCurrentOperation(input.operationId, input.contextKey)) return
       toast.success(
-        result.mutation === 'created' ? 'Room created' : 'Room updated'
+        result.mutation === 'created'
+          ? i18n.t('rooms:created')
+          : i18n.t('rooms:updated')
       )
       dispatch({ type: 'close' })
     },
@@ -533,7 +540,8 @@ export function useRoomOperationController({
         outcome,
         message: roomOperationErrorMessage(
           error,
-          input.mode === 'create' ? 'create' : 'edit'
+          input.mode === 'create' ? 'create' : 'edit',
+          featureValidationMessage
         ),
         fieldErrors: normalizedError.fieldErrors,
         ...(input.mode === 'edit'
@@ -618,8 +626,7 @@ export function useRoomOperationController({
           ...(baseFeedback ??
             current ?? {
               outcome: 'unknown',
-              message:
-                'The creation outcome could not be confirmed. Verify the authoritative room catalog before deciding what to do.',
+              message: featureValidationMessage('rooms:createUnconfirmed'),
             }),
           submittedCreationPayload: payload,
           creationReconciliation: undefined,
@@ -637,9 +644,9 @@ export function useRoomOperationController({
         const message =
           result.status === 'found'
             ? result.metadataMatches
-              ? 'The exact room code already exists and its metadata matches the submitted request. The request may have succeeded; no second request was sent.'
-              : 'The exact room code already exists with different metadata. Review the existing record before deciding what to do.'
-            : 'No exact room code was found in the authoritative catalog. Review the preserved draft before explicitly deciding whether to retry.'
+              ? featureValidationMessage('rooms:exactCodeMatches')
+              : featureValidationMessage('rooms:exactCodeDiffers')
+            : featureValidationMessage('rooms:noExactCode')
         dispatch({
           type: 'editor-feedback',
           operationId,
@@ -667,7 +674,9 @@ export function useRoomOperationController({
           feedback: {
             ...(feedback ?? baseFeedback!),
             creationReconciliation: undefined,
-            reconciliationError: normalizeCoreApiError(error).message,
+            reconciliationError: requestErrorFormMessage(
+              normalizeCoreApiError(error)
+            ),
             reconciliationLoading: false,
             submittedCreationPayload: payload,
           },
@@ -696,8 +705,7 @@ export function useRoomOperationController({
       reconciliationController.current = controller
       const fallbackFeedback: RoomOperationFeedback = {
         outcome: 'unknown',
-        message:
-          'The edit outcome could not be confirmed. Review the latest authoritative room state.',
+        message: featureValidationMessage('rooms:editUnconfirmed'),
       }
       const initialFeedback =
         baseFeedback ??
@@ -753,7 +761,9 @@ export function useRoomOperationController({
             ...(currentFeedback ?? initialFeedback),
             originalSnapshot: original,
             submittedPatch: payload,
-            reconciliationError: normalizeCoreApiError(error).message,
+            reconciliationError: requestErrorFormMessage(
+              normalizeCoreApiError(error)
+            ),
             reconciliationLoading: false,
           },
         })
@@ -786,7 +796,7 @@ export function useRoomOperationController({
     onSuccess: async (_result, input) => {
       await synchronizeRoomCaches(queryClient, 'deactivated')
       if (!isCurrentOperation(input.operationId, input.contextKey)) return
-      toast.success('Room deactivated')
+      toast.success(i18n.t('rooms:deactivated'))
       dispatch({ type: 'close' })
     },
     onError: async (error, input) => {
@@ -795,7 +805,11 @@ export function useRoomOperationController({
       const normalizedError = normalizeCoreApiError(error)
       const baseFeedback: RoomOperationFeedback = {
         outcome,
-        message: roomOperationErrorMessage(error, 'deactivate'),
+        message: roomOperationErrorMessage(
+          error,
+          'deactivate',
+          featureValidationMessage
+        ),
         fieldErrors: normalizedError.fieldErrors,
       }
       if (outcome === 'uncertain' || outcome === 'unknown') {
@@ -818,8 +832,8 @@ export function useRoomOperationController({
               ...baseFeedback,
               message:
                 latest.room.status === 'INACTIVE'
-                  ? 'The server has verified the room as inactive. We cannot determine whether this request caused the change; the verified state is shown below.'
-                  : 'The latest server state remains active. We cannot determine whether this request was applied; review the current state before deciding what to do.',
+                  ? featureValidationMessage('rooms:verifiedInactive')
+                  : featureValidationMessage('rooms:verifiedActive'),
               latestSnapshot: latest,
             },
           })
@@ -832,8 +846,9 @@ export function useRoomOperationController({
             contextKey: input.contextKey,
             feedback: {
               ...baseFeedback,
-              reconciliationError:
-                normalizeCoreApiError(reconciliationError).message,
+              reconciliationError: requestErrorFormMessage(
+                normalizeCoreApiError(reconciliationError)
+              ),
             },
           })
         } finally {
@@ -1075,9 +1090,8 @@ export function useRoomOperationController({
         feedback: null,
       })
       if (Object.keys(resolved.patch).length === 0) {
-        toast.success('Room is already up to date', {
-          description:
-            'The reviewed server state already contains the retained changes. No additional update was sent.',
+        toast.success(i18n.t('rooms:upToDate'), {
+          description: i18n.t('rooms:noAdditionalUpdate'),
         })
       }
     },

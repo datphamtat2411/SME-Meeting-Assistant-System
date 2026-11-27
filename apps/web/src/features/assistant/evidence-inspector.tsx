@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -34,10 +35,10 @@ type Result =
   | { kind: 'error'; error: unknown; message: AssistantMessage }
 
 const destinationLabels = {
-  TRANSCRIPT: 'Open transcript',
-  SUMMARY: 'Open summary',
-  DECISION: 'Open decisions',
-  ACTION_ITEM: 'Open action items',
+  TRANSCRIPT: 'assistant:destination_TRANSCRIPT',
+  SUMMARY: 'assistant:destination_SUMMARY',
+  DECISION: 'assistant:destination_DECISION',
+  ACTION_ITEM: 'assistant:destination_ACTION_ITEM',
 }
 
 export function EvidenceInspector({
@@ -59,6 +60,7 @@ export function EvidenceInspector({
   onClose: () => void
   returnFocus: HTMLElement
 }) {
+  const { t } = useUiTranslation()
   const client = useQueryClient()
   useAssistantAccessRevision(client)
   const [attempt, setAttempt] = useState(0)
@@ -109,15 +111,14 @@ export function EvidenceInspector({
         }}
       >
         <SheetHeader>
-          <SheetTitle>Supporting evidence</SheetTitle>
+          <SheetTitle>{t('assistant:supportingEvidence')}</SheetTitle>
           <SheetDescription>
-            Verified references for this answer. Previews are canonical source
-            text, not necessarily exact retrieved passages.
+            {t('assistant:evidenceDescription')}
           </SheetDescription>
         </SheetHeader>
         <div className='min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4'>
           {visibleResult.kind === 'loading' && (
-            <RequestLoading label='Resolving evidence…' />
+            <RequestLoading label={t('assistant:resolvingEvidence')} />
           )}
           {visibleResult.kind === 'error' && (
             <AssistantError
@@ -131,7 +132,7 @@ export function EvidenceInspector({
           )}
           {visibleResult.kind === 'ready' &&
             !visibleResult.evidence.evidence.length && (
-              <RequestEmpty title='No supporting evidence available' />
+              <RequestEmpty title={t('assistant:noEvidence')} />
             )}
           {visibleResult.kind === 'ready' &&
             visibleResult.evidence.evidence.map((entry, index) => (
@@ -148,11 +149,14 @@ export function EvidenceInspector({
                   [{index + 1}] {entry.label}
                 </h3>
                 <p className='text-xs text-muted-foreground'>
-                  {entry.meetingTitle} · Revision {entry.sourceRevision}
+                  {entry.meetingTitle} ·{' '}
+                  {t('assistant:revision', { revision: entry.sourceRevision })}
                 </p>
                 {entry.claimIds.length > 0 && (
                   <p className='text-xs text-muted-foreground'>
-                    Related {entry.claimIds.length === 1 ? 'claim' : 'claims'}{' '}
+                    {entry.claimIds.length === 1
+                      ? t('assistant:relatedClaim')
+                      : t('assistant:relatedClaims')}{' '}
                     {message.claims
                       .flatMap((claim, claimIndex) =>
                         entry.claimIds.includes(claim.claimId)
@@ -165,7 +169,7 @@ export function EvidenceInspector({
                 {entry.preview !== null ? (
                   <div className='space-y-1'>
                     <p className='text-xs text-muted-foreground'>
-                      Canonical source preview
+                      {t('assistant:canonicalPreview')}
                     </p>
                     <p className='text-sm leading-6 whitespace-pre-wrap'>
                       {entry.preview}
@@ -174,8 +178,8 @@ export function EvidenceInspector({
                 ) : (
                   <p className='text-sm text-muted-foreground'>
                     {entry.sourceType === 'TRANSCRIPT'
-                      ? 'Transcript-level reference. Exact passage location is unavailable.'
-                      : 'No source preview is available.'}
+                      ? t('assistant:transcriptLevel')
+                      : t('assistant:noPreview')}
                   </p>
                 )}
                 <Button asChild variant='outline' size='sm'>
@@ -187,7 +191,7 @@ export function EvidenceInspector({
                       if (!current()) event.preventDefault()
                     }}
                   >
-                    {destinationLabels[entry.sourceType]}
+                    {t(destinationLabels[entry.sourceType])}
                   </Link>
                 </Button>
               </section>

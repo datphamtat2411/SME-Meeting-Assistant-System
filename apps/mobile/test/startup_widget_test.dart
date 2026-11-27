@@ -40,6 +40,38 @@ Future<String?> _readRefreshCredential(CredentialStorage storage) async =>
     ).read()).refreshToken;
 
 void main() {
+  testWidgets('Vietnamese login remains usable with large text', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 568);
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final harness = _Harness.create(_authClient(), InMemoryCredentialStorage());
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'login ready',
+    );
+    final submit = find.widgetWithText(FilledButton, 'Đăng nhập');
+    await tester.ensureVisible(submit);
+    await tester.pumpAndSettle();
+    expect(submit.hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    final recovery = find.text('Quên mật khẩu?');
+    await tester.ensureVisible(recovery);
+    await tester.tap(recovery);
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(FilledButton, 'Gửi yêu cầu'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('reset completion from recovery acknowledgement reaches login', (
     tester,
   ) async {
@@ -57,6 +89,12 @@ void main() {
       tester,
       () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
       reason: 'login ready',
+    );
+    final loginContext = tester.element(find.text('Đăng nhập hệ thống'));
+    expect(Localizations.localeOf(loginContext).languageCode, 'vi');
+    expect(
+      MaterialLocalizations.of(loginContext).cancelButtonLabel.toLowerCase(),
+      anyOf('hủy', 'huỷ'),
     );
     await tester.ensureVisible(find.text('Quên mật khẩu?'));
     await tester.tap(find.text('Quên mật khẩu?'));
@@ -759,17 +797,24 @@ void main() {
   }
 
   testWidgets('shows a safe configuration failure', (tester) async {
-    await tester.pumpWidget(
-      const ConfigurationErrorApp(
-        error: AppConfigException(
-          'API_BASE_URL is required. Configure an absolute API URL ending in '
-          '/api/v1 before starting the app.',
-        ),
-      ),
-    );
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 568);
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    late AppConfigException failure;
+    try {
+      AppConfig.validateApiBaseUrl('');
+    } on AppConfigException catch (error) {
+      failure = error;
+    }
+    await tester.pumpWidget(ConfigurationErrorApp(error: failure));
 
     expect(find.text('Cấu hình ứng dụng không hợp lệ'), findsOneWidget);
-    expect(find.textContaining('API_BASE_URL is required'), findsOneWidget);
+    expect(find.textContaining('Chưa cấu hình API_BASE_URL'), findsOneWidget);
+    expect(failure.message, contains('API_BASE_URL is required'));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('keeps startup loading through real identity verification', (

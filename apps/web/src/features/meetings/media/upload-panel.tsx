@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react'
 import { FileAudio, Play, UploadCloud } from 'lucide-react'
 import { toast } from 'sonner'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import { localizedValidationMessage } from '@/lib/i18n/presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,24 +19,27 @@ import {
 } from './meeting-session-context'
 import { PlaybackControls } from './playback-controls'
 
+type Translate = ReturnType<typeof useUiTranslation>['t']
+
 function phaseLabel(
-  phase: ReturnType<typeof useMeetingSession>['importedMedia']['phase']
+  phase: ReturnType<typeof useMeetingSession>['importedMedia']['phase'],
+  t: Translate
 ): string | null {
   switch (phase) {
     case 'intent-created':
-      return 'Upload intent created.'
+      return t('media:intentCreated')
     case 'available-replay':
-      return 'Replayed an existing upload intent; no storage upload is needed.'
+      return t('media:availableReplay')
     case 'storage-uploading':
-      return 'Uploading bytes to object storage…'
+      return t('media:uploadingBytes')
     case 'storage-uploaded':
-      return 'Storage upload completed.'
+      return t('media:storageUploaded')
     case 'finalizing':
-      return 'Core is inspecting and finalizing the media…'
+      return t('media:finalizingMedia')
     case 'reconciling':
-      return 'Checking the authoritative Core media status…'
+      return t('media:reconciling')
     case 'available':
-      return 'Media is available for processing.'
+      return t('media:mediaReady')
     default:
       return null
   }
@@ -61,6 +66,7 @@ export function UploadPanel({
 }
 
 function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
+  const { t } = useUiTranslation()
   const fileInput = useRef<HTMLInputElement>(null)
   const session = useMeetingSession()
   const imported = session.importedMedia
@@ -76,13 +82,17 @@ function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
   async function submit() {
     const media = await session.submitImportedMedia(canSubmitMedia)
     if (media) {
-      toast.success('Media is available for processing', {
-        description: `${media.originalFilename} was finalized by Core.`,
+      toast.success(i18n.t('media:uploadAvailable'), {
+        description: i18n.t('media:mediaFinalized', {
+          filename: media.originalFilename,
+        }),
       })
     } else if (!canSubmitMedia) {
-      toast.error('Media upload is no longer authorized.')
+      toast.error(i18n.t('media:uploadUnauthorized'))
     } else if (imported.error && imported.status === 'failed') {
-      toast.error('Upload failed', { description: imported.error })
+      toast.error(i18n.t('media:uploadFailed'), {
+        description: localizedValidationMessage(imported.error),
+      })
     }
   }
 
@@ -91,7 +101,7 @@ function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
     setChecking(true)
     try {
       const media = await session.reconcileImportedMedia()
-      if (media) toast.success('Media is available for processing')
+      if (media) toast.success(i18n.t('media:uploadAvailable'))
     } finally {
       setChecking(false)
     }
@@ -99,20 +109,17 @@ function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
 
   const phaseText =
     submitting && !imported.phase
-      ? 'Creating a Core upload intent…'
-      : phaseLabel(imported.phase)
+      ? t('media:creatingIntent')
+      : phaseLabel(imported.phase, t)
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className='flex items-center gap-2'>
           <FileAudio className='size-5' />
-          Import source audio
+          {t('media:importTitle')}
         </CardTitle>
-        <p className='text-sm text-muted-foreground'>
-          Original source media is retained for reprocessing. Core must inspect
-          and confirm an upload as available before processing can begin.
-        </p>
+        <p className='text-sm text-muted-foreground'>{t('media:importDesc')}</p>
       </CardHeader>
       <CardContent className='space-y-4'>
         {canSubmitMedia && (
@@ -123,7 +130,7 @@ function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
               accept='.wav,.mp3,.m4a,audio/wav,audio/mpeg,audio/mp4'
               disabled={submitting || checking}
               onChange={(event) => selectFile(event.target.files?.[0] ?? null)}
-              aria-label='Select WAV, MP3, or AAC M4A audio file'
+              aria-label={t('media:fileInput')}
               className='max-w-full text-sm'
             />
             {imported.file && (
@@ -144,10 +151,10 @@ function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
             >
               <UploadCloud className='size-4' />
               {submitting
-                ? 'Uploading…'
+                ? t('media:uploading')
                 : imported.status === 'uncertain'
-                  ? 'Retry submission'
-                  : 'Upload and finalize'}
+                  ? t('media:retrySubmission')
+                  : t('media:uploadAndFinalize')}
             </Button>
             {imported.uncertainMediaId && (
               <>
@@ -156,14 +163,16 @@ function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
                   disabled={checking}
                   onClick={() => void checkUncertainStatus()}
                 >
-                  {checking ? 'Checking…' : 'Check upload status'}
+                  {checking
+                    ? t('media:checking')
+                    : t('media:checkUploadStatus')}
                 </Button>
                 <Button
                   variant='ghost'
                   disabled={checking}
                   onClick={session.startNewImportedSubmission}
                 >
-                  Start a new upload
+                  {t('media:newUpload')}
                 </Button>
               </>
             )}
@@ -171,7 +180,7 @@ function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
         )}
         {imported.error && canSubmitMedia && (
           <p role='alert' className='text-sm text-destructive'>
-            {imported.error}
+            {localizedValidationMessage(imported.error, t)}
           </p>
         )}
         {phaseText && canSubmitMedia && (
@@ -181,9 +190,7 @@ function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
         )}
         {canSubmitMedia && (
           <p className='text-xs text-muted-foreground'>
-            Supported declarations are WAV, MP3, and AAC in M4A. The browser
-            declaration is checked here; Core remains authoritative for the
-            actual container and codec.
+            {t('media:supportedFormats')}
           </p>
         )}
         {query.isPending ? (
@@ -194,7 +201,7 @@ function UploadPanelContent({ canSubmitMedia }: { canSubmitMedia: boolean }) {
             retry={() => void query.refetch()}
           />
         ) : !query.data || query.data.length === 0 ? (
-          <RequestEmpty title='No source files uploaded' />
+          <RequestEmpty title={t('media:noSourceFiles')} />
         ) : (
           <div className='space-y-3'>
             {query.data.map((media) => (
@@ -224,28 +231,31 @@ function MediaRow({
   isOpening: boolean
   onPlay: () => void
 }) {
+  const { t } = useUiTranslation()
   return (
     <div className='flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3'>
       <div className='min-w-0'>
         <p className='truncate font-medium'>{media.originalFilename}</p>
         <div className='mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground'>
-          <Badge variant='outline'>{media.status}</Badge>
+          <Badge variant='outline'>
+            {t(`media:mediaStatus_${media.status}`)}
+          </Badge>
           <span>
             {media.sourceType === 'RECORDING'
-              ? 'Browser recording'
-              : 'Imported file'}
+              ? t('media:recordingSource')
+              : t('media:importedSource')}
           </span>
           <span>{media.contentType}</span>
           {media.sizeBytes != null && (
             <span>{(media.sizeBytes / 1048576).toFixed(1)} MB</span>
           )}
           {media.durationMs != null && (
-            <span>{formatDuration(media.durationMs)}</span>
+            <span>{formatDuration(media.durationMs, t)}</span>
           )}
           <span>
             <RegionalTimestamp
               value={media.createdAt}
-              fallback='Time unavailable'
+              fallback={t('timeUnavailable')}
             />
           </span>
         </div>
@@ -260,10 +270,10 @@ function MediaRow({
         onClick={onPlay}
       >
         {isOpening ? (
-          'Opening…'
+          t('media:opening')
         ) : (
           <>
-            <Play className='size-4' /> Play
+            <Play className='size-4' /> {t('media:play')}
           </>
         )}
       </Button>
@@ -271,7 +281,10 @@ function MediaRow({
   )
 }
 
-function formatDuration(durationMs: number): string {
+function formatDuration(durationMs: number, t: Translate): string {
   const totalSeconds = Math.floor(durationMs / 1000)
-  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`
+  return t('media:duration', {
+    minutes: Math.floor(totalSeconds / 60),
+    seconds: totalSeconds % 60,
+  })
 }

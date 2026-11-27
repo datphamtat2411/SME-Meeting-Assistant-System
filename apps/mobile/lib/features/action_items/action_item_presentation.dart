@@ -9,7 +9,7 @@ import 'action_item_repository.dart';
 
 String actionItemStatusLabel(ActionItemStatus status) => switch (status) {
   ActionItemStatus.proposed => 'Chờ xác nhận',
-  ActionItemStatus.open => 'Cần làm',
+  ActionItemStatus.open => 'Chưa thực hiện',
   ActionItemStatus.inProgress => 'Đang thực hiện',
   ActionItemStatus.done => 'Đã hoàn thành',
   ActionItemStatus.cancelled => 'Đã hủy',

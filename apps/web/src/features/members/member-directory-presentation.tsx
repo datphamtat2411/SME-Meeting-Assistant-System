@@ -1,4 +1,5 @@
 import { Pencil, RefreshCw, Search } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { getDisplayNameInitials } from '@/lib/utils'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -52,18 +53,6 @@ import { OrganizationUnitSelect } from './organization-unit-select'
 
 const pageSizeChoices = [10, 20, 50, 100]
 
-const roleLabels: Record<MemberRole, string> = {
-  ADMINISTRATOR: 'Administrator',
-  DEPARTMENT_MANAGER: 'Department manager',
-  EMPLOYEE: 'Employee',
-}
-
-const statusLabels: Record<MemberStatus, string> = {
-  PENDING_SETUP: 'Pending setup',
-  ACTIVE: 'Active',
-  INACTIVE: 'Inactive',
-}
-
 function roleBadgeClass(role: MemberRole) {
   if (role === 'ADMINISTRATOR') {
     return 'border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900 dark:bg-violet-950 dark:text-violet-300'
@@ -97,9 +86,12 @@ function MemberOrganizationalUnit({
   id: string | null
   lookup: OrganizationUnitLookup
 }) {
+  const { t } = useUiTranslation()
   const reference = resolveOrganizationUnitReference(id, lookup)
   if (reference.state === 'unassigned') {
-    return <span className='text-muted-foreground'>Unassigned</span>
+    return (
+      <span className='text-muted-foreground'>{t('members:unassigned')}</span>
+    )
   }
   if (reference.state === 'resolved') {
     return (
@@ -113,12 +105,12 @@ function MemberOrganizationalUnit({
   }
   const message =
     reference.state === 'loading'
-      ? 'Loading organizational unit'
+      ? t('members:loadingUnit')
       : reference.state === 'error'
-        ? 'Organizational unit lookup failed'
+        ? t('members:unitLookupFailed')
         : reference.collectionEmpty
-          ? 'No authorized active unit'
-          : 'Unresolved unit reference'
+          ? t('members:noActiveUnit')
+          : t('members:unresolvedUnit')
   return (
     <div className='min-w-40 space-y-1'>
       <div className='text-sm text-muted-foreground'>{message}</div>
@@ -147,6 +139,7 @@ export function MemberDirectoryPresentation({
   onEdit,
   onLifecycle,
 }: MemberDirectoryPresentationProps) {
+  const { t } = useUiTranslation()
   if (controller.access.type !== 'authorized') return null
   const {
     access,
@@ -164,11 +157,11 @@ export function MemberDirectoryPresentation({
     <Card className='overflow-hidden'>
       <CardHeader className='gap-4 border-b'>
         <div>
-          <CardTitle>Member directory</CardTitle>
+          <CardTitle>{t('members:directory')}</CardTitle>
           <CardDescription className='mt-1'>
             {access.role === 'ADMINISTRATOR'
-              ? 'Organization-wide account discovery.'
-              : 'Employees in your explicitly granted organizational units.'}
+              ? t('members:adminDiscovery')
+              : t('members:managerDiscovery')}
           </CardDescription>
         </div>
         <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-5'>
@@ -178,15 +171,15 @@ export function MemberDirectoryPresentation({
               value={searchDraft}
               onChange={(event) => updateSearchDraft(event.target.value)}
               maxLength={200}
-              placeholder='Search name or email'
-              aria-label='Search members'
+              placeholder={t('members:searchPlaceholder')}
+              aria-label={t('members:search')}
               className='pl-9'
             />
           </div>
           {access.canFilterRoles && (
             <div className='space-y-1.5'>
               <span className='text-xs font-medium text-muted-foreground'>
-                Global role
+                {t('members:globalRole')}
               </span>
               <Select
                 value={criteria.role ?? 'all'}
@@ -196,14 +189,14 @@ export function MemberDirectoryPresentation({
                   })
                 }
               >
-                <SelectTrigger aria-label='Filter by global role'>
+                <SelectTrigger aria-label={t('members:filterRole')}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value='all'>All roles</SelectItem>
+                  <SelectItem value='all'>{t('members:allRoles')}</SelectItem>
                   {memberRoles.map((role) => (
                     <SelectItem key={role} value={role}>
-                      {roleLabels[role]}
+                      {t(`members:role.${role}`)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -212,7 +205,7 @@ export function MemberDirectoryPresentation({
           )}
           <div className='space-y-1.5'>
             <span className='text-xs font-medium text-muted-foreground'>
-              Account status
+              {t('members:accountStatusLabel')}
             </span>
             <Select
               value={criteria.status ?? 'all'}
@@ -222,14 +215,14 @@ export function MemberDirectoryPresentation({
                 })
               }
             >
-              <SelectTrigger aria-label='Filter by account status'>
+              <SelectTrigger aria-label={t('members:filterStatus')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value='all'>All statuses</SelectItem>
+                <SelectItem value='all'>{t('members:allStatuses')}</SelectItem>
                 {memberStatuses.map((status) => (
                   <SelectItem key={status} value={status}>
-                    {statusLabels[status]}
+                    {t(`members:accountStatus.${status}`)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -237,14 +230,14 @@ export function MemberDirectoryPresentation({
           </div>
           <div className='space-y-1.5'>
             <span className='text-xs font-medium text-muted-foreground'>
-              Organizational unit
+              {t('members:unit')}
             </span>
             <OrganizationUnitSelect
               value={criteria.orgUnitId ?? null}
               units={organizationUnits}
               lookupStatus={lookupState(organizationLookup)}
-              label='Filter by organizational unit'
-              emptyLabel='All units'
+              label={t('members:filterUnit')}
+              emptyLabel={t('members:allUnits')}
               disabled={
                 units.isPending ||
                 units.isError ||
@@ -258,12 +251,12 @@ export function MemberDirectoryPresentation({
         </div>
         <div className='flex flex-wrap items-center justify-between gap-3'>
           <label className='flex items-center gap-2 text-sm text-muted-foreground'>
-            Rows per page
+            {t('members:rows')}
             <Select
               value={String(criteria.size)}
               onValueChange={(value) => onSearchChange({ size: Number(value) })}
             >
-              <SelectTrigger aria-label='Rows per page' className='w-24'>
+              <SelectTrigger aria-label={t('members:rows')} className='w-24'>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -282,7 +275,7 @@ export function MemberDirectoryPresentation({
           </label>
           {units.isFetching && !units.isPending && (
             <span role='status' className='text-xs text-muted-foreground'>
-              Refreshing authorized unit names…
+              {t('members:refreshUnits')}
             </span>
           )}
         </div>
@@ -293,28 +286,24 @@ export function MemberDirectoryPresentation({
             role='alert'
             className='m-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm'
           >
-            <span>
-              Organizational unit names could not be loaded. Member data remains
-              available; unresolved references are shown by ID.
-            </span>
+            <span>{t('members:unitNamesFailed')}</span>
             <Button
               size='sm'
               variant='outline'
               onClick={() => void units.refetch()}
             >
               <RefreshCw className='size-4' />
-              Retry unit lookup
+              {t('members:retryUnit')}
             </Button>
           </div>
         )}
         {units.data?.length === 0 && !units.isFetching && (
           <p className='px-4 pt-4 text-sm text-muted-foreground'>
-            No authorized active organizational units are available. Existing
-            member references remain visible by ID.
+            {t('members:noUnits')}
           </p>
         )}
         {memberDirectory.isPending ? (
-          <RequestLoading label='Loading authorized members…' />
+          <RequestLoading label={t('members:loading')} />
         ) : memberDirectory.isError ? (
           <div className='p-4'>
             <RequestError
@@ -330,10 +319,10 @@ export function MemberDirectoryPresentation({
                 criteria.role ||
                 criteria.status ||
                 criteria.orgUnitId
-                  ? 'No members match these filters'
-                  : 'No members are available in this directory'
+                  ? t('members:emptyFiltered')
+                  : t('members:empty')
               }
-              description='Try another search or adjust the authorized filters.'
+              description={t('members:emptyHelp')}
             />
           </div>
         ) : (
@@ -341,12 +330,16 @@ export function MemberDirectoryPresentation({
             <Table className='min-w-[920px]'>
               <TableHeader>
                 <TableRow>
-                  <TableHead className='w-[25%]'>Member</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Organizational unit</TableHead>
-                  <TableHead>Global role</TableHead>
-                  <TableHead>Account status</TableHead>
-                  <TableHead className='text-end'>Actions</TableHead>
+                  <TableHead className='w-[25%]'>
+                    {t('members:member')}
+                  </TableHead>
+                  <TableHead>{t('members:email')}</TableHead>
+                  <TableHead>{t('members:unit')}</TableHead>
+                  <TableHead>{t('members:globalRole')}</TableHead>
+                  <TableHead>{t('members:accountStatusLabel')}</TableHead>
+                  <TableHead className='text-end'>
+                    {t('members:actions')}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -378,7 +371,7 @@ export function MemberDirectoryPresentation({
                         variant='outline'
                         className={roleBadgeClass(member.globalRole)}
                       >
-                        {roleLabels[member.globalRole]}
+                        {t(`members:role.${member.globalRole}`)}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -386,7 +379,7 @@ export function MemberDirectoryPresentation({
                         variant='outline'
                         className={statusBadgeClass(member.accountStatus)}
                       >
-                        {statusLabels[member.accountStatus]}
+                        {t(`members:accountStatus.${member.accountStatus}`)}
                       </Badge>
                     </TableCell>
                     <TableCell className='text-end'>
@@ -394,12 +387,14 @@ export function MemberDirectoryPresentation({
                         <Button
                           variant='ghost'
                           size='sm'
-                          aria-label={`Edit ${member.displayName}`}
+                          aria-label={t('members:editMember', {
+                            name: member.displayName,
+                          })}
                           disabled={!identityVerified}
                           onClick={() => onEdit(member)}
                         >
                           <Pencil className='size-4' />
-                          Edit
+                          {t('members:edit')}
                         </Button>
                         {member.accountStatus === 'ACTIVE' &&
                           member.id !== controller.identity?.userId && (
@@ -412,7 +407,7 @@ export function MemberDirectoryPresentation({
                               }
                               onClick={() => onLifecycle(member, 'deactivate')}
                             >
-                              Deactivate
+                              {t('members:deactivate')}
                             </Button>
                           )}
                         {member.accountStatus === 'INACTIVE' && (
@@ -425,7 +420,7 @@ export function MemberDirectoryPresentation({
                             }
                             onClick={() => onLifecycle(member, 'reactivate')}
                           >
-                            Reactivate
+                            {t('members:reactivate')}
                           </Button>
                         )}
                         {member.accountStatus === 'PENDING_SETUP' &&
@@ -442,7 +437,7 @@ export function MemberDirectoryPresentation({
                                 onLifecycle(member, 'account-setup/reissue')
                               }
                             >
-                              Resend setup
+                              {t('members:resendSetup')}
                             </Button>
                           )}
                       </div>
@@ -457,18 +452,22 @@ export function MemberDirectoryPresentation({
         {memberDirectory.data && (
           <div className='flex flex-col gap-3 border-t px-4 py-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between'>
             <span>
-              {memberDirectory.data.pagination.totalElements}{' '}
-              {memberDirectory.data.pagination.totalElements === 1
-                ? 'member'
-                : 'members'}
+              {t('members:totalMembers', {
+                count: memberDirectory.data.pagination.totalElements,
+              })}
               {memberDirectory.isPlaceholderData && (
-                <span role='status'> · Updating results…</span>
+                <span role='status'>{t('members:updatingResults')}</span>
               )}
             </span>
             <div className='flex items-center justify-between gap-3 sm:justify-end'>
               <span>
-                Page {memberDirectory.data.pagination.page + 1} of{' '}
-                {Math.max(memberDirectory.data.pagination.totalPages, 1)}
+                {t('page', {
+                  current: memberDirectory.data.pagination.page + 1,
+                  total: Math.max(
+                    memberDirectory.data.pagination.totalPages,
+                    1
+                  ),
+                })}
               </span>
               <div className='flex gap-2'>
                 <Button
@@ -484,7 +483,7 @@ export function MemberDirectoryPresentation({
                     })
                   }
                 >
-                  Previous
+                  {t('members:previous')}
                 </Button>
                 <Button
                   size='sm'
@@ -499,7 +498,7 @@ export function MemberDirectoryPresentation({
                     })
                   }
                 >
-                  Next
+                  {t('members:next')}
                 </Button>
               </div>
             </div>

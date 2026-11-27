@@ -2,6 +2,13 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+  operationErrorFormMessage,
+  UiPresentationError,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { RegionalCivilDate } from '@/components/regional-timestamp'
@@ -23,12 +30,12 @@ const allowed: Record<ActionItem['status'], ActionCommand[]> = {
 }
 
 const labels: Record<ActionCommand, string> = {
-  confirm: 'Confirm',
-  reject: 'Reject',
-  start: 'Start',
-  complete: 'Complete',
-  cancel: 'Cancel',
-  reopen: 'Reopen',
+  confirm: 'action-items:confirm',
+  reject: 'action-items:reject',
+  start: 'action-items:start',
+  complete: 'action-items:complete',
+  cancel: 'action-items:cancel',
+  reopen: 'action-items:reopen',
 }
 
 const capabilityFor: Record<ActionCommand, keyof ActionItem['capabilities']> = {
@@ -63,6 +70,7 @@ export function ActionCommands({
   currentUserId?: string
   canManageActionItems?: boolean
 }) {
+  const { t } = useUiTranslation()
   const qc = useQueryClient()
   const operation = useRef(0)
   const authoritativeItem = useRef(item)
@@ -103,7 +111,7 @@ export function ActionCommands({
         !variables.owns() ||
         !eligible(variables.review.item, variables.review.command)
       )
-        throw new Error('Action Item command is no longer eligible.')
+        throw new UiPresentationError('action-items:commandIneligible')
       const snapshot = variables.review
       return actionCommand(
         snapshot.item.id,
@@ -114,7 +122,7 @@ export function ActionCommands({
     },
     onSuccess: (result, variables) => {
       if (!variables.owns()) return
-      toast.success('Action Item updated')
+      toast.success(i18n.t('action-items:updated'))
       setReview(null)
       setConflict(null)
       operation.current += 1
@@ -134,7 +142,7 @@ export function ActionCommands({
       if (failure.status === 412 || failure.status === 409 || uncertain) {
         setConflict({
           latest: null,
-          message: 'Loading the current Action Item…',
+          message: featureValidationMessage('action-items:loadingCurrent'),
         })
         setPendingReview({
           owns: variables.owns,
@@ -154,15 +162,16 @@ export function ActionCommands({
               sourceItem: variables.review.sourceItem,
             },
             message: uncertain
-              ? 'The previous command could not be verified. Review the current state before applying another command.'
-              : 'The Action Item changed. Review its current state before applying this command.',
+              ? featureValidationMessage('action-items:commandUnverified')
+              : featureValidationMessage('action-items:commandChanged'),
           })
         } catch {
           if (variables.owns()) {
             setConflict({
               latest: null,
-              message:
-                'The current Action Item is unavailable. Close and reopen this review.',
+              message: featureValidationMessage(
+                'action-items:currentUnavailable'
+              ),
             })
           }
         } finally {
@@ -178,8 +187,10 @@ export function ActionCommands({
         }
         return
       }
-      toast.error('Action Item command was not accepted', {
-        description: error instanceof Error ? error.message : undefined,
+      toast.error(i18n.t('action-items:commandRejected'), {
+        description: localizedValidationMessage(
+          operationErrorFormMessage(error)
+        ),
       })
     },
   })
@@ -204,7 +215,7 @@ export function ActionCommands({
         !snapshot.item.capabilities[capabilityFor[command]] ||
         !allowed[snapshot.item.status].includes(command)
       ) {
-        throw new Error('This Action Item command is no longer authorized.')
+        throw new UiPresentationError('action-items:commandUnauthorized')
       }
       authoritativeItem.current = snapshot.item
       setReview({
@@ -216,8 +227,10 @@ export function ActionCommands({
       })
     } catch (error) {
       if (!owns()) return
-      toast.error('Unable to open the Action Item review', {
-        description: error instanceof Error ? error.message : undefined,
+      toast.error(i18n.t('action-items:reviewFailed'), {
+        description: localizedValidationMessage(
+          operationErrorFormMessage(error)
+        ),
       })
     } finally {
       setPendingReview((pending) => (pending?.owns === owns ? null : pending))
@@ -239,7 +252,7 @@ export function ActionCommands({
             disabled={reviewPending || commandMutation.isPending}
             onClick={() => void beginReview(command)}
           >
-            {labels[command]}
+            {t(labels[command])}
           </Button>
         ))}
       </div>
@@ -253,29 +266,29 @@ export function ActionCommands({
             setPendingReview(null)
           }
         }}
-        title={`${labels[activeReview?.command ?? 'start']} Action Item`}
+        title={t('action-items:commandTitle', {
+          command: t(labels[activeReview?.command ?? 'start']),
+        })}
         desc={
           activeReview ? (
             <div className='space-y-2'>
-              <p>
-                Review the authoritative snapshot before applying this command.
-              </p>
+              <p>{t('action-items:reviewHint')}</p>
               <ReviewContent
                 item={activeReview.item}
                 showEvidence={activeReview.item.capabilities.canAccessEvidence}
               />
               {activeReview.command === 'confirm' &&
                 !activeReview.item.assignee?.active && (
-                  <p role='alert'>
-                    Assign an eligible active primary owner before confirmation.
-                  </p>
+                  <p role='alert'>{t('action-items:assignBeforeConfirm')}</p>
                 )}
               {conflict && (
                 <div role='alert' className='space-y-2 rounded border p-3'>
-                  <p>{conflict.message}</p>
+                  <p>{localizedValidationMessage(conflict.message, t)}</p>
                   {conflict.latest && (
                     <>
-                      <p className='font-medium'>Current server state</p>
+                      <p className='font-medium'>
+                        {t('action-items:serverState')}
+                      </p>
                       <ReviewContent
                         item={conflict.latest.item}
                         showEvidence={
@@ -312,10 +325,10 @@ export function ActionCommands({
                             setConflict(null)
                           }}
                         >
-                          Review updated state
+                          {t('action-items:reviewUpdated')}
                         </Button>
                       ) : (
-                        <p>This command is no longer eligible.</p>
+                        <p>{t('action-items:commandNoLongerEligible')}</p>
                       )}
                     </>
                   )}
@@ -336,7 +349,7 @@ export function ActionCommands({
           !eligible(activeReview.item, activeReview.command)
         }
         isLoading={commandMutation.isPending || reviewPending}
-        confirmText={labels[activeReview?.command ?? 'start']}
+        confirmText={t(labels[activeReview?.command ?? 'start'])}
         handleConfirm={() => {
           if (!activeReview || conflict || commandMutation.isPending) return
           if (activeReview.owns()) {
@@ -358,15 +371,24 @@ function ReviewContent({
   item: ActionItem
   showEvidence: boolean
 }) {
+  const { t } = useUiTranslation()
   return (
     <div className='space-y-2'>
       <p className='font-medium'>{item.title}</p>
       {item.details && <p className='whitespace-pre-wrap'>{item.details}</p>}
       <p className='text-xs text-muted-foreground'>
-        State: {item.status} · Assignee:{' '}
-        {item.assignee?.displayName ?? 'Unassigned'}
-        {item.assignee && !item.assignee.active ? ' (inactive)' : ''} · Due:{' '}
-        <RegionalCivilDate value={item.dueDate} fallback='none' />
+        {t('action-items:stateAssignee', {
+          status: t(`action-items:status_${item.status}`),
+        })}
+        {item.assignee?.displayName ?? t('action-items:unassigned')}
+        {item.assignee && !item.assignee.active
+          ? t('action-items:inactive')
+          : ''}{' '}
+        {t('action-items:duePrefix')}{' '}
+        <RegionalCivilDate
+          value={item.dueDate}
+          fallback={t('action-items:noneLower')}
+        />
       </p>
       {item.evidence.limitation && <p>{item.evidence.limitation}</p>}
       {showEvidence &&
@@ -374,12 +396,15 @@ function ReviewContent({
         item.evidence.references.map((reference, index) => (
           <div key={reference.segmentId} className='rounded border p-2'>
             <p className='text-xs font-medium'>
-              Evidence {index + 1} · {item.evidence.freshness}
+              {t('action-items:evidence', {
+                index: index + 1,
+                freshness: item.evidence.freshness,
+              })}
             </p>
             <p>
               {item.evidence.availability === 'AVAILABLE'
-                ? (reference.preview ?? 'Preview unavailable')
-                : 'Original evidence unavailable'}
+                ? (reference.preview ?? t('action-items:previewUnavailable'))
+                : t('action-items:evidenceUnavailable')}
             </p>
           </div>
         ))}

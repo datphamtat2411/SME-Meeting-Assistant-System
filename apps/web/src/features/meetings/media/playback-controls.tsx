@@ -1,4 +1,6 @@
 import { Pause, Play, Square } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
+import { localizedValidationMessage } from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import { useMeetingSession } from './meeting-session-context'
 
@@ -16,6 +18,7 @@ function formatTime(milliseconds: number | null): string {
  * by Detail, Live Meeting, and later transcript surfaces.
  */
 export function PlaybackControls() {
+  const { t } = useUiTranslation()
   const session = useMeetingSession()
   const playback = session.playback
   if (playback.kind === 'idle') return null
@@ -28,26 +31,30 @@ export function PlaybackControls() {
     <div className='space-y-2 rounded-lg border bg-muted/10 p-3'>
       <div className='flex flex-wrap items-center justify-between gap-2'>
         <p className='min-w-0 truncate text-sm font-medium'>
-          {playback.kind === 'local' ? 'Local preview' : 'Source playback'}:{' '}
-          {playback.filename ?? 'recording'}
+          {t(
+            playback.kind === 'local'
+              ? 'media:localPreview'
+              : 'media:sourcePlayback',
+            { filename: playback.filename ?? t('media:recordingName') }
+          )}
         </p>
         <span className='text-xs text-muted-foreground'>
           {playback.status === 'loading'
-            ? 'Loading…'
+            ? t('media:playLoading')
             : playback.status === 'waiting'
-              ? 'Buffering…'
+              ? t('media:buffering')
               : playback.status === 'error'
-                ? 'Playback unavailable'
+                ? t('media:playbackUnavailable')
                 : playback.status === 'ended'
-                  ? 'Finished'
+                  ? t('media:playFinished')
                   : playback.status === 'paused'
-                    ? 'Paused'
+                    ? t('media:paused')
                     : ''}
         </span>
       </div>
       {playback.error && (
         <p role='alert' className='text-sm text-destructive'>
-          {playback.error}
+          {localizedValidationMessage(playback.error, t)}
         </p>
       )}
       <div className='flex flex-wrap items-center gap-2'>
@@ -57,20 +64,22 @@ export function PlaybackControls() {
           variant='outline'
           disabled={playback.isLoading || !playback.objectUrl}
           onClick={() => void (active ? session.pause() : session.play())}
-          aria-label={active ? 'Pause playback' : 'Play playback'}
+          aria-label={
+            active ? t('media:pausePlayback') : t('media:playPlayback')
+          }
         >
           {active ? <Pause className='size-4' /> : <Play className='size-4' />}
-          {active ? 'Pause' : 'Play'}
+          {active ? t('media:pause') : t('media:play')}
         </Button>
         <Button
           type='button'
           size='sm'
           variant='ghost'
           onClick={session.stopPlayback}
-          aria-label='Stop playback'
+          aria-label={t('media:stopPlayback')}
         >
           <Square className='size-4' />
-          Stop
+          {t('media:stop')}
         </Button>
         <span className='text-xs text-muted-foreground tabular-nums'>
           {formatTime(playback.currentTimeMs)} /{' '}
@@ -85,18 +94,20 @@ export function PlaybackControls() {
         value={Math.min(playback.currentTimeMs, playback.durationMs ?? 0)}
         disabled={!canSeek}
         onChange={(event) => session.seek(Number(event.target.value))}
-        aria-label={`Seek ${playback.filename ?? 'audio'}`}
+        aria-label={t('media:seek', {
+          filename: playback.filename ?? 'audio',
+        })}
         className='w-full accent-primary'
       />
       <label className='flex items-center gap-2 text-xs text-muted-foreground'>
-        Speed
+        {t('media:speed')}
         <select
           value={String(playback.playbackRate)}
           onChange={(event) =>
             session.setPlaybackRate(Number(event.target.value))
           }
           className='rounded border bg-background px-1.5 py-1 text-foreground'
-          aria-label='Playback speed'
+          aria-label={t('media:playbackSpeed')}
         >
           {[0.5, 1, 1.25, 1.5, 2].map((rate) => (
             <option key={rate} value={rate}>

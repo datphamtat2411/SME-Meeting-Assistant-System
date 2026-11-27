@@ -3,6 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  localizedValidationMessage,
+  operationErrorFormMessage,
+  UiPresentationError,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -37,14 +43,14 @@ import { reviewCoverageQuery, transcriptReviewQuery } from './transcript-api'
 const pageSize = 20
 type Filter = 'ALL' | DecisionStatus
 
-function decisionLabel(status: DecisionStatus) {
+function decisionLabel(status: DecisionStatus, t: (key: string) => string) {
   switch (status) {
     case 'PROPOSED':
-      return 'AI proposals'
+      return t('decisions:proposed')
     case 'CONFIRMED':
-      return 'Confirmed decisions'
+      return t('decisions:confirmed')
     case 'REJECTED':
-      return 'Rejected history'
+      return t('decisions:rejected')
   }
 }
 
@@ -55,12 +61,13 @@ type DecisionsPanelProps = {
 }
 
 export function DecisionsPanel(props: DecisionsPanelProps) {
+  const { t } = useUiTranslation()
   const authorization = useOptionalMeetingAuthorization()
   if (!intelligenceReadAllowed(authorization)) {
     return (
       <RequestEmpty
-        title='Decisions unavailable'
-        description='Meeting content access must be verified.'
+        title={t('decisions:unavailable')}
+        description={t('decisions:accessRequired')}
       />
     )
   }
@@ -77,6 +84,7 @@ function DecisionsPanelContent({
   canManageDecisions,
   onEvidenceNavigate,
 }: DecisionsPanelProps) {
+  const { t } = useUiTranslation()
   const queryClient = useQueryClient()
   const authorization = useOptionalMeetingAuthorization()
   const canManageRef = useRef(canManageDecisions)
@@ -266,19 +274,17 @@ function DecisionsPanelContent({
             !currentAuthorization.capabilities.canMutateIntelligence ||
             currentAuthorization.isConfirmedAccessLoss))
       ) {
-        throw new Error('Decision review is no longer authorized.')
+        throw new UiPresentationError('decisions:reviewUnauthorized')
       }
       if (
         reviewBlocked ||
         decision.status !== 'PROPOSED' ||
         decision.id !== reviewSnapshot?.id
       ) {
-        throw new Error('Review the current proposal before submitting.')
+        throw new UiPresentationError('decisions:reviewCurrent')
       }
       if (action === 'confirm' && (decision.isStale || confirmationBlocked)) {
-        throw new Error(
-          'This proposal needs fresh, matching transcript evidence before confirmation.'
-        )
+        throw new UiPresentationError('decisions:freshEvidence')
       }
       return reviewDecision(decision, action)
     },
@@ -291,8 +297,8 @@ function DecisionsPanelContent({
       refresh()
       toast.success(
         variables.action === 'confirm'
-          ? 'Decision confirmed as an official record'
-          : 'Decision rejected and preserved in history'
+          ? i18n.t('decisions:confirmSuccess')
+          : i18n.t('decisions:rejectSuccess')
       )
     },
     onError: (error, variables, ownsScope) => {
@@ -301,8 +307,10 @@ function DecisionsPanelContent({
       if (normalized.status === 412 || normalized.status === 409) {
         setReviewBlocked(true)
         setReviewConflict(null)
-        toast.error('Decision review was not applied', {
-          description: normalized.message,
+        toast.error(i18n.t('decisions:reviewFailed'), {
+          description: localizedValidationMessage(
+            operationErrorFormMessage(error)
+          ),
         })
         const ownsReconciliation = captureReviewReconciliation()
         void query.refetch().then((result) => {
@@ -315,8 +323,10 @@ function DecisionsPanelContent({
         refresh()
         return
       }
-      toast.error('Decision review was not applied', {
-        description: normalized.message,
+      toast.error(i18n.t('decisions:reviewFailed'), {
+        description: localizedValidationMessage(
+          operationErrorFormMessage(error)
+        ),
       })
     },
   })
@@ -333,19 +343,17 @@ function DecisionsPanelContent({
             !currentAuthorization.capabilities.canMutateIntelligence ||
             currentAuthorization.isConfirmedAccessLoss))
       ) {
-        throw new Error('Decision editing is no longer authorized.')
+        throw new UiPresentationError('decisions:editUnauthorized')
       }
       if (
         !editingSnapshot ||
         editBlocked ||
         editingSnapshot.status !== 'CONFIRMED'
       )
-        throw new Error('Review the current confirmed decision again.')
+        throw new UiPresentationError('decisions:reviewConfirmed')
       const content = draft.trim()
       if (!content || content.length > 5_000) {
-        throw new Error(
-          'Decision content must be between 1 and 5,000 characters.'
-        )
+        throw new UiPresentationError('decisions:invalidLength')
       }
       return editDecision(editingSnapshot, content)
     },
@@ -357,7 +365,7 @@ function DecisionsPanelContent({
       setEditConflict(null)
       setDraft('')
       refresh()
-      toast.success('Confirmed decision correction saved')
+      toast.success(i18n.t('decisions:editSuccess'))
     },
     onError: (error, _variables, ownsScope) => {
       if (!ownsScope?.()) return
@@ -380,8 +388,10 @@ function DecisionsPanelContent({
         refresh()
         return
       }
-      toast.error('Decision correction was not saved', {
-        description: normalized.message,
+      toast.error(i18n.t('decisions:editFailed'), {
+        description: localizedValidationMessage(
+          operationErrorFormMessage(error)
+        ),
       })
     },
   })
@@ -398,31 +408,25 @@ function DecisionsPanelContent({
             !currentAuthorization.capabilities.canMutateIntelligence ||
             currentAuthorization.isConfirmedAccessLoss))
       ) {
-        throw new Error('Decision creation is no longer authorized.')
+        throw new UiPresentationError('decisions:createUnauthorized')
       }
       const content = createDraft.trim()
       if (!content || content.length > 5_000) {
-        throw new Error(
-          'Decision content must be between 1 and 5,000 characters.'
-        )
+        throw new UiPresentationError('decisions:invalidLength')
       }
       if (createUncertain)
-        throw new Error(
-          'Resolve the previous creation outcome before submitting.'
-        )
+        throw new UiPresentationError('decisions:resolvePrevious')
       if (
         evidenceNeedsReview ||
         (selectedEvidence.length > 0 && transcript.isFetching)
       ) {
-        throw new Error(
-          'The transcript changed while evidence was selected. Review the evidence again.'
-        )
+        throw new UiPresentationError('decisions:transcriptChanged')
       }
       if (selectedEvidence.length > 0) {
         const ownsScope = captureCreateScope()
         const latest = await transcript.refetch()
         if (!ownsScope())
-          throw new Error('Decision creation is no longer authorized.')
+          throw new UiPresentationError('decisions:createUnauthorized')
         const source = latest.isSuccess ? latest.data?.transcript : undefined
         if (
           !source ||
@@ -432,9 +436,7 @@ function DecisionsPanelContent({
             source.segments.some((segment) => segment.id === id)
           )
         ) {
-          throw new Error(
-            'Transcript evidence must be reviewed again before creating this decision.'
-          )
+          throw new UiPresentationError('decisions:reviewEvidenceAgain')
         }
         return createDecision(meetingId, content, selectedEvidence, {
           transcriptId: source.id,
@@ -453,7 +455,7 @@ function DecisionsPanelContent({
       setSelectedEvidence([])
       setCreateTranscriptIdentity(null)
       refresh()
-      toast.success('Manual confirmed decision created')
+      toast.success(i18n.t('decisions:createSuccess'))
     },
     onError: (error, _variables, ownsScope) => {
       if (!ownsScope?.()) return
@@ -474,12 +476,12 @@ function DecisionsPanelContent({
       }
       toast.error(
         uncertain
-          ? 'Decision creation outcome is uncertain'
-          : 'Unable to create decision',
+          ? i18n.t('decisions:createUncertain')
+          : i18n.t('decisions:createFailed'),
         {
           description: uncertain
-            ? 'Check the refreshed official decisions before explicitly allowing a new attempt.'
-            : normalized.message,
+            ? i18n.t('decisions:checkBeforeRetry')
+            : localizedValidationMessage(operationErrorFormMessage(error)),
         }
       )
     },
@@ -508,9 +510,7 @@ function DecisionsPanelContent({
     } catch {
       if (ownsScope()) {
         setCreateReconciled(false)
-        toast.error(
-          'Could not verify official decisions. Creation remains unresolved.'
-        )
+        toast.error(i18n.t('decisions:verifyFailed'))
       }
     } finally {
       if (ownsScope()) setReconcilingCreation(false)
@@ -554,7 +554,7 @@ function DecisionsPanelContent({
           <div>
             <CardTitle className='flex items-center gap-2'>
               <CheckCircle2 className='size-5 text-primary' />
-              Decision management
+              {t('decisions:heading')}
             </CardTitle>
             <p className='mt-1 max-w-2xl text-sm text-muted-foreground'>
               AI proposals remain advisory until an authorized reviewer verifies
@@ -573,14 +573,14 @@ function DecisionsPanelContent({
               }
             >
               <Plus />
-              Add confirmed decision
+              {t('decisions:add')}
             </Button>
           )}
         </div>
         <div
           className='flex flex-wrap gap-2 pt-2'
           role='tablist'
-          aria-label='Decision status'
+          aria-label={t('decisions:status')}
         >
           {(['ALL', 'PROPOSED', 'CONFIRMED', 'REJECTED'] as const).map(
             (option) => (
@@ -593,7 +593,9 @@ function DecisionsPanelContent({
                 disabled={mutationPending}
                 onClick={() => selectFilter(option)}
               >
-                {option === 'ALL' ? 'All decisions' : decisionLabel(option)}
+                {option === 'ALL'
+                  ? t('decisions:all')
+                  : decisionLabel(option, t)}
               </Button>
             )
           )}
@@ -601,7 +603,7 @@ function DecisionsPanelContent({
       </CardHeader>
       <CardContent className='space-y-4 p-5'>
         {query.isPending ? (
-          <RequestLoading label='Loading authorized decisions…' />
+          <RequestLoading label={t('decisions:loading')} />
         ) : query.isError ? (
           <RequestError
             error={query.error}
@@ -611,10 +613,10 @@ function DecisionsPanelContent({
           <RequestEmpty
             title={
               filter === 'ALL'
-                ? 'No decisions recorded'
-                : `No ${decisionLabel(filter).toLowerCase()}`
+                ? t('decisions:empty')
+                : t(`decisions:empty_${filter}`)
             }
-            description='The server returned no records for this status and page.'
+            description={t('decisions:emptyDescription')}
           />
         ) : (
           <div className='space-y-3'>
@@ -663,11 +665,13 @@ function DecisionsPanelContent({
                   disabled={!query.data.page.hasPrevious || query.isFetching}
                   onClick={() => setPage((value) => Math.max(0, value - 1))}
                 >
-                  Previous
+                  {t('decisions:previous')}
                 </Button>
                 <span className='text-xs text-muted-foreground'>
-                  Page {query.data.page.page + 1} of{' '}
-                  {query.data.page.totalPages}
+                  {t('decisions:page', {
+                    page: query.data.page.page + 1,
+                    total: query.data.page.totalPages,
+                  })}
                 </span>
                 <Button
                   size='sm'
@@ -675,7 +679,7 @@ function DecisionsPanelContent({
                   disabled={!query.data.page.hasNext || query.isFetching}
                   onClick={() => setPage((value) => value + 1)}
                 >
-                  Next
+                  {t('decisions:next')}
                 </Button>
               </div>
             )}
@@ -733,7 +737,7 @@ function DecisionsPanelContent({
               if (edit.isPending) return
               if (
                 draft !== editingSnapshot.content &&
-                !window.confirm('Discard unsaved decision changes?')
+                !window.confirm(t('decisions:discardEdit'))
               )
                 return
               retireEditOperation()
@@ -759,17 +763,14 @@ function DecisionsPanelContent({
                 role='alert'
                 className='space-y-2 rounded-md border border-amber-300/70 p-3 text-sm'
               >
-                <p>
-                  The previous request may have created an official decision.
-                  Check the refreshed confirmed decisions before trying again.
-                </p>
+                <p>{t('decisions:previousRequest')}</p>
                 <Button
                   size='sm'
                   variant='outline'
                   disabled={reconcilingCreation}
                   onClick={() => void reconcileCreation()}
                 >
-                  Refresh confirmed decisions
+                  {t('decisions:refresh')}
                 </Button>
                 {createReconciled && (
                   <>
@@ -797,7 +798,7 @@ function DecisionsPanelContent({
                         setCreateTranscriptIdentity(null)
                       }}
                     >
-                      Close without retry
+                      {t('decisions:closeNoRetry')}
                     </Button>
                   </>
                 )}
@@ -821,7 +822,7 @@ function DecisionsPanelContent({
                     setCreateTranscriptIdentity(null)
                   }}
                 >
-                  Clear outdated evidence
+                  {t('decisions:clearEvidence')}
                 </Button>
               </div>
             )}
@@ -871,9 +872,7 @@ function DecisionsPanelContent({
                   return
                 if (
                   (createDraft.trim() || selectedEvidence.length) &&
-                  !window.confirm(
-                    'Discard unsaved decision content and evidence?'
-                  )
+                  !window.confirm(t('decisions:discardCreate'))
                 )
                   return
                 retireCreateOperation()

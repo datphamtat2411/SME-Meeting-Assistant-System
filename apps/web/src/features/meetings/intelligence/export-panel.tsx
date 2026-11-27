@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, FileDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -119,11 +120,11 @@ function validateDownloadCapability(
   }
 }
 
-const statusLabels: Record<ExportStatus['status'], string> = {
-  PENDING: 'Queued',
-  GENERATING: 'Generating document',
-  READY: 'Ready',
-  FAILED: 'Generation failed',
+const statusKeys: Record<ExportStatus['status'], string> = {
+  PENDING: 'export:status_PENDING',
+  GENERATING: 'export:status_GENERATING',
+  READY: 'export:status_READY',
+  FAILED: 'export:status_FAILED',
 }
 
 function FormatExportCard({
@@ -147,6 +148,7 @@ function FormatExportCard({
   canObserve: boolean
   canDownload: boolean
 }) {
+  const { t } = useUiTranslation()
   const queryClient = useQueryClient()
   const label = format === 'PDF' ? 'PDF' : 'Markdown'
   const statusScope = JSON.stringify([scope, meetingId, operation?.exportId])
@@ -251,9 +253,8 @@ function FormatExportCard({
           failure.status === 403 ||
           failure.status === 404
         ) {
-          toast.error('Download unavailable', {
-            description:
-              'Access could not be confirmed. Verifying the workspace.',
+          toast.error(i18n.t('export:downloadUnavailable'), {
+            description: i18n.t('export:accessUnconfirmed'),
           })
           void reconcileProtectedScope(
             queryClient,
@@ -261,9 +262,8 @@ function FormatExportCard({
             statusScope
           )
         } else {
-          toast.error('Download unavailable', {
-            description:
-              'The document or its secure access could not be verified. Refresh its status and try again.',
+          toast.error(i18n.t('export:downloadUnavailable'), {
+            description: i18n.t('export:secureDownloadFailed'),
           })
         }
       }
@@ -295,56 +295,50 @@ function FormatExportCard({
   const failure = owner.failures[format]
   const actionLabel = busy
     ? recovering
-      ? 'Checking request…'
-      : 'Submitting…'
+      ? t('export:checking')
+      : t('export:submitting')
     : observing
-      ? `Refresh ${label} status`
+      ? t('export:refresh', { format: label })
       : recovering
-        ? `Recover ${label} request`
+        ? t('export:recover', { format: label })
         : terminal
-          ? `Generate new ${label}`
-          : `Generate ${label}`
+          ? t('export:generateNew', { format: label })
+          : t('export:generate', { format: label })
   return (
     <section
-      aria-label={label + ' export'}
+      aria-label={t('export:formatExport', { format: label })}
       className='space-y-3 rounded-lg border p-4'
     >
       <div className='flex flex-wrap items-start justify-between gap-2'>
         <div>
-          <h3 className='font-medium'>{label} document</h3>
+          <h3 className='font-medium'>
+            {t('export:document', { format: label })}
+          </h3>
           <p className='text-xs text-muted-foreground'>
-            {format === 'PDF'
-              ? 'For sharing and printing'
-              : 'For editing and documentation'}
+            {format === 'PDF' ? t('export:sharing') : t('export:editing')}
           </p>
         </div>
         {status && (
           <Badge variant='outline'>
             {status.status === 'FAILED' && !terminal
               ? status.retryEligible === true
-                ? 'Waiting for server retry'
-                : 'Retry disposition unavailable'
-              : statusLabels[status.status]}
+                ? t('export:waitingRetry')
+                : t('export:retryDisposition')
+              : t(statusKeys[status.status])}
           </Badge>
         )}
       </div>
       {busy && (
         <p role='status' className='text-sm text-muted-foreground'>
-          Submitting or checking the request with Core API…
+          {t('export:checkingRequest')}
         </p>
       )}
       {!busy && recovering && !operation?.recoveryUnavailable && (
-        <p className='text-sm text-muted-foreground'>
-          The original request outcome is uncertain. Recover it without creating
-          another document.
-        </p>
+        <p className='text-sm text-muted-foreground'>{t('export:uncertain')}</p>
       )}
       {operation?.recoveryUnavailable && (
         <div className='space-y-2 rounded-md border p-3 text-sm'>
-          <p>
-            The original receipt is unavailable. The original export may still
-            exist. A new request may create another document.
-          </p>
+          <p>{t('export:receiptUnavailable')}</p>
           <Button
             type='button'
             variant='outline'
@@ -352,58 +346,57 @@ function FormatExportCard({
             disabled={!canGenerate || busy || download.isPending}
             onClick={() => submit(true)}
           >
-            Confirm new {label} request
+            {t('export:confirmNew', { format: label })}
           </Button>
         </div>
       )}
       {failure && (
         <div className='space-y-2'>
-          <p className='text-sm font-medium'>{format} export request failed</p>
+          <p className='text-sm font-medium'>
+            {t('export:formatFailed', { format })}
+          </p>
           <RequestError error={failure.error} />
         </div>
       )}
       {statusQuery.isError && canObserve && (
         <div role='alert' className='text-sm text-muted-foreground'>
-          Export status could not be verified. Automatic tracking has stopped;
-          the server job may still be running.
+          {t('export:statusUnverified')}
         </div>
       )}
       {paused && !terminal && (
         <p role='status' className='text-sm text-muted-foreground'>
-          Tracking paused. Refresh to continue observing the same export.
+          {t('export:paused')}
         </p>
       )}
       {freshnessNeedsVerification && (
         <p role='status' className='text-sm text-muted-foreground'>
-          Freshness must be verified again.
+          {t('export:freshnessRequired')}
         </p>
       )}
       {!freshnessNeedsVerification &&
         status?.status === 'READY' &&
         status.freshness === 'STALE' && (
           <p className='text-sm text-muted-foreground'>
-            This export is outdated. Generate a new version.
+            {t('export:outdated')}
           </p>
         )}
       {!freshnessNeedsVerification &&
         status?.status === 'READY' &&
         status.freshness === 'UNKNOWN' && (
           <p className='text-sm text-muted-foreground'>
-            Freshness could not be verified. Verify again before downloading.
+            {t('export:freshnessUnknown')}
           </p>
         )}
       {status?.status === 'FAILED' && (
         <p className='text-sm text-muted-foreground'>
-          {terminal
-            ? 'The server could not generate this document. You can request a new export.'
-            : 'The original export may be retried by the server. Continue tracking it rather than creating another document.'}
+          {terminal ? t('export:terminalFailure') : t('export:mayRetry')}
         </p>
       )}
       {!freshnessNeedsVerification &&
         status?.status === 'READY' &&
         status.freshness === 'CURRENT' && (
           <p className='text-sm text-muted-foreground'>
-            Current document. Access will be verified again before download.
+            {t('export:currentDocument')}
           </p>
         )}
       <div className='flex flex-wrap gap-2'>
@@ -433,7 +426,7 @@ function FormatExportCard({
             disabled={!canObserve || statusQuery.isFetching}
             onClick={refreshStatus}
           >
-            Verify freshness
+            {t('export:verifyFreshness')}
           </Button>
         )}
         {!freshnessNeedsVerification &&
@@ -445,13 +438,13 @@ function FormatExportCard({
               disabled={!canDownload || download.isPending || busy}
               onClick={() => download.mutate(status.exportId)}
             >
-              <Download className='size-4' /> Download
+              <Download className='size-4' /> {t('export:download')}
             </Button>
           )}
       </div>
       {previousReadyId && (
         <div className='space-y-2 border-t pt-3 text-sm'>
-          <p>Previous ready document (current status must be verified).</p>
+          <p>{t('export:previousReady')}</p>
           <Button
             type='button'
             variant='outline'
@@ -459,7 +452,7 @@ function FormatExportCard({
             disabled={!canDownload || download.isPending || busy}
             onClick={() => download.mutate(previousReadyId)}
           >
-            Verify and download previous {label}
+            {t('export:previousDownload', { format: label })}
           </Button>
         </div>
       )}
@@ -474,6 +467,7 @@ export function ExportPanel({
   meetingId: string
   canExport: boolean
 }) {
+  const { t } = useUiTranslation()
   const queryClient = useQueryClient()
   const authorization = useOptionalMeetingAuthorization()
   const session = useOptionalMeetingSession()
@@ -542,23 +536,22 @@ export function ExportPanel({
       <CardHeader>
         <CardTitle className='flex items-center gap-2'>
           <FileDown className='size-5' />
-          Export meeting minutes
+          {t('export:title')}
         </CardTitle>
         <p className='text-sm text-muted-foreground'>
-          Create official copies of the canonical meeting record. PDF and
-          Markdown are generated by the server.
+          {t('export:description')}
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
         {!authorized || !owner ? (
           <p className='text-sm text-muted-foreground'>
-            Export is unavailable for the current meeting access.
+            {t('export:unavailable')}
           </p>
         ) : (
           <>
             {availability.isPending && (
               <p role='status' className='text-sm text-muted-foreground'>
-                Checking export availability…
+                {t('export:checkingAvailability')}
               </p>
             )}
             {availability.isError && (
@@ -576,34 +569,32 @@ export function ExportPanel({
             )}
             {capabilities && !capabilities.admission && (
               <p className='text-sm text-muted-foreground'>
-                New export generation is disabled in this deployment.
+                {t('export:admissionDisabled')}
               </p>
             )}
             {capabilities && !capabilities.recovery && (
               <p className='text-sm text-muted-foreground'>
-                Recovery is unavailable in this deployment.
+                {t('export:recoveryDisabled')}
               </p>
             )}
             {capabilities && !capabilities.status && (
               <p className='text-sm text-muted-foreground'>
-                Export status observation is unavailable.
+                {t('export:observationDisabled')}
               </p>
             )}
             {capabilities && (!capabilities.access || !trusted) && (
               <p className='text-sm text-muted-foreground'>
-                Secure downloads are not configured. Contact your administrator.
+                {t('export:secureNotConfigured')}
               </p>
             )}
             {minutes.data && minutes.data.completeness !== 'COMPLETE' && (
               <p className='text-sm text-amber-700'>
-                Minutes require review before new official exports can be
-                generated.
+                {t('export:reviewRequired')}
               </p>
             )}
             {proposalsIncluded && (
               <p className='text-sm text-amber-700'>
-                Minutes contain unconfirmed AI proposals and are not eligible
-                for export.
+                {t('export:proposalsIncluded')}
               </p>
             )}
             {minutes.isError && (

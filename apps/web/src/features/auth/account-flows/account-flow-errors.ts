@@ -4,7 +4,7 @@ export type AccountFlowOperation = 'recovery' | 'setup' | 'reset'
 
 export type AccountFlowFailure = {
   kind: 'rejected' | 'throttled' | 'unavailable' | 'uncertain'
-  message: string
+  messageKey: `auth:${string}`
   field?: 'email' | 'password'
   retryAt?: number
 }
@@ -32,15 +32,15 @@ export function classifyAccountFlowFailure(
   if (failure.status === 404) {
     return {
       kind: 'unavailable',
-      message: recovery
-        ? 'Password recovery is unavailable on this deployment. Contact your administrator, or try again if the service becomes available.'
-        : 'This account flow is unavailable. Contact your administrator.',
+      messageKey: recovery
+        ? 'auth:recoveryUnavailable'
+        : 'auth:accountFlowUnavailable',
     }
   }
   if (failure.status === 429) {
     return {
       kind: 'throttled',
-      message: 'Too many requests. Please wait before trying again.',
+      messageKey: 'auth:accountFlowThrottled',
       retryAt: parseRetryAfter(failure.retryAfter, Date.now()),
     }
   }
@@ -52,19 +52,17 @@ export function classifyAccountFlowFailure(
   ) {
     return {
       kind: 'uncertain',
-      message: recovery
-        ? 'Your request may have been processed. Check your inbox and spam folder before sending another request.'
+      messageKey: recovery
+        ? 'auth:recoveryUncertain'
         : operation === 'setup'
-          ? 'Account activation may already have completed. Try signing in with the password you selected. If necessary, contact your administrator for a fresh setup link.'
-          : 'The password change may already have completed. Try signing in with the password you selected. If necessary, request a fresh recovery link.',
+          ? 'auth:setupUncertain'
+          : 'auth:resetUncertain',
     }
   }
   if (failure.status === 401 || failure.status === 403) {
     return {
       kind: 'rejected',
-      message: recovery
-        ? 'The recovery request was blocked. Contact your administrator if this persists.'
-        : 'The account request was blocked. Reopen the original link or contact your administrator.',
+      messageKey: recovery ? 'auth:recoveryBlocked' : 'auth:accountFlowBlocked',
     }
   }
   if (failure.status === 400 || failure.status === 422) {
@@ -72,27 +70,25 @@ export function classifyAccountFlowFailure(
       return {
         kind: 'rejected',
         field: 'email',
-        message: 'Check the email address and try again.',
+        messageKey: 'auth:checkEmail',
       }
     }
     if (!recovery && failure.fieldErrors.password?.length) {
       return {
         kind: 'rejected',
         field: 'password',
-        message: 'Choose a different password that meets the password policy.',
+        messageKey: 'auth:chooseDifferentPassword',
       }
     }
     return {
       kind: 'rejected',
-      message: recovery
-        ? 'The recovery request was rejected. Check the email address and try again.'
-        : 'The link may be invalid or expired, or the password may not meet organization policy. Review your password or obtain a fresh link if necessary.',
+      messageKey: recovery
+        ? 'auth:recoveryRejected'
+        : 'auth:accountFlowRejected',
     }
   }
   return {
     kind: 'rejected',
-    message: recovery
-      ? 'Unable to request recovery. Please try again later or contact your administrator.'
-      : 'Unable to complete this account request. Check your link or contact your administrator.',
+    messageKey: recovery ? 'auth:recoveryFailed' : 'auth:accountFlowFailed',
   }
 }

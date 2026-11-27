@@ -15,6 +15,7 @@ import {
 import { invalidateMeetingArtifacts } from '../intelligence/query-invalidation'
 import { requestSummaryRegeneration } from '../intelligence/summary-api'
 import { meetingMediaQuery, type MeetingMedia } from './media-api'
+import { MediaPresentationError } from './media-error-presentation'
 import {
   processingJobKey,
   processingJobsQuery,
@@ -133,7 +134,10 @@ type AuthoritativeSnapshot = {
 
 function createOperationIdentity(): string {
   if (typeof crypto?.randomUUID !== 'function') {
-    throw new Error('This browser cannot create a safe operation identity.')
+    throw new MediaPresentationError(
+      'This browser cannot create a safe operation identity.',
+      'processing:operationIdentityUnavailable'
+    )
   }
   return crypto.randomUUID()
 }

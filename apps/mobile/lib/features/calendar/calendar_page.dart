@@ -2,10 +2,10 @@ import 'dart:async';
 
 import 'package:intl/intl.dart';
 import 'package:flutter/material.dart';
-import 'package:sme_meeting_assistant/core/api_response.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/app_theme.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/core/ui_presentation.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_discovery.dart';
@@ -225,9 +225,7 @@ class _CalendarPageState extends State<CalendarPage> {
                 MessagePanel(
                   icon: Icons.cloud_off_outlined,
                   title: 'Không thể tải toàn bộ dữ liệu lịch',
-                  description: state.failure is ApiFailure
-                      ? (state.failure! as ApiFailure).message
-                      : 'Đã xảy ra lỗi khi tải lịch.',
+                  description: apiFailureLabel(state.failure),
                   onRetry: _controller.retry,
                 ),
               if (state.collectionChanged)

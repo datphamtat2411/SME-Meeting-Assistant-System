@@ -1,4 +1,5 @@
 import { Loader2 } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { LogoutStatus } from './logout-status'
 
@@ -16,16 +17,17 @@ type SessionGateProps = {
 
 const gateCopy = {
   denied: {
-    title: 'Access denied',
-    description: 'You do not have permission to access this workspace.',
+    title: 'auth:accessDenied',
+    description: 'auth:accessDeniedDescription',
   },
   unavailable: {
-    title: 'Session temporarily unavailable',
-    description: 'We could not verify your session. Please try again.',
+    title: 'auth:sessionUnavailable',
+    description: 'auth:sessionUnavailableDescription',
   },
 } as const
 
 export function SessionGate({ state, onRetry }: SessionGateProps) {
+  const { t } = useUiTranslation()
   if (state === 'logout-pending' || state === 'logout-uncertain') {
     return (
       <div className='flex min-h-svh w-full items-center justify-center p-6'>
@@ -46,7 +48,7 @@ export function SessionGate({ state, onRetry }: SessionGateProps) {
       >
         <div className='flex items-center gap-2 text-sm text-muted-foreground'>
           <Loader2 className='size-4 animate-spin' aria-hidden='true' />
-          <span>Checking your session</span>
+          <span>{t('auth:checkingSessionPlain')}</span>
         </div>
       </div>
     )
@@ -61,9 +63,9 @@ export function SessionGate({ state, onRetry }: SessionGateProps) {
       aria-live='polite'
     >
       <div className='flex max-w-md flex-col items-center gap-3 text-center'>
-        <h1 className='text-xl font-semibold'>{copy.title}</h1>
-        <p className='text-sm text-muted-foreground'>{copy.description}</p>
-        {onRetry && <Button onClick={onRetry}>Retry</Button>}
+        <h1 className='text-xl font-semibold'>{t(copy.title)}</h1>
+        <p className='text-sm text-muted-foreground'>{t(copy.description)}</p>
+        {onRetry && <Button onClick={onRetry}>{t('retry')}</Button>}
       </div>
     </div>
   )

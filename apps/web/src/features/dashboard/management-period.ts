@@ -1,3 +1,4 @@
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import type { ManagementSelection } from './dashboard-api'
 
 const dayMs = 86_400_000
@@ -24,7 +25,8 @@ function parseDate(value: string) {
 /** Find the first instant of the requested civil date, including DST changes. */
 function startOfCivilDate(date: string, zone: string) {
   const nominal = parseDate(date)
-  if (nominal === undefined) throw new Error('Enter valid calendar dates.')
+  if (nominal === undefined)
+    throw new Error(featureValidationMessage('dashboard:validDates'))
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: zone,
     calendar: 'iso8601',
@@ -47,9 +49,7 @@ function startOfCivilDate(date: string, zone: string) {
     else high = mid
   }
   if (civilDate(low) !== date) {
-    throw new Error(
-      'The selected date does not exist in the reporting timezone.'
-    )
+    throw new Error(featureValidationMessage('dashboard:dateMissing'))
   }
   return low
 }
@@ -62,7 +62,7 @@ export function customPeriod(
   const first = parseDate(start)
   const last = parseDate(end)
   if (first === undefined || last === undefined || first > last) {
-    throw new Error('Enter a valid start and end date.')
+    throw new Error(featureValidationMessage('dashboard:validRange'))
   }
   const nextDate = new Date(last + dayMs).toISOString().slice(0, 10)
   const from = startOfCivilDate(start, zone)
@@ -70,7 +70,7 @@ export function customPeriod(
   startOfCivilDate(end, zone)
   const to = startOfCivilDate(nextDate, zone)
   if (to <= from || to - from > maxDuration) {
-    throw new Error('The reporting period must not exceed 366 days.')
+    throw new Error(featureValidationMessage('dashboard:maxPeriod'))
   }
   return { from: new Date(from).toISOString(), to: new Date(to).toISOString() }
 }

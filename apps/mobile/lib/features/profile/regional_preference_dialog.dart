@@ -97,7 +97,7 @@ class _RegionalPreferenceDialogState extends State<RegionalPreferenceDialog> {
       setState(() {
         _validation = _timezone
             ? 'Nhập mã múi giờ hợp lệ, tối đa 64 ký tự.'
-            : 'Nhập mã ngôn ngữ hợp lệ, tối đa 32 ký tự.';
+            : 'Nhập mã định dạng vùng hợp lệ, tối đa 32 ký tự.';
       });
       return null;
     }
@@ -231,7 +231,7 @@ class _RegionalPreferenceDialogState extends State<RegionalPreferenceDialog> {
                         decoration: InputDecoration(
                           labelText: _timezone
                               ? 'Mã múi giờ khác (IANA)'
-                              : 'Mã ngôn ngữ khác (BCP 47)',
+                              : 'Mã định dạng vùng khác (BCP 47)',
                           hintText: _timezone ? 'Europe/Paris' : 'fr-CA',
                           errorText: _validation,
                         ),
@@ -250,7 +250,7 @@ class _RegionalPreferenceDialogState extends State<RegionalPreferenceDialog> {
                     ],
                     if (controller.failure != null)
                       Text(
-                        controller.failure!.message,
+                        profileFailureLabel(controller.failure!),
                         style: TextStyle(
                           color: Theme.of(context).colorScheme.error,
                         ),

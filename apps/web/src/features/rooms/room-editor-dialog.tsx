@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import type { FieldErrors } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -100,20 +105,23 @@ const blankValues: RoomFormValues = {
 
 function roomDisplayValues(room: RoomSnapshot['room']) {
   return [
-    ['Code', room.code],
-    ['Name', room.name],
-    ['Location', room.location ?? 'Not set'],
-    ['Capacity', room.capacity === null ? 'Not set' : String(room.capacity)],
-    ['Notes', room.notes ?? 'Not set'],
+    [i18n.t('rooms:tableCode'), room.code],
+    [i18n.t('rooms:name'), room.name],
+    [i18n.t('rooms:location'), room.location ?? i18n.t('rooms:notSet')],
+    [
+      i18n.t('rooms:capacity'),
+      room.capacity === null ? i18n.t('rooms:notSet') : String(room.capacity),
+    ],
+    [i18n.t('rooms:notes'), room.notes ?? i18n.t('rooms:notSet')],
   ] as const
 }
 
 function displayRoomFieldValue(value: string | number | null) {
-  return value === null ? 'Not set' : String(value)
+  return value === null ? i18n.t('rooms:notSet') : String(value)
 }
 
 function displayRoomFieldLabel(field: RoomEditableField) {
-  return field[0].toUpperCase() + field.slice(1)
+  return i18n.t(`rooms:${field}`)
 }
 
 function RoomConflictResolution({
@@ -127,6 +135,7 @@ function RoomConflictResolution({
   authorizationVerified: boolean
   onResolve: (operationId: number, choices: RoomConflictChoices) => void
 }) {
+  const { t } = useUiTranslation()
   const [conflictChoices, setConflictChoices] = useState<RoomConflictChoices>(
     {}
   )
@@ -137,11 +146,8 @@ function RoomConflictResolution({
   return (
     <div className='space-y-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3'>
       <div>
-        <p className='font-medium'>Review conflicting fields</p>
-        <p className='text-muted-foreground'>
-          Choose the current server value or retain your intended value for each
-          conflict.
-        </p>
+        <p className='font-medium'>{t('rooms:conflicts')}</p>
+        <p className='text-muted-foreground'>{t('rooms:conflictHelp')}</p>
       </div>
       {reconciliation.conflicts.map((field) => {
         const comparison = reconciliation.fields[field]
@@ -164,7 +170,7 @@ function RoomConflictResolution({
               />
               <span>
                 <span className='block text-xs text-muted-foreground'>
-                  Server value
+                  {t('rooms:serverValue')}
                 </span>
                 <span className='block break-words'>
                   {displayRoomFieldValue(comparison.latest)}
@@ -185,7 +191,7 @@ function RoomConflictResolution({
               />
               <span>
                 <span className='block text-xs text-muted-foreground'>
-                  Your intended value
+                  {t('rooms:intendedValue')}
                 </span>
                 <span className='block break-words'>
                   {displayRoomFieldValue(comparison.intended ?? null)}
@@ -202,7 +208,7 @@ function RoomConflictResolution({
         disabled={!authorizationVerified || unresolvedConflict}
         onClick={() => onResolve(operationId, conflictChoices)}
       >
-        Resolve conflicts and continue
+        {t('rooms:resolveConflicts')}
       </Button>
     </div>
   )
@@ -246,6 +252,7 @@ export function RoomEditorDialog({
   onRetryCreationVerification: (operationId: number) => void
   onSubmit: (input: RoomEditorSubmit) => void
 }) {
+  const { t } = useUiTranslation()
   const [recoverySnapshot, setRecoverySnapshot] = useState<RoomSnapshot | null>(
     null
   )
@@ -293,7 +300,7 @@ export function RoomEditorDialog({
       setRecoveryError(
         error instanceof Error
           ? error.message
-          : 'The latest room state could not be loaded.'
+          : featureValidationMessage('rooms:latestLoadError')
       )
     } finally {
       setRecoveryLoading(false)
@@ -324,10 +331,10 @@ export function RoomEditorDialog({
     } catch (error) {
       setLocalError(
         error instanceof NoRoomChangesError
-          ? error.message
+          ? featureValidationMessage('rooms:noChanges')
           : error instanceof Error
             ? error.message
-            : 'Room values are invalid.'
+            : featureValidationMessage('rooms:invalidRoom')
       )
     }
   }
@@ -364,49 +371,45 @@ export function RoomEditorDialog({
               size='sm'
               onClick={onRetryAuthorization}
             >
-              Retry verification
+              {t('rooms:retryVerification')}
             </Button>
           </div>
         )}
         {session?.mode === 'edit' && session.status === 'loading' ? (
           <>
             <DialogHeader>
-              <DialogTitle>Loading current room</DialogTitle>
-              <DialogDescription>
-                Retrieving the authoritative room state and concurrency token
-                before opening the editor.
-              </DialogDescription>
+              <DialogTitle>{t('rooms:loadingCurrent')}</DialogTitle>
+              <DialogDescription>{t('rooms:loadingEditor')}</DialogDescription>
             </DialogHeader>
             <div
               role='status'
               className='py-8 text-center text-sm text-muted-foreground'
             >
-              Loading room details…
+              {t('rooms:loadingDetails')}
             </div>
             <DialogFooter>
               <Button variant='outline' disabled={saving} onClick={onClose}>
-                Cancel
+                {t('rooms:cancel')}
               </Button>
             </DialogFooter>
           </>
         ) : session?.mode === 'edit' && session.status === 'error' ? (
           <>
             <DialogHeader>
-              <DialogTitle>Room details could not be loaded</DialogTitle>
-              <DialogDescription>
-                No edit session was opened because a reviewed authoritative
-                snapshot is required.
-              </DialogDescription>
+              <DialogTitle>{t('rooms:detailsError')}</DialogTitle>
+              <DialogDescription>{t('rooms:noEditSession')}</DialogDescription>
             </DialogHeader>
             <div
               role='alert'
               className='rounded-md border border-destructive/30 p-3 text-sm'
             >
-              {session.loadError ?? 'The room detail request failed.'}
+              {session.loadError
+                ? localizedValidationMessage(session.loadError, t)
+                : t('rooms:detailRequestFailed')}
             </div>
             <DialogFooter>
               <Button variant='outline' onClick={onClose}>
-                Close
+                {t('rooms:close')}
               </Button>
               <Button
                 disabled={!authorizationVerified}
@@ -414,7 +417,7 @@ export function RoomEditorDialog({
                   onRetrySnapshot(session.roomId, session.operationId)
                 }
               >
-                Retry room details
+                {t('rooms:retryDetails')}
               </Button>
             </DialogFooter>
           </>
@@ -422,12 +425,10 @@ export function RoomEditorDialog({
           <>
             <DialogHeader>
               <DialogTitle>
-                {editing ? 'Edit room metadata' : 'Add room'}
+                {editing ? t('rooms:editMetadata') : t('rooms:add')}
               </DialogTitle>
               <DialogDescription>
-                {editing
-                  ? 'Room code and lifecycle status are immutable in this metadata edit.'
-                  : 'Create a canonical room record. Blank optional values are saved as unset.'}
+                {editing ? t('rooms:immutable') : t('rooms:createHelp')}
               </DialogDescription>
             </DialogHeader>
             {isRecoveryRequired && feedback && (
@@ -435,7 +436,7 @@ export function RoomEditorDialog({
                 role='alert'
                 className='space-y-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm'
               >
-                <p>{feedback.message}</p>
+                <p>{localizedValidationMessage(feedback.message, t)}</p>
                 {session?.mode === 'edit' && (
                   <>
                     <Button
@@ -446,13 +447,16 @@ export function RoomEditorDialog({
                       onClick={() => void reloadLatest(session.roomId)}
                     >
                       {recoveryLoading
-                        ? 'Loading latest room…'
-                        : 'Reload latest for review'}
+                        ? t('rooms:loadingLatest')
+                        : t('rooms:reloadLatest')}
                     </Button>
                     {(recoveryError || feedback.reconciliationError) && (
                       <div className='space-y-2'>
                         <p role='alert' className='text-destructive'>
-                          {recoveryError ?? feedback.reconciliationError}
+                          {localizedValidationMessage(
+                            recoveryError ?? feedback.reconciliationError ?? '',
+                            t
+                          )}
                         </p>
                         <Button
                           type='button'
@@ -461,7 +465,7 @@ export function RoomEditorDialog({
                           disabled={recoveryLoading || !authorizationVerified}
                           onClick={() => void reloadLatest(session.roomId)}
                         >
-                          Retry latest room
+                          {t('rooms:retryLatest')}
                         </Button>
                       </div>
                     )}
@@ -469,17 +473,17 @@ export function RoomEditorDialog({
                       <div className='space-y-3 rounded-md border bg-background p-3'>
                         <div>
                           <p className='font-medium'>
-                            Latest authoritative state ·{' '}
+                            {t('rooms:latestState')}
                             {currentRecoverySnapshot.room.status === 'ACTIVE'
-                              ? 'Active'
-                              : 'Inactive'}
+                              ? t('rooms:active')
+                              : t('rooms:inactive')}
                           </p>
                           <p className='text-muted-foreground'>
                             {feedback.latestMatchesRequest === true
-                              ? 'The latest metadata matches the submitted changes. The request may have succeeded; no second request was sent.'
+                              ? t('rooms:matchLatest')
                               : feedback.latestMatchesRequest === false
-                                ? 'The latest room state differs from the submitted changes. Keep your draft only after reviewing this version.'
-                                : 'Review this version before starting another edit.'}
+                                ? t('rooms:differentLatest')
+                                : t('rooms:reviewVersion')}
                           </p>
                         </div>
                         <dl className='grid gap-2 sm:grid-cols-2'>
@@ -520,7 +524,7 @@ export function RoomEditorDialog({
                                   )
                                 }
                               >
-                                Keep intended changes and continue
+                                {t('rooms:keepChanges')}
                               </Button>
                             )}
                             <Button
@@ -535,12 +539,12 @@ export function RoomEditorDialog({
                                 )
                               }
                             >
-                              Discard my edits and restart from latest
+                              {t('rooms:discardEdits')}
                             </Button>
                           </div>
                         ) : (
                           <p className='text-destructive'>
-                            This room is inactive and cannot be edited.
+                            {t('rooms:inactiveEdit')}
                           </p>
                         )}
                       </div>
@@ -563,8 +567,8 @@ export function RoomEditorDialog({
                         }
                       >
                         {feedback.reconciliationLoading
-                          ? 'Verifying room…'
-                          : 'Retry verification'}
+                          ? t('rooms:verifyingRoom')
+                          : t('rooms:retryVerification')}
                       </Button>
                     )}
                     {feedback.creationReconciliation?.status ===
@@ -577,7 +581,7 @@ export function RoomEditorDialog({
                           onReviewCreationDraft(session.operationId)
                         }
                       >
-                        Review creation draft
+                        {t('rooms:reviewDraft')}
                       </Button>
                     )}
                     <Button
@@ -586,7 +590,7 @@ export function RoomEditorDialog({
                       size='sm'
                       onClick={onReviewDirectory}
                     >
-                      Close and review directory
+                      {t('rooms:reviewDirectory')}
                     </Button>
                   </div>
                 )}
@@ -598,11 +602,12 @@ export function RoomEditorDialog({
                 className='space-y-2 rounded-md border bg-muted/40 p-3 text-sm'
               >
                 <p>
-                  Room code {feedback.creationReconciliation.room.code} already
-                  exists.{' '}
+                  {t('rooms:codeExists', {
+                    code: feedback.creationReconciliation.room.code,
+                  })}
                   {feedback.creationReconciliation.metadataMatches
-                    ? 'Its metadata matches the submitted request; the request may have succeeded, but the server outcome cannot be attributed.'
-                    : 'Its metadata differs from the submitted request; review the existing record before deciding what to do.'}
+                    ? t('rooms:creationMatches')
+                    : t('rooms:creationDiffers')}
                 </p>
                 <dl className='grid gap-2 sm:grid-cols-2'>
                   {roomDisplayValues(feedback.creationReconciliation.room).map(
@@ -620,7 +625,9 @@ export function RoomEditorDialog({
             )}
             {sessionRoom && (
               <div className='rounded-md border bg-muted/40 px-3 py-2 text-sm'>
-                <span className='text-muted-foreground'>Room identity: </span>
+                <span className='text-muted-foreground'>
+                  {t('rooms:identity')}
+                </span>
                 <span className='font-mono font-medium'>
                   {sessionRoom.code}
                 </span>
@@ -639,7 +646,7 @@ export function RoomEditorDialog({
                   name='code'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Room code</FormLabel>
+                      <FormLabel>{t('rooms:code')}</FormLabel>
                       <FormControl>
                         <Input
                           {...field}
@@ -651,8 +658,8 @@ export function RoomEditorDialog({
                       </FormControl>
                       <FormDescription>
                         {editing
-                          ? 'Room codes cannot be changed after creation.'
-                          : 'Codes are normalized to uppercase by the Core API.'}
+                          ? t('rooms:codeImmutable')
+                          : t('rooms:codeUppercase')}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
@@ -663,7 +670,7 @@ export function RoomEditorDialog({
                   name='name'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Name</FormLabel>
+                      <FormLabel>{t('rooms:name')}</FormLabel>
                       <FormControl>
                         <Input
                           {...field}
@@ -682,7 +689,7 @@ export function RoomEditorDialog({
                     name='location'
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Location</FormLabel>
+                        <FormLabel>{t('rooms:location')}</FormLabel>
                         <FormControl>
                           <Input
                             {...field}
@@ -692,7 +699,7 @@ export function RoomEditorDialog({
                           />
                         </FormControl>
                         <FormDescription>
-                          Optional. Leave blank to clear existing metadata.
+                          {t('rooms:optionalClear')}
                         </FormDescription>
                         <FormMessage />
                       </FormItem>
@@ -703,7 +710,7 @@ export function RoomEditorDialog({
                     name='capacity'
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Capacity</FormLabel>
+                        <FormLabel>{t('rooms:capacity')}</FormLabel>
                         <FormControl>
                           <Input
                             {...field}
@@ -714,7 +721,7 @@ export function RoomEditorDialog({
                           />
                         </FormControl>
                         <FormDescription>
-                          Optional positive whole number.
+                          {t('rooms:optionalCapacity')}
                         </FormDescription>
                         <FormMessage />
                       </FormItem>
@@ -726,7 +733,7 @@ export function RoomEditorDialog({
                   name='notes'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Notes</FormLabel>
+                      <FormLabel>{t('rooms:notes')}</FormLabel>
                       <FormControl>
                         <Textarea
                           {...field}
@@ -734,10 +741,7 @@ export function RoomEditorDialog({
                           disabled={saving || isRecoveryRequired}
                         />
                       </FormControl>
-                      <FormDescription>
-                        Optional room notes. No client-side length limit is
-                        imposed.
-                      </FormDescription>
+                      <FormDescription>{t('rooms:notesHelp')}</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -746,7 +750,10 @@ export function RoomEditorDialog({
                   (session?.status === 'ready' &&
                     feedback?.outcome === 'rejected')) && (
                   <p role='alert' className='text-sm text-destructive'>
-                    {localError ?? feedback?.message}
+                    {localizedValidationMessage(
+                      localError ?? feedback?.message ?? '',
+                      t
+                    )}
                   </p>
                 )}
               </form>
@@ -758,7 +765,7 @@ export function RoomEditorDialog({
                 onClick={onClose}
                 disabled={saving}
               >
-                Cancel
+                {t('rooms:cancel')}
               </Button>
               <Button
                 type='submit'
@@ -770,7 +777,11 @@ export function RoomEditorDialog({
                   isRecoveryRequired
                 }
               >
-                {saving ? 'Saving…' : editing ? 'Save room' : 'Create room'}
+                {saving
+                  ? t('rooms:saving')
+                  : editing
+                    ? t('rooms:save')
+                    : t('rooms:create')}
               </Button>
             </DialogFooter>
           </>

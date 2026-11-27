@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { coreApi } from '@/lib/core-api'
+import { setUiLanguage } from '@/lib/i18n'
 import { preferencesQueryKey } from '@/features/settings/preferences-api'
 import { MinutesPanel } from './minutes-panel'
 
@@ -136,6 +137,40 @@ describe('MinutesPanel canonical document experience', () => {
     await expect.element(fingerprint).not.toBeVisible()
     await userEvent.click(screen.getByText('Advanced source details'))
     await expect.element(fingerprint).toBeVisible()
+  })
+
+  it('localizes the transcript status in source details without refetching', async () => {
+    const valid = validMinutes()
+    const screen = await renderPanel({
+      ...valid,
+      completeness: 'NEEDS_REVIEW',
+      transcript: {
+        ...valid.transcript,
+        status: 'READY_WITH_WARNINGS',
+        availability: 'NEEDS_REVIEW',
+        unresolvedCoverageRegions: 1,
+      },
+    })
+    await userEvent.click(screen.getByText('Advanced source details'))
+    await expect
+      .element(screen.getByText('Status: READY WITH WARNINGS', { exact: true }))
+      .toBeVisible()
+    const requests = vi.mocked(coreApi.get).mock.calls.length
+    try {
+      await act(async () => {
+        await setUiLanguage('vi')
+      })
+      await expect
+        .element(
+          screen.getByText('Trạng thái: Sẵn sàng, có cảnh báo', { exact: true })
+        )
+        .toBeVisible()
+      expect(vi.mocked(coreApi.get).mock.calls).toHaveLength(requests)
+    } finally {
+      await act(async () => {
+        await setUiLanguage('en')
+      })
+    }
   })
 
   it('preserves material warnings and invokes the existing review actions', async () => {

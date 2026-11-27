@@ -1,0 +1,15 @@
+{
+  "notAuthorized": "Bạn không còn quyền gán người nói.",
+  "reloadTranscript": "Tải lại bản ghi lời thoại hiện tại trước khi thay đổi người nói.",
+  "mapped": "Đã cập nhật người nói",
+  "mapFailed": "Không thể gán người nói",
+  "title": "Nhận diện người nói",
+  "description": "Nhãn người nói do AI tạo cho đến khi người xem xét gán với một thành viên đủ điều kiện.",
+  "empty": "Chưa phát hiện người nói",
+  "unconfirmed": "Chưa xác nhận danh tính",
+  "map": "Gán người nói",
+  "unmap": "Bỏ gán",
+  "searchLabel": "Tìm thành viên đủ điều kiện",
+  "searchPlaceholder": "Tìm tên hoặc email (từ 2 ký tự)",
+  "search": "Tìm kiếm"
+}

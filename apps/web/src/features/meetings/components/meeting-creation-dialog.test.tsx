@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { act, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { setUiLanguage } from '@/lib/i18n'
+import { UI_LANGUAGE_STORAGE_KEY } from '@/lib/i18n/language-preference'
 import { RegionalPresentationProvider } from '@/context/regional-presentation'
 import {
   currentUserQueryKey,
@@ -164,6 +166,42 @@ function mockRoomQueries() {
 describe('MeetingCreationDialog', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+  })
+
+  afterEach(async () => {
+    await setUiLanguage('en')
+    localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY)
+  })
+
+  it('retains entered meeting data and sends the same draft payload after switching language', async () => {
+    mockRoomQueries()
+    const createSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValue({ data: draftMeeting, meta: {}, etag: 'draft-etag' })
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <RegionalPresentationProvider>
+          <MeetingCreationDialog open onOpenChange={vi.fn()} />
+        </RegionalPresentationProvider>
+      </QueryClientProvider>
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Draft meeting'
+    )
+    await act(async () => {
+      await setUiLanguage('vi')
+    })
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Tiêu đề' }))
+      .toHaveValue('Draft meeting')
+    await userEvent.click(screen.getByRole('button', { name: 'Lưu bản nháp' }))
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(createSpy).toHaveBeenCalledWith(
+      '/meetings',
+      { title: 'Draft meeting' },
+      { headers: { 'Idempotency-Key': expect.any(String) } }
+    )
   })
 
   it('saves an authoritative DRAFT once with no organizer or fabricated participant IDs', async () => {

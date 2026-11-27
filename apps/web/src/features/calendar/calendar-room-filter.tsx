@@ -1,6 +1,7 @@
 import { useDeferredValue, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Check, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import {
   Command,
@@ -36,6 +37,7 @@ export function CalendarRoomFilter({
   roomId,
   onRoomChange,
 }: CalendarRoomFilterProps) {
+  const { t } = useUiTranslation()
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
@@ -53,14 +55,14 @@ export function CalendarRoomFilter({
     selectedRoomQuery.data ??
     roomsQuery.data?.options.find((room) => room.id === roomId)
   const selectedRoomLabel = !roomId
-    ? 'All rooms'
+    ? t('calendar:allRooms')
     : selectedRoom
       ? roomLabel(selectedRoom)
       : selectedRoomQuery.isPending
-        ? 'Loading selected room…'
+        ? t('calendar:loadingSelectedRoom')
         : selectedRoomQuery.isError
-          ? 'Selected room could not be resolved'
-          : `Room ${roomId}`
+          ? t('calendar:roomUnresolved')
+          : t('calendar:roomId', { id: roomId })
   const pagination = roomsQuery.data?.pagination
   const currentPage = pagination ? pagination.page + 1 : page
 
@@ -71,14 +73,14 @@ export function CalendarRoomFilter({
 
   return (
     <div className='space-y-1.5 text-sm font-medium'>
-      <span className='block'>Room</span>
+      <span className='block'>{t('calendar:room')}</span>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button
             type='button'
             variant='outline'
             role='combobox'
-            aria-label='Room'
+            aria-label={t('calendar:room')}
             aria-expanded={open}
             className='w-full justify-between font-normal'
           >
@@ -100,7 +102,7 @@ export function CalendarRoomFilter({
                 setSearch(value)
                 setPage(1)
               }}
-              placeholder='Search authorized rooms...'
+              placeholder={t('calendar:searchRoom')}
             />
             <CommandList>
               {roomsQuery.isPending ? (
@@ -108,14 +110,14 @@ export function CalendarRoomFilter({
                   role='status'
                   className='px-3 py-6 text-center text-sm text-muted-foreground'
                 >
-                  Loading authorized rooms…
+                  {t('calendar:loadingRooms')}
                 </div>
               ) : roomsQuery.isError ? (
                 <div
                   role='alert'
                   className='grid gap-2 px-3 py-6 text-center text-sm'
                 >
-                  <span>Authorized room options could not be loaded.</span>
+                  <span>{t('calendar:roomOptionsError')}</span>
                   <Button
                     type='button'
                     variant='outline'
@@ -123,11 +125,11 @@ export function CalendarRoomFilter({
                     onClick={() => void roomsQuery.refetch()}
                     className='mx-auto'
                   >
-                    Retry room options
+                    {t('calendar:retryRoomOptions')}
                   </Button>
                 </div>
               ) : roomsQuery.data.options.length === 0 ? (
-                <CommandEmpty>No authorized rooms found.</CommandEmpty>
+                <CommandEmpty>{t('calendar:noRooms')}</CommandEmpty>
               ) : (
                 <CommandGroup>
                   {roomsQuery.data.options.map((room) => (
@@ -153,7 +155,7 @@ export function CalendarRoomFilter({
                 role='status'
                 className='border-t px-3 py-2 text-xs text-muted-foreground'
               >
-                Updating room options…
+                {t('calendar:updatingRooms')}
               </p>
             )}
             {roomId && (
@@ -166,7 +168,7 @@ export function CalendarRoomFilter({
                   onClick={() => selectRoom(undefined)}
                 >
                   <RotateCcw aria-hidden='true' className='size-4' />
-                  Clear room filter
+                  {t('calendar:clearRoom')}
                 </Button>
               </div>
             )}
@@ -179,7 +181,7 @@ export function CalendarRoomFilter({
                     type='button'
                     variant='ghost'
                     size='sm'
-                    aria-label='Previous room options page'
+                    aria-label={t('calendar:previousRoomPage')}
                     onClick={() =>
                       setPage((current) => Math.max(1, current - 1))
                     }
@@ -188,13 +190,16 @@ export function CalendarRoomFilter({
                     <ChevronLeft aria-hidden='true' />
                   </Button>
                   <span className='text-xs text-muted-foreground'>
-                    Page {currentPage} of {pagination.totalPages}
+                    {t('page', {
+                      current: currentPage,
+                      total: pagination.totalPages,
+                    })}
                   </span>
                   <Button
                     type='button'
                     variant='ghost'
                     size='sm'
-                    aria-label='Next room options page'
+                    aria-label={t('calendar:nextRoomPage')}
                     onClick={() => setPage((current) => current + 1)}
                     disabled={!pagination.hasNext}
                   >
@@ -210,10 +215,7 @@ export function CalendarRoomFilter({
           role='alert'
           className='flex flex-col gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs font-normal'
         >
-          <span>
-            The selected room could not be resolved. Meeting results remain
-            filtered by this room ID.
-          </span>
+          <span>{t('calendar:unresolvedRoomHelp')}</span>
           <Button
             type='button'
             variant='outline'
@@ -221,7 +223,7 @@ export function CalendarRoomFilter({
             className='w-fit'
             onClick={() => void selectedRoomQuery.refetch()}
           >
-            Retry room lookup
+            {t('calendar:retryRoom')}
           </Button>
         </div>
       )}

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { AlertTriangle, FileText } from 'lucide-react'
+import { useUiTranslation } from '@/lib/i18n'
 import { formatCivilDate, formatRegionalInstant } from '@/lib/regional-time'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -16,6 +17,7 @@ import {
 } from './minutes-presentation'
 
 function SnapshotBadge({ value }: { value: string }) {
+  const { t } = useUiTranslation()
   const normal = [
     'AVAILABLE',
     'COMPLETE',
@@ -30,12 +32,13 @@ function SnapshotBadge({ value }: { value: string }) {
         value === 'FAILED' ? 'destructive' : normal ? 'secondary' : 'outline'
       }
     >
-      {minutesStatusLabel(value)}
+      {minutesStatusLabel(value, t)}
     </Badge>
   )
 }
 
 function Warnings({ warnings }: { warnings: string[] }) {
+  const { t } = useUiTranslation()
   if (!warnings.length) return null
   return (
     <ul className='space-y-2'>
@@ -48,7 +51,9 @@ function Warnings({ warnings }: { warnings: string[] }) {
             className='mt-0.5 size-4 shrink-0'
             aria-hidden='true'
           />
-          <span className='min-w-0 break-words'>{minutesWarning(warning)}</span>
+          <span className='min-w-0 break-words'>
+            {minutesWarning(warning, t)}
+          </span>
         </li>
       ))}
     </ul>
@@ -70,17 +75,18 @@ export function MinutesPanel({
   onOpenDecisions?: () => void
   onOpenTranscript?: () => void
 }) {
+  const { t } = useUiTranslation()
   const query = useQuery(minutesQuery(meetingId))
   const preferences = useQuery(preferencesQuery())
   if (query.isPending || query.isError) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Meeting Minutes</CardTitle>
+          <CardTitle>{t('minutes:title')}</CardTitle>
         </CardHeader>
         <CardContent>
           {query.isPending ? (
-            <RequestLoading label='Loading meeting minutes…' />
+            <RequestLoading label={t('minutes:loading')} />
           ) : (
             <RequestError
               error={query.error}
@@ -97,15 +103,16 @@ export function MinutesPanel({
     minutes.displayMetadata?.assigneeDisplayNames ?? {}
   const person = (id: string | null) =>
     id
-      ? (assigneeDisplayNames[id] ?? names[id] ?? 'Name unavailable')
-      : 'Unassigned'
+      ? (assigneeDisplayNames[id] ?? names[id] ?? t('minutes:nameUnavailable'))
+      : t('minutes:unassigned')
   const { timezone: zone, locale } = resolveRegionalPreferences(
     preferences.data ?? { timezone: null, locale: null }
   )
   const time = (value: string | null) =>
     value
-      ? (formatRegionalInstant(value, zone, locale) ?? 'Time unavailable')
-      : 'Not recorded'
+      ? (formatRegionalInstant(value, zone, locale) ??
+        t('minutes:timeUnavailable'))
+      : t('minutes:notRecorded')
   const ready =
     minutes.completeness === 'COMPLETE' && !minutes.proposalsIncluded
   const transcript = minutes.transcript
@@ -118,12 +125,11 @@ export function MinutesPanel({
         <div className='flex flex-wrap items-start justify-between gap-3'>
           <div className='min-w-0 space-y-1'>
             <p className='flex items-center gap-2 text-sm font-medium text-primary'>
-              <FileText className='size-4' /> Meeting record
+              <FileText className='size-4' /> {t('minutes:record')}
             </p>
-            <CardTitle className='text-xl'>Meeting Minutes</CardTitle>
+            <CardTitle className='text-xl'>{t('minutes:title')}</CardTitle>
             <p className='text-sm text-muted-foreground'>
-              Summary, confirmed decisions, official action items and source
-              quality.
+              {t('minutes:description')}
             </p>
           </div>
           <SnapshotBadge value={minutes.completeness} />
@@ -133,25 +139,22 @@ export function MinutesPanel({
             role='alert'
             className='rounded-md border border-amber-300/70 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-200'
           >
-            This snapshot contains unconfirmed AI proposals and is not official
-            minutes.
+            {t('minutes:unconfirmed')}
           </p>
         )}
         <div className='rounded-md border bg-muted/30 p-3 text-sm'>
           <p className='font-medium'>
-            {ready
-              ? 'Minutes are complete'
-              : 'Not ready for a new official export'}
+            {ready ? t('minutes:complete') : t('minutes:notReadyExport')}
           </p>
           <p className='mt-1 text-muted-foreground'>
             {ready
-              ? 'Export availability and access are verified separately.'
-              : 'Review the unavailable or uncertain sources below before requesting a new export.'}
+              ? t('minutes:separateVerification')
+              : t('minutes:reviewSources')}
           </p>
         </div>
         {query.isFetching && (
           <p role='status' className='text-xs text-muted-foreground'>
-            Refreshing meeting minutes…
+            {t('minutes:refreshing')}
           </p>
         )}
       </CardHeader>
@@ -167,19 +170,25 @@ export function MinutesPanel({
           )}
           <dl className='grid gap-3 rounded-lg border bg-muted/20 p-4 text-sm sm:grid-cols-2'>
             <div>
-              <dt className='text-xs text-muted-foreground'>Organizer</dt>
+              <dt className='text-xs text-muted-foreground'>
+                {t('minutes:organizer')}
+              </dt>
               <dd className='mt-1 font-medium break-words'>
                 {person(minutes.meeting.organizerUserId)}
               </dd>
             </div>
             <div>
-              <dt className='text-xs text-muted-foreground'>Meeting status</dt>
+              <dt className='text-xs text-muted-foreground'>
+                {t('minutes:meetingStatus')}
+              </dt>
               <dd className='mt-1'>
-                {minutesStatusLabel(minutes.meeting.status)}
+                {minutesStatusLabel(minutes.meeting.status, t)}
               </dd>
             </div>
             <div>
-              <dt className='text-xs text-muted-foreground'>Scheduled</dt>
+              <dt className='text-xs text-muted-foreground'>
+                {t('minutes:scheduled')}
+              </dt>
               <dd className='mt-1'>
                 {time(minutes.meeting.scheduledStartAt)} –{' '}
                 {time(minutes.meeting.scheduledEndAt)}
@@ -187,7 +196,7 @@ export function MinutesPanel({
             </div>
             <div>
               <dt className='text-xs text-muted-foreground'>
-                Actual occurrence
+                {t('minutes:actualOccurrence')}
               </dt>
               <dd className='mt-1'>
                 {time(minutes.meeting.startedAt)} –{' '}
@@ -196,37 +205,47 @@ export function MinutesPanel({
             </div>
           </dl>
           <p className='text-xs text-muted-foreground'>
-            Times shown in {zone}.
+            {t('minutes:timezone', { zone })}
           </p>
         </section>
 
         {minutes.warnings.length > 0 && (
           <section className='space-y-3'>
-            <h3 className='font-semibold'>Review warnings</h3>
+            <h3 className='font-semibold'>{t('minutes:warnings')}</h3>
             <Warnings warnings={minutes.warnings} />
           </section>
         )}
 
         <section className='space-y-3 border-t pt-5'>
           <div className='flex flex-wrap items-center justify-between gap-2'>
-            <h3 className='text-lg font-semibold'>Current Summary</h3>
+            <h3 className='text-lg font-semibold'>
+              {t('minutes:currentSummary')}
+            </h3>
             <div className='flex flex-wrap items-center gap-2'>
               <SnapshotBadge value={minutes.summary.availability} />
               {onOpenSummary && (
                 <Button size='sm' variant='link' onClick={onOpenSummary}>
-                  Review Summary
+                  {t('minutes:reviewSummary')}
                 </Button>
               )}
             </div>
           </div>
           <p className='text-sm leading-7 break-words whitespace-pre-wrap'>
-            {minutes.summary.content || 'No current Summary is available.'}
+            {minutes.summary.content || t('minutes:noSummary')}
           </p>
           <div className='flex flex-wrap items-center gap-2 text-xs text-muted-foreground'>
-            <span>Source: {minutes.summary.sourceType ?? 'Not available'}</span>
+            <span>
+              {t('minutes:source', {
+                source: minutes.summary.sourceType
+                  ? minutesStatusLabel(minutes.summary.sourceType, t)
+                  : t('minutes:notAvailable'),
+              })}
+            </span>
             {minutes.summary.qualityStatus && (
               <span>
-                Quality: {minutes.summary.qualityStatus.replace(/_/g, ' ')}
+                {t('minutes:quality', {
+                  status: minutesStatusLabel(minutes.summary.qualityStatus, t),
+                })}
               </span>
             )}
             {minutes.summary.isStale && <SnapshotBadge value='STALE' />}
@@ -237,17 +256,19 @@ export function MinutesPanel({
         <section className='space-y-3 border-t pt-5'>
           <div className='flex flex-wrap items-center justify-between gap-2'>
             <h3 className='text-lg font-semibold'>
-              Confirmed Decisions ({minutes.confirmedDecisions.length})
+              {t('minutes:confirmedDecisions', {
+                count: minutes.confirmedDecisions.length,
+              })}
             </h3>
             {onOpenDecisions && (
               <Button size='sm' variant='link' onClick={onOpenDecisions}>
-                Review Decisions
+                {t('minutes:reviewDecisions')}
               </Button>
             )}
           </div>
           {minutes.confirmedDecisions.length === 0 ? (
             <p className='text-sm text-muted-foreground'>
-              No confirmed Decisions are included in this snapshot.
+              {t('minutes:noDecisions')}
             </p>
           ) : (
             <div className='space-y-3'>
@@ -260,7 +281,7 @@ export function MinutesPanel({
                     <SnapshotBadge value={decision.status} />
                     {decision.isStale && <SnapshotBadge value='STALE' />}
                     <span className='text-xs text-muted-foreground'>
-                      {decision.sourceType.replace(/_/g, ' ')}
+                      {minutesStatusLabel(decision.sourceType, t)}
                     </span>
                   </div>
                   <p className='text-sm leading-7 break-words whitespace-pre-wrap'>
@@ -268,14 +289,17 @@ export function MinutesPanel({
                   </p>
                   {decision.aiUncertainty && (
                     <p className='text-sm text-muted-foreground'>
-                      Source uncertainty: {decision.aiUncertainty}
+                      {t('minutes:sourceUncertainty', {
+                        value: decision.aiUncertainty,
+                      })}
                     </p>
                   )}
                   <Warnings warnings={decision.aiWarnings} />
                   {decision.evidenceSegmentIds.length > 0 && (
                     <p className='text-xs text-muted-foreground'>
-                      {decision.evidenceSegmentIds.length} evidence references ·
-                      Review Decisions to inspect evidence.
+                      {t('minutes:evidenceReferences', {
+                        count: decision.evidenceSegmentIds.length,
+                      })}
                     </p>
                   )}
                 </article>
@@ -287,21 +311,25 @@ export function MinutesPanel({
         <section className='space-y-3 border-t pt-5'>
           <div className='flex flex-wrap items-center justify-between gap-2'>
             <h3 className='text-lg font-semibold'>
-              Official Action Items ({minutes.officialActionItems.length})
+              {t('minutes:officialActions', {
+                count: minutes.officialActionItems.length,
+              })}
             </h3>
             {onOpenActions ? (
               <Button size='sm' variant='link' onClick={onOpenActions}>
-                Review meeting Action Items
+                {t('minutes:reviewActions')}
               </Button>
             ) : (
               <Button asChild size='sm' variant='link'>
-                <Link to='/action-items'>Open Action Item workspace</Link>
+                <Link to='/action-items'>
+                  {t('minutes:openActionWorkspace')}
+                </Link>
               </Button>
             )}
           </div>
           {minutes.officialActionItems.length === 0 ? (
             <p className='text-sm text-muted-foreground'>
-              No official Action Items are included in this snapshot.
+              {t('minutes:noActions')}
             </p>
           ) : (
             <div className='space-y-3'>
@@ -324,7 +352,7 @@ export function MinutesPanel({
                   <dl className='grid gap-2 text-sm sm:grid-cols-2'>
                     <div>
                       <dt className='text-xs text-muted-foreground'>
-                        Assignee
+                        {t('minutes:assignee')}
                       </dt>
                       <dd className='break-words'>
                         {person(item.assigneeUserId)}
@@ -332,18 +360,20 @@ export function MinutesPanel({
                     </div>
                     <div>
                       <dt className='text-xs text-muted-foreground'>
-                        Due date
+                        {t('minutes:dueDate')}
                       </dt>
                       <dd>
                         {item.dueDate
                           ? (formatCivilDate(item.dueDate, locale) ??
-                            'Date unavailable')
-                          : 'No due date'}
+                            t('minutes:dateUnavailable'))
+                          : t('minutes:noDueDate')}
                       </dd>
                     </div>
                   </dl>
                   <p className='text-xs text-muted-foreground'>
-                    Source: {item.sourceType.replace(/_/g, ' ')}
+                    {t('minutes:source', {
+                      source: minutesStatusLabel(item.sourceType, t),
+                    })}
                   </p>
                 </article>
               ))}
@@ -353,12 +383,14 @@ export function MinutesPanel({
 
         <section className='space-y-3 border-t pt-5'>
           <div className='flex flex-wrap items-center justify-between gap-2'>
-            <h3 className='text-lg font-semibold'>Transcript quality</h3>
+            <h3 className='text-lg font-semibold'>
+              {t('minutes:transcriptQuality')}
+            </h3>
             <div className='flex flex-wrap items-center gap-2'>
               <SnapshotBadge value={transcript.availability} />
               {onOpenTranscript && (
                 <Button size='sm' variant='link' onClick={onOpenTranscript}>
-                  Review transcript
+                  {t('minutes:reviewTranscript')}
                 </Button>
               )}
             </div>
@@ -366,102 +398,162 @@ export function MinutesPanel({
           {hasTranscript ? (
             <dl className='grid gap-3 rounded-lg border p-4 text-sm sm:grid-cols-2'>
               <div>
-                <dt className='text-muted-foreground'>Source duration</dt>
-                <dd>{formatMinutesDuration(transcript.durationMs)}</dd>
+                <dt className='text-muted-foreground'>
+                  {t('minutes:sourceDuration')}
+                </dt>
+                <dd>{formatMinutesDuration(transcript.durationMs, t)}</dd>
               </div>
               <div>
-                <dt className='text-muted-foreground'>Suspicious segments</dt>
+                <dt className='text-muted-foreground'>
+                  {t('minutes:suspiciousSegments')}
+                </dt>
                 <dd>{transcript.suspiciousSegments}</dd>
               </div>
               <div>
-                <dt className='text-muted-foreground'>Unresolved segments</dt>
+                <dt className='text-muted-foreground'>
+                  {t('minutes:unresolvedSegments')}
+                </dt>
                 <dd>{transcript.unresolvedSegments}</dd>
               </div>
               <div>
                 <dt className='text-muted-foreground'>
-                  Unresolved speech regions
+                  {t('minutes:unresolvedRegions')}
                 </dt>
                 <dd>{transcript.unresolvedCoverageRegions}</dd>
               </div>
             </dl>
           ) : (
             <p className='text-sm text-muted-foreground'>
-              No current transcript is available to assess speech coverage or
-              quality.
+              {t('minutes:noTranscript')}
             </p>
           )}
           <p className='text-xs text-muted-foreground'>
-            Review the transcript source for evidence and any unresolved speech.
+            {t('minutes:reviewEvidence')}
           </p>
         </section>
 
         <details className='rounded-lg border p-4 text-sm'>
           <summary className='cursor-pointer font-medium focus-visible:outline-2'>
-            Advanced source details
+            {t('minutes:advanced')}
           </summary>
           <div className='mt-3 space-y-4 text-xs break-all text-muted-foreground'>
             <div>
-              <h4 className='font-semibold text-foreground'>Snapshot</h4>
-              <p>Assembled: {minutes.assembledAt}</p>
-              <p>Schema version: {minutes.schemaVersion}</p>
-              <p>Source fingerprint: {minutes.sourceFingerprint}</p>
+              <h4 className='font-semibold text-foreground'>
+                {t('minutes:snapshot')}
+              </h4>
+              <p>
+                {t('minutes:assembled')}: {minutes.assembledAt}
+              </p>
+              <p>
+                {t('minutes:schemaVersion')}: {minutes.schemaVersion}
+              </p>
+              <p>
+                {t('minutes:fingerprint')}: {minutes.sourceFingerprint}
+              </p>
             </div>
             <div>
-              <h4 className='font-semibold text-foreground'>Summary</h4>
-              <p>ID: {minutes.summary.id ?? 'Not available'}</p>
-              <p>Version: {minutes.summary.versionNumber ?? '—'}</p>
-              <p>Selection epoch: {minutes.summary.selectionEpoch}</p>
+              <h4 className='font-semibold text-foreground'>
+                {t('minutes:summary')}
+              </h4>
               <p>
-                Transcript: {minutes.summary.transcriptId ?? 'Not available'}
+                {t('minutes:id')}:{' '}
+                {minutes.summary.id ?? t('minutes:notAvailable')}
               </p>
-              <p>Content revision: {minutes.summary.contentRevision ?? '—'}</p>
+              <p>
+                {t('minutes:version')}: {minutes.summary.versionNumber ?? '—'}
+              </p>
+              <p>
+                {t('minutes:selectionEpoch')}: {minutes.summary.selectionEpoch}
+              </p>
+              <p>
+                {t('minutes:transcriptLabel')}:{' '}
+                {minutes.summary.transcriptId ?? t('minutes:notAvailable')}
+              </p>
+              <p>
+                {t('minutes:revision')}:{' '}
+                {minutes.summary.contentRevision ?? '—'}
+              </p>
             </div>
             {minutes.confirmedDecisions.map((decision) => (
               <div key={decision.id}>
                 <h4 className='font-semibold text-foreground'>
-                  Decision {decision.id}
+                  {t('minutes:decisionId', { id: decision.id })}
                 </h4>
-                <p>Version: {decision.version}</p>
                 <p>
-                  Confirmed by: {person(decision.confirmedByUserId)} ·{' '}
+                  {t('minutes:version')}: {decision.version}
+                </p>
+                <p>
+                  {t('minutes:confirmedBy')}:{' '}
+                  {person(decision.confirmedByUserId)} ·{' '}
                   {time(decision.confirmedAt)}
                 </p>
                 <p>
-                  Confirmer ID: {decision.confirmedByUserId ?? 'Not recorded'}
+                  Confirmer {t('minutes:id')}:{' '}
+                  {decision.confirmedByUserId ?? t('minutes:notRecorded')}
                 </p>
-                <p>Transcript: {decision.transcriptId ?? 'Not available'}</p>
-                <p>Revision: {decision.contentRevision ?? '—'}</p>
                 <p>
-                  Evidence:{' '}
-                  {decision.evidenceSegmentIds.join(', ') || 'None recorded'}
+                  {t('minutes:transcriptLabel')}:{' '}
+                  {decision.transcriptId ?? t('minutes:notAvailable')}
+                </p>
+                <p>
+                  {t('minutes:revisionShort')}:{' '}
+                  {decision.contentRevision ?? '—'}
+                </p>
+                <p>
+                  {t('minutes:evidence')}:{' '}
+                  {decision.evidenceSegmentIds.join(', ') ||
+                    t('minutes:noneRecorded')}
                 </p>
               </div>
             ))}
             {minutes.officialActionItems.map((item) => (
               <div key={item.id}>
                 <h4 className='font-semibold text-foreground'>
-                  Action Item {item.id}
+                  {t('minutes:actionId', { id: item.id })}
                 </h4>
                 <p>
-                  Version: {item.version} · Created: {item.createdAt}
+                  {t('minutes:version')}: {item.version} ·{' '}
+                  {t('minutes:created')}: {item.createdAt}
                 </p>
-                <p>Confirmed by: {item.confirmedByUserId ?? 'Not recorded'}</p>
-                <p>Confirmed at: {item.confirmedAt ?? 'Not recorded'}</p>
+                <p>
+                  {t('minutes:confirmedBy')}:{' '}
+                  {item.confirmedByUserId ?? t('minutes:notRecorded')}
+                </p>
+                <p>
+                  {t('minutes:confirmedAt')}:{' '}
+                  {item.confirmedAt ?? t('minutes:notRecorded')}
+                </p>
               </div>
             ))}
             <div>
-              <h4 className='font-semibold text-foreground'>Transcript</h4>
-              <p>ID: {transcript.id ?? 'Not available'}</p>
+              <h4 className='font-semibold text-foreground'>
+                {t('minutes:transcript')}
+              </h4>
               <p>
-                Processing job: {transcript.processingJobId ?? 'Not available'}
+                {t('minutes:id')}: {transcript.id ?? t('minutes:notAvailable')}
               </p>
-              <p>Status: {transcript.status ?? 'Not available'}</p>
-              <p>Language: {transcript.languageCode ?? 'Not available'}</p>
               <p>
-                Version: {transcript.versionNumber ?? '—'} · Revision:{' '}
+                {t('minutes:processingJob')}:{' '}
+                {transcript.processingJobId ?? t('minutes:notAvailable')}
+              </p>
+              <p>
+                {t('minutes:status')}:{' '}
+                {transcript.status
+                  ? minutesStatusLabel(transcript.status, t)
+                  : t('minutes:notAvailable')}
+              </p>
+              <p>
+                {t('minutes:language')}:{' '}
+                {transcript.languageCode ?? t('minutes:notAvailable')}
+              </p>
+              <p>
+                {t('minutes:version')}: {transcript.versionNumber ?? '—'} ·{' '}
+                {t('minutes:revisionShort')}:{' '}
                 {transcript.contentRevision ?? '—'}
               </p>
-              <p>Duration: {transcript.durationMs ?? '—'} ms</p>
+              <p>
+                {t('minutes:duration')}: {transcript.durationMs ?? '—'} ms
+              </p>
             </div>
           </div>
         </details>

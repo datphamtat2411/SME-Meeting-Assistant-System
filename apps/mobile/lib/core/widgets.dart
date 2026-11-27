@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
-import 'api_client.dart';
 import 'app_theme.dart';
 import 'models.dart';
+import 'ui_presentation.dart';
 
 class SectionHeading extends StatelessWidget {
   final String title;
@@ -87,11 +87,16 @@ class StatePill extends StatelessWidget {
       'PENDING',
       'PARTIAL',
       'COMPLETED_WITH_WARNINGS',
+      'SUCCEEDED_WITH_WARNING',
+      'READY_WITH_WARNINGS',
+      'WAITING_FOR_REVIEW',
+      'SUSPICIOUS',
       'NEEDS_REVIEW',
       'DRAFT',
     ].contains(status);
     final bad = [
       'FAILED',
+      'UNRESOLVED_ERROR',
       'CANCELLED',
       'REJECTED',
       'BLOCKED',
@@ -115,7 +120,10 @@ class StatePill extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         child: Text(
-          label ?? meetingStates[status] ?? actionStates[status] ?? status,
+          label ??
+              meetingStates[status] ??
+              actionStates[status] ??
+              'Trạng thái chưa được nhận diện ($status)',
           style: TextStyle(
             color: tone,
             fontSize: 11,
@@ -202,9 +210,7 @@ class AsyncContent<T> extends StatelessWidget {
         return MessagePanel(
           icon: Icons.cloud_off_outlined,
           title: 'Không thể tải dữ liệu',
-          description: snapshot.error is ApiFailure
-              ? (snapshot.error as ApiFailure).message
-              : 'Đã xảy ra lỗi không mong muốn.',
+          description: apiFailureLabel(snapshot.error),
           onRetry: retry,
         );
       }
@@ -217,13 +223,8 @@ class AsyncContent<T> extends StatelessWidget {
 
 void showFailure(BuildContext context, Object error) {
   if (!context.mounted) return;
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text(
-        error is ApiFailure ? error.message : 'Thao tác không thành công.',
-      ),
-    ),
-  );
+  ScaffoldMessenger.of(context)
+      .showSnackBar(SnackBar(content: Text(apiFailureLabel(error))));
 }
 
 void showSuccess(BuildContext context, String message) {

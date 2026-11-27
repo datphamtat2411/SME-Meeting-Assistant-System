@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import { useUiTranslation } from '@/lib/i18n'
 import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -21,6 +22,7 @@ export function MeetingSearchCard({
   selectedMeetingId?: string
   onMeetingSelect: (meetingId: string) => void
 }) {
+  const { t } = useUiTranslation()
   const { timezone, locale } = useRegionalPresentation()
   const {
     criteria,
@@ -36,7 +38,7 @@ export function MeetingSearchCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Search meetings</CardTitle>
+        <CardTitle>{t('assistant:searchMeetings')}</CardTitle>
         <MeetingFilters
           search={criteria}
           onSearchChange={(q) => updateCriteria({ q })}
@@ -65,7 +67,7 @@ export function MeetingSearchCard({
       <CardContent className='space-y-3'>
         {invalidRange ? (
           <p role='alert' className='text-sm text-destructive'>
-            The start date must not be after the end date.
+            {t('assistant:invalidRange')}
           </p>
         ) : meetingsQuery.isPending ? (
           <RequestLoading />
@@ -75,7 +77,7 @@ export function MeetingSearchCard({
             retry={() => void meetingsQuery.refetch()}
           />
         ) : !meetingsQuery.data.meetings.length ? (
-          <RequestEmpty title='No accessible meetings match' />
+          <RequestEmpty title={t('assistant:noMatches')} />
         ) : (
           meetingsQuery.data.meetings.map((meeting) => (
             <div
@@ -89,10 +91,14 @@ export function MeetingSearchCard({
               >
                 <div className='flex flex-wrap items-center justify-between gap-2'>
                   <strong>{meeting.title}</strong>
-                  <Badge variant='outline'>{meeting.status}</Badge>
+                  <Badge variant='outline'>
+                    {t(`assistant:meetingStatus_${meeting.status}`, {
+                      defaultValue: meeting.status,
+                    })}
+                  </Badge>
                 </div>
                 <p className='mt-1 line-clamp-2 text-sm text-muted-foreground'>
-                  {meeting.description || 'No description provided'}
+                  {meeting.description || t('assistant:noDescription')}
                 </p>
                 <p className='mt-1 text-xs text-muted-foreground'>
                   {formatMeetingSchedule(
@@ -111,8 +117,8 @@ export function MeetingSearchCard({
                 onClick={() => onMeetingSelect(meeting.id)}
               >
                 {selectedMeetingId === meeting.id
-                  ? 'Selected for Assistant'
-                  : 'Use meeting for Assistant'}
+                  ? t('assistant:selectedForAssistant')
+                  : t('assistant:useMeeting')}
               </Button>
             </div>
           ))
@@ -120,10 +126,12 @@ export function MeetingSearchCard({
         {!invalidRange && meetingsQuery.isSuccess && (
           <div className='flex items-center justify-between text-sm text-muted-foreground'>
             <span>
-              {meetingsQuery.data.pagination.totalElements.toLocaleString(
-                locale
-              )}{' '}
-              result(s)
+              {t('assistant:resultCount', {
+                count:
+                  meetingsQuery.data.pagination.totalElements.toLocaleString(
+                    locale
+                  ),
+              })}
             </span>
             <div className='flex items-center gap-2'>
               <Button
@@ -132,7 +140,7 @@ export function MeetingSearchCard({
                 disabled={!meetingsQuery.data.pagination.hasPrevious}
                 onClick={() => setPage((current) => current - 1)}
               >
-                Previous
+                {t('assistant:previous')}
               </Button>
               {page}
               <Button
@@ -141,7 +149,7 @@ export function MeetingSearchCard({
                 disabled={!meetingsQuery.data.pagination.hasNext}
                 onClick={() => setPage((current) => current + 1)}
               >
-                Next
+                {t('assistant:next')}
               </Button>
             </div>
           </div>

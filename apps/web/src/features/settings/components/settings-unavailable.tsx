@@ -1,3 +1,5 @@
+import { useUiTranslation } from '@/lib/i18n'
+
 type SettingsUnavailableProps = {
   title: string
   description: string
@@ -7,6 +9,7 @@ export function SettingsUnavailable({
   title,
   description,
 }: SettingsUnavailableProps) {
+  const { t } = useUiTranslation()
   return (
     <div
       role='status'
@@ -15,7 +18,7 @@ export function SettingsUnavailable({
       <h4 className='font-medium'>{title}</h4>
       <p className='mt-1 text-sm text-muted-foreground'>{description}</p>
       <p className='mt-2 text-sm text-muted-foreground'>
-        This settings area is not available in this workspace yet.
+        {t('settings:unavailable')}
       </p>
     </div>
   )

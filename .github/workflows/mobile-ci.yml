@@ -6,6 +6,7 @@ on:
       - pre-integration-develop
       - develop
       - 'feat/mobile-reintegration'
+      - 'feat/vietnamese-ui'
       - main
       - 'integration/**'
       - 'mobile/**'
@@ -14,6 +15,7 @@ on:
       - pre-integration-develop
       - develop
       - 'feat/mobile-reintegration'
+      - 'feat/vietnamese-ui'
       - main
       - 'integration/**'
       - 'mobile/**'

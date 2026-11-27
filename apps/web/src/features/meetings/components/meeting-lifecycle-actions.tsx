@@ -3,6 +3,11 @@ import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { AlertCircle, Check, LoaderCircle, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import {
+  featureValidationMessage,
+  localizedValidationMessage,
+} from '@/lib/i18n/presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -38,21 +43,21 @@ const lifecycleActionsByStatus: Record<
 }
 
 const actionLabels: Record<MeetingLifecycleAction, string> = {
-  start: 'Start meeting',
-  end: 'End meeting',
-  cancel: 'Cancel meeting',
+  start: 'meetings:lifecycle_start',
+  end: 'meetings:lifecycle_end',
+  cancel: 'meetings:lifecycle_cancel',
 }
 
 const actionProgressLabels: Record<MeetingLifecycleAction, string> = {
-  start: 'Starting meeting...',
-  end: 'Ending meeting...',
-  cancel: 'Cancelling meeting...',
+  start: 'meetings:lifecycle_progress_start',
+  end: 'meetings:lifecycle_progress_end',
+  cancel: 'meetings:lifecycle_progress_cancel',
 }
 
 const successLabels: Record<MeetingLifecycleAction, string> = {
-  start: 'Meeting started',
-  end: 'Meeting ended',
-  cancel: 'Meeting cancelled',
+  start: 'meetings:lifecycle_success_start',
+  end: 'meetings:lifecycle_success_end',
+  cancel: 'meetings:lifecycle_success_cancel',
 }
 
 type LifecyclePhase =
@@ -112,6 +117,7 @@ export function MeetingLifecycleActions({
   allowedActions,
   onCommitted,
 }: MeetingLifecycleActionsProps) {
+  const { t } = useUiTranslation()
   const queryClient = useQueryClient()
   const [phase, setPhase] = useState<LifecyclePhase>('ready')
   const [feedback, setFeedback] = useState<LifecycleFeedback | null>(null)
@@ -160,8 +166,7 @@ export function MeetingLifecycleActions({
       setAuthorizationBlocked(true)
       setFeedback({
         variant: 'destructive',
-        message:
-          'You are no longer the organizer of this meeting. The lifecycle intent was preserved and was not retried.',
+        message: featureValidationMessage('meetings:lifecycle_ownershipLost'),
       })
       return null
     }
@@ -198,8 +203,10 @@ export function MeetingLifecycleActions({
     setPendingIntent(null)
     setFeedback(null)
     setSuccessAction(intent.action)
-    toast.success(successLabels[intent.action], {
-      description: `Core API confirmed the meeting is now ${result.meeting.status}.`,
+    toast.success(i18n.t(successLabels[intent.action]), {
+      description: i18n.t('meetings:lifecycle_successHint', {
+        status: i18n.t(`status:meeting.${result.meeting.status}`),
+      }),
     })
   }
 
@@ -227,7 +234,7 @@ export function MeetingLifecycleActions({
       setFeedback({
         variant: ownsMeeting ? 'default' : 'destructive',
         message: !ownsMeeting
-          ? 'You are no longer the organizer of this meeting. The latest meeting state is available for review; no mutation was retried.'
+          ? featureValidationMessage('meetings:lifecycle_ownershipReview')
           : !actionAvailable
             ? formatUnavailableAction(intent.action, latest.meeting.status)
             : formatReconciledFailure(kind, intent),
@@ -396,8 +403,8 @@ export function MeetingLifecycleActions({
                 <LoaderCircle className='animate-spin' />
               ) : null}
               {phase === 'mutating' && activeIntentAction === action
-                ? actionProgressLabels[action]
-                : actionLabels[action]}
+                ? t(actionProgressLabels[action])
+                : t(actionLabels[action])}
             </Button>
           ))}
         </div>
@@ -408,13 +415,13 @@ export function MeetingLifecycleActions({
           {feedback.variant === 'destructive' ? <AlertCircle /> : <RefreshCw />}
           <AlertTitle>
             {phase === 'version_unverified'
-              ? 'Meeting version needs verification'
+              ? t('meetings:lifecycle_verifyVersion')
               : feedback.variant === 'default'
-                ? 'Meeting state refreshed'
-                : 'Meeting operation did not complete'}
+                ? t('meetings:lifecycle_refreshed')
+                : t('meetings:lifecycle_failed')}
           </AlertTitle>
           <AlertDescription>
-            <p>{feedback.message}</p>
+            <p>{localizedValidationMessage(feedback.message, t)}</p>
             {phase === 'version_unverified' && !authorizationBlocked ? (
               <Button
                 type='button'
@@ -422,7 +429,7 @@ export function MeetingLifecycleActions({
                 size='sm'
                 onClick={retryRefresh}
               >
-                Retry refresh
+                {t('meetings:lifecycle_retryRefresh')}
               </Button>
             ) : phase === 'ready' &&
               !authorizationBlocked &&
@@ -434,7 +441,7 @@ export function MeetingLifecycleActions({
                 size='sm'
                 onClick={retryMutation}
               >
-                Retry {pendingIntent.action} meeting
+                {t(`meetings:lifecycle_retry_${pendingIntent.action}`)}
               </Button>
             ) : null}
           </AlertDescription>
@@ -444,9 +451,9 @@ export function MeetingLifecycleActions({
       {successAction && (
         <Alert>
           <Check />
-          <AlertTitle>{successLabels[successAction]}</AlertTitle>
+          <AlertTitle>{t(successLabels[successAction])}</AlertTitle>
           <AlertDescription>
-            Core API confirmed the authoritative lifecycle transition.
+            {t('meetings:lifecycle_confirmed')}
           </AlertDescription>
         </Alert>
       )}
@@ -456,27 +463,25 @@ export function MeetingLifecycleActions({
         onOpenChange={setConfirmationOpen}
         title={
           confirmationAction === 'cancel'
-            ? 'Cancel this meeting?'
-            : 'End this meeting?'
+            ? t('meetings:lifecycle_cancelQuestion')
+            : t('meetings:lifecycle_endQuestion')
         }
         desc={
           confirmationAction === 'cancel' ? (
-            <p>
-              This meeting will be marked CANCELLED by Core API. The action
-              cannot be undone.
-            </p>
+            <p>{t('meetings:lifecycle_cancelHint')}</p>
           ) : (
-            <p>
-              This meeting will be marked ENDED by Core API. No recording or AI
-              processing will be started.
-            </p>
+            <p>{t('meetings:lifecycle_endHint')}</p>
           )
         }
         confirmText={
-          confirmationAction === 'cancel' ? 'Cancel meeting' : 'End meeting'
+          confirmationAction === 'cancel'
+            ? t('meetings:lifecycle_cancel')
+            : t('meetings:lifecycle_end')
         }
         cancelBtnText={
-          confirmationAction === 'cancel' ? 'Keep meeting' : 'Keep meeting live'
+          confirmationAction === 'cancel'
+            ? t('meetings:lifecycle_keep')
+            : t('meetings:lifecycle_keepLive')
         }
         destructive
         isLoading={phase === 'mutating' || phase === 'reconciling'}
@@ -488,16 +493,16 @@ export function MeetingLifecycleActions({
               htmlFor='meeting-cancellation-reason'
               className='text-sm font-medium'
             >
-              Cancellation reason{' '}
+              {t('meetings:lifecycle_reason')}{' '}
               <span className='font-normal text-muted-foreground'>
-                (optional)
+                {t('meetings:lifecycle_optional')}
               </span>
             </label>
             <Textarea
               id='meeting-cancellation-reason'
               value={cancelReason}
               onChange={(event) => setCancelReason(event.target.value)}
-              placeholder='Why is this meeting being cancelled?'
+              placeholder={t('meetings:lifecycle_reasonPlaceholder')}
               rows={3}
             />
           </div>
@@ -513,15 +518,19 @@ function formatMutationFailure(
 ) {
   switch (kind) {
     case 'unauthenticated':
-      return 'Your session is no longer authenticated. The lifecycle intent was preserved and was not retried.'
+      return featureValidationMessage('meetings:lifecycle_unauthenticated')
     case 'forbidden':
-      return 'You are not authorized to change this meeting. No local success was recorded.'
+      return featureValidationMessage('meetings:lifecycle_forbidden')
     case 'not_found':
-      return 'The meeting could not be found or is unavailable. No local success was recorded.'
+      return featureValidationMessage('meetings:lifecycle_notFound')
     case 'validation':
-      return `Core API rejected the request to ${intent.action} this meeting. Review the meeting state before trying again.`
+      return featureValidationMessage(
+        `meetings:lifecycle_validation_${intent.action}`
+      )
     default:
-      return `Core API could not complete the request to ${intent.action} this meeting. No local success was recorded.`
+      return featureValidationMessage(
+        `meetings:lifecycle_fallback_${intent.action}`
+      )
   }
 }
 
@@ -530,31 +539,35 @@ function formatReconciledFailure(
   intent: LifecycleIntent
 ) {
   if (kind === 'precondition') {
-    return 'The meeting changed on the server. The latest meeting version is ready for review; no mutation was retried.'
+    return featureValidationMessage('meetings:lifecycle_precondition')
   }
   if (kind === 'conflict') {
-    return `The request to ${intent.action} this meeting conflicted with current Core API state. The latest meeting version is ready for review; no mutation was retried.`
+    return featureValidationMessage(
+      `meetings:lifecycle_conflict_${intent.action}`
+    )
   }
-  return 'The operation outcome could not be confirmed. The latest meeting data is available for review; no mutation was retried.'
+  return featureValidationMessage('meetings:lifecycle_unknown')
 }
 
 function formatUnavailableAction(
   action: MeetingLifecycleAction,
   status: MeetingView['status']
 ) {
-  return `The meeting is now ${status}. ${actionLabels[action]} is no longer available; no mutation was retried.`
+  return featureValidationMessage(
+    `meetings:lifecycle_unavailable_${action}_${status}`
+  )
 }
 
 function formatRefreshFailure(error: unknown, intent: LifecycleIntent) {
   const normalized = normalizeCoreApiError(error)
   if (normalized.status === 401) {
-    return 'Your session could not be confirmed while refreshing the meeting. The latest version could not be verified and no mutation was retried.'
+    return featureValidationMessage('meetings:lifecycle_refreshUnauthenticated')
   }
   if (normalized.status === 403) {
-    return 'You are no longer authorized to refresh this meeting. The latest version could not be verified and no mutation was retried.'
+    return featureValidationMessage('meetings:lifecycle_refreshForbidden')
   }
   if (normalized.status === 404) {
-    return 'The meeting is no longer available. The latest version could not be verified and no mutation was retried.'
+    return featureValidationMessage('meetings:lifecycle_refreshMissing')
   }
-  return `The latest meeting version could not be verified after trying to ${intent.action} the meeting. The lifecycle intent was preserved; retry refresh without repeating the mutation.`
+  return featureValidationMessage(`meetings:lifecycle_refresh_${intent.action}`)
 }
