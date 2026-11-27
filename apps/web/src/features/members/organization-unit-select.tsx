@@ -1,3 +1,4 @@
+import { i18n, useUiTranslation } from '@/lib/i18n'
 import { useState } from 'react'
 import { Check, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -37,10 +38,10 @@ function unresolvedLabel(
   status: OrganizationUnitLookup['status'],
   collectionEmpty: boolean
 ) {
-  if (status === 'loading') return `Loading unit reference · ${id}`
-  if (status === 'error') return `Lookup unavailable · ${id}`
-  if (collectionEmpty) return `No authorized active unit · ${id}`
-  return `Unit unavailable · ${id}`
+  if (status === 'loading') return i18n.t('members:loadingReference', { id })
+  if (status === 'error') return i18n.t('members:lookupUnavailable', { id })
+  if (collectionEmpty) return i18n.t('members:noActiveReference', { id })
+  return i18n.t('members:unitUnavailable', { id })
 }
 
 export function OrganizationUnitSelect({
@@ -49,10 +50,11 @@ export function OrganizationUnitSelect({
   lookupStatus,
   onValueChange,
   label,
-  emptyLabel = 'No organizational units available.',
+  emptyLabel = i18n.t('members:noAvailableUnits'),
   allowClear = true,
   disabled,
 }: OrganizationUnitSelectProps) {
+  const { t } = useUiTranslation()
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const selectedUnit = units.find((unit) => unit.id === value)
@@ -100,16 +102,16 @@ export function OrganizationUnitSelect({
           <CommandInput
             value={search}
             onValueChange={setSearch}
-            placeholder='Search authorized units…'
-            aria-label={`Search ${label.toLocaleLowerCase()}`}
+            placeholder={t('members:searchAuthorizedUnitsEllipsis')}
+            aria-label={t('members:searchLabel', { label: label.toLocaleLowerCase() })}
           />
           <CommandList>
             <CommandEmpty>
               {lookupStatus === 'loading'
-                ? 'Loading authorized units…'
+                ? t('members:loadingAuthorizedUnits')
                 : lookupStatus === 'error'
-                  ? 'Authorized units are unavailable.'
-                  : 'No matching authorized units.'}
+                  ? t('members:unitsUnavailable')
+                  : t('members:noMatchingUnits')}
             </CommandEmpty>
             <CommandGroup>
               {value && allowClear && (

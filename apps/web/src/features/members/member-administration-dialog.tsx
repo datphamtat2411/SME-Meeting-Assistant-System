@@ -1,3 +1,5 @@
+import { i18n, useUiTranslation } from '@/lib/i18n'
+import { featureValidationMessage, localizedValidationMessage } from '@/lib/i18n/presentation'
 import { useEffect, useRef, useState } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -85,31 +87,31 @@ function memberSummary(member: Member) {
   return (
     <dl className='grid gap-3 rounded-md border bg-muted/30 p-3 text-sm sm:grid-cols-2'>
       <div>
-        <dt className='text-muted-foreground'>Name</dt>
+        <dt className='text-muted-foreground'>{i18n.t('members:name')}</dt>
         <dd className='font-medium'>{member.displayName}</dd>
       </div>
       <div>
-        <dt className='text-muted-foreground'>Email</dt>
+        <dt className='text-muted-foreground'>{i18n.t('members:email')}</dt>
         <dd className='font-medium break-all'>{member.email}</dd>
       </div>
       <div>
-        <dt className='text-muted-foreground'>Role</dt>
+        <dt className='text-muted-foreground'>{i18n.t('members:roleLabel')}</dt>
         <dd className='font-medium'>
           {member.globalRole === 'DEPARTMENT_MANAGER'
-            ? 'Department manager'
+            ? i18n.t('members:departmentManager')
             : member.globalRole === 'ADMINISTRATOR'
-              ? 'Administrator'
-              : 'Employee'}
+              ? i18n.t('members:administrator')
+              : i18n.t('members:employee')}
         </dd>
       </div>
       <div>
-        <dt className='text-muted-foreground'>Account status</dt>
+        <dt className='text-muted-foreground'>{i18n.t('members:accountStatusLabel')}</dt>
         <dd className='font-medium'>
           {member.accountStatus === 'PENDING_SETUP'
-            ? 'Pending secure setup'
+            ? i18n.t('members:pendingSecureSetup')
             : member.accountStatus === 'ACTIVE'
-              ? 'Active'
-              : 'Inactive'}
+              ? i18n.t('members:active')
+              : i18n.t('members:inactive')}
         </dd>
       </div>
     </dl>
@@ -161,6 +163,7 @@ export function MemberAdministrationDialog({
   onResolveEditReconciliation,
   onSubmit,
 }: MemberAdministrationDialogProps) {
+  const { t } = useUiTranslation()
   const [localError, setLocalError] = useState<string | null>(null)
   const editing = session?.mode === 'edit'
   const readySnapshot =
@@ -264,10 +267,10 @@ export function MemberAdministrationDialog({
     } catch (error) {
       setLocalError(
         error instanceof NoMemberChangesError
-          ? error.message
+          ? featureValidationMessage('members:noChanges')
           : error instanceof Error
             ? error.message
-            : 'Member values are invalid.'
+            : featureValidationMessage('members:invalidValues')
       )
     }
   }
@@ -302,46 +305,44 @@ export function MemberAdministrationDialog({
               size='sm'
               onClick={onRetryAuthorization}
             >
-              Retry verification
+              {t('members:retryVerification')}
             </Button>
           </div>
         )}
         {session?.mode === 'edit' && session.status === 'loading' ? (
           <>
             <DialogHeader>
-              <DialogTitle>Loading current member</DialogTitle>
+              <DialogTitle>{t('members:loadingCurrent')}</DialogTitle>
               <DialogDescription>
-                Retrieving the authoritative account state and concurrency token
-                before opening the editor.
+                {t('members:loadingEditor')}
               </DialogDescription>
             </DialogHeader>
             <div
               role='status'
               className='py-8 text-center text-sm text-muted-foreground'
             >
-              Loading member details…
+              {t('members:loadingDetails')}
             </div>
             <DialogFooter>
               <Button variant='outline' disabled={saving} onClick={onClose}>
-                Cancel
+                {t('members:cancel')}
               </Button>
             </DialogFooter>
           </>
         ) : session?.mode === 'edit' && session.status === 'error' ? (
           <>
             <DialogHeader>
-              <DialogTitle>Member details could not be loaded</DialogTitle>
+              <DialogTitle>{t('members:detailError')}</DialogTitle>
               <DialogDescription>
-                No edit session was opened because a reviewed authoritative
-                snapshot is required.
+                {t('members:noEditSession')}
               </DialogDescription>
             </DialogHeader>
             <p role='alert' className='text-sm text-destructive'>
-              {session.loadError ?? 'The member detail request failed.'}
+              {session.loadError ? localizedValidationMessage(session.loadError, t) : t('members:detailFailed')}
             </p>
             <DialogFooter>
               <Button variant='outline' disabled={saving} onClick={onClose}>
-                Close
+                {t('members:close')}
               </Button>
               <Button
                 disabled={!authorizationVerified}
@@ -349,7 +350,7 @@ export function MemberAdministrationDialog({
                   onRetrySnapshot(session.memberId, session.operationId)
                 }
               >
-                Retry member details
+                {t('members:retryDetails')}
               </Button>
             </DialogFooter>
           </>
@@ -357,11 +358,10 @@ export function MemberAdministrationDialog({
           <>
             <DialogHeader>
               <DialogTitle>
-                {editing ? 'Edit member' : 'Create account'}
+                {editing ? t('members:editMemberTitle') : t('members:createAccount')}
               </DialogTitle>
               <DialogDescription>
-                New accounts remain pending secure setup. Administrators never
-                set or receive a member password.
+                {t('members:secureSetupHelp')}
               </DialogDescription>
             </DialogHeader>
             {targetMember && memberSummary(targetMember)}
@@ -388,7 +388,7 @@ export function MemberAdministrationDialog({
                   name='displayName'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Name</FormLabel>
+                      <FormLabel>{t('members:name')}</FormLabel>
                       <FormControl>
                         <Input
                           {...field}
@@ -406,7 +406,7 @@ export function MemberAdministrationDialog({
                   name='email'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Email</FormLabel>
+                      <FormLabel>{t('members:email')}</FormLabel>
                       <FormControl>
                         <Input
                           {...field}
@@ -417,7 +417,7 @@ export function MemberAdministrationDialog({
                         />
                       </FormControl>
                       <FormDescription>
-                        Email identity cannot be changed after provisioning.
+                        {t('members:emailImmutable')}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
@@ -428,17 +428,17 @@ export function MemberAdministrationDialog({
                   name='primaryOrgUnitId'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Primary organizational unit</FormLabel>
+                      <FormLabel>{t('members:primaryUnit')}</FormLabel>
                       <FormControl>
                         <OrganizationUnitSelect
                           value={field.value || null}
                           units={units}
                           lookupStatus={lookupStatus}
-                          label='Primary organizational unit'
+                          label={t('members:primaryUnit')}
                           emptyLabel={
                             identity.globalRole === 'DEPARTMENT_MANAGER'
-                              ? 'Select a unit'
-                              : 'Unassigned'
+                              ? t('members:selectUnit')
+                              : t('members:unassigned')
                           }
                           allowClear={
                             !editing && identity.globalRole === 'ADMINISTRATOR'
@@ -449,10 +449,10 @@ export function MemberAdministrationDialog({
                       </FormControl>
                       <FormDescription>
                         {identity.globalRole === 'DEPARTMENT_MANAGER'
-                          ? 'Select an active unit within your explicit management scope.'
+                          ? t('members:unitScopeHelp')
                           : editing
-                            ? 'Assignments can move to another active unit; they cannot be cleared here.'
-                            : 'Optional for administrator-provisioned accounts.'}
+                            ? t('members:unitMoveHelp')
+                            : t('members:unitOptional')}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
@@ -464,7 +464,7 @@ export function MemberAdministrationDialog({
                     name='globalRole'
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Global role</FormLabel>
+                        <FormLabel>{t('members:globalRole')}</FormLabel>
                         <Select
                           value={field.value}
                           onValueChange={(value) => {
@@ -474,17 +474,17 @@ export function MemberAdministrationDialog({
                           disabled={saving || !canEditValues}
                         >
                           <FormControl>
-                            <SelectTrigger aria-label='Global role'>
+                            <SelectTrigger aria-label={t('members:globalRole')}>
                               <SelectValue />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
-                            <SelectItem value='EMPLOYEE'>Employee</SelectItem>
+                            <SelectItem value='EMPLOYEE'>{t('members:employee')}</SelectItem>
                             <SelectItem value='DEPARTMENT_MANAGER'>
-                              Department manager
+                              {t('members:departmentManager')}
                             </SelectItem>
                             <SelectItem value='ADMINISTRATOR'>
-                              Administrator
+                              {t('members:administrator')}
                             </SelectItem>
                           </SelectContent>
                         </Select>
@@ -518,7 +518,7 @@ export function MemberAdministrationDialog({
                 {(localError ||
                   (feedback?.outcome === 'rejected' && !reviewRequired)) && (
                   <p role='alert' className='text-sm text-destructive'>
-                    {localError ?? feedback?.message}
+                    {localizedValidationMessage(localError ?? feedback?.message ?? '', t)}
                   </p>
                 )}
               </form>
@@ -530,14 +530,14 @@ export function MemberAdministrationDialog({
                 onClick={onClose}
                 disabled={saving && !reviewRequired}
               >
-                Cancel
+                {t('members:cancel')}
               </Button>
               <Button
                 type='submit'
                 form='member-editor-form'
                 disabled={saving || !authorizationVerified || !canEditValues}
               >
-                {saving ? 'Saving…' : editing ? 'Save member' : 'Save member'}
+                {saving ? t('members:saving') : editing ? t('members:saveMember') : t('members:saveMember')}
               </Button>
             </DialogFooter>
           </>

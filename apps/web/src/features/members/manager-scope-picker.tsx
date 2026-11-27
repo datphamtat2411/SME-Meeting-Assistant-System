@@ -1,3 +1,4 @@
+import { useUiTranslation } from '@/lib/i18n'
 import { useState } from 'react'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -17,6 +18,7 @@ export function ManagerScopePicker({
   lookupStatus?: 'loading' | 'error' | 'success'
   disabled?: boolean
 }) {
+  const { t } = useUiTranslation()
   const [search, setSearch] = useState('')
   const normalizedSearch = search.trim().toLocaleLowerCase()
   const visibleUnits = units.filter(
@@ -32,26 +34,25 @@ export function ManagerScopePicker({
 
   return (
     <fieldset className='space-y-2 rounded-lg border p-3'>
-      <legend className='px-1 text-sm font-medium'>Manager scope units</legend>
+      <legend className='px-1 text-sm font-medium'>{t('members:managerScopeUnits')}</legend>
       <p className='text-xs text-muted-foreground'>
-        Managers can administer only explicitly assigned organizational units.
-        Scope does not grant unrestricted transcript access.
+        {t('members:scopeExplanation')}
       </p>
       <Input
         value={search}
         onChange={(event) => setSearch(event.target.value)}
-        placeholder='Search authorized units'
-        aria-label='Search manager scope units'
+        placeholder={t('members:searchAuthorizedUnits')}
+        aria-label={t('members:searchManagerUnits')}
         disabled={disabled}
       />
       {lookupStatus === 'loading' && (
         <p role='status' className='text-xs text-muted-foreground'>
-          Loading authorized organizational units…
+          {t('members:loadingOrganizationalUnits')}
         </p>
       )}
       {lookupStatus === 'error' && (
         <p role='alert' className='text-xs text-destructive'>
-          Organizational-unit lookup failed. Existing scope IDs are preserved.
+          {t('members:scopeLookupFailed')}
         </p>
       )}
       {unresolvedIds.map((id) => (
@@ -59,19 +60,18 @@ export function ManagerScopePicker({
           key={id}
           className='rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground'
         >
-          Existing scope grant is unavailable in the authorized active-unit
-          lookup: <code className='break-all'>{id}</code>
+          {t('members:missingScopeGrant')}<code className='break-all'>{id}</code>
         </p>
       ))}
       {lookupStatus === 'success' && units.length === 0 ? (
         <p className='text-xs text-muted-foreground'>
-          No authorized active organizational units are available.
+          {t('members:noAuthorizedUnits')}
         </p>
       ) : (
         <div className='max-h-36 space-y-2 overflow-y-auto'>
           {visibleUnits.length === 0 && lookupStatus === 'success' ? (
             <p className='text-xs text-muted-foreground'>
-              No units match this search.
+              {t('members:noUnitsMatch')}
             </p>
           ) : (
             visibleUnits.map((unit) => (

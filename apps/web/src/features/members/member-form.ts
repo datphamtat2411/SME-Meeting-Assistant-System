@@ -1,3 +1,4 @@
+import { featureValidationMessage } from '@/lib/i18n/presentation'
 import { z } from 'zod'
 import type { AuthContext } from '@/features/auth/session/current-user'
 import { MemberPolicyError } from './member-administration-policy'
@@ -14,14 +15,14 @@ export const memberFormSchema = z.object({
   email: z
     .string()
     .trim()
-    .min(1, 'Email is required.')
-    .max(320, 'Email must be 320 characters or fewer.')
-    .email('Enter a valid email address.'),
+    .min(1, featureValidationMessage('members:emailRequired'))
+    .max(320, featureValidationMessage('members:emailTooLong'))
+    .email(featureValidationMessage('members:invalidEmail')),
   displayName: z
     .string()
     .trim()
-    .min(1, 'Display name is required.')
-    .max(200, 'Display name must be 200 characters or fewer.'),
+    .min(1, featureValidationMessage('members:nameRequired'))
+    .max(200, featureValidationMessage('members:nameTooLong')),
   primaryOrgUnitId: z.union([z.literal(''), uuidSchema]),
   globalRole: z.enum(memberRoles),
   managerScopeUnitIds: z.array(uuidSchema),
