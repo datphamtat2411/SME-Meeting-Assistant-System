@@ -3,11 +3,13 @@ name: Web CI
 on:
   push:
     branches:
+      - pre-integration-develop
       - develop
       - main
       - 'web/**'
   pull_request:
     branches:
+      - pre-integration-develop
       - develop
       - main
   workflow_dispatch:

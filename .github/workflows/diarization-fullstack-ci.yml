@@ -3,6 +3,7 @@ name: Diarization Full-Stack CI
 on:
   push:
     branches:
+      - pre-integration-develop
       - 'integration/**'
     paths:
       - 'services/api/**'
@@ -13,6 +14,7 @@ on:
       - '.github/workflows/ai-ci.yml'
   pull_request:
     branches:
+      - pre-integration-develop
       - develop
     paths:
       - 'services/api/**'

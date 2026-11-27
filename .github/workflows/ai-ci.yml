@@ -3,6 +3,7 @@ name: AI CI
 on:
   push:
     branches:
+      - pre-integration-develop
       - develop
       - 'ai/**'
       - 'api/**'
@@ -14,6 +15,7 @@ on:
       - '.github/workflows/ai-ci.yml'
   pull_request:
     branches:
+      - pre-integration-develop
       - develop
       - 'ai/**'
       - 'integration/**'

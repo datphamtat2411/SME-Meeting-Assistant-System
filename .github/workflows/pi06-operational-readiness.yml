@@ -3,6 +3,7 @@ name: PI-06 Operational Readiness
 on:
   push:
     branches:
+      - pre-integration-develop
       - 'api/**'
     paths:
       - 'services/api/**'
@@ -11,6 +12,7 @@ on:
       - '.github/workflows/pi06-operational-readiness.yml'
   pull_request:
     branches:
+      - pre-integration-develop
       - develop
       - 'api/**'
   workflow_dispatch:

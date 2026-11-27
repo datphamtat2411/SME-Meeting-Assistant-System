@@ -3,6 +3,7 @@ name: PI-05 System Acceptance
 on:
   push:
     branches:
+      - pre-integration-develop
       - 'api/**'
     paths:
       - 'services/api/**'
@@ -12,6 +13,7 @@ on:
       - '.github/workflows/pi05-system-acceptance.yml'
   pull_request:
     branches:
+      - pre-integration-develop
       - develop
       - 'api/**'
     paths:

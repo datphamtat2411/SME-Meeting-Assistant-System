@@ -3,6 +3,7 @@ name: PI Integration CI
 on:
   push:
     branches:
+      - pre-integration-develop
       - 'api/**'
     paths:
       - 'services/api/**'
@@ -10,6 +11,7 @@ on:
       - '.github/workflows/pi-integration-ci.yml'
   pull_request:
     branches:
+      - pre-integration-develop
       - develop
       - 'api/**'
     paths:
