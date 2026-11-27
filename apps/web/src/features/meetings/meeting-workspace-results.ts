@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n'
+
 export type ResultAvailability =
   | 'AVAILABLE'
   | 'NOT_AVAILABLE'
@@ -22,20 +24,21 @@ export function canonicalResultAvailability(
 }
 
 export function resultAvailabilityLabel(
-  value: string | null | undefined
+  value: string | null | undefined,
+  t: (key: string) => string = (key) => i18n.t(key)
 ): string {
   switch (canonicalResultAvailability(value)) {
     case 'AVAILABLE':
-      return 'Available'
+      return t('workspace:resultAvailable')
     case 'NOT_AVAILABLE':
-      return 'Not available'
+      return t('workspace:resultNotAvailable')
     case 'PROCESSING':
-      return 'Processing'
+      return t('workspace:resultProcessing')
     case 'NEEDS_REVIEW':
-      return 'Action required'
+      return t('workspace:resultReview')
     case 'FAILED':
-      return 'Failed'
+      return t('workspace:resultFailed')
     case 'UNKNOWN':
-      return 'Unknown status'
+      return t('workspace:unknownStatus')
   }
 }

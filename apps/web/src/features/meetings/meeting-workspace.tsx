@@ -19,6 +19,8 @@ import {
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { useUiTranslation } from '@/lib/i18n'
+import { formatRegionalInstant } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -1114,6 +1116,7 @@ function WorkspaceResultsOverview({
   ) => void
 }) {
   const { t } = useUiTranslation()
+  const { timezone, locale } = useRegionalPresentation()
   const session = useOptionalMeetingSession()
   const media = session?.media
   const jobs = session?.processing.jobs
@@ -1183,7 +1186,7 @@ function WorkspaceResultsOverview({
                   ? t('workspace:noConfirmedRecording')
                   : mediaData
                       .filter((item) => item.status !== 'AVAILABLE')
-                      .map((item) => `${item.originalFilename}: ${item.status}`)
+                      .map((item) => `${item.originalFilename}: ${t(`media:mediaStatus_${item.status}`)}`)
                       .join(' · ') ||
                     t('workspace:finalizedMediaAvailable')
           }
@@ -1236,9 +1239,15 @@ function WorkspaceResultsOverview({
                   ? t('workspace:ambiguousAttempts')
                   : observedJob
                     ? [
-                        `Observed attempt: ${processingState?.label ?? t('workspace:unknownStatus')}`,
+                        t('workspace:observedAttempt', {
+                          status:
+                            processingState?.label ??
+                            t('workspace:unknownStatus'),
+                        }),
                         observedJob.currentStage
-                          ? `Current stage: ${observedJob.currentStage}`
+                          ? t('workspace:currentStage', {
+                              stage: observedJob.currentStage,
+                            })
                           : undefined,
                         observedJob.warningSummary ?? undefined,
                         observedJob.errorSummary ?? undefined,
@@ -1286,7 +1295,8 @@ function WorkspaceResultsOverview({
                 : transcriptAvailability === 'NOT_AVAILABLE'
                   ? t('workspace:transcriptUnavailable')
                   : resultAvailabilityLabel(
-                      minutes.data.transcript.availability
+                      minutes.data.transcript.availability,
+                      t
                     )
           }
           description={
@@ -1335,11 +1345,11 @@ function WorkspaceResultsOverview({
                 ? t('workspace:unableToVerify')
                 : hasDerivedResults
                   ? hasSummaryArtifact
-                    ? `Summary ${resultAvailabilityLabel(minutes.data.summary.availability).toLocaleLowerCase()}`
+                    ? t(`workspace:summary_${canonicalResultAvailability(minutes.data.summary.availability)}`)
                     : t('workspace:otherConfirmedResults')
                   : summaryAvailability === 'NOT_AVAILABLE'
                     ? t('workspace:noSummary')
-                    : `Summary ${resultAvailabilityLabel(minutes.data.summary.availability).toLocaleLowerCase()}`
+                    : t(`workspace:summary_${canonicalResultAvailability(minutes.data.summary.availability)}`)
           }
           description={
             minutes.isPending
@@ -1395,7 +1405,7 @@ function WorkspaceResultsOverview({
               ? t('workspace:checkingAvailability')
               : minutes.isError
                 ? t('workspace:unableToVerify')
-                : minutes.data.completeness.replace(/_/g, ' ')
+                : t(`workspace:completeness_${minutes.data.completeness}`)
           }
           description={
             minutes.isSuccess
@@ -1467,19 +1477,13 @@ function WorkspaceResultsOverview({
           !mediaIsError &&
           mediaData.length === 0 && (
             <p className='pt-3 text-xs text-muted-foreground'>
-              Meeting ended{' '}
-              {meeting.endedAt ? (
-                <>
-                  at{' '}
-                  <RegionalTimestamp
-                    value={meeting.endedAt}
-                    fallback='an unavailable time'
-                  />
-                </>
-              ) : (
-                'without a recorded end time'
-              )}
-              ; no recording or processing result is inferred.
+              {meeting.endedAt
+                ? t('workspace:endedAtNoResults', {
+                    time:
+                      formatRegionalInstant(meeting.endedAt, timezone, locale) ??
+                      t('workspace:unavailableTime'),
+                  })
+                : t('workspace:endedWithoutTime')}
             </p>
           )}
       </CardContent>
