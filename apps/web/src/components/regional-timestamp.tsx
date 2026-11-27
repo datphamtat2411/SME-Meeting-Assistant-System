@@ -7,10 +7,7 @@ type DatePresentationProps = {
   fallback?: string
 }
 
-export function RegionalTimestamp({
-  value,
-  fallback,
-}: DatePresentationProps) {
+export function RegionalTimestamp({ value, fallback }: DatePresentationProps) {
   const { t } = useUiTranslation()
   const unavailable = fallback ?? t('timeUnavailable')
   const { timezone, locale } = useRegionalPresentation()

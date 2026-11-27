@@ -19,7 +19,10 @@ function Example() {
       <LanguageSwitcher />
       <label>
         {t('navigation:meetings')}
-        <input value={draft} onChange={(event) => setDraft(event.target.value)} />
+        <input
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+        />
       </label>
     </>
   )

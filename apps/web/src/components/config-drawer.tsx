@@ -57,9 +57,7 @@ export function ConfigDrawer() {
       <SheetContent className='flex flex-col'>
         <SheetHeader className='pb-0 text-start'>
           <SheetTitle>{t('themeSettings')}</SheetTitle>
-          <SheetDescription>
-            {t('themeSettingsDesc')}
-          </SheetDescription>
+          <SheetDescription>{t('themeSettingsDesc')}</SheetDescription>
         </SheetHeader>
         <div className='space-y-6 overflow-y-auto px-4'>
           <ThemeConfig />

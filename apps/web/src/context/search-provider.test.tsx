@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, type RenderResult } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
+import { setUiLanguage } from '@/lib/i18n'
+import { UI_LANGUAGE_STORAGE_KEY } from '@/lib/i18n/language-preference'
 import { SearchProvider } from '@/context/search-provider'
 import { Search } from '@/components/search'
 
@@ -59,6 +61,11 @@ async function openCommandPalette(
 describe('SearchProvider and CommandMenu', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  afterEach(async () => {
+    await setUiLanguage('en')
+    localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY)
   })
 
   it('renders the command palette when the palette is open', async () => {
@@ -144,10 +151,52 @@ describe('SearchProvider and CommandMenu', () => {
 
     const input = screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER)
     await userEvent.fill(input, 'General Meetings /meetings')
+    await expect
+      .element(screen.getByRole('option', { name: 'Meeting Rooms' }))
+      .not.toBeInTheDocument()
     await userEvent.keyboard('{ArrowDown}{Enter}')
 
     expect(mocks.navigate).toHaveBeenCalledWith({ to: '/meetings' })
     await expect.element(input).not.toBeInTheDocument()
+  })
+
+  it.each(['Cuộc họp', 'cuoc hop'])(
+    'navigates by Vietnamese label: %s',
+    async (query) => {
+      await setUiLanguage('vi')
+      const screen = await renderWithSearchProvider(<Search />)
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Mở menu tìm kiếm' })
+      )
+      const input = screen.getByPlaceholder('Tìm trang hoặc lệnh')
+      await userEvent.fill(input, query)
+      await expect
+        .element(screen.getByRole('option', { name: 'Cuộc họp', exact: true }))
+        .toBeInTheDocument()
+      await expect
+        .element(screen.getByRole('option', { name: 'Phòng họp' }))
+        .not.toBeInTheDocument()
+      await userEvent.keyboard('{ArrowDown}{Enter}')
+
+      expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({
+        to: '/meetings',
+      })
+      await expect.element(input).not.toBeInTheDocument()
+    }
+  )
+
+  it('finds Vietnamese aliases while English is active', async () => {
+    const screen = await renderWithSearchProvider()
+    await openCommandPalette(screen)
+    const input = screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER)
+    await userEvent.fill(input, 'cuoc hop')
+    await expect
+      .element(screen.getByRole('option', { name: 'Meetings', exact: true }))
+      .toBeInTheDocument()
+    await userEvent.keyboard('{ArrowDown}{Enter}')
+    expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({
+      to: '/meetings',
+    })
   })
 
   it('applies theme and closes the palette when a theme command is chosen', async () => {

@@ -1,6 +1,7 @@
 import React from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ChevronRight, Laptop, Moon, Sun } from 'lucide-react'
+import { commandSearchScore } from '@/lib/command-search'
 import { useUiTranslation } from '@/lib/i18n'
 import { useSearch } from '@/context/search-provider'
 import { useTheme } from '@/context/theme-provider'
@@ -15,17 +16,6 @@ import {
 } from '@/components/ui/command'
 import { navigationGroups } from './layout/data/navigation-data'
 import { ScrollArea } from './ui/scroll-area'
-
-function searchKeywords(...labels: string[]) {
-  return labels.flatMap((label) => [
-    label,
-    label
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/đ/g, 'd')
-      .replace(/Đ/g, 'D'),
-  ])
-}
 
 export function CommandMenu() {
   const { t } = useUiTranslation()
@@ -53,11 +43,17 @@ export function CommandMenu() {
 
   const label = (item: { title: string; titleKey?: string }) =>
     item.titleKey ? t(item.titleKey) : item.title
+  const vietnameseLabel = (item: { title: string; titleKey?: string }) =>
+    item.titleKey ? t(item.titleKey, { lng: 'vi' }) : item.title
+
+  const keywords = (...items: { title: string; titleKey?: string }[]) =>
+    items.flatMap((item) => [item.title, vietnameseLabel(item)])
 
   return (
     <CommandDialog
       title={t('commandTitle')}
       description={t('commandDesc')}
+      filter={commandSearchScore}
       modal
       open={open}
       onOpenChange={setOpen}
@@ -78,7 +74,7 @@ export function CommandMenu() {
                     <CommandItem
                       key={navItem.url}
                       value={`${group.title} ${navItem.title} ${navItem.url}`}
-                      keywords={searchKeywords(label(group), label(navItem))}
+                      keywords={keywords(group, navItem)}
                       onSelect={() => {
                         runCommand(() => navigate({ to: navItem.url }))
                       }}
@@ -94,11 +90,7 @@ export function CommandMenu() {
                   <CommandItem
                     key={subItem.url}
                     value={`${group.title} ${navItem.title} ${subItem.title} ${subItem.url}`}
-                    keywords={searchKeywords(
-                      label(group),
-                      label(navItem),
-                      label(subItem)
-                    )}
+                    keywords={keywords(group, navItem, subItem)}
                     onSelect={() => {
                       runCommand(() => navigate({ to: subItem.url }))
                     }}
@@ -117,14 +109,22 @@ export function CommandMenu() {
           <CommandGroup heading={t('navigation:appearance')}>
             <CommandItem
               value='Appearance Light theme'
-              keywords={searchKeywords(t('navigation:appearance'), t('light'))}
+              keywords={[
+                t('navigation:appearance', { lng: 'vi' }),
+                t('light', { lng: 'vi' }),
+                'light',
+              ]}
               onSelect={() => runCommand(() => setTheme('light'))}
             >
               <Sun /> <span>{t('light')}</span>
             </CommandItem>
             <CommandItem
               value='Appearance Dark theme'
-              keywords={searchKeywords(t('navigation:appearance'), t('dark'))}
+              keywords={[
+                t('navigation:appearance', { lng: 'vi' }),
+                t('dark', { lng: 'vi' }),
+                'dark',
+              ]}
               onSelect={() => runCommand(() => setTheme('dark'))}
             >
               <Moon className='scale-90' />
@@ -132,7 +132,11 @@ export function CommandMenu() {
             </CommandItem>
             <CommandItem
               value='Appearance System theme'
-              keywords={searchKeywords(t('navigation:appearance'), t('system'))}
+              keywords={[
+                t('navigation:appearance', { lng: 'vi' }),
+                t('system', { lng: 'vi' }),
+                'system',
+              ]}
               onSelect={() => runCommand(() => setTheme('system'))}
             >
               <Laptop />
