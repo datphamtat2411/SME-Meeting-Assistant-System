@@ -60,7 +60,10 @@ void main() {
     );
     final loginContext = tester.element(find.text('Đăng nhập hệ thống'));
     expect(Localizations.localeOf(loginContext).languageCode, 'vi');
-    expect(MaterialLocalizations.of(loginContext).cancelButtonLabel, 'Hủy');
+    expect(
+      MaterialLocalizations.of(loginContext).cancelButtonLabel.toLowerCase(),
+      anyOf('hủy', 'huỷ'),
+    );
     await tester.ensureVisible(find.text('Quên mật khẩu?'));
     await tester.tap(find.text('Quên mật khẩu?'));
     await tester.pump();

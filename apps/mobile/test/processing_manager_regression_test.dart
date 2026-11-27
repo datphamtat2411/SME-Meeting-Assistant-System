@@ -102,6 +102,10 @@ void main() {
       await tester.pumpWidget(panel(true));
       await tester.pumpAndSettle();
       expect(find.text('Mã tác vụ: $firstJobId'), findsOneWidget);
+      expect(find.text('Nhận dạng lời nói'), findsOneWidget);
+      expect(find.text('Đang xử lý'), findsOneWidget);
+      expect(find.text('RUNNING'), findsNothing);
+      expect(find.text('TRANSCRIBING'), findsNothing);
       await tester.pumpWidget(panel(false));
       await tester.runAsync(
         () => manager.refresh(testMeetingId, scope: scope, explicit: true),

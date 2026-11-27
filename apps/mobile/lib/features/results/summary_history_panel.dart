@@ -288,7 +288,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
             ),
           if (job?.errorSummary != null)
             Text(
-              processingFailureLabel(job!.errorCode, job!.errorSummary),
+              processingFailureLabel(job!.errorCode, job.errorSummary),
               style: const TextStyle(color: Palette.red),
             ),
           if (job?.status.isSuccessful == true)
