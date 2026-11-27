@@ -64,8 +64,9 @@ Feature-local strings remain the responsibility of LOC-02 and LOC-03.
 Shared date-only controls format the selected civil day with the resolved
 regional locale without converting it to a different timezone. Calendar
 control labels follow UI language. Shared errors map canonical API and
-transport codes; unrecognized feature errors preserve the safe server
-message rather than inventing a meaning or concealing actionable information.
+transport codes. For unrecognized or absent codes, a localized HTTP category
+can accompany the existing safe server message without replacing it. Existing
+permission, not-found, stale and network presentation remains unchanged.
 Use `REQUIRED_VALIDATION_MESSAGE`, `INVALID_EMAIL_VALIDATION_MESSAGE` and
 `lengthValidationMessage` from the presentation module for shared form
 validation; markers are translated at render time, including after a language

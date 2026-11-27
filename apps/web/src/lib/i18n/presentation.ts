@@ -56,9 +56,13 @@ export function requestErrorKey(failure: {
   if (failure.status === 404) return 'errors:notFound'
   if (failure.isNetworkError) return 'errors:network'
   if (failure.status === 412) return 'errors:stale'
-  // Preserve the actionable message for unknown domain codes.
-  if (failure.code) return errorCodeKey(failure.code)
-  switch (failure.status) {
+  return errorCodeKey(failure.code)
+}
+
+// An HTTP category can explain an unrecognized failure, but cannot replace
+// its actionable server message. The request-state UI presents both.
+export function requestStatusErrorKey(status: number | undefined) {
+  switch (status) {
     case 400:
       return 'errors:malformedRequest'
     case 401:

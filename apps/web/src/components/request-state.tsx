@@ -1,7 +1,10 @@
 import { AlertCircle, Inbox, LoaderCircle, RefreshCw } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { useUiTranslation } from '@/lib/i18n'
-import { requestErrorKey } from '@/lib/i18n/presentation'
+import {
+  requestErrorKey,
+  requestStatusErrorKey,
+} from '@/lib/i18n/presentation'
 import { Button } from '@/components/ui/button'
 
 export function RequestLoading({ label }: { label?: string }) {
@@ -27,7 +30,10 @@ export function RequestError({
   const { t } = useUiTranslation()
   const failure = normalizeCoreApiError(error)
   const key = requestErrorKey(failure)
-  const message = key ? t(key) : failure.message
+  const statusKey = key ? undefined : requestStatusErrorKey(failure.status)
+  const message = key ? t(key) : statusKey ? t(statusKey) : failure.message
+  const detail =
+    statusKey && failure.message !== message ? failure.message : undefined
   return (
     <div
       role='alert'
@@ -35,7 +41,10 @@ export function RequestError({
     >
       <div className='flex gap-2 text-sm'>
         <AlertCircle className='size-5 shrink-0 text-destructive' />
-        <span>{message}</span>
+        <div className='space-y-1'>
+          <p>{message}</p>
+          {detail && <p className='text-muted-foreground'>{detail}</p>}
+        </div>
       </div>
       {retry && (
         <Button size='sm' variant='outline' onClick={retry}>

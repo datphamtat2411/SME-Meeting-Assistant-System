@@ -9,6 +9,7 @@ import {
   localizedValidationMessage,
   meetingStatusKey,
   requestErrorKey,
+  requestStatusErrorKey,
   roleKey,
 } from './presentation'
 
@@ -43,7 +44,9 @@ describe('localized presentation mappings', () => {
     expect(requestErrorKey({ code: 'VALIDATION_FAILED' })).toBe(
       'errors:validation'
     )
-    expect(requestErrorKey({ status: 429 })).toBe('errors:rateLimit')
+    expect(requestErrorKey({ status: 429 })).toBeUndefined()
+    expect(requestStatusErrorKey(429)).toBe('errors:rateLimit')
+    expect(requestStatusErrorKey(503)).toBe('errors:serviceUnavailable')
     expect(requestErrorKey({ code: 'MALFORMED_RESPONSE' })).toBe(
       'errors:malformedResponse'
     )
