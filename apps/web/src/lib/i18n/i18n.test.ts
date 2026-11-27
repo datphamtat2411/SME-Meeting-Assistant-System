@@ -12,18 +12,48 @@ afterEach(async () => {
   localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY)
 })
 
-function leafKeys(value: object, prefix = ''): string[] {
-  return Object.entries(value)
-    .flatMap(([key, child]) => {
-      const path = prefix ? `${prefix}.${key}` : key
-      return typeof child === 'string' ? [path] : leafKeys(child, path)
-    })
-    .sort()
+function leafEntries(value: object, prefix = ''): [string, string][] {
+  return Object.entries(value).flatMap(([key, child]) => {
+    const path = prefix ? `${prefix}.${key}` : key
+    return typeof child === 'string'
+      ? [[path, child] as [string, string]]
+      : leafEntries(child, path)
+  })
+}
+
+function semanticCatalog(language: 'en' | 'vi') {
+  const entries = new Map(leafEntries(resources[language]))
+  const result = new Map<string, string[]>()
+  const pluralCategories = new Intl.PluralRules(language).resolvedOptions()
+    .pluralCategories
+  for (const [key, value] of entries) {
+    const base = key.replace(/_(zero|one|two|few|many|other)$/, '')
+    const plural = base !== key && entries.has(base + '_other')
+    const semanticKey = plural ? base : key
+    if (plural) {
+      for (const category of pluralCategories) {
+        expect(entries.has(base + '_' + category), base + '_' + category).toBe(
+          true
+        )
+      }
+    }
+    const placeholders = [
+      ...new Set(
+        [...value.matchAll(/{{\s*([\w.]+)\s*}}/g)].map((match) => match[1])
+      ),
+    ].sort()
+    if (result.has(semanticKey)) {
+      expect(placeholders, key).toEqual(result.get(semanticKey))
+    } else {
+      result.set(semanticKey, placeholders)
+    }
+  }
+  return [...result.entries()].sort(([a], [b]) => a.localeCompare(b))
 }
 
 describe('UI localization', () => {
   it('keeps translation keys aligned between languages', () => {
-    expect(leafKeys(resources.vi)).toEqual(leafKeys(resources.en))
+    expect(semanticCatalog('vi')).toEqual(semanticCatalog('en'))
   })
 
   it('changes UI labels and persists only the selected language', async () => {

@@ -1,6 +1,8 @@
 import { format } from 'date-fns'
 import { Calendar as CalendarIcon } from 'lucide-react'
 import { useUiTranslation } from '@/lib/i18n'
+import { formatCivilDate } from '@/lib/regional-time'
+import { useRegionalPresentation } from '@/context/regional-presentation'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
 import {
@@ -21,6 +23,7 @@ export function DatePicker({
   placeholder,
 }: DatePickerProps) {
   const { t } = useUiTranslation()
+  const { locale } = useRegionalPresentation()
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -30,7 +33,7 @@ export function DatePicker({
           className='w-60 justify-start text-start font-normal data-[empty=true]:text-muted-foreground'
         >
           {selected ? (
-            format(selected, 'MMM d, yyyy')
+            formatCivilDate(format(selected, 'yyyy-MM-dd'), locale)
           ) : (
             <span>{placeholder ?? t('pickDate')}</span>
           )}

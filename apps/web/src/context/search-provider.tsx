@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react'
 import { CommandMenu } from '@/components/command-menu'
+import type { AuthContext } from '@/features/auth/session/current-user'
 
 type SearchContextType = {
   open: boolean
@@ -18,9 +19,10 @@ const SearchContext = createContext<SearchContextType | null>(null)
 
 type SearchProviderProps = {
   children: React.ReactNode
+  identity?: AuthContext | null
 }
 
-export function SearchProvider({ children }: SearchProviderProps) {
+export function SearchProvider({ children, identity }: SearchProviderProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLElement | null>(null)
 
@@ -71,7 +73,7 @@ export function SearchProvider({ children }: SearchProviderProps) {
   return (
     <SearchContext value={{ open, setOpen, openSearch }}>
       {children}
-      <CommandMenu />
+      <CommandMenu identity={identity} />
     </SearchContext>
   )
 }

@@ -5,6 +5,7 @@ import { setUiLanguage } from '@/lib/i18n'
 import { UI_LANGUAGE_STORAGE_KEY } from '@/lib/i18n/language-preference'
 import { SearchProvider } from '@/context/search-provider'
 import { Search } from '@/components/search'
+import type { AuthContext } from '@/features/auth/session/current-user'
 
 const COMMAND_MENU_PLACEHOLDER = 'Navigate to a page or command'
 
@@ -27,8 +28,30 @@ vi.mock('@/context/theme-provider', () => ({
 
 type ShortcutModifier = 'Control' | 'Meta'
 
-async function renderWithSearchProvider(children: React.ReactNode = null) {
-  return await render(<SearchProvider>{children}</SearchProvider>)
+async function renderWithSearchProvider(
+  children: React.ReactNode = null,
+  identity?: AuthContext
+) {
+  return await render(
+    <SearchProvider identity={identity}>{children}</SearchProvider>
+  )
+}
+
+const identity: AuthContext = {
+  userId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  email: 'actor@example.test',
+  displayName: 'Actor',
+  globalRole: 'EMPLOYEE',
+  accountStatus: 'ACTIVE',
+  primaryOrgUnitId: null,
+  directoryManagementScope: { allUnits: false, unitIds: [] },
+  session: {
+    id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    clientType: 'WEB',
+    createdAt: '2026-11-24T00:00:00Z',
+    lastSeenAt: null,
+    absoluteExpiresAt: '2027-11-24T00:00:00Z',
+  },
 }
 
 /**
@@ -87,6 +110,34 @@ describe('SearchProvider and CommandMenu', () => {
     await expect
       .element(getByPlaceholder(COMMAND_MENU_PLACEHOLDER))
       .toHaveFocus()
+  })
+
+  it.each([
+    undefined,
+    'EMPLOYEE',
+    'DEPARTMENT_MANAGER',
+    'ADMINISTRATOR',
+  ] as const)('matches sidebar member visibility for %s', async (role) => {
+    await setUiLanguage('vi')
+    const screen = await renderWithSearchProvider(
+      <Search />,
+      role ? { ...identity, globalRole: role } : undefined
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Mở menu tìm kiếm' })
+    )
+    const memberOption = screen.getByRole('option', {
+      name: 'Thành viên',
+      exact: true,
+    })
+    if (role === 'ADMINISTRATOR' || role === 'DEPARTMENT_MANAGER') {
+      await expect.element(memberOption).toBeInTheDocument()
+    } else {
+      await expect.element(memberOption).not.toBeInTheDocument()
+    }
+    await expect
+      .element(screen.getByRole('option', { name: 'Phòng họp' }))
+      .toBeInTheDocument()
   })
 
   it('does not show the dialog content when search is closed', async () => {

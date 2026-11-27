@@ -24,7 +24,7 @@ export function AuthenticatedLayout({
   const defaultOpen = getCookie('sidebar_state') !== 'false'
   return (
     <UserPresentationProvider user={user}>
-      <SearchProvider>
+      <SearchProvider identity={identity}>
         <LayoutProvider>
           <SidebarProvider defaultOpen={defaultOpen}>
             <SkipToMain />

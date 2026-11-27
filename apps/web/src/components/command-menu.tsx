@@ -14,10 +14,11 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command'
-import { navigationGroups } from './layout/data/navigation-data'
+import type { AuthContext } from '@/features/auth/session/current-user'
+import { getNavigationGroups } from './layout/data/navigation-data'
 import { ScrollArea } from './ui/scroll-area'
 
-export function CommandMenu() {
+export function CommandMenu({ identity }: { identity?: AuthContext | null }) {
   const { t } = useUiTranslation()
   const navigate = useNavigate()
   const { setTheme } = useTheme()
@@ -62,7 +63,7 @@ export function CommandMenu() {
       <CommandList>
         <ScrollArea type='hover' className='h-72 pe-1'>
           <CommandEmpty>{t('commandEmpty')}</CommandEmpty>
-          {navigationGroups.map((group) => (
+          {getNavigationGroups(identity).map((group) => (
             <CommandGroup
               key={group.titleKey ?? group.title}
               heading={label(group)}

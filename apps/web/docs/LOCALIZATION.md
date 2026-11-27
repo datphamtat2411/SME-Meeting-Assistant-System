@@ -60,3 +60,14 @@ values, catalog coverage, permission-sensitive navigation, command search,
 keyboard accessibility, responsive layout, and Vietnamese accents in Inter,
 Manrope, and System fonts. Run the focused browser tests and existing Web CI.
 Feature-local strings remain the responsibility of LOC-02 and LOC-03.
+
+Shared date-only controls format the selected civil day with the resolved
+regional locale without converting it to a different timezone. Calendar
+control labels follow UI language. Shared errors map canonical API and
+transport codes; unrecognized feature errors preserve the safe server
+message rather than inventing a meaning or concealing actionable information.
+Use `REQUIRED_VALIDATION_MESSAGE`, `INVALID_EMAIL_VALIDATION_MESSAGE` and
+`lengthValidationMessage` from the presentation module for shared form
+validation; markers are translated at render time, including after a language
+switch. Catalog tests compare semantic keys, interpolation parameters and
+the plural categories required by each language.

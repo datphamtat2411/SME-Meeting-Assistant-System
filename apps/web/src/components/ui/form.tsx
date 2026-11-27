@@ -138,7 +138,9 @@ function FormMessage({ className, ...props }: React.ComponentProps<'p'>) {
   const { t } = useUiTranslation()
   const { error, formMessageId } = useFormField()
   const body = error
-    ? localizedValidationMessage(String(error.message ?? ''), (key) => t(key))
+    ? localizedValidationMessage(String(error.message ?? ''), (key, options) =>
+        t(key, options)
+      )
     : props.children
 
   if (!body) {
