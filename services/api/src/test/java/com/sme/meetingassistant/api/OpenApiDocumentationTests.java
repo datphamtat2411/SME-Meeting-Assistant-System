@@ -68,6 +68,8 @@ class OpenApiDocumentationTests {
   assertResponse(paths, "/api/v1/processing-jobs/{jobId}/retry", "post", "202");
   assertResponse(paths, "/api/v1/processing-jobs/{jobId}/meeting-intelligence/admit", "post", "202");
   assertHeader(paths, "/api/v1/processing-jobs/{jobId}/retry", "post", "Idempotency-Key", true);
+  assertHeader(paths, "/api/v1/action-items/{actionItemId}", "patch", "If-Match", true);
+  assertHeader(paths, "/api/v1/meetings/{meetingId}/transcript/segments/{segmentId}", "patch", "If-Match", true);
  }
 
  private static void assertResponse(JsonNode paths, String path, String method, String code) {

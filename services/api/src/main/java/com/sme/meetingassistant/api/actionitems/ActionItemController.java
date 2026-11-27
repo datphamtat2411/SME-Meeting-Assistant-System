@@ -112,6 +112,7 @@ public class ActionItemController {
 
     @PatchMapping("/{actionItemId}")
     public ResponseEntity<ApiResponse<ActionItemView>> update(@PathVariable UUID actionItemId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, stale returns 412")
             @RequestHeader(value=HttpHeaders.IF_MATCH, required=false) String ifMatch,
             @RequestBody JsonNode patch) {
         return result(service.update(actionItemId, caller.requireUserId(), ifMatch,
@@ -120,31 +121,37 @@ public class ActionItemController {
 
     @PostMapping("/{actionItemId}/confirm")
     public ResponseEntity<ApiResponse<ActionItemView>> confirm(@PathVariable UUID actionItemId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, stale returns 412")
             @RequestHeader(value=HttpHeaders.IF_MATCH, required=false) String tag) {
         return result(service.confirm(actionItemId, caller.requireUserId(), tag));
     }
     @PostMapping("/{actionItemId}/reject")
     public ResponseEntity<ApiResponse<ActionItemView>> reject(@PathVariable UUID actionItemId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, stale returns 412")
             @RequestHeader(value=HttpHeaders.IF_MATCH, required=false) String tag) {
         return result(service.reject(actionItemId, caller.requireUserId(), tag));
     }
     @PostMapping("/{actionItemId}/start")
     public ResponseEntity<ApiResponse<ActionItemView>> start(@PathVariable UUID actionItemId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, stale returns 412")
             @RequestHeader(value=HttpHeaders.IF_MATCH, required=false) String tag) {
         return result(service.start(actionItemId, caller.requireUserId(), tag));
     }
     @PostMapping("/{actionItemId}/complete")
     public ResponseEntity<ApiResponse<ActionItemView>> complete(@PathVariable UUID actionItemId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, stale returns 412")
             @RequestHeader(value=HttpHeaders.IF_MATCH, required=false) String tag) {
         return result(service.complete(actionItemId, caller.requireUserId(), tag));
     }
     @PostMapping("/{actionItemId}/cancel")
     public ResponseEntity<ApiResponse<ActionItemView>> cancel(@PathVariable UUID actionItemId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, stale returns 412")
             @RequestHeader(value=HttpHeaders.IF_MATCH, required=false) String tag) {
         return result(service.cancel(actionItemId, caller.requireUserId(), tag));
     }
     @PostMapping("/{actionItemId}/reopen")
     public ResponseEntity<ApiResponse<ActionItemView>> reopen(@PathVariable UUID actionItemId,
+            @io.swagger.v3.oas.annotations.Parameter(required = true, description = "Exact current ETag; missing returns 428, stale returns 412")
             @RequestHeader(value=HttpHeaders.IF_MATCH, required=false) String tag) {
         return result(service.reopen(actionItemId, caller.requireUserId(), tag));
     }

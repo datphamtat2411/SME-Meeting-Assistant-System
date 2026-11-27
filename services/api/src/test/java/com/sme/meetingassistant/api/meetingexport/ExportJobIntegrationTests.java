@@ -92,6 +92,7 @@ class ExportJobIntegrationTests {
     @Autowired ObjectMapper json;
     @Autowired ExportJobProcessor worker;
     @Autowired ExportSubmissionService submissions;
+    @Autowired ExportIntentService intents;
     @Autowired ExportGenerationStateMachine state;
     @Autowired MeetingExportRepository records;
     @Autowired InMemoryExportStore storage;
@@ -149,6 +150,55 @@ class ExportJobIntegrationTests {
                 readyMd.artifactSha256(), 8*1024*1024),
                 java.nio.charset.StandardCharsets.UTF_8))
                 .contains("Phê duyệt kế hoạch mới","Source fingerprint");
+    }
+
+    @Test
+    void versionedIntakeSurvivesReplayAndLegacyPendingWorkUsesOriginalRenderer() throws Exception {
+        UUID owner = user(), meeting = meeting(owner);
+        MinutesSnapshot base = snapshot(meeting, owner, "Nội dung có người phụ trách");
+        var action = new MinutesSnapshot.Action(UUID.randomUUID(), "Kiểm tra báo cáo", null,
+                "OPEN", "MANUAL", owner, null, 0L, base.assembledAt(), null, null);
+        var canonical = new MinutesSnapshot.CanonicalContent(1, "COMPLETE", base.meeting(),
+                base.summary(), List.of(), List.of(action), base.transcript(), List.of(), false);
+        String hash = ExportSnapshotCodec.sha256(json.writeValueAsBytes(canonical));
+        var source = new MinutesSnapshot(1, base.assembledAt(), hash, "COMPLETE", base.meeting(),
+                base.summary(), List.of(), List.of(action), base.transcript(), List.of(), false,
+                new MinutesSnapshot.DisplayMetadata(Map.of(owner, "Nguyễn Văn An")));
+        var renamed = new MinutesSnapshot(1, base.assembledAt(), hash, "COMPLETE", base.meeting(),
+                base.summary(), List.of(), List.of(action), base.transcript(), List.of(), false,
+                new MinutesSnapshot.DisplayMetadata(Map.of(owner, "Người đổi tên")));
+
+        // Reproduce an existing, still-pending intake as written by the old code.
+        ExportRecord legacy = as(owner, () -> intents.create(meeting, ExportFormat.MARKDOWN, "legacy"));
+        byte[] legacyBytes = json.writeValueAsBytes(new ExportSnapshotCodec.Envelope(
+                1, legacy.id(), meeting, owner, source));
+        String digest = ExportSnapshotCodec.sha256(legacyBytes);
+        String key = "exports/" + legacy.id() + "/intake/" + digest + ".json";
+        storage.putVerified(key, legacyBytes, "application/json", digest);
+        jdbc.update("""
+            INSERT INTO meeting_export_intakes(export_id,meeting_id,requested_by_user_id,
+                source_fingerprint,intake_sha256,object_key) VALUES(?,?,?,?,?,?)
+            """, legacy.id(), meeting, owner, hash, digest, key);
+        assertThat(worker.processNext()).isTrue();
+        var legacyReady = records.require(legacy.id());
+        assertThat(legacyReady.status()).isEqualTo(ExportStatus.READY);
+        assertThat(legacyReady.rendererVersion()).isEqualTo("markdown-v1");
+        assertThat(new String(storage.readVerified(legacyReady.objectKey(),
+                legacyReady.artifactSha256(), 8*1024*1024), java.nio.charset.StandardCharsets.UTF_8))
+                .doesNotContain("Nguyễn Văn An");
+
+        ExportRecord current = as(owner, () -> submissions.submit(meeting,
+                ExportFormat.MARKDOWN, "enriched", source));
+        assertThat(as(owner, () -> submissions.submit(meeting,
+                ExportFormat.MARKDOWN, "enriched", renamed)).id()).isEqualTo(current.id());
+        assertThat(worker.processNext()).isTrue();
+        var ready = records.require(current.id());
+        assertThat(ready.status()).isEqualTo(ExportStatus.READY);
+        assertThat(ready.rendererVersion()).isEqualTo("markdown-v2");
+        assertThat(ready.sourceFingerprint()).isEqualTo(hash);
+        assertThat(new String(storage.readVerified(ready.objectKey(), ready.artifactSha256(),
+                8*1024*1024), java.nio.charset.StandardCharsets.UTF_8))
+                .contains("Nguyễn Văn An").doesNotContain("Người đổi tên");
     }
 
     @Test
